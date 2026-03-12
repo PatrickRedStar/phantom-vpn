@@ -11,6 +11,58 @@ PhantomVPN — это кастомный VPN протокол, который м
 
 ---
 
+## One-Button clean deploy (актуальный сценарий)
+
+Сценарий хост-агностичный:
+- `<server-host>` — хост, где поднимается сервер
+- `<client-host>` — хост, где запускается Linux-клиент
+
+### 1) Чистый деплой сервера на `<server-host>`
+
+На сервере выполните один запуск:
+
+```bash
+ssh <server-host>
+cd /root/ghoststream/phantom-vpn
+git pull --ff-only origin master
+sudo ./scripts/install.py
+```
+
+Что делает скрипт:
+- подготавливает зависимости и Rust (если нужно),
+- собирает `phantom-server` и `phantom-keygen`,
+- генерирует **новые** ключи/secret на каждый запуск,
+- заново создаёт `/opt/phantom-vpn` и `server.toml`,
+- перезапускает `systemd`-сервис `phantom-vpn`,
+- печатает готовый `client.toml` и quick-start для клиента.
+
+### 2) Быстрый старт клиента на `<client-host>`
+
+После запуска `install.py` на сервере возьмите напечатанный им блок `client.toml` и выполните на клиенте:
+
+```bash
+ssh <client-host>
+cd /root/ghoststream/phantom-vpn
+# вставьте client.toml в config/client.toml
+source /root/.cargo/env
+cargo build --release -p phantom-client-linux
+./target/release/phantom-client-linux -c ./config/client.toml -vv
+```
+
+Проверка:
+
+```bash
+ping -c 3 10.7.0.1
+ping -c 3 1.1.1.1
+curl -4 https://ifconfig.me
+```
+
+Пример:
+- `<server-host>` = `vdsina`
+- `<client-host>` = `kz`
+
+---
+
 ## 🛠 Установка зависимостей
 
 Для сборки проекта потребуется **Rust**:

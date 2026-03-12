@@ -1,0 +1,14 @@
+/Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/deps/serde-dadfff2c96ea9786.d: /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/build/serde-16acfc4863fe7d9c/out/private.rs
+
+/Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/deps/libserde-dadfff2c96ea9786.rlib: /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/build/serde-16acfc4863fe7d9c/out/private.rs
+
+/Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/deps/libserde-dadfff2c96ea9786.rmeta: /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/build/serde-16acfc4863fe7d9c/out/private.rs
+
+/Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/spongebob/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/build/serde-16acfc4863fe7d9c/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/spongebob/Documents/GhostStream/phantom-vpn/target/release/build/serde-16acfc4863fe7d9c/out
