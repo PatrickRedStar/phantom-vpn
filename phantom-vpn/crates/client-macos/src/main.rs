@@ -17,6 +17,7 @@ mod macos {
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, AsyncReadExt};
     use tokio::net::UdpSocket;
     use tokio::sync::mpsc;
+    use tokio::signal;
 
     use client_common::helpers::{self, Args};
 
@@ -153,12 +154,64 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn add_default_route(tun_name: &str, gateway: &str) -> anyhow::Result<()> {
-    // macOS 'route' command
+pub struct RouteCleanup {
+    server_ip: String,
+    old_gw: Option<String>,
+    old_dev: Option<String>,
+}
+
+impl Drop for RouteCleanup {
+    fn drop(&mut self) {
+        tracing::info!("Restoring original routes...");
+        let _ = run_cmd("route", &["delete", "default"]);
+        if let (Some(ref gw), Some(ref dev)) = (&self.old_gw, &self.old_dev) {
+            let _ = run_cmd("route", &["add", "default", gw, "-iface", dev]);
+            let _ = run_cmd("route", &["delete", &self.server_ip, gw]);
+            tracing::info!("Restored default route via {} dev {}", gw, dev);
+        } else {
+            tracing::warn!("No original gateway collected. Leaving default route missing.");
+        }
+    }
+}
+
+fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) -> anyhow::Result<RouteCleanup> {
+    let server_ip = server_addr.ip().to_string();
+
+    // Determine current default gateway on macOS using `route -n get default`
+    let output = Command::new("route").args(&["-n", "get", "default"])
+        .output().context("Failed to get default route")?;
+    let route_str = String::from_utf8_lossy(&output.stdout);
+    
+    let mut old_gw = None;
+    let mut old_dev = None;
+    
+    for line in route_str.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("gateway:") {
+            old_gw = trimmed.split_whitespace().nth(1).map(|s| s.to_string());
+        } else if trimmed.starts_with("interface:") {
+            old_dev = trimmed.split_whitespace().nth(1).map(|s| s.to_string());
+        }
+    }
+
+    // Add host route to VPN server via the original gateway
+    if let (Some(ref gw), Some(ref _dev)) = (&old_gw, &old_dev) {
+        let _ = run_cmd("route", &["add", "-host", &server_ip, gw]);
+        tracing::info!("Host route: {} via {}", server_ip, gw);
+    } else {
+        tracing::warn!("Could not detect original default gateway — split routing may fail");
+    }
+
+    // Replace default route with TUN
     let _ = run_cmd("route", &["delete", "default"]);
     run_cmd("route", &["add", "default", gateway, "-iface", tun_name])?;
     tracing::info!("Default route set via {} gw {}", tun_name, gateway);
-    Ok(())
+    
+    Ok(RouteCleanup {
+        server_ip,
+        old_gw,
+        old_dev,
+    })
 }
 
 // ─── UTUN Creation ───────────────────────────────────────────────────────────
@@ -288,10 +341,17 @@ fn create_utun(addr_cidr: &str, mtu: u32) -> anyhow::Result<(RawFd, String)> {
     let (mut tun_reader, mut tun_writer) = tokio::io::split(async_tun);
 
     // Default route
-    if let Some(ref gw) = cfg.network.default_gw {
-        add_default_route(&ifname, gw)
-            .unwrap_or_else(|e| tracing::warn!("Route setup failed: {}", e));
-    }
+    let _cleanup_guard = if let Some(ref gw) = cfg.network.default_gw {
+        match add_default_route(&ifname, gw, &server_addr) {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                tracing::warn!("Route setup failed: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // ─── Channels ────────────────────────────────────────────────────────
     let noise_arc = Arc::new(tokio::sync::Mutex::new(noise_session));
@@ -350,10 +410,27 @@ fn create_utun(addr_cidr: &str, mtu: u32) -> anyhow::Result<(RawFd, String)> {
     }
 
     tracing::info!("Tunnel active on {}. Press Ctrl-C to exit.", ifname);
-    tokio::signal::ctrl_c().await?;
-        tracing::info!("Shutting down...");
-        Ok(())
+
+    // Wait for SIGINT or SIGTERM
+    #[cfg(unix)]
+    {
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+        
+        tokio::select! {
+            _ = sigint.recv() => { tracing::info!("Received SIGINT. Shutting down..."); }
+            _ = sigterm.recv() => { tracing::info!("Received SIGTERM. Shutting down..."); }
+        }
     }
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c().await?;
+        tracing::info!("Shutting down...");
+    }
+
+    // _cleanup_guard will be dropped here, restoring routes
+    Ok(())
+}
 }
 
 #[cfg(target_os = "macos")]

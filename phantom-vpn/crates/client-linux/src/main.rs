@@ -18,6 +18,7 @@ mod linux {
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, AsyncReadExt};
     use tokio::net::UdpSocket;
     use tokio::sync::mpsc;
+    use tokio::signal;
 
     use client_common::helpers::{self, Args};
 
@@ -142,7 +143,27 @@ fn create_tun(name: &str, addr_cidr: &str, mtu: u32) -> anyhow::Result<File> {
     Ok(file)
 }
 
-fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) -> anyhow::Result<()> {
+pub struct RouteCleanup {
+    server_ip: String,
+    old_gw: Option<String>,
+    old_dev: Option<String>,
+}
+
+impl Drop for RouteCleanup {
+    fn drop(&mut self) {
+        tracing::info!("Restoring original routes...");
+        let _ = run_cmd("ip", &["route", "del", "default"]);
+        if let (Some(ref gw), Some(ref dev)) = (&self.old_gw, &self.old_dev) {
+            let _ = run_cmd("ip", &["route", "add", "default", "via", gw, "dev", dev]);
+            let _ = run_cmd("ip", &["route", "del", &format!("{}/32", self.server_ip), "via", gw, "dev", dev]);
+            tracing::info!("Restored default route via {} dev {}", gw, dev);
+        } else {
+            tracing::warn!("No original gateway collected. Leaving default route missing.");
+        }
+    }
+}
+
+fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) -> anyhow::Result<RouteCleanup> {
     let server_ip = server_addr.ip().to_string();
 
     // Determine current default gateway
@@ -171,7 +192,12 @@ fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) ->
     let _ = run_cmd("ip", &["route", "del", "default"]);
     run_cmd("ip", &["route", "add", "default", "via", gateway, "dev", tun_name])?;
     tracing::info!("Default route set via {} dev {}", gateway, tun_name);
-    Ok(())
+    
+    Ok(RouteCleanup {
+        server_ip,
+        old_gw,
+        old_dev,
+    })
 }
 
 fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
@@ -229,10 +255,17 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     let (mut tun_reader, mut tun_writer) = tokio::io::split(async_tun);
 
     // Default route (with split routing for server IP)
-    if let Some(ref gw) = cfg.network.default_gw {
-        add_default_route(tun_name, gw, &server_addr)
-            .unwrap_or_else(|e| tracing::warn!("Route setup failed: {}", e));
-    }
+    let _cleanup_guard = if let Some(ref gw) = cfg.network.default_gw {
+        match add_default_route(tun_name, gw, &server_addr) {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                tracing::warn!("Route setup failed: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // ─── Channels ────────────────────────────────────────────────────────
     let noise_arc = Arc::new(tokio::sync::Mutex::new(noise_session));
@@ -291,10 +324,27 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     }
 
     tracing::info!("Tunnel active. Press Ctrl-C to exit.");
-    tokio::signal::ctrl_c().await?;
-        tracing::info!("Shutting down...");
-        Ok(())
+
+    // Wait for SIGINT or SIGTERM
+    #[cfg(unix)]
+    {
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+        
+        tokio::select! {
+            _ = sigint.recv() => { tracing::info!("Received SIGINT. Shutting down..."); }
+            _ = sigterm.recv() => { tracing::info!("Received SIGTERM. Shutting down..."); }
+        }
     }
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c().await?;
+        tracing::info!("Shutting down...");
+    }
+
+    // _cleanup_guard will be dropped here, restoring routes
+    Ok(())
+}
 }
 
 #[cfg(target_os = "linux")]
