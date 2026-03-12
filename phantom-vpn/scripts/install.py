@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 
 class Colors:
@@ -108,9 +110,9 @@ shared_secret      = "{keys['shared_secret']}"
 """
 
 
-def generate_server_toml(primary_iface, keys):
+def generate_server_toml(listen_ip, primary_iface, keys):
     return f"""[network]
-listen_addr = "0.0.0.0:3478"
+listen_addr = "{listen_ip}:3478"
 tun_name    = "tun0"
 tun_addr    = "10.7.0.1/24"
 tun_mtu     = 1380
@@ -125,6 +127,22 @@ shared_secret      = "{keys['shared_secret']}"
 idle_timeout_secs  = 300
 hard_timeout_secs  = 86400
 """
+
+
+def write_clients_keyring(path, client_name, keys, tun_addr, dry_run=False):
+    record = {
+        "client_private_key": keys["client_private_key"],
+        "client_public_key": keys["client_public_key"],
+        "tun_addr": tun_addr,
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    }
+    keyring = {"clients": {client_name: record}}
+    if dry_run:
+        print(f"{Colors.YELLOW}[dry-run]{Colors.RESET} write {path}")
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(keyring, f, indent=2, sort_keys=True)
+        f.write("\n")
 
 
 def main():
@@ -229,7 +247,7 @@ def main():
     run_cmd("rm -rf /opt/phantom-vpn", dry_run=args.dry_run)
     run_cmd("mkdir -p /opt/phantom-vpn/config", dry_run=args.dry_run)
 
-    server_toml = generate_server_toml(primary_iface, keys)
+    server_toml = generate_server_toml(public_ip, primary_iface, keys)
     if args.dry_run:
         print(f"{Colors.YELLOW}[dry-run]{Colors.RESET} write /opt/phantom-vpn/config/server.toml")
     else:
@@ -252,7 +270,16 @@ def main():
 
     # 8. Print client quick-start
     print_step(f"Generating client config and quick-start for host '{args.client_host}'...")
+    client_tun_addr = "10.7.0.2/24"
     client_toml = generate_client_toml(public_ip, keys)
+    keyring_path = "/opt/phantom-vpn/config/clients.json"
+    write_clients_keyring(
+        keyring_path,
+        args.client_host,
+        keys,
+        client_tun_addr,
+        dry_run=args.dry_run,
+    )
 
     print("\n" + "=" * 70)
     print(f"{Colors.GREEN}✅ CLEAN DEPLOY COMPLETED (server: {server_host}){Colors.RESET}")
