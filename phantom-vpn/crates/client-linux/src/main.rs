@@ -143,55 +143,33 @@ fn create_tun(name: &str, addr_cidr: &str, mtu: u32) -> anyhow::Result<File> {
     Ok(file)
 }
 
-const BYPASS_TABLE: &str = "100";
+const FWMARK: &str = "0x50";
+const ROUTE_TABLE: &str = "51820";
 
 pub struct RouteCleanup {
     server_ip: String,
     old_gw: Option<String>,
     old_dev: Option<String>,
-    host_ips: Vec<String>,
+    tun_name: String,
 }
 
 impl Drop for RouteCleanup {
     fn drop(&mut self) {
-        tracing::info!("Restoring original routes...");
-        let _ = run_cmd("ip", &["route", "del", "default"]);
+        tracing::info!("Cleaning up policy routing rules...");
+        let _ = run_cmd("ip", &["rule", "del", "not", "fwmark", FWMARK, "table", ROUTE_TABLE]);
+        let _ = run_cmd("ip", &["rule", "del", "table", "main", "suppress_prefixlength", "0"]);
+        let _ = run_cmd(
+            "ip",
+            &["route", "del", "default", "dev", &self.tun_name, "table", ROUTE_TABLE],
+        );
 
-        for ip in &self.host_ips {
-            let _ = run_cmd("ip", &["rule", "del", "from", ip, "table", BYPASS_TABLE]);
-        }
-        let _ = run_cmd("ip", &["route", "flush", "table", BYPASS_TABLE]);
-
-        if let (Some(ref gw), Some(ref dev)) = (&self.old_gw, &self.old_dev) {
-            let _ = run_cmd("ip", &["route", "add", "default", "via", gw, "dev", dev]);
+        if self.old_gw.is_some() && self.old_dev.is_some() {
             let _ = run_cmd("ip", &["route", "del", &format!("{}/32", self.server_ip)]);
-            tracing::info!("Restored default route via {} dev {}", gw, dev);
-        } else {
-            tracing::warn!("No original gateway collected. Leaving default route missing.");
         }
     }
 }
 
-fn get_interface_ips(dev: &str) -> Vec<String> {
-    let output = Command::new("ip")
-        .args(["addr", "show", "dev", dev])
-        .output()
-        .ok();
-    let Some(out) = output else { return vec![] };
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("inet ") {
-                trimmed.split_whitespace().nth(1).and_then(|cidr| cidr.split('/').next()).map(String::from)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) -> anyhow::Result<RouteCleanup> {
+fn add_default_route(tun_name: &str, server_addr: &SocketAddr) -> anyhow::Result<RouteCleanup> {
     let server_ip = server_addr.ip().to_string();
 
     let output = Command::new("ip").args(["route", "show", "default"])
@@ -206,32 +184,26 @@ fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) ->
         .nth(1)
         .map(|s| s.to_string());
 
-    let mut host_ips = Vec::new();
-
     if let (Some(ref gw), Some(ref dev)) = (&old_gw, &old_dev) {
         let _ = run_cmd("ip", &["route", "add", &format!("{}/32", server_ip), "via", gw, "dev", dev]);
         tracing::info!("Host route: {} via {} dev {}", server_ip, gw, dev);
-
-        let _ = run_cmd("ip", &["route", "add", "default", "via", gw, "dev", dev, "table", BYPASS_TABLE]);
-
-        host_ips = get_interface_ips(dev);
-        for ip in &host_ips {
-            let _ = run_cmd("ip", &["rule", "add", "from", ip, "table", BYPASS_TABLE, "priority", "100"]);
-            tracing::info!("Policy route: from {} → table {} (bypass tunnel)", ip, BYPASS_TABLE);
-        }
     } else {
-        tracing::warn!("Could not detect original default gateway — split routing may fail");
+        tracing::warn!("Could not detect original default gateway — host route for server skipped");
     }
 
-    let _ = run_cmd("ip", &["route", "del", "default"]);
-    run_cmd("ip", &["route", "add", "default", "via", gateway, "dev", tun_name])?;
-    tracing::info!("Default route set via {} dev {}", gateway, tun_name);
+    run_cmd("ip", &["route", "add", "default", "dev", tun_name, "table", ROUTE_TABLE])?;
+    run_cmd("ip", &["rule", "add", "not", "fwmark", FWMARK, "table", ROUTE_TABLE])?;
+    run_cmd("ip", &["rule", "add", "table", "main", "suppress_prefixlength", "0"])?;
+    tracing::info!(
+        "Policy routing enabled: unmarked traffic -> table {}, marked traffic -> main",
+        ROUTE_TABLE
+    );
 
     Ok(RouteCleanup {
         server_ip,
         old_gw,
         old_dev,
-        host_ips,
+        tun_name: tun_name.to_string(),
     })
 }
 
@@ -290,6 +262,22 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
     let socket = Arc::new(UdpSocket::bind(bind_addr).await.context("UDP bind failed")?);
     socket.connect(server_addr).await.context("UDP connect failed")?;
+    let mark: u32 = 0x50;
+    let setsockopt_ret = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_MARK,
+            &mark as *const _ as *const libc::c_void,
+            std::mem::size_of::<u32>() as libc::socklen_t,
+        )
+    };
+    if setsockopt_ret != 0 {
+        anyhow::bail!(
+            "Failed to set SO_MARK on UDP socket: {}",
+            io::Error::last_os_error()
+        );
+    }
     tracing::info!("UDP socket bound, targeting {}", server_addr);
 
     // ─── Noise IK Handshake ──────────────────────────────────────────────
@@ -310,8 +298,8 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     let (mut tun_reader, mut tun_writer) = tokio::io::split(async_tun);
 
     // Default route (with split routing for server IP)
-    let _cleanup_guard = if let Some(ref gw) = cfg.network.default_gw {
-        match add_default_route(tun_name, gw, &server_addr) {
+    let _cleanup_guard = if cfg.network.default_gw.is_some() {
+        match add_default_route(tun_name, &server_addr) {
             Ok(guard) => Some(guard),
             Err(e) => {
                 tracing::warn!("Route setup failed: {}", e);
