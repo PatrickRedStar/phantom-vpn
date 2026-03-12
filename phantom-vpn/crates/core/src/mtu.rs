@@ -73,6 +73,7 @@ fn clamp_tcp_options(tcp: &mut [u8], max_mss: u16) -> Result<bool, MtuError> {
     let opts = &mut tcp[20..doff];
     let mut i = 0;
     let mut modified = false;
+    let mut old_mss = 0;
 
     while i < opts.len() {
         match opts[i] {
@@ -85,6 +86,7 @@ fn clamp_tcp_options(tcp: &mut [u8], max_mss: u16) -> Result<bool, MtuError> {
                     let cur_mss = u16::from_be_bytes([opts[i + 2], opts[i + 3]]);
                     if cur_mss > max_mss {
                         opts[i + 2..i + 4].copy_from_slice(&max_mss.to_be_bytes());
+                        old_mss = cur_mss;
                         modified = true;
                     }
                 }
@@ -100,22 +102,18 @@ fn clamp_tcp_options(tcp: &mut [u8], max_mss: u16) -> Result<bool, MtuError> {
     }
 
     if modified {
-        // Пересчитываем TCP checksum
-        recalculate_tcp_checksum_v4(tcp)?;
+        // Incremental TCP checksum update (RFC 1624)
+        let hc = u16::from_be_bytes([tcp[16], tcp[17]]);
+        let mut sum = (!hc) as u32;
+        sum += (!old_mss) as u16 as u32;
+        sum += max_mss as u32;
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        tcp[16..18].copy_from_slice(&(!sum as u16).to_be_bytes());
     }
-    Ok(modified)
-}
 
-/// Упрощённый пересчёт TCP checksum (без pseudo-header — для демонстрации).
-/// В production нужен полный pseudo-header (src_ip, dst_ip, proto, tcp_len).
-fn recalculate_tcp_checksum_v4(tcp: &mut [u8]) -> Result<(), MtuError> {
-    // Обнуляем текущую контрольную сумму
-    tcp[16] = 0;
-    tcp[17] = 0;
-    // Вычисляем checksum (только TCP, без pseudo-header — допустимо для туннеля)
-    let cksum = internet_checksum(tcp);
-    tcp[16..18].copy_from_slice(&cksum.to_be_bytes());
-    Ok(())
+    Ok(modified)
 }
 
 /// Стандартный internet checksum (RFC 1071)

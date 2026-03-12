@@ -217,6 +217,26 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         helpers::init_logging(args.verbose);
         tracing::info!("PhantomVPN Linux Client starting...");
 
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Register signals early
+        #[cfg(unix)]
+        tokio::spawn(async move {
+            let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! {
+                _ = sigint.recv() => { tracing::info!("Received SIGINT. Initiating shutdown..."); }
+                _ = sigterm.recv() => { tracing::info!("Received SIGTERM. Initiating shutdown..."); }
+            }
+            let _ = shutdown_tx.send(());
+        });
+        #[cfg(not(unix))]
+        tokio::spawn(async move {
+            let _ = signal::ctrl_c().await;
+            tracing::info!("Received Ctrl-C. Initiating shutdown...");
+            let _ = shutdown_tx.send(());
+        });
+
     let cfg = helpers::load_config(&args.config)?;
 
     let server_addr: SocketAddr = if let Some(ref sa) = args.server {
@@ -325,24 +345,13 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
     tracing::info!("Tunnel active. Press Ctrl-C to exit.");
 
-    // Wait for SIGINT or SIGTERM
-    #[cfg(unix)]
-    {
-        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
-        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
-        
-        tokio::select! {
-            _ = sigint.recv() => { tracing::info!("Received SIGINT. Shutting down..."); }
-            _ = sigterm.recv() => { tracing::info!("Received SIGTERM. Shutting down..."); }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        signal::ctrl_c().await?;
-        tracing::info!("Shutting down...");
-    }
+    // Wait for the shutdown signal from our early-registered handlers
+    let _ = shutdown_rx.await;
 
-    // _cleanup_guard will be dropped here, restoring routes
+    // Manually drop the guard to restore routes before tokio runtime shuts down
+    drop(_cleanup_guard);
+    tracing::info!("Shutdown complete.");
+    
     Ok(())
 }
 }
