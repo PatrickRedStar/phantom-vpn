@@ -8,8 +8,8 @@ use tokio::io::AsyncReadExt;
 
 use phantom_core::{
     crypto::NoiseSession,
+    session::{NonceCounter, NonceReconstructor, ReplayWindow},
     wire::{SrtpHeader, SRTP_HEADER_LEN, build_plaintext, extract_ip_packet, TUNNEL_MSS},
-    session::ReplayWindow,
     mtu::clamp_tcp_mss,
 };
 
@@ -25,6 +25,7 @@ pub async fn udp_rx_loop(
     let mut buf        = vec![0u8; BUF];
     let mut decrypt_buf = vec![0u8; BUF];
     let mut replay_win = ReplayWindow::new();
+    let mut recv_nonce = NonceReconstructor::new();
 
     tracing::info!("UDP RX loop started");
 
@@ -51,7 +52,8 @@ pub async fn udp_rx_loop(
         };
 
         // Replay protection
-        if let Err(e) = replay_win.check_and_update(hdr.seq_num) {
+        let nonce = recv_nonce.reconstruct(hdr.seq_num);
+        if let Err(e) = replay_win.check_and_update(nonce) {
             tracing::trace!("replay drop: {}", e);
             continue;
         }
@@ -61,7 +63,7 @@ pub async fn udp_rx_loop(
         // Расшифровка
         let pt_len = {
             let mut session = noise.lock().await;
-            match session.decrypt(payload, &mut decrypt_buf) {
+            match session.decrypt(nonce, payload, &mut decrypt_buf) {
                 Ok(n)  => n,
                 Err(e) => {
                     tracing::trace!("decrypt failed: {}", e);
@@ -102,7 +104,7 @@ pub async fn tun_to_udp_loop(
 ) -> anyhow::Result<()> {
     let mut pt_buf   = vec![0u8; BUF];
     let mut ct_buf   = vec![0u8; BUF];
-    let mut seq_num: u16 = rand::random();
+    let mut send_nonce = NonceCounter::new();
     let mut rtp_ts:  u32 = rand::random();
 
     tracing::info!("TUN→UDP loop started (ssrc={:#010x})", ssrc);
@@ -128,9 +130,10 @@ pub async fn tun_to_udp_loop(
         };
 
         // Шифруем
+        let (seq_num, nonce) = send_nonce.next();
         let ct_len = {
             let mut session = noise.lock().await;
-            match session.encrypt(&pt_buf[..pt_len], &mut ct_buf) {
+            match session.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
                 Ok(n)  => n,
                 Err(e) => {
                     tracing::trace!("encrypt error: {}", e);
@@ -150,7 +153,6 @@ pub async fn tun_to_udp_loop(
         hdr.write(&mut pkt[..SRTP_HEADER_LEN]);
         pkt[SRTP_HEADER_LEN..].copy_from_slice(&ct_buf[..ct_len]);
 
-        seq_num = seq_num.wrapping_add(1);
         rtp_ts  = rtp_ts.wrapping_add(3000); // 30 FPS, 90kHz
 
         if let Err(e) = socket.send(&pkt).await {

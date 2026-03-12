@@ -9,11 +9,9 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::io::AsyncWriteExt;
 
 use phantom_core::{
-    wire::{SrtpHeader, SRTP_HEADER_LEN, compute_ssrc, build_plaintext, extract_ip_packet, TUNNEL_MSS},
-    crypto::{NoiseSession, NoiseHandshake, KeyPair},
-    session::{ClientSession, ReplayWindow},
-    shaper::{H264Shaper, FrameType, tick_duration},
+    crypto::{KeyPair, NoiseHandshake},
     mtu::clamp_tcp_mss,
+    wire::{build_plaintext, extract_ip_packet, SrtpHeader, SRTP_HEADER_LEN, TUNNEL_MSS},
 };
 
 use crate::sessions::SessionMap;
@@ -76,18 +74,61 @@ pub async fn rx_loop(
 
         // Проверяем: есть ли уже активная сессия для этого SSRC?
         if let Some(session_ref) = sessions.get(&hdr.ssrc) {
+            let session_arc = session_ref.value().clone();
+            drop(session_ref);
+
             // Активная сессия — расшифровываем
-            let mut session = session_ref.lock().await;
+            let mut session = session_arc.lock().await;
+
+            // При смене UDP source (NAT rebinding/restart клиента) старая сессия невалидна.
+            // Удаляем её и пробуем текущий пакет как новый handshake init.
+            if session.client_addr != src_addr {
+                let old_addr = session.client_addr;
+                drop(session);
+                sessions.remove(&hdr.ssrc);
+
+                tracing::info!(
+                    "session addr changed for ssrc={:#010x}: {} -> {}, resetting session",
+                    hdr.ssrc,
+                    old_addr,
+                    src_addr
+                );
+
+                match try_handshake_respond(
+                    payload,
+                    src_addr,
+                    hdr.ssrc,
+                    &server_keys,
+                    &shared_secret,
+                    &socket,
+                    &sessions,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            "Handshake completed after addr change for {} (ssrc={:#010x})",
+                            src_addr,
+                            hdr.ssrc
+                        );
+                    }
+                    Err(e) => {
+                        tracing::trace!("Handshake failed after addr change from {}: {}", src_addr, e);
+                    }
+                }
+                continue;
+            }
             session.touch();
 
             // Replay check
-            if let Err(e) = session.replay_win.check_and_update(hdr.seq_num) {
+            let nonce = session.recv_nonce.reconstruct(hdr.seq_num);
+            if let Err(e) = session.replay_win.check_and_update(nonce) {
                 tracing::trace!("replay drop from {}: {}", src_addr, e);
                 continue;
             }
 
             // Расшифровка (Noise transport mode)
-            let pt_len = match session.noise.decrypt(payload, &mut decrypt_buf) {
+            let pt_len = match session.noise.decrypt(nonce, payload, &mut decrypt_buf) {
                 Ok(n) => n,
                 Err(e) => {
                     tracing::trace!("decrypt failed from {}: {}", src_addr, e);
@@ -240,7 +281,8 @@ pub async fn tun_to_udp_loop(
             };
 
             // Шифруем
-            let ct_len = match session.noise.encrypt(&pt_buf[..pt_len], &mut ct_buf) {
+            let (seq, nonce) = session.send_nonce.next();
+            let ct_len = match session.noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
                 Ok(n) => n,
                 Err(e) => {
                     tracing::trace!("encrypt error for ssrc={:#010x}: {}", ssrc, e);
@@ -250,9 +292,6 @@ pub async fn tun_to_udp_loop(
 
             // Фейковый SRTP заголовок
             let mut pkt = vec![0u8; SRTP_HEADER_LEN + ct_len];
-            let seq = session.tx_seq;
-            session.tx_seq = session.tx_seq.wrapping_add(1);
-
             let hdr = SrtpHeader {
                 seq_num:   seq,
                 timestamp: rand::random(),

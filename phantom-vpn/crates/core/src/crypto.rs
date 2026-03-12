@@ -2,7 +2,7 @@
 //! Noise_IK — 0-RTT: клиент знает публичный ключ сервера заранее.
 
 use crate::error::CryptoError;
-use snow::{Builder, HandshakeState, TransportState};
+use snow::{Builder, HandshakeState, StatelessTransportState};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -99,7 +99,10 @@ impl NoiseHandshake {
 
     /// Переходит в transport mode (шифрование/расшифровка данных)
     pub fn into_transport(self) -> Result<NoiseSession, CryptoError> {
-        let transport = self.state.into_transport_mode().map_err(CryptoError::Noise)?;
+        let transport = self
+            .state
+            .into_stateless_transport_mode()
+            .map_err(CryptoError::Noise)?;
         Ok(NoiseSession::new(transport))
     }
 }
@@ -107,14 +110,14 @@ impl NoiseHandshake {
 // ─── Транспортная сессия ─────────────────────────────────────────────────────
 
 pub struct NoiseSession {
-    transport:   TransportState,
+    transport:   StatelessTransportState,
     bytes_sent:  AtomicU64,
     bytes_recv:  AtomicU64,
     created_at:  Instant,
 }
 
 impl NoiseSession {
-    fn new(transport: TransportState) -> Self {
+    fn new(transport: StatelessTransportState) -> Self {
         Self {
             transport,
             bytes_sent:  AtomicU64::new(0),
@@ -124,18 +127,28 @@ impl NoiseSession {
     }
 
     /// Шифрует plaintext в out, возвращает длину зашифрованного сообщения
-    pub fn encrypt(&mut self, plaintext: &[u8], out: &mut [u8]) -> Result<usize, CryptoError> {
+    pub fn encrypt(
+        &mut self,
+        nonce: u64,
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, CryptoError> {
         let len = self.transport
-            .write_message(plaintext, out)
+            .write_message(nonce, plaintext, out)
             .map_err(CryptoError::Noise)?;
         self.bytes_sent.fetch_add(len as u64, Ordering::Relaxed);
         Ok(len)
     }
 
     /// Расшифровывает ciphertext в out, возвращает длину plaintext
-    pub fn decrypt(&mut self, ciphertext: &[u8], out: &mut [u8]) -> Result<usize, CryptoError> {
+    pub fn decrypt(
+        &mut self,
+        nonce: u64,
+        ciphertext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, CryptoError> {
         let len = self.transport
-            .read_message(ciphertext, out)
+            .read_message(nonce, ciphertext, out)
             .map_err(CryptoError::Noise)?;
         self.bytes_recv.fetch_add(ciphertext.len() as u64, Ordering::Relaxed);
         Ok(len)
@@ -180,17 +193,21 @@ mod tests {
         // Клиент -> Сервер
         let plaintext = b"Hello, World! This is a test payload.";
         let mut ciphertext = vec![0u8; plaintext.len() + 100];
-        let ct_len = client_session.encrypt(plaintext, &mut ciphertext).unwrap();
+        let ct_len = client_session.encrypt(0, plaintext, &mut ciphertext).unwrap();
         let mut decrypted = vec![0u8; plaintext.len() + 100];
-        let pt_len = server_session.decrypt(&ciphertext[..ct_len], &mut decrypted).unwrap();
+        let pt_len = server_session
+            .decrypt(0, &ciphertext[..ct_len], &mut decrypted)
+            .unwrap();
         assert_eq!(&decrypted[..pt_len], plaintext.as_ref());
 
         // Сервер -> Клиент
         let reply = b"Server reply data 12345";
         let mut ct2 = vec![0u8; reply.len() + 100];
-        let ct2_len = server_session.encrypt(reply, &mut ct2).unwrap();
+        let ct2_len = server_session.encrypt(0, reply, &mut ct2).unwrap();
         let mut dec2 = vec![0u8; reply.len() + 100];
-        let pt2_len = client_session.decrypt(&ct2[..ct2_len], &mut dec2).unwrap();
+        let pt2_len = client_session
+            .decrypt(0, &ct2[..ct2_len], &mut dec2)
+            .unwrap();
         assert_eq!(&dec2[..pt2_len], reply.as_ref());
     }
 

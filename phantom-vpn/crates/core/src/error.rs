@@ -21,7 +21,7 @@ pub enum PacketError {
     #[error("Invalid SSRC: {0:#010x}")]
     InvalidSsrc(u32),
     #[error("Replay detected: seq={0}")]
-    Replay(u16),
+    Replay(u64),
     #[error("Packet timestamp too old: diff={0}s")]
     StaleTimestamp(u32),
     #[error("Decryption failed")]
