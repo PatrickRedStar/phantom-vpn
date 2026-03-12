@@ -1,0 +1,14 @@
+# PhantomVPN Client Configuration
+
+[network]
+server_addr = "38.180.207.110:3478"
+tun_name    = "tun0"
+tun_addr    = "10.7.0.2/24"
+tun_mtu     = 1380
+default_gw  = "10.7.0.1"
+
+[keys]
+client_private_key = "BFzDGcie8XOTFoPiiZUHgtQFq5cEZVsaELOkFPtitQ0="
+client_public_key  = "5mFr5M2/M4lUf1CNjEXTvgokzFVq3TbFi5c8t7gOIRc="
+server_public_key  = "L4ulOiR2KwBhwR9D/iAOv4UlU5Z4CLerTnUsOKtB72E="
+shared_secret      = "z7sJadwK2nsi57pArPYmAv/JP3xbmJPG0Hug89f+Sm8="

@@ -1,0 +1,19 @@
+[package]
+name = "phantom-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+snow           = "0.9"
+rand_distr     = "0.4"
+rand           = "0.8"
+bytes          = "1"
+hmac           = "0.12"
+sha2           = "0.10"
+tracing        = "0.1"
+thiserror      = "1"
+serde          = { version = "1", features = ["derive"] }
+toml           = "0.8"
+base64         = "0.22"
+libc           = "0.2"
+tokio          = { version = "1", features = ["full"] }
