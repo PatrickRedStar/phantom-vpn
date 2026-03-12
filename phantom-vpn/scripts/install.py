@@ -65,16 +65,24 @@ def main():
 
     lines = keygen_output.splitlines()
     for line in lines:
-        if line.startswith("Private:") and not server_priv:
-            server_priv = line.split("Private:", 1)[1].strip()
-        elif line.startswith("Public:") and not server_pub:
-            server_pub = line.split("Public:", 1)[1].strip()
-        elif line.startswith("Private:") and server_priv:
-            client_priv = line.split("Private:", 1)[1].strip()
-        elif line.startswith("Public:") and server_pub:
-            client_pub = line.split("Public:", 1)[1].strip()
-        elif line.startswith("Secret:"):
-            shared_secret = line.split("Secret:", 1)[1].strip()
+        line = line.strip()
+        if "=" not in line:
+            continue
+            
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip().strip('"')
+
+        if key == "server_private_key":
+            server_priv = val
+        elif key == "server_public_key":
+            server_pub = val
+        elif key == "client_private_key":
+            client_priv = val
+        elif key == "client_public_key":
+            client_pub = val
+        elif key == "shared_secret":
+            shared_secret = val
 
     # Get public IP
     public_ip = subprocess.check_output(["curl", "-s", "https://ifconfig.me"], text=True).strip()
@@ -160,7 +168,10 @@ shared_secret      = "{shared_secret}"
     print("Copy the following configuration and save it as config/client.toml on your local PC (Mac/Linux):\n")
     print(f"{Colors.BLUE}{client_toml}{Colors.RESET}")
     print("="*60)
-    print(f"To run the client on your PC, execute:")
+    print("To run the client on your PC (Linux or macOS):")
+    print(f"\n{Colors.BLUE}For Linux:{Colors.RESET}")
+    print(f"{Colors.YELLOW}sudo cargo run --release -p phantom-client-linux -- -c config/client.toml -vv{Colors.RESET}")
+    print(f"\n{Colors.BLUE}For macOS:{Colors.RESET}")
     print(f"{Colors.YELLOW}sudo cargo run --release -p phantom-client-macos -- -c config/client.toml -vv{Colors.RESET}")
     print("="*60 + "\n")
 
