@@ -151,6 +151,7 @@ pub struct RouteCleanup {
     old_gw: Option<String>,
     old_dev: Option<String>,
     tun_name: String,
+    connmark_rules_installed: bool,
 }
 
 impl Drop for RouteCleanup {
@@ -165,6 +166,42 @@ impl Drop for RouteCleanup {
 
         if self.old_gw.is_some() && self.old_dev.is_some() {
             let _ = run_cmd("ip", &["route", "del", &format!("{}/32", self.server_ip)]);
+        }
+        if self.connmark_rules_installed {
+            if let Some(ref dev) = self.old_dev {
+                let _ = run_cmd(
+                    "iptables",
+                    &[
+                        "-t",
+                        "mangle",
+                        "-D",
+                        "PREROUTING",
+                        "-i",
+                        dev,
+                        "-j",
+                        "CONNMARK",
+                        "--set-mark",
+                        FWMARK,
+                    ],
+                );
+            }
+            let _ = run_cmd(
+                "iptables",
+                &[
+                    "-t",
+                    "mangle",
+                    "-D",
+                    "OUTPUT",
+                    "-m",
+                    "connmark",
+                    "--mark",
+                    FWMARK,
+                    "-j",
+                    "MARK",
+                    "--set-mark",
+                    FWMARK,
+                ],
+            );
         }
     }
 }
@@ -191,6 +228,85 @@ fn add_default_route(tun_name: &str, server_addr: &SocketAddr) -> anyhow::Result
         tracing::warn!("Could not detect original default gateway — host route for server skipped");
     }
 
+    let mut connmark_rules_installed = false;
+    if let Some(ref dev) = old_dev {
+        // Mark host inbound connections and restore mark on their replies, so
+        // management traffic (SSH and similar services) bypasses the tunnel.
+        if run_cmd(
+            "iptables",
+            &[
+                "-t",
+                "mangle",
+                "-C",
+                "PREROUTING",
+                "-i",
+                dev,
+                "-j",
+                "CONNMARK",
+                "--set-mark",
+                FWMARK,
+            ],
+        )
+        .is_err()
+        {
+            run_cmd(
+                "iptables",
+                &[
+                    "-t",
+                    "mangle",
+                    "-I",
+                    "PREROUTING",
+                    "1",
+                    "-i",
+                    dev,
+                    "-j",
+                    "CONNMARK",
+                    "--set-mark",
+                    FWMARK,
+                ],
+            )?;
+        }
+        if run_cmd(
+            "iptables",
+            &[
+                "-t",
+                "mangle",
+                "-C",
+                "OUTPUT",
+                "-m",
+                "connmark",
+                "--mark",
+                FWMARK,
+                "-j",
+                "MARK",
+                "--set-mark",
+                FWMARK,
+            ],
+        )
+        .is_err()
+        {
+            run_cmd(
+                "iptables",
+                &[
+                    "-t",
+                    "mangle",
+                    "-I",
+                    "OUTPUT",
+                    "1",
+                    "-m",
+                    "connmark",
+                    "--mark",
+                    FWMARK,
+                    "-j",
+                    "MARK",
+                    "--set-mark",
+                    FWMARK,
+                ],
+            )?;
+        }
+        connmark_rules_installed = true;
+    }
+
     run_cmd("ip", &["route", "add", "default", "dev", tun_name, "table", ROUTE_TABLE])?;
     run_cmd("ip", &["rule", "add", "not", "fwmark", FWMARK, "table", ROUTE_TABLE])?;
     run_cmd("ip", &["rule", "add", "table", "main", "suppress_prefixlength", "0"])?;
@@ -204,6 +320,7 @@ fn add_default_route(tun_name: &str, server_addr: &SocketAddr) -> anyhow::Result
         old_gw,
         old_dev,
         tun_name: tun_name.to_string(),
+        connmark_rules_installed,
     })
 }
 
