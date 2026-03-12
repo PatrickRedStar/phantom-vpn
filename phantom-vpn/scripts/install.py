@@ -51,7 +51,7 @@ def main():
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     os.chdir(repo_root)
     run_cmd("cargo build --release -p phantom-server")
-    run_cmd("cargo build --release -p phantom-keygen")
+    run_cmd("cargo build --release -p phantom-server --bin phantom-keygen")
 
     # 4. Generate keys
     print_step("Generating VPN keys...")
