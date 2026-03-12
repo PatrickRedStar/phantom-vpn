@@ -244,6 +244,7 @@ def main():
     else:
         with open("/etc/systemd/system/phantom-vpn.service", "w", encoding="utf-8") as f:
             f.write(SYSTEMD_UNIT)
+    run_cmd("ufw allow 3478/udp comment 'PhantomVPN' || true", dry_run=args.dry_run)
     run_cmd("systemctl daemon-reload", dry_run=args.dry_run)
     run_cmd("systemctl enable phantom-vpn", dry_run=args.dry_run)
     run_cmd("systemctl restart phantom-vpn", dry_run=args.dry_run)

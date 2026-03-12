@@ -143,19 +143,28 @@ fn create_tun(name: &str, addr_cidr: &str, mtu: u32) -> anyhow::Result<File> {
     Ok(file)
 }
 
+const BYPASS_TABLE: &str = "100";
+
 pub struct RouteCleanup {
     server_ip: String,
     old_gw: Option<String>,
     old_dev: Option<String>,
+    host_ips: Vec<String>,
 }
 
 impl Drop for RouteCleanup {
     fn drop(&mut self) {
         tracing::info!("Restoring original routes...");
         let _ = run_cmd("ip", &["route", "del", "default"]);
+
+        for ip in &self.host_ips {
+            let _ = run_cmd("ip", &["rule", "del", "from", ip, "table", BYPASS_TABLE]);
+        }
+        let _ = run_cmd("ip", &["route", "flush", "table", BYPASS_TABLE]);
+
         if let (Some(ref gw), Some(ref dev)) = (&self.old_gw, &self.old_dev) {
             let _ = run_cmd("ip", &["route", "add", "default", "via", gw, "dev", dev]);
-            let _ = run_cmd("ip", &["route", "del", &format!("{}/32", self.server_ip), "via", gw, "dev", dev]);
+            let _ = run_cmd("ip", &["route", "del", &format!("{}/32", self.server_ip)]);
             tracing::info!("Restored default route via {} dev {}", gw, dev);
         } else {
             tracing::warn!("No original gateway collected. Leaving default route missing.");
@@ -163,11 +172,29 @@ impl Drop for RouteCleanup {
     }
 }
 
+fn get_interface_ips(dev: &str) -> Vec<String> {
+    let output = Command::new("ip")
+        .args(["addr", "show", "dev", dev])
+        .output()
+        .ok();
+    let Some(out) = output else { return vec![] };
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("inet ") {
+                trimmed.split_whitespace().nth(1).and_then(|cidr| cidr.split('/').next()).map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) -> anyhow::Result<RouteCleanup> {
     let server_ip = server_addr.ip().to_string();
 
-    // Determine current default gateway
-    let output = Command::new("ip").args(&["route", "show", "default"])
+    let output = Command::new("ip").args(["route", "show", "default"])
         .output().context("Failed to get default route")?;
     let route_str = String::from_utf8_lossy(&output.stdout);
     let old_gw = route_str.split_whitespace()
@@ -179,24 +206,32 @@ fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) ->
         .nth(1)
         .map(|s| s.to_string());
 
-    // Add host route to VPN server via the original gateway
-    // so encrypted UDP traffic doesn't go through the tunnel
+    let mut host_ips = Vec::new();
+
     if let (Some(ref gw), Some(ref dev)) = (&old_gw, &old_dev) {
         let _ = run_cmd("ip", &["route", "add", &format!("{}/32", server_ip), "via", gw, "dev", dev]);
         tracing::info!("Host route: {} via {} dev {}", server_ip, gw, dev);
+
+        let _ = run_cmd("ip", &["route", "add", "default", "via", gw, "dev", dev, "table", BYPASS_TABLE]);
+
+        host_ips = get_interface_ips(dev);
+        for ip in &host_ips {
+            let _ = run_cmd("ip", &["rule", "add", "from", ip, "table", BYPASS_TABLE, "priority", "100"]);
+            tracing::info!("Policy route: from {} → table {} (bypass tunnel)", ip, BYPASS_TABLE);
+        }
     } else {
         tracing::warn!("Could not detect original default gateway — split routing may fail");
     }
 
-    // Replace default route with TUN
     let _ = run_cmd("ip", &["route", "del", "default"]);
     run_cmd("ip", &["route", "add", "default", "via", gateway, "dev", tun_name])?;
     tracing::info!("Default route set via {} dev {}", gateway, tun_name);
-    
+
     Ok(RouteCleanup {
         server_ip,
         old_gw,
         old_dev,
+        host_ips,
     })
 }
 
