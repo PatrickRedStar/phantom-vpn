@@ -158,23 +158,25 @@ pub struct RouteCleanup {
     server_ip: String,
     old_gw: Option<String>,
     old_dev: Option<String>,
+    tun_name: String,
 }
 
 impl Drop for RouteCleanup {
     fn drop(&mut self) {
         tracing::info!("Restoring original routes...");
-        let _ = run_cmd("route", &["delete", "default"]);
+        let _ = run_cmd("route", &["delete", "-net", "0.0.0.0/1", "-interface", &self.tun_name]);
+        let _ = run_cmd("route", &["delete", "-net", "128.0.0.0/1", "-interface", &self.tun_name]);
+        let _ = run_cmd("route", &["delete", "-host", &self.server_ip]);
+
         if let (Some(ref gw), Some(ref dev)) = (&self.old_gw, &self.old_dev) {
-            let _ = run_cmd("route", &["add", "default", gw, "-iface", dev]);
-            let _ = run_cmd("route", &["delete", &self.server_ip, gw]);
             tracing::info!("Restored default route via {} dev {}", gw, dev);
         } else {
-            tracing::warn!("No original gateway collected. Leaving default route missing.");
+            tracing::warn!("No original gateway collected. Original default route may be unchanged.");
         }
     }
 }
 
-fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) -> anyhow::Result<RouteCleanup> {
+fn add_default_route(tun_name: &str, server_addr: &SocketAddr) -> anyhow::Result<RouteCleanup> {
     let server_ip = server_addr.ip().to_string();
 
     // Determine current default gateway on macOS using `route -n get default`
@@ -202,15 +204,17 @@ fn add_default_route(tun_name: &str, gateway: &str, server_addr: &SocketAddr) ->
         tracing::warn!("Could not detect original default gateway — split routing may fail");
     }
 
-    // Replace default route with TUN
-    let _ = run_cmd("route", &["delete", "default"]);
-    run_cmd("route", &["add", "default", gateway, "-iface", tun_name])?;
-    tracing::info!("Default route set via {} gw {}", tun_name, gateway);
-    
+    // WireGuard-style full-tunnel on macOS: install two /1 routes via utun.
+    // This overrides default route without deleting it, so rollback is safe.
+    run_cmd("route", &["add", "-net", "0.0.0.0/1", "-interface", tun_name])?;
+    run_cmd("route", &["add", "-net", "128.0.0.0/1", "-interface", tun_name])?;
+    tracing::info!("Policy routes set via {}: 0.0.0.0/1 and 128.0.0.0/1", tun_name);
+
     Ok(RouteCleanup {
         server_ip,
         old_gw,
         old_dev,
+        tun_name: tun_name.to_string(),
     })
 }
 
@@ -341,8 +345,8 @@ fn create_utun(addr_cidr: &str, mtu: u32) -> anyhow::Result<(RawFd, String)> {
     let (mut tun_reader, mut tun_writer) = tokio::io::split(async_tun);
 
     // Default route
-    let _cleanup_guard = if let Some(ref gw) = cfg.network.default_gw {
-        match add_default_route(&ifname, gw, &server_addr) {
+    let _cleanup_guard = if cfg.network.default_gw.is_some() {
+        match add_default_route(&ifname, &server_addr) {
             Ok(guard) => Some(guard),
             Err(e) => {
                 tracing::warn!("Route setup failed: {}", e);
