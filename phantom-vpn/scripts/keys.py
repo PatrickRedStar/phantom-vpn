@@ -10,22 +10,53 @@ from pathlib import Path
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib
+    tomllib = None
 
 
 def load_server_values(server_toml_path):
     content = Path(server_toml_path).read_text(encoding="utf-8")
-    data = tomllib.loads(content)
-    listen_addr = data.get("network", {}).get("listen_addr", "127.0.0.1:3478")
+    if tomllib is not None:
+        data = tomllib.loads(content)
+        listen_addr = data.get("network", {}).get("listen_addr", "127.0.0.1:3478")
+        keys = data.get("keys", {})
+        server_public_key = keys.get("server_public_key")
+        shared_secret = keys.get("shared_secret")
+    else:
+        listen_addr, server_public_key, shared_secret = parse_server_toml_minimal(content)
     server_ip = listen_addr.rsplit(":", 1)[0]
-    keys = data.get("keys", {})
-    server_public_key = keys.get("server_public_key")
-    shared_secret = keys.get("shared_secret")
     if not server_public_key or not shared_secret:
         raise RuntimeError(
             "server.toml must contain [keys].server_public_key and [keys].shared_secret"
         )
     return server_ip, server_public_key, shared_secret
+
+
+def parse_server_toml_minimal(content):
+    section = ""
+    listen_addr = "127.0.0.1:3478"
+    server_public_key = None
+    shared_secret = None
+
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.split("#", 1)[0].strip().strip('"')
+        if section == "network" and key == "listen_addr":
+            listen_addr = value
+        elif section == "keys" and key == "server_public_key":
+            server_public_key = value
+        elif section == "keys" and key == "shared_secret":
+            shared_secret = value
+
+    return listen_addr, server_public_key, shared_secret
 
 
 def load_keyring(path):
