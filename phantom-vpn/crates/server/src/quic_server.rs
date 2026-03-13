@@ -322,8 +322,23 @@ pub async fn tun_to_quic_loop(
             }
         };
 
-        // Build plaintext with padding
-        let target = (ip_pkt.len() + 50).max(200);
+        // Respect runtime QUIC datagram ceiling for this client connection.
+        let max_datagram = session.connection.max_datagram_size().unwrap_or(1200);
+        let max_plaintext = max_datagram.saturating_sub(NONCE_LEN + 16); // 16 = Noise AEAD tag
+        let min_plaintext = 2 + ip_pkt.len(); // inner length prefix + IP packet
+        if min_plaintext > max_plaintext {
+            tracing::warn!(
+                "drop oversized packet to {}: ip_len={} min_plaintext={} max_plaintext={}",
+                dst_ip,
+                ip_pkt.len(),
+                min_plaintext,
+                max_plaintext
+            );
+            continue;
+        }
+
+        // Build plaintext with bounded padding
+        let target = (ip_pkt.len() + 50).max(200).min(max_plaintext);
         let pt_len = match build_plaintext(ip_pkt, target, &mut pt_buf) {
             Ok(n) => n,
             Err(e) => {
@@ -352,6 +367,16 @@ pub async fn tun_to_quic_loop(
         let mut datagram = Vec::with_capacity(NONCE_LEN + ct_len);
         datagram.extend_from_slice(&nonce.to_be_bytes());
         datagram.extend_from_slice(&ct_buf[..ct_len]);
+
+        if datagram.len() > max_datagram {
+            tracing::warn!(
+                "drop oversized QUIC datagram to {}: datagram_len={} max_datagram={}",
+                dst_ip,
+                datagram.len(),
+                max_datagram
+            );
+            continue;
+        }
 
         if let Err(e) = session.connection.send_datagram(datagram.into()) {
             tracing::warn!("QUIC send_datagram to {} failed: {}", dst_ip, e);

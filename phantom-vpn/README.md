@@ -11,55 +11,46 @@ PhantomVPN — это кастомный VPN протокол, который м
 
 ---
 
-## One-Button clean deploy (актуальный сценарий)
+## One-click deploy на сервер
 
-Сценарий хост-агностичный:
-- `<server-host>` — хост, где поднимается сервер
-- `<client-host>` — хост, где запускается Linux-клиент
-
-### 1) Чистый деплой сервера на `<server-host>`
-
-На сервере выполните один запуск:
+Каноничный способ развернуть/обновить сервер:
 
 ```bash
-ssh <server-host>
-cd /root/ghoststream/phantom-vpn
-git pull --ff-only origin master
-sudo ./scripts/install.py
-```
-
-Что делает скрипт:
-- подготавливает зависимости и Rust (если нужно),
-- собирает `phantom-server` и `phantom-keygen`,
-- генерирует **новые** ключи/secret на каждый запуск,
-- заново создаёт `/opt/phantom-vpn` и `server.toml`,
-- перезапускает `systemd`-сервис `phantom-vpn`,
-- печатает готовый `client.toml` и quick-start для клиента.
-
-### 2) Быстрый старт клиента на `<client-host>`
-
-После запуска `install.py` на сервере возьмите напечатанный им блок `client.toml` и выполните на клиенте:
-
-```bash
-ssh <client-host>
-cd /root/ghoststream/phantom-vpn
-# вставьте client.toml в config/client.toml
-source /root/.cargo/env
-cargo build --release -p phantom-client-linux
-./target/release/phantom-client-linux -c ./config/client.toml -vv
-```
-
-Проверка:
-
-```bash
-ping -c 3 10.7.0.1
-ping -c 3 1.1.1.1
-curl -4 https://ifconfig.me
+cd phantom-vpn
+bash ./scripts/deploy.sh root@<server-host> ~/.ssh/personal
 ```
 
 Пример:
-- `<server-host>` = `vdsina`
-- `<client-host>` = `kz`
+
+```bash
+bash ./scripts/deploy.sh root@89.110.109.128 ~/.ssh/personal
+```
+
+Что делает `scripts/deploy.sh`:
+
+- локально собирает `phantom-server` и `phantom-keygen`;
+- копирует бинарники и `keys.py` в `/opt/phantom-vpn`;
+- на пустом хосте создаёт `/opt/phantom-vpn/config` и ставит runtime-зависимости;
+- унифицирует systemd на `phantom-server.service` (legacy `phantom-vpn.service` отключается);
+- запускает/перезапускает сервис и печатает health-check;
+- проверяет `keys.py` командой `python3 /opt/phantom-vpn/keys.py --help`.
+
+Политика синка конфига:
+
+- если локально есть `config/server.toml` — он перезаписывает `/opt/phantom-vpn/config/server.toml` на хосте;
+- если `config/server.toml` нет, но есть `config/server.example.toml` — синкается только шаблон, а `server.toml` создаётся на хосте только если ещё отсутствует.
+
+Dry run:
+
+```bash
+bash ./scripts/deploy.sh root@<server-host> ~/.ssh/personal --dry-run
+```
+
+Управление ключами на сервере:
+
+```bash
+ssh root@<server-host> "python3 /opt/phantom-vpn/keys.py --server-config /opt/phantom-vpn/config/server.toml --keyring /opt/phantom-vpn/config/clients.json"
+```
 
 ---
 

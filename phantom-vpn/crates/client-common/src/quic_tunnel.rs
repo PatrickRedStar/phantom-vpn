@@ -95,7 +95,7 @@ pub async fn quic_tx_loop(
     tracing::info!("TUN→QUIC loop started");
 
     loop {
-        let ip_pkt = match tun_rx.recv().await {
+        let mut ip_pkt = match tun_rx.recv().await {
             Some(pkt) => pkt,
             None => {
                 tracing::warn!("TUN read channel closed");
@@ -103,8 +103,25 @@ pub async fn quic_tx_loop(
             }
         };
 
-        // Padding target
-        let target = (ip_pkt.len() + 50).max(200);
+        // Clamp TCP MSS early on client TX path to keep downstream packets within QUIC limits.
+        let _ = clamp_tcp_mss(&mut ip_pkt, QUIC_TUNNEL_MSS);
+
+        // Respect runtime QUIC datagram ceiling (depends on peer transport params + PMTU).
+        let max_datagram = connection.max_datagram_size().unwrap_or(1200);
+        let max_plaintext = max_datagram.saturating_sub(NONCE_LEN + 16); // 16 = Noise AEAD tag
+        let min_plaintext = 2 + ip_pkt.len(); // inner length prefix + IP packet
+        if min_plaintext > max_plaintext {
+            tracing::warn!(
+                "drop oversized TUN packet: ip_len={} min_plaintext={} max_plaintext={}",
+                ip_pkt.len(),
+                min_plaintext,
+                max_plaintext
+            );
+            continue;
+        }
+
+        // Padding target (bounded by current datagram budget).
+        let target = (ip_pkt.len() + 50).max(200).min(max_plaintext);
 
         let pt_len = match build_plaintext(&ip_pkt, target, &mut pt_buf) {
             Ok(n) => n,
@@ -131,6 +148,15 @@ pub async fn quic_tx_loop(
         let mut datagram = Vec::with_capacity(NONCE_LEN + ct_len);
         datagram.extend_from_slice(&nonce.to_be_bytes());
         datagram.extend_from_slice(&ct_buf[..ct_len]);
+
+        if datagram.len() > max_datagram {
+            tracing::warn!(
+                "drop oversized QUIC datagram before send: datagram_len={} max_datagram={}",
+                datagram.len(),
+                max_datagram
+            );
+            continue;
+        }
 
         if let Err(e) = connection.send_datagram(datagram.into()) {
             tracing::warn!("QUIC send_datagram error: {}", e);
