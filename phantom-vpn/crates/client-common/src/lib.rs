@@ -8,7 +8,7 @@ pub mod quic_handshake;
 
 pub use tunnel::{udp_rx_loop, tun_to_udp_loop};
 pub use helpers::{perform_handshake, load_client_keys, load_server_public_key, load_shared_secret};
-pub use quic_tunnel::{quic_rx_loop, quic_tx_loop};
+pub use quic_tunnel::{quic_stream_rx_loop, quic_stream_tx_loop};
 pub use quic_handshake::connect_and_handshake;
 
 // Re-export CLI args для единообразия

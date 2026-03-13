@@ -171,11 +171,19 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(300);
     tokio::spawn(quic_server::cleanup_task(sessions.clone(), idle_secs));
 
-    // ─── TUN → QUIC loop ────────────────────────────────────────────────────
+    // ─── TUN reader → channel ───────────────────────────────────────────────
+    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
+    {
+        tokio::spawn(async move {
+            quic_server::tun_reader_loop(tun_reader, tun_pkt_tx).await;
+        });
+    }
+
+    // ─── TUN → QUIC loop (batching from channel) ────────────────────────────
     {
         let sess = sessions.clone();
         tokio::spawn(async move {
-            if let Err(e) = quic_server::tun_to_quic_loop(tun_reader, sess).await {
+            if let Err(e) = quic_server::tun_to_quic_loop(tun_pkt_rx, sess).await {
                 tracing::error!("tun_to_quic_loop exited: {}", e);
             }
         });
@@ -198,8 +206,13 @@ async fn main() -> anyhow::Result<()> {
     // ─── QUIC accept loop (main) ────────────────────────────────────────────
     tracing::info!("Server ready. Listening on {} (QUIC/UDP)", listen_addr);
 
+    let (tun_network, tun_prefix) = parse_cidr(tun_addr).unwrap_or_else(|| {
+        tracing::warn!("Could not parse tun_addr CIDR '{}', defaulting to 10.7.0.0/24", tun_addr);
+        ("10.7.0.0".parse().unwrap(), 24)
+    });
+
     tokio::select! {
-        result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, server_keys) => {
+        result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, server_keys, tun_network, tun_prefix) => {
             if let Err(e) = result {
                 tracing::error!("Accept loop exited: {}", e);
             }
@@ -220,6 +233,16 @@ async fn main() -> anyhow::Result<()> {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// "10.7.0.1/24" → (Ipv4Addr("10.7.0.0"), 24)
+fn parse_cidr(cidr: &str) -> Option<(std::net::Ipv4Addr, u8)> {
+    let (ip_str, prefix_str) = cidr.split_once('/')?;
+    let ip: std::net::Ipv4Addr = ip_str.parse().ok()?;
+    let prefix: u8 = prefix_str.parse().ok()?;
+    let mask: u32 = if prefix == 0 { 0 } else { !0u32 << (32 - prefix) };
+    let network = std::net::Ipv4Addr::from(u32::from(ip) & mask);
+    Some((network, prefix))
+}
 
 /// "10.7.0.1/24" → "10.7.0.0/24"
 fn cidr_to_network(cidr: &str) -> String {

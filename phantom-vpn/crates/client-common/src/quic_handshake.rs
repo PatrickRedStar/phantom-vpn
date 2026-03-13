@@ -1,4 +1,5 @@
 //! QUIC connection establishment + Noise IK handshake over control stream.
+//! After handshake, opens a bidirectional data stream for the tunnel.
 
 use std::net::SocketAddr;
 
@@ -6,15 +7,17 @@ use anyhow::Context;
 
 use phantom_core::crypto::{KeyPair, NoiseHandshake, NoiseSession};
 
-/// Connects to the server via QUIC, performs Noise IK handshake over a control stream.
-/// Returns the established QUIC connection and the Noise transport session.
+/// Connects to the server via QUIC, performs Noise IK handshake over a control stream,
+/// then opens a bidirectional data stream for the tunnel.
+///
+/// Returns: (connection, noise_session, data_send_stream, data_recv_stream)
 pub async fn connect_and_handshake(
     endpoint:      &quinn::Endpoint,
     server_addr:   SocketAddr,
     server_name:   &str,
     client_keys:   &KeyPair,
     server_public: &[u8; 32],
-) -> anyhow::Result<(quinn::Connection, NoiseSession)> {
+) -> anyhow::Result<(quinn::Connection, NoiseSession, quinn::SendStream, quinn::RecvStream)> {
     // 1. Connect to server (TLS 1.3 handshake happens automatically via quinn)
     tracing::info!("Connecting to {} (SNI: {}) via QUIC...", server_addr, server_name);
     let connection = endpoint
@@ -77,5 +80,13 @@ pub async fn connect_and_handshake(
 
     tracing::info!("Noise handshake completed over QUIC");
 
-    Ok((connection, session))
+    // 8. Open bidirectional data stream for tunnel traffic
+    let (data_send, data_recv) = connection
+        .open_bi()
+        .await
+        .context("Failed to open data stream")?;
+
+    tracing::info!("Data stream opened");
+
+    Ok((connection, session, data_send, data_recv))
 }

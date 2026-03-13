@@ -363,7 +363,7 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom");
 
     tracing::info!("Connecting to {} (SNI: {}) via QUIC...", server_addr, server_name);
-    let (connection, noise_session) = client_common::connect_and_handshake(
+    let (connection, noise_session, data_send, data_recv) = client_common::connect_and_handshake(
         &endpoint, server_addr, server_name, &client_keys, &server_public,
     ).await.context("QUIC handshake failed")?;
     tracing::info!("QUIC + Noise handshake complete!");
@@ -425,24 +425,22 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         }
     });
 
-    // ─── QUIC RX (server → decrypt → TUN) ────────────────────────────────
+    // ─── QUIC stream RX (server → decrypt → TUN) ─────────────────────────
     {
-        let conn_rx = connection.clone();
         let noise_rx = noise_arc.clone();
         tokio::spawn(async move {
-            if let Err(e) = client_common::quic_rx_loop(conn_rx, noise_rx, quic_pkt_tx).await {
-                tracing::error!("quic_rx_loop exited: {}", e);
+            if let Err(e) = client_common::quic_stream_rx_loop(data_recv, noise_rx, quic_pkt_tx).await {
+                tracing::error!("quic_stream_rx_loop exited: {}", e);
             }
         });
     }
 
-    // ─── TUN → encrypt → QUIC ────────────────────────────────────────────
+    // ─── TUN → batch → encrypt → QUIC stream ─────────────────────────────
     {
-        let conn_tx = connection.clone();
         let noise_tx = noise_arc.clone();
         tokio::spawn(async move {
-            if let Err(e) = client_common::quic_tx_loop(tun_pkt_rx, conn_tx, noise_tx).await {
-                tracing::error!("quic_tx_loop exited: {}", e);
+            if let Err(e) = client_common::quic_stream_tx_loop(tun_pkt_rx, data_send, noise_tx).await {
+                tracing::error!("quic_stream_tx_loop exited: {}", e);
             }
         });
     }

@@ -1,165 +1,178 @@
-//! QUIC tunnel loops: TUN ↔ QUIC datagrams (Noise encrypted).
-//! Replaces the UDP+SRTP tunnel with QUIC datagrams for DPI evasion.
+//! QUIC stream tunnel loops: TUN ↔ QUIC streams.
+//! Данные передаются надёжными QUIC-стримами, батчами, по H.264-шаблону для DPI-защиты.
+//!
+//! Wire format одного stream-фрейма:
+//!   [4B total_len][8B nonce][Noise ciphertext]
+//!
+//! Noise plaintext внутри — batch:
+//!   [2B len1][pkt1][2B len2][pkt2]...[2B 0x0000][padding до H.264 target]
 
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     crypto::NoiseSession,
-    session::{NonceCounter, ReplayWindow},
-    wire::{build_plaintext, extract_ip_packet, NONCE_LEN, QUIC_TUNNEL_MSS},
     mtu::clamp_tcp_mss,
+    session::NonceCounter,
+    shaper::H264Shaper,
+    wire::{build_batch_plaintext, extract_batch_packets, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
 
-const BUF: usize = 65536;
+// Буфер с запасом для Noise overhead (16B AEAD tag)
+const BUF: usize = BATCH_MAX_PLAINTEXT + 64;
 
-// ─── QUIC RX: server → decrypt → TUN ────────────────────────────────────────
+// ─── QUIC stream RX: stream → decrypt → TUN ──────────────────────────────────
 
-pub async fn quic_rx_loop(
-    connection: quinn::Connection,
-    noise:      Arc<Mutex<NoiseSession>>,
-    tun_tx:     mpsc::Sender<Vec<u8>>,
+pub async fn quic_stream_rx_loop(
+    mut recv: quinn::RecvStream,
+    noise: Arc<Mutex<NoiseSession>>,
+    tun_tx: mpsc::Sender<Vec<u8>>,
 ) -> anyhow::Result<()> {
-    let mut decrypt_buf = vec![0u8; BUF];
-    let mut replay_win = ReplayWindow::new();
+    let mut ct_buf = vec![0u8; BUF];
+    let mut pt_buf = vec![0u8; BUF];
 
-    tracing::info!("QUIC RX loop started");
+    tracing::info!("QUIC stream RX loop started");
 
     loop {
-        let datagram = match connection.read_datagram().await {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("QUIC connection closed: {}", e);
-                return Err(e.into());
-            }
-        };
+        // 1. Читаем заголовок: [4B total_len]
+        let mut len_buf = [0u8; 4];
+        match tokio::io::AsyncReadExt::read_exact(&mut recv, &mut len_buf).await {
+            Ok(_) => {}
+            Err(e) => return Err(anyhow::anyhow!("stream RX: closed: {}", e)),
+        }
+        let frame_len = u32::from_be_bytes(len_buf) as usize;
 
-        if datagram.len() < NONCE_LEN {
-            tracing::trace!("drop: datagram too short ({} bytes)", datagram.len());
-            continue;
+        // Минимум: 8B nonce + 16B AEAD tag = 24B
+        if frame_len < 24 || frame_len > BUF {
+            return Err(anyhow::anyhow!(
+                "stream RX: invalid frame_len={}, closing",
+                frame_len
+            ));
         }
 
-        // Extract nonce (first 8 bytes)
-        let nonce = u64::from_be_bytes(datagram[..NONCE_LEN].try_into().unwrap());
-        let ciphertext = &datagram[NONCE_LEN..];
+        // 2. Читаем [8B nonce][ciphertext]
+        tokio::io::AsyncReadExt::read_exact(&mut recv, &mut ct_buf[..frame_len])
+            .await
+            .map_err(|e| anyhow::anyhow!("stream RX: read frame: {}", e))?;
 
-        // Replay protection
-        if let Err(e) = replay_win.check_and_update(nonce) {
-            tracing::trace!("replay drop: {}", e);
-            continue;
-        }
+        let nonce = u64::from_be_bytes(ct_buf[..8].try_into().unwrap());
+        let ciphertext = &ct_buf[8..frame_len];
 
-        // Decrypt
+        // 3. Расшифровываем
         let pt_len = {
             let mut session = noise.lock().await;
-            match session.decrypt(nonce, ciphertext, &mut decrypt_buf) {
+            match session.decrypt(nonce, ciphertext, &mut pt_buf) {
                 Ok(n) => n,
                 Err(e) => {
-                    tracing::trace!("decrypt failed: {}", e);
+                    tracing::warn!("stream RX: decrypt failed: {}", e);
                     continue;
                 }
             }
         };
 
-        // Extract IP packet
-        let ip_data = match extract_ip_packet(&decrypt_buf[..pt_len]) {
-            Ok(d) => d.to_vec(),
+        // 4. Извлекаем все пакеты из батча
+        let packets = match extract_batch_packets(&pt_buf[..pt_len]) {
+            Ok(pkts) => pkts,
             Err(e) => {
-                tracing::trace!("extract_ip failed: {}", e);
+                tracing::warn!("stream RX: extract_batch failed: {}", e);
                 continue;
             }
         };
 
-        // MSS clamping
-        let mut ip_buf = ip_data;
-        let _ = clamp_tcp_mss(&mut ip_buf, QUIC_TUNNEL_MSS);
-
-        // Send to TUN
-        if let Err(e) = tun_tx.send(ip_buf).await {
-            tracing::error!("tun_tx send error: {}", e);
+        for mut pkt in packets {
+            // Пропускаем не-IPv4
+            if pkt.len() < 20 || (pkt[0] >> 4) != 4 {
+                continue;
+            }
+            let _ = clamp_tcp_mss(&mut pkt, QUIC_TUNNEL_MSS);
+            if let Err(e) = tun_tx.send(pkt).await {
+                tracing::error!("stream RX: tun_tx send error: {}", e);
+            }
         }
     }
 }
 
-// ─── TUN → QUIC: TUN → encrypt → server ─────────────────────────────────────
+// ─── QUIC stream TX: TUN → batch → encrypt → stream ──────────────────────────
 
-pub async fn quic_tx_loop(
-    mut tun_rx:   mpsc::Receiver<Vec<u8>>,
-    connection:   quinn::Connection,
-    noise:        Arc<Mutex<NoiseSession>>,
+pub async fn quic_stream_tx_loop(
+    mut tun_rx: mpsc::Receiver<Vec<u8>>,
+    mut send: quinn::SendStream,
+    noise: Arc<Mutex<NoiseSession>>,
 ) -> anyhow::Result<()> {
     let mut pt_buf = vec![0u8; BUF];
     let mut ct_buf = vec![0u8; BUF];
     let mut send_nonce = NonceCounter::new();
+    let mut shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper init: {}", e))?;
 
-    tracing::info!("TUN→QUIC loop started");
+    tracing::info!("QUIC stream TX loop started");
 
     loop {
-        let mut ip_pkt = match tun_rx.recv().await {
-            Some(pkt) => pkt,
+        // 1. Ждём первый пакет (блокирующий)
+        let first = match tun_rx.recv().await {
+            Some(p) => p,
             None => {
-                tracing::warn!("TUN read channel closed");
+                tracing::warn!("TUN channel closed");
                 break;
             }
         };
 
-        // Clamp TCP MSS early on client TX path to keep downstream packets within QUIC limits.
-        let _ = clamp_tcp_mss(&mut ip_pkt, QUIC_TUNNEL_MSS);
+        // 2. Определяем целевой размер фрейма по H.264 шаблону
+        let target = shaper.next_frame().target_bytes.min(BATCH_MAX_PLAINTEXT - 16);
 
-        // Respect runtime QUIC datagram ceiling (depends on peer transport params + PMTU).
-        let max_datagram = connection.max_datagram_size().unwrap_or(1200);
-        let max_plaintext = max_datagram.saturating_sub(NONCE_LEN + 16); // 16 = Noise AEAD tag
-        let min_plaintext = 2 + ip_pkt.len(); // inner length prefix + IP packet
-        if min_plaintext > max_plaintext {
-            tracing::warn!(
-                "drop oversized TUN packet: ip_len={} min_plaintext={} max_plaintext={}",
-                ip_pkt.len(),
-                min_plaintext,
-                max_plaintext
-            );
-            continue;
+        // 3. Собираем батч: берём все уже доступные пакеты из канала (non-blocking)
+        let mut batch: Vec<Vec<u8>> = Vec::with_capacity(16);
+        let mut batch_data_bytes = 0usize;
+
+        let mut pkt = first;
+        loop {
+            let _ = clamp_tcp_mss(&mut pkt, QUIC_TUNNEL_MSS);
+            batch_data_bytes += 2 + pkt.len();
+            batch.push(pkt);
+
+            // Останавливаемся если набрали достаточно или буфер переполнится
+            if batch_data_bytes >= target || batch_data_bytes + 2 + 1350 > BATCH_MAX_PLAINTEXT - 16 {
+                break;
+            }
+            // Non-blocking drain
+            match tun_rx.try_recv() {
+                Ok(p) => pkt = p,
+                Err(_) => break,
+            }
         }
 
-        // Padding target (bounded by current datagram budget).
-        let target = (ip_pkt.len() + 50).max(200).min(max_plaintext);
-
-        let pt_len = match build_plaintext(&ip_pkt, target, &mut pt_buf) {
+        // 4. Строим batch plaintext: реальные данные + H.264 padding
+        let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
+        let pt_len = match build_batch_plaintext(&refs, target, &mut pt_buf) {
             Ok(n) => n,
             Err(e) => {
-                tracing::trace!("build_plaintext error: {}", e);
+                tracing::warn!("stream TX: build_batch failed: {}", e);
                 continue;
             }
         };
 
-        // Encrypt
+        // 5. Шифруем
         let nonce = send_nonce.next_u64();
         let ct_len = {
             let mut session = noise.lock().await;
             match session.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
                 Ok(n) => n,
                 Err(e) => {
-                    tracing::trace!("encrypt error: {}", e);
+                    tracing::warn!("stream TX: encrypt failed: {}", e);
                     continue;
                 }
             }
         };
 
-        // Build datagram: [8B nonce][ciphertext]
-        let mut datagram = Vec::with_capacity(NONCE_LEN + ct_len);
-        datagram.extend_from_slice(&nonce.to_be_bytes());
-        datagram.extend_from_slice(&ct_buf[..ct_len]);
+        // 6. Пишем фрейм: [4B total_len][8B nonce][ciphertext]
+        let total_len = 8 + ct_len;
+        let mut frame = Vec::with_capacity(4 + total_len);
+        frame.extend_from_slice(&(total_len as u32).to_be_bytes());
+        frame.extend_from_slice(&nonce.to_be_bytes());
+        frame.extend_from_slice(&ct_buf[..ct_len]);
 
-        if datagram.len() > max_datagram {
-            tracing::warn!(
-                "drop oversized QUIC datagram before send: datagram_len={} max_datagram={}",
-                datagram.len(),
-                max_datagram
-            );
-            continue;
-        }
-
-        if let Err(e) = connection.send_datagram(datagram.into()) {
-            tracing::warn!("QUIC send_datagram error: {}", e);
+        if let Err(e) = send.write_all(&frame).await {
+            return Err(anyhow::anyhow!("stream TX: write failed: {}", e));
         }
     }
     Ok(())

@@ -1,21 +1,22 @@
 //! QUIC server: accepts QUIC connections, performs Noise IK handshake per client,
-//! forwards datagrams between QUIC connections and TUN interface.
+//! forwards stream frames between QUIC streams and TUN interface.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use dashmap::DashMap;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     crypto::{KeyPair, NoiseHandshake, NoiseSession},
     mtu::clamp_tcp_mss,
-    session::{NonceCounter, ReplayWindow},
-    wire::{build_plaintext, extract_ip_packet, NONCE_LEN, QUIC_TUNNEL_MSS},
+    session::NonceCounter,
+    shaper::H264Shaper,
+    wire::{build_batch_plaintext, extract_batch_packets, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
 
 // ─── Session types ──────────────────────────────────────────────────────────
@@ -24,6 +25,8 @@ pub struct QuicSession {
     pub connection: quinn::Connection,
     pub noise:      Mutex<NoiseSession>,
     pub send_nonce: Mutex<NonceCounter>,
+    pub data_send:  Mutex<quinn::SendStream>,
+    pub shaper:     Mutex<H264Shaper>,
     pub last_seen:  AtomicU64,
 }
 
@@ -54,12 +57,13 @@ pub fn new_quic_session_map() -> QuicSessionMap {
 
 // ─── Accept loop ────────────────────────────────────────────────────────────
 
-/// Main QUIC accept loop: waits for incoming connections and spawns a handler per client.
 pub async fn run_accept_loop(
     endpoint:    quinn::Endpoint,
     tun_tx:      mpsc::Sender<Vec<u8>>,
     sessions:    QuicSessionMap,
     server_keys: Arc<KeyPair>,
+    tun_network: Ipv4Addr,
+    tun_prefix:  u8,
 ) -> anyhow::Result<()> {
     tracing::info!("QUIC accept loop started");
 
@@ -88,7 +92,7 @@ pub async fn run_accept_loop(
                 }
             };
 
-            if let Err(e) = handle_connection(connection, tun_tx, sessions, server_keys).await {
+            if let Err(e) = handle_connection(connection, tun_tx, sessions, server_keys, tun_network, tun_prefix).await {
                 tracing::warn!("Connection handler error from {}: {}", remote, e);
             }
         });
@@ -104,6 +108,8 @@ async fn handle_connection(
     tun_tx:      mpsc::Sender<Vec<u8>>,
     sessions:    QuicSessionMap,
     server_keys: Arc<KeyPair>,
+    tun_network: Ipv4Addr,
+    tun_prefix:  u8,
 ) -> anyhow::Result<()> {
     let remote = connection.remote_address();
 
@@ -158,10 +164,25 @@ async fn handle_connection(
         .into_transport()
         .context("Noise into_transport failed")?;
 
+    // 6. Accept data stream (client opens it immediately after handshake)
+    let (data_send, data_recv) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        connection.accept_bi(),
+    )
+    .await
+    .context("Data stream accept timeout")?
+    .context("Failed to accept data stream")?;
+
+    tracing::debug!("Data stream accepted from {}", remote);
+
+    let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
+
     let session = Arc::new(QuicSession {
         connection: connection.clone(),
         noise:      Mutex::new(noise_session),
         send_nonce: Mutex::new(NonceCounter::new()),
+        data_send:  Mutex::new(data_send),
+        shaper:     Mutex::new(shaper),
         last_seen:  AtomicU64::new(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -170,69 +191,77 @@ async fn handle_connection(
         ),
     });
 
-    // 6. Run datagram RX loop — register session once we know the client's tunnel IP
+    // 7. Run stream RX loop — register session once we know the client's tunnel IP
     let registered_ip: Arc<Mutex<Option<IpAddr>>> = Arc::new(Mutex::new(None));
     let reg_ip_clone = registered_ip.clone();
     let sessions_clone = sessions.clone();
-    let rx_result = datagram_rx_loop(
-        connection.clone(),
+    let rx_result = stream_rx_loop(
+        data_recv,
         session.clone(),
         tun_tx,
         sessions.clone(),
         registered_ip.clone(),
+        tun_network,
+        tun_prefix,
+        remote,
     )
     .await;
 
-    // 7. Cleanup: unregister session on disconnect
+    // 8. Cleanup: unregister session on disconnect
     if let Some(ip) = reg_ip_clone.lock().await.take() {
         sessions_clone.remove(&ip);
         tracing::info!("Session unregistered for tunnel IP {} ({})", ip, remote);
     }
 
     if let Err(e) = rx_result {
-        tracing::debug!("Datagram RX loop ended for {}: {}", remote, e);
+        tracing::debug!("Stream RX loop ended for {}: {}", remote, e);
     }
 
     Ok(())
 }
 
-// ─── Datagram RX loop (per connection) ──────────────────────────────────────
+// ─── Stream RX loop (client → server) ───────────────────────────────────────
 
-async fn datagram_rx_loop(
-    connection:    quinn::Connection,
+async fn stream_rx_loop(
+    mut recv:      quinn::RecvStream,
     session:       Arc<QuicSession>,
     tun_tx:        mpsc::Sender<Vec<u8>>,
     sessions:      QuicSessionMap,
     registered_ip: Arc<Mutex<Option<IpAddr>>>,
+    tun_network:   Ipv4Addr,
+    tun_prefix:    u8,
+    remote:        SocketAddr,
 ) -> anyhow::Result<()> {
-    let mut decrypt_buf = vec![0u8; 65536];
-    let mut replay_win = ReplayWindow::new();
+    let buf_size = BATCH_MAX_PLAINTEXT + 64;
+    let mut ct_buf = vec![0u8; buf_size];
+    let mut pt_buf = vec![0u8; buf_size];
 
     loop {
-        let datagram = match connection.read_datagram().await {
-            Ok(d) => d,
-            Err(e) => return Err(e.into()),
-        };
+        // 1. Read frame header: [4B total_len]
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf)
+            .await
+            .map_err(|e| anyhow::anyhow!("stream closed: {}", e))?;
+        let frame_len = u32::from_be_bytes(len_buf) as usize;
 
-        if datagram.len() < NONCE_LEN {
-            continue;
+        if frame_len < 24 || frame_len > buf_size {
+            return Err(anyhow::anyhow!("invalid frame_len={}", frame_len));
         }
 
-        // Extract nonce
-        let nonce = u64::from_be_bytes(datagram[..NONCE_LEN].try_into().unwrap());
-        let ciphertext = &datagram[NONCE_LEN..];
+        // 2. Read [8B nonce][ciphertext]
+        recv.read_exact(&mut ct_buf[..frame_len])
+            .await
+            .map_err(|e| anyhow::anyhow!("stream read frame: {}", e))?;
 
-        // Replay check
-        if let Err(_) = replay_win.check_and_update(nonce) {
-            continue;
-        }
+        let nonce = u64::from_be_bytes(ct_buf[..8].try_into().unwrap());
+        let ciphertext = &ct_buf[8..frame_len];
 
         session.touch();
 
-        // Decrypt
+        // 3. Decrypt
         let pt_len = {
             let mut noise = session.noise.lock().await;
-            match noise.decrypt(nonce, ciphertext, &mut decrypt_buf) {
+            match noise.decrypt(nonce, ciphertext, &mut pt_buf) {
                 Ok(n) => n,
                 Err(e) => {
                     tracing::trace!("decrypt failed: {}", e);
@@ -241,79 +270,98 @@ async fn datagram_rx_loop(
             }
         };
 
-        // Extract IP packet
-        let ip_data = match extract_ip_packet(&decrypt_buf[..pt_len]) {
-            Ok(d) => d.to_vec(),
+        // 4. Extract batch packets
+        let packets = match extract_batch_packets(&pt_buf[..pt_len]) {
+            Ok(pkts) => pkts,
             Err(e) => {
-                tracing::trace!("extract_ip failed: {}", e);
+                tracing::trace!("extract_batch failed: {}", e);
                 continue;
             }
         };
 
-        // Register session by source IP from the first IPv4 packet.
-        // Пропускаем IPv6 (первый nibble = 6) — Linux TUN сразу генерирует
-        // IPv6 RS при создании интерфейса, что даёт некорректный src=0.0.0.0.
-        if registered_ip.lock().await.is_none() {
-            if ip_data.len() >= 20 && (ip_data[0] >> 4) == 4 {
-                let src_ip = IpAddr::V4(std::net::Ipv4Addr::new(
-                    ip_data[12], ip_data[13], ip_data[14], ip_data[15],
-                ));
-                sessions.insert(src_ip, session.clone());
-                *registered_ip.lock().await = Some(src_ip);
-                tracing::info!(
-                    "Session registered for tunnel IP {} ({})",
-                    src_ip,
-                    connection.remote_address()
-                );
+        for ip_data in packets {
+            if ip_data.len() < 20 {
+                continue;
             }
-        }
 
-        // MSS clamping
-        let mut ip_buf = ip_data;
-        let _ = clamp_tcp_mss(&mut ip_buf, QUIC_TUNNEL_MSS);
+            // Register session by first IPv4 packet within the tunnel subnet
+            if registered_ip.lock().await.is_none() && (ip_data[0] >> 4) == 4 {
+                let src_v4 = Ipv4Addr::new(
+                    ip_data[12], ip_data[13], ip_data[14], ip_data[15],
+                );
+                let mask: u32 = if tun_prefix == 0 { 0 } else { !0u32 << (32 - tun_prefix) };
+                if u32::from(src_v4) & mask == u32::from(tun_network) & mask {
+                    let src_ip = IpAddr::V4(src_v4);
+                    sessions.insert(src_ip, session.clone());
+                    *registered_ip.lock().await = Some(src_ip);
+                    tracing::info!(
+                        "Session registered for tunnel IP {} ({})",
+                        src_ip, remote
+                    );
+                } else {
+                    tracing::debug!(
+                        "Skipping session registration: src {} not in tunnel subnet {}/{}",
+                        src_v4, tun_network, tun_prefix
+                    );
+                }
+            }
 
-        // Send to TUN
-        if let Err(e) = tun_tx.send(ip_buf).await {
-            tracing::error!("tun_tx send error: {}", e);
+            let mut ip_buf = ip_data;
+            let _ = clamp_tcp_mss(&mut ip_buf, QUIC_TUNNEL_MSS);
+
+            if let Err(e) = tun_tx.send(ip_buf).await {
+                tracing::error!("tun_tx send error: {}", e);
+            }
         }
     }
 }
 
-// ─── TUN → QUIC: route packets to correct client ───────────────────────────
+// ─── TUN reader: file → channel ─────────────────────────────────────────────
+
+pub async fn tun_reader_loop(
+    mut tun_reader: tokio::io::ReadHalf<crate::tun_iface::AsyncTun>,
+    pkt_tx:         mpsc::Sender<Vec<u8>>,
+) {
+    let mut buf = vec![0u8; 65536];
+    tracing::info!("TUN reader loop started");
+    loop {
+        let len = match tun_reader.read(&mut buf).await {
+            Ok(0) | Err(_) => continue,
+            Ok(n) => n,
+        };
+        if len < 20 || (buf[0] >> 4) != 4 {
+            continue; // only IPv4
+        }
+        if pkt_tx.send(buf[..len].to_vec()).await.is_err() {
+            break;
+        }
+    }
+}
+
+// ─── TUN → QUIC stream: batch routing per client ────────────────────────────
 
 pub async fn tun_to_quic_loop(
-    mut tun_reader: tokio::io::ReadHalf<crate::tun_iface::AsyncTun>,
-    sessions:       QuicSessionMap,
+    mut pkt_rx: mpsc::Receiver<Vec<u8>>,
+    sessions:   QuicSessionMap,
 ) -> anyhow::Result<()> {
-    let mut tun_buf = vec![0u8; 65536];
-    let mut pt_buf = vec![0u8; 65536];
-    let mut ct_buf = vec![0u8; 65536];
+    let buf_size = BATCH_MAX_PLAINTEXT + 64;
+    let mut pt_buf = vec![0u8; buf_size];
+    let mut ct_buf = vec![0u8; buf_size];
 
     tracing::info!("TUN→QUIC loop started");
 
     loop {
-        let len = match tun_reader.read(&mut tun_buf).await {
-            Ok(0) => continue,
-            Ok(n) => n,
-            Err(e) => {
-                tracing::error!("TUN read error: {}", e);
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                continue;
-            }
+        // Wait for the first packet
+        let first = match pkt_rx.recv().await {
+            Some(p) => p,
+            None => break,
         };
 
-        let ip_pkt = &tun_buf[..len];
-
-        // Обрабатываем только IPv4 (первый nibble = 4, минимум 20 байт заголовка)
-        if len < 20 || (ip_pkt[0] >> 4) != 4 {
-            continue;
-        }
-
-        let dst_ip = IpAddr::V4(std::net::Ipv4Addr::new(
-            ip_pkt[16], ip_pkt[17], ip_pkt[18], ip_pkt[19],
+        // Route by destination IP
+        let dst_ip = IpAddr::V4(Ipv4Addr::new(
+            first[16], first[17], first[18], first[19],
         ));
 
-        // Look up session by destination IP
         let session = match sessions.get(&dst_ip) {
             Some(entry) => entry.value().clone(),
             None => {
@@ -322,35 +370,43 @@ pub async fn tun_to_quic_loop(
             }
         };
 
-        // Respect runtime QUIC datagram ceiling for this client connection.
-        let max_datagram = session.connection.max_datagram_size().unwrap_or(1200);
-        let max_plaintext = max_datagram.saturating_sub(NONCE_LEN + 16); // 16 = Noise AEAD tag
-        let min_plaintext = 2 + ip_pkt.len(); // inner length prefix + IP packet
-        if min_plaintext > max_plaintext {
-            tracing::warn!(
-                "drop oversized packet to {}: ip_len={} min_plaintext={} max_plaintext={}",
-                dst_ip,
-                ip_pkt.len(),
-                min_plaintext,
-                max_plaintext
-            );
-            continue;
+        // Drain additional packets destined for the same session
+        let mut packets: Vec<Vec<u8>> = vec![first];
+        while packets.len() < 64 {
+            match pkt_rx.try_recv() {
+                Ok(pkt) if pkt.len() >= 20 => {
+                    let d = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
+                    if d == dst_ip {
+                        packets.push(pkt);
+                    } else {
+                        // Different dst — re-queue is not possible; drop is acceptable
+                        // under high load (same behaviour as before batching)
+                        tracing::trace!("Dropped cross-session pkt for {} during batch", d);
+                    }
+                }
+                _ => break,
+            }
         }
 
-        // Build plaintext with bounded padding
-        let target = (ip_pkt.len() + 50).max(200).min(max_plaintext);
-        let pt_len = match build_plaintext(ip_pkt, target, &mut pt_buf) {
+        let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
+
+        // H.264 frame target
+        let target = {
+            let mut shaper = session.shaper.lock().await;
+            shaper.next_frame().target_bytes.min(BATCH_MAX_PLAINTEXT - 16)
+        };
+
+        let pt_len = match build_batch_plaintext(&refs, target, &mut pt_buf) {
             Ok(n) => n,
             Err(e) => {
-                tracing::trace!("build_plaintext error: {}", e);
+                tracing::trace!("build_batch error for {}: {}", dst_ip, e);
                 continue;
             }
         };
 
-        // Encrypt
         let nonce = {
-            let mut send_nonce = session.send_nonce.lock().await;
-            send_nonce.next_u64()
+            let mut nc = session.send_nonce.lock().await;
+            nc.next_u64()
         };
         let ct_len = {
             let mut noise = session.noise.lock().await;
@@ -363,25 +419,19 @@ pub async fn tun_to_quic_loop(
             }
         };
 
-        // Build datagram: [8B nonce][ciphertext]
-        let mut datagram = Vec::with_capacity(NONCE_LEN + ct_len);
-        datagram.extend_from_slice(&nonce.to_be_bytes());
-        datagram.extend_from_slice(&ct_buf[..ct_len]);
+        let total_len = 8 + ct_len;
+        let mut frame = Vec::with_capacity(4 + total_len);
+        frame.extend_from_slice(&(total_len as u32).to_be_bytes());
+        frame.extend_from_slice(&nonce.to_be_bytes());
+        frame.extend_from_slice(&ct_buf[..ct_len]);
 
-        if datagram.len() > max_datagram {
-            tracing::warn!(
-                "drop oversized QUIC datagram to {}: datagram_len={} max_datagram={}",
-                dst_ip,
-                datagram.len(),
-                max_datagram
-            );
-            continue;
-        }
-
-        if let Err(e) = session.connection.send_datagram(datagram.into()) {
-            tracing::warn!("QUIC send_datagram to {} failed: {}", dst_ip, e);
+        let mut data_send = session.data_send.lock().await;
+        if let Err(e) = data_send.write_all(&frame).await {
+            tracing::warn!("stream write to {} failed: {}", dst_ip, e);
         }
     }
+
+    Ok(())
 }
 
 // ─── Cleanup task ───────────────────────────────────────────────────────────

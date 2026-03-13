@@ -24,6 +24,9 @@ pub const QUIC_TUNNEL_MTU: usize = 1350;
 /// MSS for TCP SYN clamping in QUIC mode
 pub const QUIC_TUNNEL_MSS: u16 = 1310;
 
+/// Maximum batch plaintext (H.264 I-frame up to 50 KB + overhead)
+pub const BATCH_MAX_PLAINTEXT: usize = 65_536;
+
 /// Version=2, P=0, X=0, CC=0
 pub const RTP_VERSION_FLAGS: u8 = 0x80;
 /// Marker=0, PayloadType=97 (H.264)
@@ -127,6 +130,72 @@ pub fn extract_ip_packet(plaintext: &[u8]) -> Result<&[u8], PacketError> {
     Ok(&plaintext[2..2 + ip_len])
 }
 
+// ─── Batch format ───────────────────────────────────────────────────────────
+
+/// Собирает batch plaintext из нескольких IP-пакетов.
+///
+/// Формат: [2B len1][pkt1][2B len2][pkt2]...[2B 0x0000][padding до target_size]
+///
+/// `target_size` — целевой размер кадра из H264Shaper для имитации H.264 паттерна.
+/// Если реальные данные больше target_size — padding не добавляется.
+pub fn build_batch_plaintext(
+    packets: &[&[u8]],
+    target_size: usize,
+    out: &mut [u8],
+) -> Result<usize, PacketError> {
+    if packets.is_empty() {
+        return Err(PacketError::TooShort(0));
+    }
+    // data_size = sum(2 + pkt.len()) + 2 (terminator)
+    let data_size: usize = packets.iter().map(|p| 2 + p.len()).sum::<usize>() + 2;
+    let total = data_size.max(target_size).min(BATCH_MAX_PLAINTEXT);
+    if out.len() < total {
+        return Err(PacketError::BufferTooSmall);
+    }
+    let mut offset = 0;
+    for pkt in packets {
+        let pkt_len = pkt.len();
+        if pkt_len > u16::MAX as usize {
+            return Err(PacketError::BadIpLen(pkt_len));
+        }
+        out[offset..offset + 2].copy_from_slice(&(pkt_len as u16).to_be_bytes());
+        out[offset + 2..offset + 2 + pkt_len].copy_from_slice(pkt);
+        offset += 2 + pkt_len;
+    }
+    // End-of-batch marker
+    out[offset..offset + 2].copy_from_slice(&0u16.to_be_bytes());
+    offset += 2;
+    // Random padding
+    if offset < total {
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut out[offset..total]);
+    }
+    Ok(total)
+}
+
+/// Извлекает все IP-пакеты из batch plaintext.
+/// Останавливается на терминаторе 0x0000. Padding после терминатора игнорируется.
+pub fn extract_batch_packets(plaintext: &[u8]) -> Result<Vec<Vec<u8>>, PacketError> {
+    let mut packets = Vec::new();
+    let mut offset = 0;
+    loop {
+        if offset + 2 > plaintext.len() {
+            return Err(PacketError::TooShort(plaintext.len()));
+        }
+        let pkt_len = u16::from_be_bytes([plaintext[offset], plaintext[offset + 1]]) as usize;
+        offset += 2;
+        if pkt_len == 0 {
+            break; // end-of-batch marker
+        }
+        if offset + pkt_len > plaintext.len() {
+            return Err(PacketError::BadIpLen(pkt_len));
+        }
+        packets.push(plaintext[offset..offset + pkt_len].to_vec());
+        offset += pkt_len;
+    }
+    Ok(packets)
+}
+
 // ─── Фрагментация I-frame ───────────────────────────────────────────────────
 
 /// Информация об одном UDP-фрагменте кадра
@@ -201,5 +270,34 @@ mod tests {
     fn test_srtp_too_short() {
         let buf = [0u8; 5];
         assert!(SrtpHeader::parse(&buf).is_err());
+    }
+
+    #[test]
+    fn test_batch_roundtrip_single() {
+        let pkt = b"hello_ip_packet_data";
+        let mut buf = vec![0u8; 1024];
+        let n = build_batch_plaintext(&[pkt.as_ref()], 512, &mut buf).unwrap();
+        assert_eq!(n, 512);
+        let packets = extract_batch_packets(&buf[..n]).unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0], pkt);
+    }
+
+    #[test]
+    fn test_batch_roundtrip_multi() {
+        let pkts: Vec<Vec<u8>> = vec![
+            b"packet_one".to_vec(),
+            b"packet_two_longer".to_vec(),
+            b"pkt3".to_vec(),
+        ];
+        let refs: Vec<&[u8]> = pkts.iter().map(|p| p.as_slice()).collect();
+        let mut buf = vec![0u8; 8192];
+        let n = build_batch_plaintext(&refs, 4096, &mut buf).unwrap();
+        assert_eq!(n, 4096);
+        let out = extract_batch_packets(&buf[..n]).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], b"packet_one");
+        assert_eq!(out[1], b"packet_two_longer");
+        assert_eq!(out[2], b"pkt3");
     }
 }
