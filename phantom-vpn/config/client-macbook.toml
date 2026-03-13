@@ -1,0 +1,18 @@
+# PhantomVPN — конфиг клиента macbook-m1pro
+# Автоматически сгенерирован при тестировании
+
+[network]
+server_addr = "89.110.109.128:443"
+server_name = "89.110.109.128"
+insecure    = true        # Самоподписанный сертификат сервера
+
+tun_name    = "utun10"    # macOS: не конфликтует с другими VPN
+tun_addr    = "10.7.0.2/24"
+tun_mtu     = 1350
+
+default_gw  = "10.7.0.1" # Full-tunnel: весь трафик через VPN
+
+[keys]
+client_private_key = "ABZzsnfYTnnuA84gpoqRtmhC68BQqjU9fggZ7ja2oHY="
+client_public_key  = "BRK57xg3Z8qHVGpl3UfzNzK+ejUtbW4+UftWquO8YHA="
+server_public_key  = "SZxuKjZA/eyNvn19n4eQtNHoInbwodMCSWrGNZct+Ew="
