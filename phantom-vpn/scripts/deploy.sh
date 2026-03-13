@@ -94,6 +94,7 @@ fi"
 
 # ─── Step 3: Sync binaries/scripts/config ────────────────────────────────────
 echo "[3/5] Syncing project artifacts..."
+run_remote "systemctl stop '$SERVICE' || true; pkill -x phantom-server || true"
 if [[ "$LOCAL_BUILD" -eq 1 ]]; then
     run_cmd "rsync -avz --progress -e \"$RSYNC_SSH\" target/release/phantom-server target/release/phantom-keygen scripts/keys.py \"$REMOTE:$REMOTE_DIR/\""
 else
@@ -109,8 +110,10 @@ else
     run_remote "source \"\$HOME/.cargo/env\" 2>/dev/null || true; \
       cd '$REMOTE_DIR/src' && \
       cargo build --release -p phantom-server --bin phantom-server --bin phantom-keygen"
-    run_remote "cp '$REMOTE_DIR/src/target/release/phantom-server' '$REMOTE_DIR/phantom-server' && \
-      cp '$REMOTE_DIR/src/target/release/phantom-keygen' '$REMOTE_DIR/phantom-keygen' && \
+    run_remote "install -m 0755 '$REMOTE_DIR/src/target/release/phantom-server' '$REMOTE_DIR/phantom-server.new' && \
+      install -m 0755 '$REMOTE_DIR/src/target/release/phantom-keygen' '$REMOTE_DIR/phantom-keygen.new' && \
+      mv -f '$REMOTE_DIR/phantom-server.new' '$REMOTE_DIR/phantom-server' && \
+      mv -f '$REMOTE_DIR/phantom-keygen.new' '$REMOTE_DIR/phantom-keygen' && \
       cp '$REMOTE_DIR/src/scripts/keys.py' '$REMOTE_DIR/keys.py'"
 fi
 
