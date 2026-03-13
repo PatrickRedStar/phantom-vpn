@@ -250,9 +250,11 @@ async fn datagram_rx_loop(
             }
         };
 
-        // Register session by source IP from the first packet
+        // Register session by source IP from the first IPv4 packet.
+        // Пропускаем IPv6 (первый nibble = 6) — Linux TUN сразу генерирует
+        // IPv6 RS при создании интерфейса, что даёт некорректный src=0.0.0.0.
         if registered_ip.lock().await.is_none() {
-            if ip_data.len() >= 20 {
+            if ip_data.len() >= 20 && (ip_data[0] >> 4) == 4 {
                 let src_ip = IpAddr::V4(std::net::Ipv4Addr::new(
                     ip_data[12], ip_data[13], ip_data[14], ip_data[15],
                 ));
@@ -302,8 +304,8 @@ pub async fn tun_to_quic_loop(
 
         let ip_pkt = &tun_buf[..len];
 
-        // Extract destination IP from IPv4 header
-        if len < 20 {
+        // Обрабатываем только IPv4 (первый nibble = 4, минимум 20 байт заголовка)
+        if len < 20 || (ip_pkt[0] >> 4) != 4 {
             continue;
         }
 
