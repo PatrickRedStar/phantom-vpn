@@ -287,6 +287,11 @@ fn create_utun(addr_cidr: &str, mtu: u32) -> anyhow::Result<(RawFd, String)> {
 
     #[tokio::main]
     pub async fn async_main() -> anyhow::Result<()> {
+        // Явно выбираем ring как TLS-провайдер (rustls 0.23 требует этого при наличии нескольких провайдеров)
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("Failed to install ring crypto provider");
+
         let args = Args::parse();
         helpers::init_logging(args.verbose);
         tracing::info!("PhantomVPN macOS Client starting (QUIC transport)...");

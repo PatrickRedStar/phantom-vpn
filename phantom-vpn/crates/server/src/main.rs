@@ -43,6 +43,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Явно выбираем ring как TLS-провайдер — обязательно в rustls 0.23
+    // когда в дереве зависимостей присутствуют оба провайдера (ring + aws-lc-rs).
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install ring crypto provider");
+
     let args = Args::parse();
 
     // Инициализация tracing

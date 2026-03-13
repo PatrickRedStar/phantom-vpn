@@ -291,6 +291,11 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
     #[tokio::main]
     pub async fn async_main() -> anyhow::Result<()> {
+        // Явно выбираем ring как TLS-провайдер (rustls 0.23 требует этого при наличии нескольких провайдеров)
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("Failed to install ring crypto provider");
+
         let args = Args::parse();
         helpers::init_logging(args.verbose);
         tracing::info!("PhantomVPN Linux Client starting (QUIC transport)...");
