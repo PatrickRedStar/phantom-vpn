@@ -158,6 +158,9 @@ pub fn build_batch_plaintext(
         if pkt_len > u16::MAX as usize {
             return Err(PacketError::BadIpLen(pkt_len));
         }
+        if offset + 2 + pkt_len + 2 > out.len() {
+            return Err(PacketError::BufferTooSmall);
+        }
         out[offset..offset + 2].copy_from_slice(&(pkt_len as u16).to_be_bytes());
         out[offset + 2..offset + 2 + pkt_len].copy_from_slice(pkt);
         offset += 2 + pkt_len;

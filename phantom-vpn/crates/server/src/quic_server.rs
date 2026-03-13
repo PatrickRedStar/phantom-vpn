@@ -371,12 +371,19 @@ pub async fn tun_to_quic_loop(
         };
 
         // Drain additional packets destined for the same session
+        // Track data_size = sum(2 + pkt.len()) + 2 (terminator) to avoid overflow
+        let mut batch_data_bytes = 2 + first.len() + 2;
         let mut packets: Vec<Vec<u8>> = vec![first];
         while packets.len() < 64 {
             match pkt_rx.try_recv() {
                 Ok(pkt) if pkt.len() >= 20 => {
                     let d = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
                     if d == dst_ip {
+                        let next_size = batch_data_bytes + 2 + pkt.len();
+                        if next_size > BATCH_MAX_PLAINTEXT {
+                            break;
+                        }
+                        batch_data_bytes = next_size;
                         packets.push(pkt);
                     } else {
                         // Different dst — re-queue is not possible; drop is acceptable

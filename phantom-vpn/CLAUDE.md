@@ -4,188 +4,212 @@
 
 ## Обзор проекта
 
-PhantomVPN — это пользовательский VPN-протокол, который маскирует трафик под WebRTC/SRTP (видеозвонки), чтобы обходить системы DPI (Deep Packet Inspection). Трафик выглядит как зашифрованные видеопотоки H.264, передаваемые по UDP/QUIC.
+PhantomVPN — пользовательский VPN-протокол, маскирующий трафик под WebRTC/SRTP (видеозвонки) для обхода DPI. Трафик выглядит как зашифрованные H.264-видеопотоки поверх QUIC/HTTP3.
 
-## Команды сборки
+## Сборка
+
+**На локальной машине (CachyOS) cargo не установлен.** Сборка происходит на сервере vdsina через SSH:
 
 ```bash
-# Собрать всё
-cargo build --release
+# Синхронизировать изменённые файлы на сервер и собрать там
+rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
+ssh -i ~/.ssh/personal root@89.110.109.128 \
+  "source ~/.cargo/env && cd /opt/phantom-vpn/src && cargo build --release -p phantom-server"
 
-# Собрать отдельные крейты
+# Скачать готовый бинарник клиента
+scp -i ~/.ssh/personal root@89.110.109.128:/opt/phantom-vpn/src/target/release/phantom-client-linux \
+  /tmp/phantom-client-linux
+sudo install -m 0755 /tmp/phantom-client-linux /usr/local/bin/phantom-client-linux
+```
+
+Если нужно собрать на машине с cargo:
+
+```bash
 cargo build --release -p phantom-server
 cargo build --release -p phantom-client-linux
 cargo build --release -p phantom-client-macos
 cargo run --release --bin phantom-keygen
-
-# Проверка / линтинг
-cargo check
-cargo clippy
-
-# Запуск тестов
-cargo test
-cargo test -p phantom-core   # тестировать конкретный крейт
+cargo check && cargo clippy && cargo test
 ```
 
-**Бинарные файлы выводятся в:** `target/release/`
+## Развёртывание сервера
 
-**Сервер требует root** (создаёт TUN-интерфейс + iptables NAT):
+Сервер: `root@89.110.109.128`, директория `/opt/phantom-vpn/`, сервис `phantom-server.service`.
 
 ```bash
-sudo ./target/release/phantom-server -c config/server.toml -v
-sudo ./target/release/phantom-client-linux -c config/client.toml -vv
-sudo ./target/release/phantom-client-macos -c config/client.toml -vv
+# Полный деплой (rsync source → remote build → перезапуск)
+bash ./scripts/deploy.sh root@89.110.109.128 ~/.ssh/personal
+
+# Быстрое обновление (только изменённые файлы)
+rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
+ssh -i ~/.ssh/personal root@89.110.109.128 \
+  "source ~/.cargo/env && cd /opt/phantom-vpn/src && \
+   cargo build --release -p phantom-server && \
+   install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server && \
+   systemctl restart phantom-server.service"
+
+# Управление клиентскими ключами
+ssh -i ~/.ssh/personal root@89.110.109.128 \
+  "python3 /opt/phantom-vpn/keys.py \
+   --server-config /opt/phantom-vpn/config/server.toml \
+   --keyring /opt/phantom-vpn/config/clients.json"
 ```
 
-## Развёртывание
+## Клиент на локальной машине (CachyOS)
 
 ```bash
-# Развернуть/обновить сервер (локальная сборка, синхронизация бинарников через SSH)
-bash ./scripts/deploy.sh root@<server-host> ~/.ssh/personal [--dry-run]
+# Запуск
+sudo phantom-client-linux -c /etc/phantom-vpn/client.toml -vv
 
-# Управление клиентскими ключами на сервере
-ssh root@<server-host> "python3 /opt/phantom-vpn/keys.py \
-  --server-config /opt/phantom-vpn/config/server.toml \
-  --keyring /opt/phantom-vpn/config/clients.json"
+# Конфиг
+/etc/phantom-vpn/client.toml
 ```
 
 ## Структура Workspace
 
-Это Cargo workspace со следующими крейтами:
-
 | Крейт | Назначение |
-|------|-------------|
-| `crates/core` | Общая библиотека: криптография, wire-формат, shaping трафика, сессии, конфигурация |
-| `crates/server` | Серверный бинарник только для Linux + бинарник `phantom-keygen` |
-| `crates/client-common` | Платформонезависимый QUIC-handshake + циклы туннеля |
-| `crates/client-linux` | Клиент для Linux (TUN через `/dev/net/tun`) |
-| `crates/client-macos` | Клиент для macOS (utun через сокет `AF_SYSTEM`) |
+|-------|------------|
+| `crates/core` | Общая библиотека: криптография, wire-формат, H264-shaping, сессии, конфигурация |
+| `crates/server` | Серверный бинарник (Linux) + `phantom-keygen` |
+| `crates/client-common` | Платформонезависимый QUIC-handshake + stream TX/RX циклы |
+| `crates/client-linux` | Клиент Linux (TUN через `/dev/net/tun`) |
+| `crates/client-macos` | Клиент macOS (utun через `AF_SYSTEM`) |
 
 ## Архитектура
 
-### Транспортные уровни
+### Транспорт
 
-Проект имеет два режима транспорта:
+Единственный активный режим — **QUIC streams**:
+- ALPN=`h3` (имитирует HTTP/3), порт `8443`
+- TLS поверх QUIC (self-signed cert, `insecure=true` на клиенте)
+- Noise IK поверх QUIC control stream для аутентификации и согласования ключей
+- Данные туннеля передаются через **bidirectional QUIC stream** (надёжная доставка)
 
-- **Legacy UDP+SRTP** — пакеты оборачиваются в поддельные SRTP-заголовки на порту 3478
-- **Текущий QUIC** — ALPN="h3" (имитирует HTTP/3), порт 443, с шифрованием Noise поверх QUIC-датаграмм
+Legacy UDP+SRTP (порт 3478) — код сохранён в `wire.rs`, но не используется.
 
-### Шифрование
+### Handshake (client-common/quic_handshake.rs)
 
-Шаблон протокола Noise:
+```
+Client → Server: QUIC connect (TLS 1.3 + ALPN h3)
+Client → Server: open_bi() control stream
+Client → Server: [4B len][Noise IK msg1]   (→ e, es, s, ss)
+Server → Client: [4B len][Noise IK msg2]   (← e, ee, se)
+Client → Server: open_bi() data stream
+# Handshake complete, both sides have NoiseSession
+```
+
+### Wire Format — Stream Frame
+
+Каждый фрейм в data stream:
+
+```
+[4B total_len][8B nonce (u64 BE)][Noise ciphertext + AEAD tag]
+```
+
+Plaintext внутри Noise AEAD — **batch формат**:
+
+```
+[2B pkt1_len][pkt1_bytes]
+[2B pkt2_len][pkt2_bytes]
+...
+[2B 0x0000]      ← end-of-batch marker
+[random padding до target_size]
+```
+
+`target_size` задаётся `H264Shaper` (имитация I/P кадров H.264).
+
+Константы:
+```
+BATCH_MAX_PLAINTEXT = 65536   # максимальный размер одного фрейма
+QUIC_TUNNEL_MTU     = 1350    # MTU TUN интерфейса в QUIC режиме
+QUIC_TUNNEL_MSS     = 1310    # TCP MSS clamping
+```
+
+### Шифрование (core/src/crypto.rs)
 
 ```
 Noise_IK_25519_ChaChaPoly_BLAKE2s
 ```
 
-- **IK (Initiator Knows)**: клиент знает публичный ключ сервера → handshake с 0-RTT
-- Используется `StatelessTransportState` — nonce передаётся явно, без изменения внутреннего состояния
-- Реключение ключей после 100 MB или 600 секунд (`REKEY_BYTES` / `REKEY_SECS` в `crypto.rs`)
+- **IK**: клиент знает публичный ключ сервера → нет round-trip для auth
+- `StatelessTransportState` — nonce передаётся явно как u64
+- Рекейинг: каждые 100 MB или 600 секунд (`REKEY_BYTES` / `REKEY_SECS`)
 
-### Wire Format (`core/src/wire.rs`)
+### Батчинг и шейпинг (client-common/quic_tunnel.rs, server/quic_server.rs)
 
-Открытый текст внутри AEAD:
+**TX loop (оба клиент и сервер):**
+1. Ждать первый пакет из TUN
+2. Дренировать канал с `try_recv` до 64 пакетов (или пока `batch_data_bytes + 2 + pkt_len > BATCH_MAX_PLAINTEXT`)
+3. Запросить `target_size` у `H264Shaper`
+4. Упаковать в batch plaintext, зашифровать, отправить фрейм в stream
 
-```
-[0-1]  inner_ip_len (u16 BE)
-[2..]  IP пакет
-[..]   случайный padding
-```
+**RX loop:**
+1. Читать `[4B len]`, затем `[nonce + ciphertext]`
+2. Расшифровать → `extract_batch_packets` → каждый IP-пакет в TUN
 
-Перед nonce добавляется 8 байт (u64 LE).  
-Заголовок SRTP (12 байт) используется только в legacy UDP-режиме.
+### Шейпинг трафика (core/src/shaper.rs)
 
-Поле SSRC в SRTP:
+H.264 симуляция, 30 fps, GOP=60:
+- I-кадр (каждые 60 кадров): burst 15–50 KB
+- P-кадры: LogNormal (μ=7.0, σ=0.8), ~1–4 KB
+- «Строгая фаза» первые 5 сек, затем «фаза простоя»
 
-```
-HMAC-SHA256(shared_secret, client_public_key)[0..4]
-```
+### Управление сессиями (core/src/session.rs)
 
-Позволяет идентифицировать клиента без полной расшифровки.
+- `ReplayWindow` — 64-битное скользящее окно, защита от replay-атак
+- `NonceCounter` — монотонный u64
+- QUIC keep-alive: 10 сек; idle timeout: 30 сек (core/src/quic.rs)
+- Сессии на сервере: `DashMap<IpAddr, Arc<QuicSession>>` по tunnel IP клиента
+- Cleanup task: каждые 60 сек удаляет сессии старше idle_secs
 
-### Шейпинг трафика (`core/src/shaper.rs`)
-
-Симуляция кодека H.264 на 30 fps, GOP = 60 кадров:
-
-- I-кадр каждые 60 кадров (burst 15–50 KB)
-- P-кадры: распределение LogNormal (μ=7.0, σ=0.8)
-- «Строгая фаза» первые 5 секунд, затем «фаза простоя»
-
-### Управление сессиями (`core/src/session.rs`)
-
-- `ReplayWindow` — 64-битное скользящее окно предотвращает replay-атаки; отклоняет пакеты с номером последовательности более чем на 64 назад
-- `NonceCounter` — монотонный u64; младшие 16 бит используются как SRTP `seq_num` в UDP-режиме
-
-### Поток данных (режим QUIC)
+### Поток данных
 
 ```
-TUN interface ←→ [IP пакет] ←→ TX/RX loops (client-common/quic_tunnel.rs)
-                              ↕ Noise encrypt/decrypt
-                     QUIC datagrams ←→ quinn::Endpoint
+[TUN]  ←read──  tun_reader_loop  ──→ mpsc::channel ──→  tun_to_quic_loop
+                                                              │ batch + encrypt
+                                                        quinn SendStream
+                                                              │
+[TUN]  ──write→  quic_stream_rx_loop  ←── quinn RecvStream  ─┘
+                      │ decrypt + extract_batch
+                      └→ tun_tx.send(ip_pkt)
 ```
 
-Сервер маршрутизирует возвращаемые пакеты по TUN IP клиента через:
+### Маршрутизация на сервере
+
+Обратный трафик (server→client) маршрутизируется по destination IP пакета:
 
 ```
-DashMap<IpAddr, QuicSession>
+DashMap<IpAddr, Arc<QuicSession>>
 ```
 
-в `sessions.rs`.
+Сессия регистрируется при первом IPv4-пакете из клиентской tunnel-подсети.
 
 ### Различия TUN между платформами
 
-**Linux**
-
-```
-/dev/net/tun
-```
-
-- используется ioctl `TUNSETIFF`
-- формат пакета = raw IP
-
-**macOS**
-
-```
-AF_SYSTEM socket
-```
-
-- формат пакета = 4-байтовый префикс address-family + IP пакет
+**Linux** — `/dev/net/tun`, ioctl `TUNSETIFF`, raw IP
+**macOS** — `AF_SYSTEM socket`, 4-байтовый prefix address-family + IP
 
 ## Конфигурация
-
-Скопируйте:
 
 ```
 config/server.example.toml → config/server.toml
 config/client.example.toml → config/client.toml
 ```
 
-Ключевые поля:
-
 ### Сервер
 
-- `listen_addr`
-- `tun_addr` (10.7.0.1/24)
-- `wan_iface` (для NAT)
-- `server_private_key`
-- `server_public_key`
-- `cert_subjects` (SAN для self-signed TLS)
+- `listen_addr` — адрес:порт (напр. `89.110.109.128:8443`)
+- `tun_addr` — `10.7.0.1/24`
+- `wan_iface` — интерфейс для NAT (напр. `ens3`)
+- `server_private_key`, `server_public_key`
+- `cert_subjects` — SAN для self-signed TLS cert
 
 ### Клиент
 
-- `server_addr`
-- `server_name` (SNI)
-- `insecure` (пропустить проверку сертификата для self-signed)
-- `tun_addr` (10.7.0.x/24)
-- `default_gw` (10.7.0.1 для полного туннеля)
-- все три ключа
-
-## Константы MTU (`core/src/wire.rs`, `core/src/mtu.rs`)
-
-```
-TUNNEL_MTU = 1380     # режим UDP
-QUIC_TUNNEL_MTU = 1350  # режим QUIC
-```
-
-TCP MSS ограничивается (clamped) для пакетов, выходящих из TUN-интерфейса.
-
+- `server_addr` — `89.110.109.128:8443`
+- `server_name` — SNI (можно IP, если `insecure=true`)
+- `insecure` — `true` для self-signed cert
+- `tun_addr` — `10.7.0.x/24`
+- `tun_mtu` — `1350`
+- `default_gw` — `10.7.0.1` (полный туннель)
+- `client_private_key`, `client_public_key`, `server_public_key`
