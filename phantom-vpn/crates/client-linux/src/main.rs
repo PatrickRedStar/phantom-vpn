@@ -1,4 +1,4 @@
-//! phantom-client-linux: Linux VPN client.
+//! phantom-client-linux: Linux VPN client with QUIC transport.
 //! TUN interface via /dev/net/tun + ioctl TUNSETIFF.
 
 #[cfg(target_os = "linux")]
@@ -16,7 +16,6 @@ mod linux {
     use clap::Parser;
     use tokio::io::unix::AsyncFd;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, AsyncReadExt};
-    use tokio::net::UdpSocket;
     use tokio::sync::mpsc;
     use tokio::signal;
 
@@ -172,37 +171,37 @@ impl Drop for RouteCleanup {
                 let _ = run_cmd(
                     "iptables",
                     &[
-                        "-t",
-                        "mangle",
-                        "-D",
-                        "PREROUTING",
-                        "-i",
-                        dev,
-                        "-j",
-                        "CONNMARK",
-                        "--set-mark",
-                        FWMARK,
+                        "-t", "mangle", "-D", "PREROUTING",
+                        "-i", dev,
+                        "-j", "CONNMARK", "--set-mark", FWMARK,
                     ],
                 );
             }
             let _ = run_cmd(
                 "iptables",
                 &[
-                    "-t",
-                    "mangle",
-                    "-D",
-                    "OUTPUT",
-                    "-m",
-                    "connmark",
-                    "--mark",
-                    FWMARK,
-                    "-j",
-                    "MARK",
-                    "--set-mark",
-                    FWMARK,
+                    "-t", "mangle", "-D", "OUTPUT",
+                    "-m", "connmark", "--mark", FWMARK,
+                    "-j", "MARK", "--set-mark", FWMARK,
                 ],
             );
         }
+
+        // Remove route state file
+        let _ = std::fs::remove_file("/run/phantom-vpn-routes.json");
+    }
+}
+
+fn write_route_state(cleanup: &RouteCleanup) {
+    let state = serde_json::json!({
+        "server_ip": cleanup.server_ip,
+        "old_gw": cleanup.old_gw,
+        "old_dev": cleanup.old_dev,
+        "tun_name": cleanup.tun_name,
+        "connmark_rules_installed": cleanup.connmark_rules_installed,
+    });
+    if let Err(e) = std::fs::write("/run/phantom-vpn-routes.json", state.to_string()) {
+        tracing::warn!("Failed to write route state file: {}", e);
     }
 }
 
@@ -230,78 +229,28 @@ fn add_default_route(tun_name: &str, server_addr: &SocketAddr) -> anyhow::Result
 
     let mut connmark_rules_installed = false;
     if let Some(ref dev) = old_dev {
-        // Mark host inbound connections and restore mark on their replies, so
-        // management traffic (SSH and similar services) bypasses the tunnel.
         if run_cmd(
             "iptables",
-            &[
-                "-t",
-                "mangle",
-                "-C",
-                "PREROUTING",
-                "-i",
-                dev,
-                "-j",
-                "CONNMARK",
-                "--set-mark",
-                FWMARK,
-            ],
-        )
-        .is_err()
-        {
+            &["-t", "mangle", "-C", "PREROUTING", "-i", dev,
+              "-j", "CONNMARK", "--set-mark", FWMARK],
+        ).is_err() {
             run_cmd(
                 "iptables",
-                &[
-                    "-t",
-                    "mangle",
-                    "-I",
-                    "PREROUTING",
-                    "1",
-                    "-i",
-                    dev,
-                    "-j",
-                    "CONNMARK",
-                    "--set-mark",
-                    FWMARK,
-                ],
+                &["-t", "mangle", "-I", "PREROUTING", "1", "-i", dev,
+                  "-j", "CONNMARK", "--set-mark", FWMARK],
             )?;
         }
         if run_cmd(
             "iptables",
-            &[
-                "-t",
-                "mangle",
-                "-C",
-                "OUTPUT",
-                "-m",
-                "connmark",
-                "--mark",
-                FWMARK,
-                "-j",
-                "MARK",
-                "--set-mark",
-                FWMARK,
-            ],
-        )
-        .is_err()
-        {
+            &["-t", "mangle", "-C", "OUTPUT",
+              "-m", "connmark", "--mark", FWMARK,
+              "-j", "MARK", "--set-mark", FWMARK],
+        ).is_err() {
             run_cmd(
                 "iptables",
-                &[
-                    "-t",
-                    "mangle",
-                    "-I",
-                    "OUTPUT",
-                    "1",
-                    "-m",
-                    "connmark",
-                    "--mark",
-                    FWMARK,
-                    "-j",
-                    "MARK",
-                    "--set-mark",
-                    FWMARK,
-                ],
+                &["-t", "mangle", "-I", "OUTPUT", "1",
+                  "-m", "connmark", "--mark", FWMARK,
+                  "-j", "MARK", "--set-mark", FWMARK],
             )?;
         }
         connmark_rules_installed = true;
@@ -315,13 +264,18 @@ fn add_default_route(tun_name: &str, server_addr: &SocketAddr) -> anyhow::Result
         ROUTE_TABLE
     );
 
-    Ok(RouteCleanup {
+    let cleanup = RouteCleanup {
         server_ip,
         old_gw,
         old_dev,
         tun_name: tun_name.to_string(),
         connmark_rules_installed,
-    })
+    };
+
+    // Write state file for crash recovery
+    write_route_state(&cleanup);
+
+    Ok(cleanup)
 }
 
 fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
@@ -339,12 +293,11 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     pub async fn async_main() -> anyhow::Result<()> {
         let args = Args::parse();
         helpers::init_logging(args.verbose);
-        tracing::info!("PhantomVPN Linux Client starting...");
+        tracing::info!("PhantomVPN Linux Client starting (QUIC transport)...");
 
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
         // Register signals early
-        #[cfg(unix)]
         tokio::spawn(async move {
             let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
             let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
@@ -352,12 +305,6 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
                 _ = sigint.recv() => { tracing::info!("Received SIGINT. Initiating shutdown..."); }
                 _ = sigterm.recv() => { tracing::info!("Received SIGTERM. Initiating shutdown..."); }
             }
-            let _ = shutdown_tx.send(());
-        });
-        #[cfg(not(unix))]
-        tokio::spawn(async move {
-            let _ = signal::ctrl_c().await;
-            tracing::info!("Received Ctrl-C. Initiating shutdown...");
             let _ = shutdown_tx.send(());
         });
 
@@ -372,42 +319,54 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
     let client_keys = Arc::new(helpers::load_client_keys(&cfg)?);
     let server_public = helpers::load_server_public_key(&cfg)?;
-    let shared_secret = helpers::load_shared_secret(&cfg)?;
     tracing::info!("Client public key: {}", hex::encode(&client_keys.public));
 
-    // ─── UDP socket ──────────────────────────────────────────────────────
-    let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-    let socket = Arc::new(UdpSocket::bind(bind_addr).await.context("UDP bind failed")?);
-    socket.connect(server_addr).await.context("UDP connect failed")?;
+    // ─── QUIC endpoint with SO_MARK ─────────────────────────────────────
+    let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")
+        .context("Failed to bind UDP socket")?;
+
+    // Set SO_MARK so QUIC traffic bypasses the VPN tunnel
     let mark: u32 = 0x50;
-    let setsockopt_ret = unsafe {
+    let ret = unsafe {
         libc::setsockopt(
-            socket.as_raw_fd(),
+            std_socket.as_raw_fd(),
             libc::SOL_SOCKET,
             libc::SO_MARK,
             &mark as *const _ as *const libc::c_void,
             std::mem::size_of::<u32>() as libc::socklen_t,
         )
     };
-    if setsockopt_ret != 0 {
-        anyhow::bail!(
-            "Failed to set SO_MARK on UDP socket: {}",
-            io::Error::last_os_error()
-        );
+    if ret != 0 {
+        anyhow::bail!("Failed to set SO_MARK: {}", io::Error::last_os_error());
     }
-    tracing::info!("UDP socket bound, targeting {}", server_addr);
+    std_socket.set_nonblocking(true)?;
 
-    // ─── Noise IK Handshake ──────────────────────────────────────────────
-    tracing::info!("Performing Noise IK handshake...");
-    let (noise_session, our_ssrc) = helpers::perform_handshake(
-        &socket, &client_keys, &server_public, &shared_secret,
-    ).await.context("Handshake failed")?;
-    tracing::info!("Handshake complete! SSRC={:#010x}", our_ssrc);
+    let client_config = phantom_core::quic::make_client_config(cfg.network.insecure);
+    let runtime = quinn::default_runtime()
+        .ok_or_else(|| anyhow::anyhow!("No async runtime available"))?;
+    let mut endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        std_socket,
+        runtime,
+    ).context("Failed to create QUIC endpoint")?;
+    endpoint.set_default_client_config(client_config);
+
+    tracing::info!("QUIC endpoint created with SO_MARK={:#x}", mark);
+
+    // ─── QUIC + Noise IK Handshake ──────────────────────────────────────
+    let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom");
+
+    tracing::info!("Connecting to {} (SNI: {}) via QUIC...", server_addr, server_name);
+    let (connection, noise_session) = client_common::connect_and_handshake(
+        &endpoint, server_addr, server_name, &client_keys, &server_public,
+    ).await.context("QUIC handshake failed")?;
+    tracing::info!("QUIC + Noise handshake complete!");
 
     // ─── TUN interface ───────────────────────────────────────────────────
     let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
     let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
-    let tun_mtu  = cfg.network.tun_mtu.unwrap_or(1380);
+    let tun_mtu  = cfg.network.tun_mtu.unwrap_or(1350);
 
     tracing::info!("Creating TUN interface {}...", tun_name);
     let tun_file = create_tun(tun_name, tun_addr, tun_mtu)?;
@@ -430,12 +389,12 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     // ─── Channels ────────────────────────────────────────────────────────
     let noise_arc = Arc::new(tokio::sync::Mutex::new(noise_session));
     let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(256);
-    let (udp_pkt_tx, mut udp_pkt_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(256);
 
     // ─── TUN writer: decrypted packets → TUN ─────────────────────────────
     tokio::spawn(async move {
         use tokio::io::AsyncWriteExt;
-        while let Some(pkt) = udp_pkt_rx.recv().await {
+        while let Some(pkt) = quic_pkt_rx.recv().await {
             if let Err(e) = tun_writer.write_all(&pkt).await {
                 tracing::error!("TUN write error: {}", e);
             }
@@ -461,37 +420,40 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         }
     });
 
-    // ─── UDP RX (server → decrypt → TUN) ─────────────────────────────────
+    // ─── QUIC RX (server → decrypt → TUN) ────────────────────────────────
     {
-        let sock_rx  = socket.clone();
+        let conn_rx = connection.clone();
         let noise_rx = noise_arc.clone();
         tokio::spawn(async move {
-            if let Err(e) = client_common::udp_rx_loop(sock_rx, noise_rx, udp_pkt_tx).await {
-                tracing::error!("udp_rx_loop exited: {}", e);
+            if let Err(e) = client_common::quic_rx_loop(conn_rx, noise_rx, quic_pkt_tx).await {
+                tracing::error!("quic_rx_loop exited: {}", e);
             }
         });
     }
 
-    // ─── TUN → encrypt → UDP ─────────────────────────────────────────────
+    // ─── TUN → encrypt → QUIC ────────────────────────────────────────────
     {
-        let sock_tx  = socket.clone();
+        let conn_tx = connection.clone();
         let noise_tx = noise_arc.clone();
         tokio::spawn(async move {
-            if let Err(e) = client_common::tun_to_udp_loop(tun_pkt_rx, sock_tx, noise_tx, our_ssrc).await {
-                tracing::error!("tun_to_udp_loop exited: {}", e);
+            if let Err(e) = client_common::quic_tx_loop(tun_pkt_rx, conn_tx, noise_tx).await {
+                tracing::error!("quic_tx_loop exited: {}", e);
             }
         });
     }
 
     tracing::info!("Tunnel active. Press Ctrl-C to exit.");
 
-    // Wait for the shutdown signal from our early-registered handlers
+    // Wait for shutdown signal
     let _ = shutdown_rx.await;
+
+    // Close QUIC connection gracefully
+    connection.close(0u32.into(), b"client shutdown");
 
     // Manually drop the guard to restore routes before tokio runtime shuts down
     drop(_cleanup_guard);
     tracing::info!("Shutdown complete.");
-    
+
     Ok(())
 }
 }

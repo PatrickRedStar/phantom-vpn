@@ -50,6 +50,22 @@ impl Default for ServerNetworkConfig {
     }
 }
 
+// ─── QUIC секция ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QuicConfig {
+    /// Путь к PEM сертификату (если не задан — генерируется self-signed)
+    pub cert_path: Option<String>,
+    /// Путь к PEM приватному ключу
+    pub key_path:  Option<String>,
+    /// Subject Alternative Names для self-signed сертификата
+    pub cert_subjects: Option<Vec<String>>,
+    /// ALPN протокол (default: "h3")
+    pub alpn: Option<String>,
+    /// Idle timeout в секундах (default: 30)
+    pub idle_timeout_secs: Option<u64>,
+}
+
 // ─── Клиентская сетевая секция ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,11 +73,16 @@ pub struct ClientNetworkConfig {
     /// Адрес сервера (required: "ip:port")
     #[serde(default = "default_server_addr")]
     pub server_addr: String,
+    /// Имя хоста сервера для TLS SNI (e.g. "myserver.com")
+    pub server_name: Option<String>,
+    /// Принимать self-signed сертификаты (default: false)
+    #[serde(default)]
+    pub insecure: bool,
     /// Имя TUN интерфейса (default: "tun0")
     pub tun_name:    Option<String>,
     /// IP адрес клиента в туннеле (default: "10.7.0.2/24")
     pub tun_addr:    Option<String>,
-    /// MTU для TUN (default: 1380)
+    /// MTU для TUN (default: 1350)
     pub tun_mtu:     Option<u32>,
     /// Шлюз по умолчанию в туннеле (если задан — добавляем default route)
     pub default_gw:  Option<String>,
@@ -71,6 +92,8 @@ impl Default for ClientNetworkConfig {
     fn default() -> Self {
         Self {
             server_addr: default_server_addr(),
+            server_name: None,
+            insecure:    false,
             tun_name:    None,
             tun_addr:    None,
             tun_mtu:     None,
@@ -113,6 +136,8 @@ pub struct ServerConfig {
     pub timeouts: Option<TimeoutsConfig>,
     #[serde(default)]
     pub shaper:   Option<ShaperConfig>,
+    #[serde(default)]
+    pub quic:     Option<QuicConfig>,
 }
 
 impl ServerConfig {
@@ -143,5 +168,5 @@ impl ClientConfig {
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
-fn default_listen_addr() -> String { "0.0.0.0:3478".into() }
-fn default_server_addr() -> String { "127.0.0.1:3478".into() }
+fn default_listen_addr() -> String { "0.0.0.0:443".into() }
+fn default_server_addr() -> String { "127.0.0.1:443".into() }

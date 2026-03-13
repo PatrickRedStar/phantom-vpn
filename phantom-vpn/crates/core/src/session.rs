@@ -76,6 +76,13 @@ impl NonceCounter {
         self.next_nonce = self.next_nonce.wrapping_add(1);
         (nonce as u16, nonce)
     }
+
+    /// Возвращает nonce (u64) для QUIC mode (не нужен seq_num).
+    pub fn next_u64(&mut self) -> u64 {
+        let nonce = self.next_nonce;
+        self.next_nonce = self.next_nonce.wrapping_add(1);
+        nonce
+    }
 }
 
 /// Восстановление полного nonce (u64) из 16-битного seq_num (ROC-подобно).

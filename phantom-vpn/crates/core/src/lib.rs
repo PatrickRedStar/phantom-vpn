@@ -5,6 +5,7 @@ pub mod session;
 pub mod shaper;
 pub mod mtu;
 pub mod config;
+pub mod quic;
 
 pub use error::*;
 pub use wire::*;

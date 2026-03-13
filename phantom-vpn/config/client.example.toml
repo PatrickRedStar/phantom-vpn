@@ -1,12 +1,24 @@
+# PhantomVPN Client Configuration (QUIC Transport)
+
 [network]
-server_addr = "SERVER_PUBLIC_IP:3478"
+# Server address (QUIC/UDP port 443)
+server_addr = "SERVER_PUBLIC_IP:443"
+
+# Server hostname for TLS SNI verification
+server_name = "myserver.com"
+
+# Accept self-signed certificates (set to true if server uses self-signed cert)
+insecure    = true
+
+# TUN interface name
 tun_name    = "tun0"
 tun_addr    = "10.7.0.2/24"
-tun_mtu     = 1380
+tun_mtu     = 1350
+
+# Gateway for full-tunnel routing (comment out for split-tunnel)
 default_gw  = "10.7.0.1"
 
 [keys]
 client_private_key = "REPLACE_ME_BASE64_CLIENT_PRIVATE_KEY"
 client_public_key  = "REPLACE_ME_BASE64_CLIENT_PUBLIC_KEY"
 server_public_key  = "REPLACE_ME_BASE64_SERVER_PUBLIC_KEY"
-shared_secret      = "REPLACE_ME_BASE64_32_BYTE_SHARED_SECRET"

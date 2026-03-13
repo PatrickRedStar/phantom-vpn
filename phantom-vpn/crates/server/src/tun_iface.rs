@@ -181,16 +181,37 @@ impl AsRawFd for AsyncTun {
 // ─── NAT ─────────────────────────────────────────────────────────────────────
 
 pub fn setup_nat(tun_name: &str, wan_iface: &str, subnet: &str) -> io::Result<()> {
+    let comment = format!("phantom-vpn-{}", tun_name);
     let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
     let _ = run_cmd("iptables", &["-t", "nat", "-A", "POSTROUTING",
-        "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE"]);
+        "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
+        "-m", "comment", "--comment", &comment]);
     let _ = run_cmd("iptables", &["-A", "FORWARD",
-        "-i", tun_name, "-o", wan_iface, "-j", "ACCEPT"]);
+        "-i", tun_name, "-o", wan_iface, "-j", "ACCEPT",
+        "-m", "comment", "--comment", &comment]);
     let _ = run_cmd("iptables", &["-A", "FORWARD",
         "-i", wan_iface, "-o", tun_name,
-        "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]);
+        "-m", "state", "--state", "RELATED,ESTABLISHED",
+        "-j", "ACCEPT",
+        "-m", "comment", "--comment", &comment]);
     tracing::info!("NAT: {} → {} (subnet {})", tun_name, wan_iface, subnet);
     Ok(())
+}
+
+pub fn teardown_nat(tun_name: &str, wan_iface: &str, subnet: &str) {
+    let comment = format!("phantom-vpn-{}", tun_name);
+    let _ = run_cmd("iptables", &["-t", "nat", "-D", "POSTROUTING",
+        "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
+        "-m", "comment", "--comment", &comment]);
+    let _ = run_cmd("iptables", &["-D", "FORWARD",
+        "-i", tun_name, "-o", wan_iface, "-j", "ACCEPT",
+        "-m", "comment", "--comment", &comment]);
+    let _ = run_cmd("iptables", &["-D", "FORWARD",
+        "-i", wan_iface, "-o", tun_name,
+        "-m", "state", "--state", "RELATED,ESTABLISHED",
+        "-j", "ACCEPT",
+        "-m", "comment", "--comment", &comment]);
+    tracing::info!("NAT teardown: {} → {} (subnet {})", tun_name, wan_iface, subnet);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

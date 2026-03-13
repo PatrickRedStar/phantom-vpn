@@ -16,6 +16,14 @@ pub const TUNNEL_MSS: u16 = 1340;
 /// Максимальный plaintext в одном UDP пакете
 pub const UDP_PAYLOAD_MAX: usize = TUNNEL_MTU - SRTP_HEADER_LEN - INNER_LEN_FIELD - AEAD_TAG_LEN;
 
+// ─── QUIC mode constants ────────────────────────────────────────────────────
+/// Nonce prefix length in QUIC datagrams
+pub const NONCE_LEN: usize = 8;
+/// TUN MTU for QUIC mode (conservative for QUIC datagram limits)
+pub const QUIC_TUNNEL_MTU: usize = 1350;
+/// MSS for TCP SYN clamping in QUIC mode
+pub const QUIC_TUNNEL_MSS: u16 = 1310;
+
 /// Version=2, P=0, X=0, CC=0
 pub const RTP_VERSION_FLAGS: u8 = 0x80;
 /// Marker=0, PayloadType=97 (H.264)
