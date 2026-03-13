@@ -129,6 +129,8 @@ async fn main() -> anyhow::Result<()> {
     // Настраиваем NAT если задан WAN интерфейс
     let nat_info = if let Some(ref wan) = cfg.network.wan_iface {
         let subnet = cidr_to_network(tun_addr);
+        // Сначала сносим старые правила (идемпотентно — на случай грязного рестарта)
+        tun_iface::teardown_nat(tun_name, wan, &subnet);
         tun_iface::setup_nat(tun_name, wan, &subnet)
             .unwrap_or_else(|e| tracing::warn!("NAT setup failed (may need root): {}", e));
         tracing::info!("NAT configured: {} -> {} (subnet {})", tun_name, wan, subnet);
