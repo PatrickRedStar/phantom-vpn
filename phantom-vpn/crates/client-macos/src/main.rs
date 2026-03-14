@@ -349,9 +349,9 @@ fn create_utun(addr_cidr: &str, mtu: u32) -> anyhow::Result<(RawFd, String)> {
     };
 
     // ─── Channels ────────────────────────────────────────────────────────
-    let noise_arc = Arc::new(tokio::sync::Mutex::new(noise_session));
-    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(256);
-    let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(256);
+    let noise_arc = Arc::new(noise_session);
+    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
+    let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
 
     // ─── TUN writer: decrypted packets → TUN ─────────────────────────────
     tokio::spawn(async move {

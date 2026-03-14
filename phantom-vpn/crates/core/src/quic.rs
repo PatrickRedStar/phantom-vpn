@@ -65,15 +65,19 @@ pub fn make_server_config(
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_server_config));
 
     let mut transport = quinn::TransportConfig::default();
-    transport.datagram_receive_buffer_size(Some(65536));
-    transport.datagram_send_buffer_size(65536);
     transport.max_idle_timeout(Some(
         quinn::IdleTimeout::try_from(std::time::Duration::from_secs(idle_timeout_secs))
             .map_err(|e| anyhow::anyhow!("Invalid idle timeout: {}", e))?,
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
-    // Allow large datagrams
     transport.initial_mtu(1400);
+
+    // High-throughput stream tuning
+    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024)); // 32 MB connection window
+    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024)); // 16 MB per-stream window
+    transport.send_window(16 * 1024 * 1024); // 16 MB send buffer
+    // BBR congestion control — гораздо лучше NewReno для high-BDP каналов
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
 
     server_config.transport_config(Arc::new(transport));
 
@@ -107,13 +111,18 @@ pub fn make_client_config(skip_verify: bool) -> quinn::ClientConfig {
     let mut client_config = quinn::ClientConfig::new(Arc::new(quic_client_config));
 
     let mut transport = quinn::TransportConfig::default();
-    transport.datagram_receive_buffer_size(Some(65536));
-    transport.datagram_send_buffer_size(65536);
     transport.max_idle_timeout(Some(
         quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30)).unwrap(),
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.initial_mtu(1400);
+
+    // High-throughput stream tuning
+    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024)); // 32 MB connection window
+    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024)); // 16 MB per-stream window
+    transport.send_window(16 * 1024 * 1024); // 16 MB send buffer
+    // BBR congestion control — гораздо лучше NewReno для high-BDP каналов
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
 
     client_config.transport_config(Arc::new(transport));
 

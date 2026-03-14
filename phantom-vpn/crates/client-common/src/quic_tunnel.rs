@@ -9,13 +9,12 @@
 
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 
 use phantom_core::{
     crypto::NoiseSession,
     mtu::clamp_tcp_mss,
     session::NonceCounter,
-    shaper::H264Shaper,
     wire::{build_batch_plaintext, extract_batch_packets, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
 
@@ -26,7 +25,7 @@ const BUF: usize = BATCH_MAX_PLAINTEXT + 64;
 
 pub async fn quic_stream_rx_loop(
     mut recv: quinn::RecvStream,
-    noise: Arc<Mutex<NoiseSession>>,
+    noise: Arc<NoiseSession>,
     tun_tx: mpsc::Sender<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let mut ct_buf = vec![0u8; BUF];
@@ -59,15 +58,12 @@ pub async fn quic_stream_rx_loop(
         let nonce = u64::from_be_bytes(ct_buf[..8].try_into().unwrap());
         let ciphertext = &ct_buf[8..frame_len];
 
-        // 3. Расшифровываем
-        let pt_len = {
-            let mut session = noise.lock().await;
-            match session.decrypt(nonce, ciphertext, &mut pt_buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!("stream RX: decrypt failed: {}", e);
-                    continue;
-                }
+        // 3. Расшифровываем (NoiseSession::decrypt берёт &self — lock не нужен)
+        let pt_len = match noise.decrypt(nonce, ciphertext, &mut pt_buf) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("stream RX: decrypt failed: {}", e);
+                continue;
             }
         };
 
@@ -98,13 +94,13 @@ pub async fn quic_stream_rx_loop(
 pub async fn quic_stream_tx_loop(
     mut tun_rx: mpsc::Receiver<Vec<u8>>,
     mut send: quinn::SendStream,
-    noise: Arc<Mutex<NoiseSession>>,
+    noise: Arc<NoiseSession>,
 ) -> anyhow::Result<()> {
     let mut pt_buf = vec![0u8; BUF];
     let mut ct_buf = vec![0u8; BUF];
     let mut send_nonce = NonceCounter::new();
-    let mut shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper init: {}", e))?;
 
+    let mut frame_buf = vec![0u8; 4 + 8 + BUF];
     tracing::info!("QUIC stream TX loop started");
 
     loop {
@@ -117,12 +113,10 @@ pub async fn quic_stream_tx_loop(
             }
         };
 
-        // 2. Определяем целевой размер фрейма по H.264 шаблону
-        let target = shaper.next_frame().target_bytes.min(BATCH_MAX_PLAINTEXT - 16);
-
-        // 3. Собираем батч: берём все уже доступные пакеты из канала (non-blocking)
-        let mut batch: Vec<Vec<u8>> = Vec::with_capacity(16);
-        let mut batch_data_bytes = 0usize;
+        // 2. Собираем батч: drain всё что доступно — без таймера коалесценции
+        let batch_limit = BATCH_MAX_PLAINTEXT - 16; // запас на AEAD tag
+        let mut batch: Vec<Vec<u8>> = Vec::with_capacity(64);
+        let mut batch_data_bytes = 2usize; // terminator
 
         let mut pkt = first;
         loop {
@@ -130,20 +124,18 @@ pub async fn quic_stream_tx_loop(
             batch_data_bytes += 2 + pkt.len();
             batch.push(pkt);
 
-            // Останавливаемся если набрали достаточно или буфер переполнится
-            if batch_data_bytes >= target || batch_data_bytes + 2 + 1350 > BATCH_MAX_PLAINTEXT - 16 {
+            if batch_data_bytes + 2 + 1350 > batch_limit {
                 break;
             }
-            // Non-blocking drain
             match tun_rx.try_recv() {
                 Ok(p) => pkt = p,
                 Err(_) => break,
             }
         }
 
-        // 4. Строим batch plaintext: реальные данные + H.264 padding
+        // 3. Строим batch plaintext (без H.264 padding при высоком трафике)
         let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
-        let pt_len = match build_batch_plaintext(&refs, target, &mut pt_buf) {
+        let pt_len = match build_batch_plaintext(&refs, 0, &mut pt_buf) {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!("stream TX: build_batch failed: {}", e);
@@ -151,27 +143,23 @@ pub async fn quic_stream_tx_loop(
             }
         };
 
-        // 5. Шифруем
+        // 5. Шифруем (NoiseSession::encrypt берёт &self — lock не нужен)
         let nonce = send_nonce.next_u64();
-        let ct_len = {
-            let mut session = noise.lock().await;
-            match session.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!("stream TX: encrypt failed: {}", e);
-                    continue;
-                }
+        let ct_len = match noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("stream TX: encrypt failed: {}", e);
+                continue;
             }
         };
 
-        // 6. Пишем фрейм: [4B total_len][8B nonce][ciphertext]
+        // 6. Пишем фрейм: [4B total_len][8B nonce][ciphertext] в pre-alloc буфер
         let total_len = 8 + ct_len;
-        let mut frame = Vec::with_capacity(4 + total_len);
-        frame.extend_from_slice(&(total_len as u32).to_be_bytes());
-        frame.extend_from_slice(&nonce.to_be_bytes());
-        frame.extend_from_slice(&ct_buf[..ct_len]);
+        frame_buf[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
+        frame_buf[4..12].copy_from_slice(&nonce.to_be_bytes());
+        frame_buf[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
 
-        if let Err(e) = send.write_all(&frame).await {
+        if let Err(e) = send.write_all(&frame_buf[..4 + total_len]).await {
             return Err(anyhow::anyhow!("stream TX: write failed: {}", e));
         }
     }

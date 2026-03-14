@@ -126,9 +126,10 @@ impl NoiseSession {
         }
     }
 
-    /// Шифрует plaintext в out, возвращает длину зашифрованного сообщения
+    /// Шифрует plaintext в out, возвращает длину зашифрованного сообщения.
+    /// Безопасно вызывать из нескольких потоков — StatelessTransportState::write_message берёт &self.
     pub fn encrypt(
-        &mut self,
+        &self,
         nonce: u64,
         plaintext: &[u8],
         out: &mut [u8],
@@ -140,9 +141,10 @@ impl NoiseSession {
         Ok(len)
     }
 
-    /// Расшифровывает ciphertext в out, возвращает длину plaintext
+    /// Расшифровывает ciphertext в out, возвращает длину plaintext.
+    /// Безопасно вызывать из нескольких потоков — StatelessTransportState::read_message берёт &self.
     pub fn decrypt(
-        &mut self,
+        &self,
         nonce: u64,
         ciphertext: &[u8],
         out: &mut [u8],

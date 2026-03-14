@@ -14,7 +14,6 @@ use tokio::sync::{mpsc, Mutex};
 use phantom_core::{
     crypto::{KeyPair, NoiseHandshake, NoiseSession},
     mtu::clamp_tcp_mss,
-    session::NonceCounter,
     shaper::H264Shaper,
     wire::{build_batch_plaintext, extract_batch_packets, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
@@ -23,8 +22,8 @@ use phantom_core::{
 
 pub struct QuicSession {
     pub connection: quinn::Connection,
-    pub noise:      Mutex<NoiseSession>,
-    pub send_nonce: Mutex<NonceCounter>,
+    pub noise:      NoiseSession,
+    pub send_nonce: AtomicU64,
     pub data_send:  Mutex<quinn::SendStream>,
     pub shaper:     Mutex<H264Shaper>,
     pub last_seen:  AtomicU64,
@@ -179,8 +178,8 @@ async fn handle_connection(
 
     let session = Arc::new(QuicSession {
         connection: connection.clone(),
-        noise:      Mutex::new(noise_session),
-        send_nonce: Mutex::new(NonceCounter::new()),
+        noise:      noise_session,
+        send_nonce: AtomicU64::new(0),
         data_send:  Mutex::new(data_send),
         shaper:     Mutex::new(shaper),
         last_seen:  AtomicU64::new(
@@ -258,15 +257,12 @@ async fn stream_rx_loop(
 
         session.touch();
 
-        // 3. Decrypt
-        let pt_len = {
-            let mut noise = session.noise.lock().await;
-            match noise.decrypt(nonce, ciphertext, &mut pt_buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::trace!("decrypt failed: {}", e);
-                    continue;
-                }
+        // 3. Decrypt (NoiseSession methods take &self — no lock needed)
+        let pt_len = match session.noise.decrypt(nonce, ciphertext, &mut pt_buf) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::trace!("decrypt failed: {}", e);
+                continue;
             }
         };
 
@@ -345,8 +341,10 @@ pub async fn tun_to_quic_loop(
     sessions:   QuicSessionMap,
 ) -> anyhow::Result<()> {
     let buf_size = BATCH_MAX_PLAINTEXT + 64;
+    let batch_limit = BATCH_MAX_PLAINTEXT - 16; // запас на AEAD tag
     let mut pt_buf = vec![0u8; buf_size];
     let mut ct_buf = vec![0u8; buf_size];
+    let mut frame_buf = vec![0u8; 4 + 8 + buf_size];
 
     tracing::info!("TUN→QUIC loop started");
 
@@ -370,25 +368,16 @@ pub async fn tun_to_quic_loop(
             }
         };
 
-        // Drain additional packets destined for the same session
-        // Track data_size = sum(2 + pkt.len()) + 2 (terminator) to avoid overflow
-        let mut batch_data_bytes = 2 + first.len() + 2;
+        // Drain all available packets for this destination — no coalescing timer
+        let mut batch_data_bytes = 2 + first.len() + 2; // first pkt + terminator
         let mut packets: Vec<Vec<u8>> = vec![first];
-        while packets.len() < 64 {
+        while packets.len() < 64 && batch_data_bytes + 2 + 1350 <= batch_limit {
             match pkt_rx.try_recv() {
                 Ok(pkt) if pkt.len() >= 20 => {
                     let d = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
                     if d == dst_ip {
-                        let next_size = batch_data_bytes + 2 + pkt.len();
-                        if next_size > BATCH_MAX_PLAINTEXT {
-                            break;
-                        }
-                        batch_data_bytes = next_size;
+                        batch_data_bytes += 2 + pkt.len();
                         packets.push(pkt);
-                    } else {
-                        // Different dst — re-queue is not possible; drop is acceptable
-                        // under high load (same behaviour as before batching)
-                        tracing::trace!("Dropped cross-session pkt for {} during batch", d);
                     }
                 }
                 _ => break,
@@ -397,13 +386,8 @@ pub async fn tun_to_quic_loop(
 
         let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
 
-        // H.264 frame target
-        let target = {
-            let mut shaper = session.shaper.lock().await;
-            shaper.next_frame().target_bytes.min(BATCH_MAX_PLAINTEXT - 16)
-        };
-
-        let pt_len = match build_batch_plaintext(&refs, target, &mut pt_buf) {
+        // При высоком трафике шейпер не нужен — padding только для idle
+        let pt_len = match build_batch_plaintext(&refs, 0, &mut pt_buf) {
             Ok(n) => n,
             Err(e) => {
                 tracing::trace!("build_batch error for {}: {}", dst_ip, e);
@@ -411,29 +395,28 @@ pub async fn tun_to_quic_loop(
             }
         };
 
-        let nonce = {
-            let mut nc = session.send_nonce.lock().await;
-            nc.next_u64()
-        };
-        let ct_len = {
-            let mut noise = session.noise.lock().await;
-            match noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::trace!("encrypt error for {}: {}", dst_ip, e);
-                    continue;
-                }
+        // Encrypt + write under single data_send lock to minimize contention
+        let nonce = session.send_nonce.fetch_add(1, Ordering::Relaxed);
+        let ct_len = match session.noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::trace!("encrypt error for {}: {}", dst_ip, e);
+                continue;
             }
         };
 
+        // Pre-allocated frame buffer: [4B total_len][8B nonce][ciphertext]
         let total_len = 8 + ct_len;
-        let mut frame = Vec::with_capacity(4 + total_len);
-        frame.extend_from_slice(&(total_len as u32).to_be_bytes());
-        frame.extend_from_slice(&nonce.to_be_bytes());
-        frame.extend_from_slice(&ct_buf[..ct_len]);
+        frame_buf[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
+        frame_buf[4..12].copy_from_slice(&nonce.to_be_bytes());
+        frame_buf[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
 
-        let mut data_send = session.data_send.lock().await;
-        if let Err(e) = data_send.write_all(&frame).await {
+        // try_lock avoids async yield when uncontended (single writer)
+        let mut data_send = match session.data_send.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => session.data_send.lock().await,
+        };
+        if let Err(e) = data_send.write_all(&frame_buf[..4 + total_len]).await {
             tracing::warn!("stream write to {} failed: {}", dst_ip, e);
         }
     }

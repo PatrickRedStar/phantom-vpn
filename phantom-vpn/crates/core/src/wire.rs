@@ -168,10 +168,9 @@ pub fn build_batch_plaintext(
     // End-of-batch marker
     out[offset..offset + 2].copy_from_slice(&0u16.to_be_bytes());
     offset += 2;
-    // Random padding
+    // Zero padding (inside AEAD — content irrelevant to observer)
     if offset < total {
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut out[offset..total]);
+        out[offset..total].fill(0);
     }
     Ok(total)
 }
