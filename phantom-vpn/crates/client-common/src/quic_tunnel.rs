@@ -89,19 +89,48 @@ pub async fn quic_stream_rx_loop(
     }
 }
 
-// ─── QUIC stream TX: TUN → batch → encrypt → stream ──────────────────────────
+// ─── QUIC stream TX: двухстадийный pipeline ───────────────────────────────────
+//
+// Stage 1 (collect_encrypt_loop): читает TUN, собирает батч, шифрует → channel
+// Stage 2 (ниже): читает готовые фреймы из channel, пишет в QUIC stream
+//
+// Пока Stage 2 ждёт подтверждения от QUIC (flow control / буферы ядра),
+// Stage 1 уже шифрует следующий батч — нет простоя ни CPU, ни сети.
 
 pub async fn quic_stream_tx_loop(
-    mut tun_rx: mpsc::Receiver<Vec<u8>>,
+    tun_rx: mpsc::Receiver<Vec<u8>>,
     mut send: quinn::SendStream,
+    noise: Arc<NoiseSession>,
+) -> anyhow::Result<()> {
+    // Канал между стадиями: зашифрованные фреймы готовы к записи
+    let (frame_tx, mut frame_rx) = mpsc::channel::<Vec<u8>>(128);
+
+    // Stage 1 работает параллельно в отдельном tokio task
+    let stage1 = tokio::spawn(collect_encrypt_loop(tun_rx, frame_tx, noise));
+
+    tracing::info!("QUIC stream TX pipeline started");
+
+    // Stage 2: просто пишет готовые фреймы в QUIC stream
+    while let Some(frame) = frame_rx.recv().await {
+        if let Err(e) = send.write_all(&frame).await {
+            return Err(anyhow::anyhow!("stream TX: write failed: {}", e));
+        }
+    }
+
+    stage1.await.unwrap_or_else(|e| Err(anyhow::anyhow!("stage1 join: {}", e)))?;
+    Ok(())
+}
+
+// ─── Stage 1: collect + encrypt → frame channel ───────────────────────────────
+
+async fn collect_encrypt_loop(
+    mut tun_rx: mpsc::Receiver<Vec<u8>>,
+    frame_tx: mpsc::Sender<Vec<u8>>,
     noise: Arc<NoiseSession>,
 ) -> anyhow::Result<()> {
     let mut pt_buf = vec![0u8; BUF];
     let mut ct_buf = vec![0u8; BUF];
     let mut send_nonce = NonceCounter::new();
-
-    let mut frame_buf = vec![0u8; 4 + 8 + BUF];
-    tracing::info!("QUIC stream TX loop started");
 
     loop {
         // 1. Ждём первый пакет (блокирующий)
@@ -114,7 +143,7 @@ pub async fn quic_stream_tx_loop(
         };
 
         // 2. Собираем батч: drain всё что доступно — без таймера коалесценции
-        let batch_limit = BATCH_MAX_PLAINTEXT - 16; // запас на AEAD tag
+        let batch_limit = BATCH_MAX_PLAINTEXT - 16;
         let mut batch: Vec<Vec<u8>> = Vec::with_capacity(64);
         let mut batch_data_bytes = 2usize; // terminator
 
@@ -133,7 +162,7 @@ pub async fn quic_stream_tx_loop(
             }
         }
 
-        // 3. Строим batch plaintext (без H.264 padding при высоком трафике)
+        // 3. Batch plaintext
         let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
         let pt_len = match build_batch_plaintext(&refs, 0, &mut pt_buf) {
             Ok(n) => n,
@@ -143,7 +172,7 @@ pub async fn quic_stream_tx_loop(
             }
         };
 
-        // 5. Шифруем (NoiseSession::encrypt берёт &self — lock не нужен)
+        // 4. Encrypt
         let nonce = send_nonce.next_u64();
         let ct_len = match noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
             Ok(n) => n,
@@ -153,15 +182,17 @@ pub async fn quic_stream_tx_loop(
             }
         };
 
-        // 6. Пишем фрейм: [4B total_len][8B nonce][ciphertext] в pre-alloc буфер
+        // 5. Формируем фрейм: [4B total_len][8B nonce][ciphertext]
         let total_len = 8 + ct_len;
-        frame_buf[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
-        frame_buf[4..12].copy_from_slice(&nonce.to_be_bytes());
-        frame_buf[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
+        let mut frame = vec![0u8; 4 + total_len];
+        frame[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
+        frame[4..12].copy_from_slice(&nonce.to_be_bytes());
+        frame[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
 
-        if let Err(e) = send.write_all(&frame_buf[..4 + total_len]).await {
-            return Err(anyhow::anyhow!("stream TX: write failed: {}", e));
+        if frame_tx.send(frame).await.is_err() {
+            break;
         }
     }
+
     Ok(())
 }

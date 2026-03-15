@@ -24,7 +24,7 @@ pub struct QuicSession {
     pub connection: quinn::Connection,
     pub noise:      NoiseSession,
     pub send_nonce: AtomicU64,
-    pub data_send:  Mutex<quinn::SendStream>,
+    pub data_send:  mpsc::Sender<Vec<u8>>,
     pub shaper:     Mutex<H264Shaper>,
     pub last_seen:  AtomicU64,
 }
@@ -176,11 +176,16 @@ async fn handle_connection(
 
     let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
+    // Pipeline: tun_to_quic_loop шлёт готовые фреймы в канал,
+    // session_write_loop пишет их в QUIC stream независимо.
+    let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(128);
+    tokio::spawn(session_write_loop(frame_rx, data_send, remote));
+
     let session = Arc::new(QuicSession {
         connection: connection.clone(),
         noise:      noise_session,
         send_nonce: AtomicU64::new(0),
-        data_send:  Mutex::new(data_send),
+        data_send:  frame_tx,
         shaper:     Mutex::new(shaper),
         last_seen:  AtomicU64::new(
             SystemTime::now()
@@ -344,7 +349,6 @@ pub async fn tun_to_quic_loop(
     let batch_limit = BATCH_MAX_PLAINTEXT - 16; // запас на AEAD tag
     let mut pt_buf = vec![0u8; buf_size];
     let mut ct_buf = vec![0u8; buf_size];
-    let mut frame_buf = vec![0u8; 4 + 8 + buf_size];
 
     tracing::info!("TUN→QUIC loop started");
 
@@ -405,23 +409,39 @@ pub async fn tun_to_quic_loop(
             }
         };
 
-        // Pre-allocated frame buffer: [4B total_len][8B nonce][ciphertext]
+        // Формируем фрейм и отправляем в write loop сессии (без блокирующего await на сети)
         let total_len = 8 + ct_len;
-        frame_buf[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
-        frame_buf[4..12].copy_from_slice(&nonce.to_be_bytes());
-        frame_buf[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
+        let mut frame = vec![0u8; 4 + total_len];
+        frame[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
+        frame[4..12].copy_from_slice(&nonce.to_be_bytes());
+        frame[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
 
-        // try_lock avoids async yield when uncontended (single writer)
-        let mut data_send = match session.data_send.try_lock() {
-            Ok(guard) => guard,
-            Err(_) => session.data_send.lock().await,
-        };
-        if let Err(e) = data_send.write_all(&frame_buf[..4 + total_len]).await {
-            tracing::warn!("stream write to {} failed: {}", dst_ip, e);
+        if session.data_send.send(frame).await.is_err() {
+            tracing::warn!("session write channel closed for {}", dst_ip);
         }
     }
 
     Ok(())
+}
+
+// ─── Per-session write loop ──────────────────────────────────────────────────
+//
+// Получает готовые зашифрованные фреймы из канала и пишет в QUIC stream.
+// Работает параллельно с tun_to_quic_loop: пока tun_to_quic шифрует батч N+1,
+// этот loop отправляет батч N в сеть.
+
+async fn session_write_loop(
+    mut frame_rx: mpsc::Receiver<Vec<u8>>,
+    mut send: quinn::SendStream,
+    remote: SocketAddr,
+) {
+    while let Some(frame) = frame_rx.recv().await {
+        if let Err(e) = send.write_all(&frame).await {
+            tracing::warn!("session write to {} failed: {}", remote, e);
+            break;
+        }
+    }
+    tracing::debug!("session write loop ended for {}", remote);
 }
 
 // ─── Cleanup task ───────────────────────────────────────────────────────────
