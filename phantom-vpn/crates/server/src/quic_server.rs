@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, Mutex};
 use phantom_core::{
     mtu::clamp_tcp_mss,
     shaper::H264Shaper,
-    wire::{build_batch_plaintext, extract_batch_packets, flow_stream_idx, BATCH_MAX_PLAINTEXT, N_DATA_STREAMS, QUIC_TUNNEL_MSS},
+    wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT, N_DATA_STREAMS, QUIC_TUNNEL_MSS},
 };
 
 // ─── Session types ──────────────────────────────────────────────────────────
@@ -212,48 +212,42 @@ async fn stream_rx_loop(
 
         session.touch();
 
-        // 3. Extract batch packets
-        let packets = match extract_batch_packets(&frame_buf[..frame_len]) {
-            Ok(pkts) => pkts,
-            Err(e) => {
-                tracing::trace!("extract_batch failed: {}", e);
-                continue;
-            }
-        };
+        // 3. Walk batch in-place — no intermediate Vec<Vec<u8>>
+        let mut offset = 0;
+        let mut registered = registered_ip.lock().await.is_some();
+        loop {
+            if offset + 2 > frame_len { break; }
+            let pkt_len = u16::from_be_bytes([
+                frame_buf[offset], frame_buf[offset + 1],
+            ]) as usize;
+            offset += 2;
+            if pkt_len == 0 { break; }
+            if offset + pkt_len > frame_len { break; }
+            if pkt_len < 20 { offset += pkt_len; continue; }
 
-        for ip_data in packets {
-            if ip_data.len() < 20 {
-                continue;
-            }
-
-            // Register session by first IPv4 packet within tunnel subnet
-            if registered_ip.lock().await.is_none() && (ip_data[0] >> 4) == 4 {
+            // Register session on first IPv4 packet (single lock, not per-packet)
+            if !registered && (frame_buf[offset] >> 4) == 4 {
                 let src_v4 = Ipv4Addr::new(
-                    ip_data[12], ip_data[13], ip_data[14], ip_data[15],
+                    frame_buf[offset + 12], frame_buf[offset + 13],
+                    frame_buf[offset + 14], frame_buf[offset + 15],
                 );
                 let mask: u32 = if tun_prefix == 0 { 0 } else { !0u32 << (32 - tun_prefix) };
                 if u32::from(src_v4) & mask == u32::from(tun_network) & mask {
                     let src_ip = IpAddr::V4(src_v4);
                     sessions.insert(src_ip, session.clone());
                     *registered_ip.lock().await = Some(src_ip);
-                    tracing::info!(
-                        "Session registered for tunnel IP {} ({})",
-                        src_ip, remote
-                    );
-                } else {
-                    tracing::debug!(
-                        "Skipping session registration: src {} not in tunnel subnet {}/{}",
-                        src_v4, tun_network, tun_prefix
-                    );
+                    registered = true;
+                    tracing::info!("Session registered for tunnel IP {} ({})", src_ip, remote);
                 }
             }
 
-            let mut ip_buf = ip_data;
-            let _ = clamp_tcp_mss(&mut ip_buf, QUIC_TUNNEL_MSS);
+            session.touch();
+            let _ = clamp_tcp_mss(&mut frame_buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
 
-            if let Err(e) = tun_tx.send(ip_buf).await {
+            if let Err(e) = tun_tx.send(frame_buf[offset..offset + pkt_len].to_vec()).await {
                 tracing::error!("tun_tx send error: {}", e);
             }
+            offset += pkt_len;
         }
     }
 }
@@ -286,9 +280,8 @@ pub async fn tun_to_quic_loop(
     mut pkt_rx: mpsc::Receiver<Vec<u8>>,
     sessions:   QuicSessionMap,
 ) -> anyhow::Result<()> {
-    let buf_size  = BATCH_MAX_PLAINTEXT + 16;
-    let batch_limit = BATCH_MAX_PLAINTEXT - 16;
-    let mut pt_buf = vec![0u8; buf_size];
+    let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
+    let mut frame_buf = vec![0u8; buf_size];
 
     tracing::info!("TUN→QUIC loop started");
 
@@ -339,7 +332,7 @@ pub async fn tun_to_quic_loop(
             }
 
             let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
-            let pt_len = match build_batch_plaintext(&refs, 0, &mut pt_buf) {
+            let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
                 Ok(n) => n,
                 Err(e) => {
                     tracing::trace!("build_batch error stream {}: {}", idx, e);
@@ -347,15 +340,10 @@ pub async fn tun_to_quic_loop(
                 }
             };
 
-            // Frame: [4B pt_len][plaintext batch]
-            let mut frame = vec![0u8; 4 + pt_len];
-            frame[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-            frame[4..].copy_from_slice(&pt_buf[..pt_len]);
+            // Write header directly, send [4B header + batch] as one Vec
+            frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
 
-            // Suppress unused variable warning
-            let _ = batch_limit;
-
-            if session.data_sends[idx].send(frame).await.is_err() {
+            if session.data_sends[idx].send(frame_buf[..4 + pt_len].to_vec()).await.is_err() {
                 tracing::warn!("session write channel closed for stream {}", idx);
             }
         }
