@@ -1,27 +1,23 @@
 //! QUIC stream tunnel loops: TUN ↔ QUIC streams.
-//! Data is sent as raw batch plaintext over reliable QUIC streams.
-//! QUIC TLS provides confidentiality — no additional encryption layer.
-//!
-//! Wire format of one stream frame:
-//!   [4B total_len][batch plaintext]
-//!
-//! Batch plaintext format:
-//!   [2B len1][pkt1][2B len2][pkt2]...[2B 0x0000][padding to H.264 target]
+//! Zero-copy optimized: batch built directly into frame buffer,
+//! written to QUIC stream without intermediate allocations.
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
-    wire::{build_batch_plaintext, extract_batch_packets, flow_stream_idx, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
+    wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
-const BUF: usize = BATCH_MAX_PLAINTEXT + 16;
+const BUF: usize = 4 + BATCH_MAX_PLAINTEXT + 16;
 
-// ─── QUIC stream RX: stream → decrypt → TUN ──────────────────────────────────
+// ─── QUIC stream RX: stream → TUN (zero-copy extract) ──────────────────────
 
 pub async fn quic_stream_rx_loop(
     mut recv: quinn::RecvStream,
     tun_tx: mpsc::Sender<Vec<u8>>,
 ) -> anyhow::Result<()> {
+    use tokio::io::AsyncReadExt;
     let mut frame_buf = vec![0u8; BUF];
 
     tracing::info!("QUIC stream RX loop started");
@@ -29,50 +25,46 @@ pub async fn quic_stream_rx_loop(
     loop {
         // 1. Read frame header: [4B total_len]
         let mut len_buf = [0u8; 4];
-        match tokio::io::AsyncReadExt::read_exact(&mut recv, &mut len_buf).await {
-            Ok(_) => {}
-            Err(e) => return Err(anyhow::anyhow!("stream RX: closed: {}", e)),
-        }
+        recv.read_exact(&mut len_buf)
+            .await
+            .map_err(|e| anyhow::anyhow!("stream RX: closed: {}", e))?;
         let frame_len = u32::from_be_bytes(len_buf) as usize;
 
         if frame_len < 4 || frame_len > BUF {
-            return Err(anyhow::anyhow!(
-                "stream RX: invalid frame_len={}, closing",
-                frame_len
-            ));
+            return Err(anyhow::anyhow!("stream RX: invalid frame_len={}", frame_len));
         }
 
-        // 2. Read [frame_len bytes of plaintext batch]
-        tokio::io::AsyncReadExt::read_exact(&mut recv, &mut frame_buf[..frame_len])
+        // 2. Read plaintext batch into frame_buf
+        recv.read_exact(&mut frame_buf[..frame_len])
             .await
             .map_err(|e| anyhow::anyhow!("stream RX: read frame: {}", e))?;
 
-        // 3. Extract all packets from the batch
-        let packets = match extract_batch_packets(&frame_buf[..frame_len]) {
-            Ok(pkts) => pkts,
-            Err(e) => {
-                tracing::warn!("stream RX: extract_batch failed: {}", e);
-                continue;
-            }
-        };
+        // 3. Walk batch in-place: [2B len][data]...[2B 0x0000]
+        //    No intermediate Vec<Vec<u8>> — process each packet directly from frame_buf.
+        let mut offset = 0;
+        loop {
+            if offset + 2 > frame_len { break; }
+            let pkt_len = u16::from_be_bytes([
+                frame_buf[offset], frame_buf[offset + 1],
+            ]) as usize;
+            offset += 2;
+            if pkt_len == 0 { break; } // end-of-batch
+            if offset + pkt_len > frame_len { break; }
 
-        for mut pkt in packets {
-            if pkt.len() < 20 || (pkt[0] >> 4) != 4 {
-                continue;
+            if pkt_len >= 20 && (frame_buf[offset] >> 4) == 4 {
+                // Clamp MSS in-place (modifies frame_buf directly)
+                let _ = clamp_tcp_mss(&mut frame_buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
+                // Single copy: frame_buf slice → owned Vec for channel send
+                if tun_tx.send(frame_buf[offset..offset + pkt_len].to_vec()).await.is_err() {
+                    return Ok(());
+                }
             }
-            let _ = clamp_tcp_mss(&mut pkt, QUIC_TUNNEL_MSS);
-            if let Err(e) = tun_tx.send(pkt).await {
-                tracing::error!("stream RX: tun_tx send error: {}", e);
-            }
+            offset += pkt_len;
         }
     }
 }
 
-// ─── QUIC stream TX: N parallel pipelines ────────────────────────────────────
-//
-// Dispatcher reads packets from TUN, distributes to N streams by flow-hash (5-tuple).
-// Each stream: [collect+batch task] → channel → [write task]
-// No encryption here — QUIC TLS handles confidentiality.
+// ─── QUIC stream TX: N parallel pipelines (zero-copy batch+write) ───────────
 
 pub async fn quic_stream_tx_loop(
     tun_rx: mpsc::Receiver<Vec<u8>>,
@@ -86,14 +78,14 @@ pub async fn quic_stream_tx_loop(
         let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(64);
         stream_txs.push(pkt_tx);
 
-        // Stage 1: collect batch → frame channel
+        // Stage 1: collect + batch → frame channel (pipelined)
         tokio::spawn(async move {
             if let Err(e) = collect_and_batch(pkt_rx, frame_tx).await {
                 tracing::warn!("TX stage1: {}", e);
             }
         });
 
-        // Stage 2: write frames to this QUIC stream
+        // Stage 2: write frames to QUIC stream
         tokio::spawn(async move {
             let mut s = send;
             let mut fr = frame_rx;
@@ -119,13 +111,16 @@ pub async fn quic_stream_tx_loop(
     Ok(())
 }
 
-// ─── Collect + batch (no encryption) ─────────────────────────────────────────
+// ─── Collect + batch (zero-copy: 1 copy instead of 2) ───────────────────────
+//
+// Old: build_batch → pt_buf → alloc frame Vec → copy pt_buf into frame (2 copies)
+// New: build_batch directly at buf[4..] → prepend header → to_vec once (1 copy)
 
 async fn collect_and_batch(
     mut pkt_rx: mpsc::Receiver<Vec<u8>>,
     frame_tx: mpsc::Sender<Vec<u8>>,
 ) -> anyhow::Result<()> {
-    let mut pt_buf = vec![0u8; BUF];
+    let mut buf = vec![0u8; BUF];
 
     loop {
         let first = match pkt_rx.recv().await {
@@ -152,7 +147,9 @@ async fn collect_and_batch(
         }
 
         let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
-        let pt_len = match build_batch_plaintext(&refs, 0, &mut pt_buf) {
+
+        // Build batch directly at offset 4, leaving room for length header
+        let pt_len = match build_batch_plaintext(&refs, 0, &mut buf[4..]) {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!("build_batch: {}", e);
@@ -160,12 +157,9 @@ async fn collect_and_batch(
             }
         };
 
-        // Frame: [4B pt_len][plaintext batch]
-        let mut frame = vec![0u8; 4 + pt_len];
-        frame[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-        frame[4..].copy_from_slice(&pt_buf[..pt_len]);
-
-        if frame_tx.send(frame).await.is_err() {
+        // Prepend header, then single to_vec (1 copy instead of 2)
+        buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+        if frame_tx.send(buf[..4 + pt_len].to_vec()).await.is_err() {
             break;
         }
     }
