@@ -16,7 +16,6 @@ use tokio::sync::mpsc;
 use tokio::io::AsyncWriteExt;
 
 use phantom_core::config::ServerConfig;
-use phantom_core::crypto::KeyPair;
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
@@ -83,10 +82,6 @@ async fn main() -> anyhow::Result<()> {
         cfg.network.listen_addr.parse().context("Invalid config listen_addr")?
     };
 
-    // Загрузка ключей
-    let server_keys = Arc::new(load_or_generate_keys(&cfg)?);
-    tracing::info!("Server public key: {}", hex::encode(&server_keys.public));
-
     // ─── TLS сертификаты ──────────────────────────────────────────────────
     let (certs, key) = if let Some(ref qc) = cfg.quic {
         if let (Some(ref cp), Some(ref kp)) = (&qc.cert_path, &qc.key_path) {
@@ -110,7 +105,17 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|q| q.idle_timeout_secs)
         .unwrap_or(30);
 
-    let server_config = phantom_core::quic::make_server_config(certs, key, idle_timeout)
+    // Load CA cert for mTLS client verification (if configured)
+    let client_ca = if let Some(ref ca_path) = cfg.quic.as_ref().and_then(|q| q.ca_cert_path.clone()) {
+        tracing::info!("Loading client CA cert from {}", ca_path);
+        Some(phantom_core::quic::load_pem_cert_chain(Path::new(ca_path))
+            .context("Failed to load client CA cert")?)
+    } else {
+        tracing::warn!("No ca_cert_path in [quic] config — client authentication disabled");
+        None
+    };
+
+    let server_config = phantom_core::quic::make_server_config(certs, key, idle_timeout, client_ca)
         .context("Failed to create QUIC server config")?;
 
     // ─── TUN interface ──────────────────────────────────────────────────────
@@ -212,7 +217,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     tokio::select! {
-        result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, server_keys, tun_network, tun_prefix) => {
+        result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, tun_network, tun_prefix) => {
             if let Err(e) = result {
                 tracing::error!("Accept loop exited: {}", e);
             }
@@ -253,22 +258,3 @@ fn cidr_to_network(cidr: &str) -> String {
     format!("{}.{}.{}.0/{}", ip_parts[0], ip_parts[1], ip_parts[2], parts[1])
 }
 
-fn load_or_generate_keys(cfg: &ServerConfig) -> anyhow::Result<KeyPair> {
-    if let Some(ref keys_cfg) = cfg.keys {
-        if let (Some(ref priv_b64), Some(ref pub_b64)) =
-            (&keys_cfg.server_private_key, &keys_cfg.server_public_key)
-        {
-            use base64::{Engine, engine::general_purpose::STANDARD};
-            let private = STANDARD.decode(priv_b64)
-                .context("Invalid base64 in server_private_key")?;
-            let public  = STANDARD.decode(pub_b64)
-                .context("Invalid base64 in server_public_key")?;
-            tracing::info!("Loaded server keypair from config");
-            return Ok(KeyPair { private, public });
-        }
-    }
-
-    tracing::warn!("No server keys in config — generating ephemeral keys (NOT persistent!)");
-    tracing::warn!("Run `phantom-keygen` to generate permanent keys and add them to config.");
-    KeyPair::generate().context("Key generation failed")
-}

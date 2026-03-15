@@ -4,10 +4,10 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::net::SocketAddr;
-    use std::sync::Arc;
     use std::fs::{File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::os::unix::io::AsRawFd;
+    use std::path::Path;
     use std::pin::Pin;
     use std::process::Command;
     use std::task::Poll;
@@ -322,10 +322,6 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     };
     tracing::info!("Server address: {}", server_addr);
 
-    let client_keys = Arc::new(helpers::load_client_keys(&cfg)?);
-    let server_public = helpers::load_server_public_key(&cfg)?;
-    tracing::info!("Client public key: {}", hex::encode(&client_keys.public));
-
     // ─── QUIC endpoint with SO_MARK ─────────────────────────────────────
     let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")
         .context("Failed to bind UDP socket")?;
@@ -346,7 +342,28 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     }
     std_socket.set_nonblocking(true)?;
 
-    let client_config = phantom_core::quic::make_client_config(cfg.network.insecure);
+    // Load mTLS client identity (cert + key) if configured
+    let client_identity = if let Some(ref qc) = cfg.quic {
+        if let (Some(ref cp), Some(ref kp)) = (&qc.cert_path, &qc.key_path) {
+            tracing::info!("Loading client TLS certificate from {}", cp);
+            let identity = phantom_core::quic::load_pem_certs(Path::new(cp), Path::new(kp))
+                .context("Failed to load client TLS certificate")?;
+            Some(identity)
+        } else { None }
+    } else { None };
+
+    // Load server CA cert if configured (for verifying server cert instead of skip)
+    let server_ca = if let Some(ref qc) = cfg.quic {
+        if let Some(ref ca_path) = qc.ca_cert_path {
+            Some(phantom_core::quic::load_pem_cert_chain(Path::new(ca_path))
+                .context("Failed to load server CA cert")?)
+        } else { None }
+    } else { None };
+
+    let skip_verify = cfg.network.insecure || (server_ca.is_none() && client_identity.is_none());
+    let client_config = phantom_core::quic::make_client_config(skip_verify, server_ca, client_identity)
+        .context("Failed to build QUIC client config")?;
+
     let runtime = quinn::default_runtime()
         .ok_or_else(|| anyhow::anyhow!("No async runtime available"))?;
     let mut endpoint = quinn::Endpoint::new(
@@ -359,14 +376,13 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
     tracing::info!("QUIC endpoint created with SO_MARK={:#x}", mark);
 
-    // ─── QUIC + Noise IK Handshake ──────────────────────────────────────
+    // ─── QUIC connect + open data streams ───────────────────────────────
     let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom");
 
-    tracing::info!("Connecting to {} (SNI: {}) via QUIC...", server_addr, server_name);
-    let (connection, noise_session, streams) = client_common::connect_and_handshake(
-        &endpoint, server_addr, server_name, &client_keys, &server_public,
-    ).await.context("QUIC handshake failed")?;
-    tracing::info!("QUIC + Noise handshake complete ({} data streams)!", streams.len());
+    let (connection, streams) = client_common::connect_and_handshake(
+        &endpoint, server_addr, server_name,
+    ).await.context("QUIC connect failed")?;
+    tracing::info!("QUIC connected ({} data streams)!", streams.len());
 
     // ─── TUN interface ───────────────────────────────────────────────────
     let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
@@ -392,7 +408,6 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     };
 
     // ─── Channels ────────────────────────────────────────────────────────
-    let noise_arc = Arc::new(noise_session);
     let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
     let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
 
@@ -428,31 +443,34 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     // ─── Разделяем N data streams на sends и recvs ───────────────────────
     let (sends, recvs): (Vec<_>, Vec<_>) = streams.into_iter().unzip();
 
-    // ─── QUIC stream RX: N параллельных потоков → TUN ────────────────────
-    for recv in recvs {
-        let noise_rx = noise_arc.clone();
-        let pkt_tx = quic_pkt_tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = client_common::quic_stream_rx_loop(recv, noise_rx, pkt_tx).await {
-                tracing::error!("quic_stream_rx_loop exited: {}", e);
-            }
-        });
-    }
+    // ─── QUIC stream RX / TX tasks ────────────────────────────────────────
+    let mut tunnel_set = tokio::task::JoinSet::new();
 
-    // ─── TUN → N параллельных QUIC streams ───────────────────────────────
-    {
-        let noise_tx = noise_arc.clone();
-        tokio::spawn(async move {
-            if let Err(e) = client_common::quic_stream_tx_loop(tun_pkt_rx, sends, noise_tx).await {
-                tracing::error!("quic_stream_tx_loop exited: {}", e);
-            }
+    for recv in recvs {
+        let pkt_tx = quic_pkt_tx.clone();
+        tunnel_set.spawn(async move {
+            client_common::quic_stream_rx_loop(recv, pkt_tx).await
         });
     }
+    tunnel_set.spawn(async move {
+        client_common::quic_stream_tx_loop(tun_pkt_rx, sends).await
+    });
 
     tracing::info!("Tunnel active. Press Ctrl-C to exit.");
 
-    // Wait for shutdown signal
-    let _ = shutdown_rx.await;
+    // Exit (triggering RouteCleanup Drop) when shutdown signal arrives
+    // OR when any tunnel task dies (connection dropped) — systemd will restart us.
+    tokio::select! {
+        _ = shutdown_rx => {
+            tracing::info!("Shutdown signal received.");
+        }
+        Some(res) = tunnel_set.join_next() => {
+            if let Ok(Err(e)) = res {
+                tracing::error!("Tunnel task failed: {}", e);
+            }
+            tracing::info!("Tunnel died, exiting for restart.");
+        }
+    }
 
     // Close QUIC connection gracefully
     connection.close(0u32.into(), b"client shutdown");

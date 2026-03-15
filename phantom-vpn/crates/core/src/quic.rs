@@ -9,8 +9,6 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 // ─── Self-signed certificate generation ─────────────────────────────────────
 
-/// Generates a self-signed certificate for the given subject alternative names.
-/// Subjects can be domain names or IP addresses (e.g. ["myserver.com", "1.2.3.4"]).
 pub fn self_signed_cert(
     subjects: Vec<String>,
 ) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
@@ -24,8 +22,6 @@ pub fn self_signed_cert(
 
 // ─── PEM certificate loading ────────────────────────────────────────────────
 
-/// Loads PEM-encoded certificate chain and private key from disk.
-/// Works with Let's Encrypt fullchain.pem + privkey.pem.
 pub fn load_pem_certs(
     cert_path: &Path,
     key_path: &Path,
@@ -46,17 +42,43 @@ pub fn load_pem_certs(
     Ok((certs, key))
 }
 
+/// Loads only the PEM certificate chain (no key).
+pub fn load_pem_cert_chain(cert_path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    let cert_data = std::fs::read(cert_path)?;
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_data[..])
+        .collect::<Result<Vec<_>, _>>()?;
+    if certs.is_empty() {
+        anyhow::bail!("No certificates found in {}", cert_path.display());
+    }
+    Ok(certs)
+}
+
 // ─── Quinn server config ────────────────────────────────────────────────────
 
-/// Builds a `quinn::ServerConfig` with QUIC datagrams enabled and ALPN "h3".
+/// Builds a `quinn::ServerConfig`.
+/// If `client_ca` is Some, requires mTLS: clients must present a cert signed by that CA.
 pub fn make_server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
     idle_timeout_secs: u64,
+    client_ca: Option<Vec<CertificateDer<'static>>>,
 ) -> anyhow::Result<quinn::ServerConfig> {
-    let mut tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
+    let mut tls_config = if let Some(ca_certs) = client_ca {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in ca_certs {
+            roots.add(cert)?;
+        }
+        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build client cert verifier: {}", e))?;
+        rustls::ServerConfig::builder()
+            .with_client_cert_verifier(verifier)
+            .with_single_cert(certs, key)?
+    } else {
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?
+    };
 
     tls_config.alpn_protocols = vec![b"h3".to_vec()];
     tls_config.max_early_data_size = 0;
@@ -71,43 +93,47 @@ pub fn make_server_config(
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.initial_mtu(1400);
-
-    // High-throughput stream tuning
-    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024)); // 32 MB connection window
-    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024)); // 16 MB per-stream window
-    transport.send_window(16 * 1024 * 1024); // 16 MB send buffer
-    // BBR congestion control — гораздо лучше NewReno для high-BDP каналов
+    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
+    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
+    transport.send_window(16 * 1024 * 1024);
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
 
     server_config.transport_config(Arc::new(transport));
-
     Ok(server_config)
 }
 
 // ─── Quinn client config ────────────────────────────────────────────────────
 
 /// Builds a `quinn::ClientConfig`.
-/// If `skip_verify` is true, accepts any server certificate (for self-signed mode).
-pub fn make_client_config(skip_verify: bool) -> quinn::ClientConfig {
-    let tls_config = if skip_verify {
-        let mut config = rustls::ClientConfig::builder()
+/// - `skip_server_verify`: accept any server cert (legacy self-signed mode)
+/// - `server_ca`: CA cert chain to verify server cert (used instead of system roots)
+/// - `client_identity`: (cert_chain, key) for mTLS client authentication
+pub fn make_client_config(
+    skip_server_verify: bool,
+    server_ca: Option<Vec<CertificateDer<'static>>>,
+    client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+) -> anyhow::Result<quinn::ClientConfig> {
+    let mut tls_config: rustls::ClientConfig = match (skip_server_verify, client_identity) {
+        (true, Some((certs, key))) => rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipVerification))
-            .with_no_client_auth();
-        config.alpn_protocols = vec![b"h3".to_vec()];
-        config
-    } else {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut config = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        config.alpn_protocols = vec![b"h3".to_vec()];
-        config
+            .with_client_auth_cert(certs, key)?,
+        (true, None) => rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(SkipVerification))
+            .with_no_client_auth(),
+        (false, Some((certs, key))) => rustls::ClientConfig::builder()
+            .with_root_certificates(build_root_store(server_ca)?)
+            .with_client_auth_cert(certs, key)?,
+        (false, None) => rustls::ClientConfig::builder()
+            .with_root_certificates(build_root_store(server_ca)?)
+            .with_no_client_auth(),
     };
 
+    tls_config.alpn_protocols = vec![b"h3".to_vec()];
+
     let quic_client_config = QuicClientConfig::try_from(tls_config)
-        .expect("Failed to create QUIC client config");
+        .map_err(|e| anyhow::anyhow!("Failed to create QUIC client config: {}", e))?;
     let mut client_config = quinn::ClientConfig::new(Arc::new(quic_client_config));
 
     let mut transport = quinn::TransportConfig::default();
@@ -116,20 +142,32 @@ pub fn make_client_config(skip_verify: bool) -> quinn::ClientConfig {
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.initial_mtu(1400);
-
-    // High-throughput stream tuning
-    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024)); // 32 MB connection window
-    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024)); // 16 MB per-stream window
-    transport.send_window(16 * 1024 * 1024); // 16 MB send buffer
-    // BBR congestion control — гораздо лучше NewReno для high-BDP каналов
+    transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
+    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
+    transport.send_window(16 * 1024 * 1024);
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
 
     client_config.transport_config(Arc::new(transport));
-
-    client_config
+    Ok(client_config)
 }
 
-// ─── Certificate verification skip (self-signed mode) ───────────────────────
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+fn build_root_store(
+    ca_certs: Option<Vec<CertificateDer<'static>>>,
+) -> anyhow::Result<Arc<rustls::RootCertStore>> {
+    let mut roots = rustls::RootCertStore::empty();
+    if let Some(certs) = ca_certs {
+        for cert in certs {
+            roots.add(cert)?;
+        }
+    } else {
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
+    Ok(Arc::new(roots))
+}
+
+// ─── Certificate verification skip (legacy self-signed mode) ─────────────────
 
 #[derive(Debug)]
 struct SkipVerification;
