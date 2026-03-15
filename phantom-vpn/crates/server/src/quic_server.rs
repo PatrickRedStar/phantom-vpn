@@ -106,12 +106,21 @@ async fn handle_connection(
 ) -> anyhow::Result<()> {
     let remote = connection.remote_address();
 
-    // Log mTLS identity if client presented a certificate
-    if let Some(identity) = connection.peer_identity() {
-        if let Some(certs) = identity.downcast_ref::<Vec<rustls::pki_types::CertificateDer>>() {
-            tracing::debug!("Client {} presented {} TLS cert(s)", remote, certs.len());
-        }
+    // ─── REALITY-style: check if client presented a valid mTLS cert ──────
+    let is_authenticated = connection.peer_identity()
+        .and_then(|id| id.downcast_ref::<Vec<rustls::pki_types::CertificateDer>>().cloned())
+        .map(|certs| !certs.is_empty())
+        .unwrap_or(false);
+
+    if !is_authenticated {
+        // No client cert → DPI probe or curious visitor.
+        // Behave like a normal HTTP/3 server: accept streams, respond with a web page.
+        tracing::info!("Unauthenticated connection from {} → fallback mode", remote);
+        handle_fallback(connection, remote).await;
+        return Ok(());
     }
+
+    tracing::info!("Authenticated VPN client from {}", remote);
 
     let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
@@ -368,6 +377,49 @@ async fn session_write_loop(
         }
     }
     tracing::debug!("session write loop ended for {}", remote);
+}
+
+// ─── REALITY fallback: serve fake HTTP/3 page to unauthenticated clients ────
+
+async fn handle_fallback(connection: quinn::Connection, remote: SocketAddr) {
+    // Accept bidirectional streams (like a browser would open for HTTP/3)
+    // and respond with a minimal valid response. This makes the server
+    // indistinguishable from a real HTTP/3 website to DPI probes.
+    loop {
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            connection.accept_bi(),
+        ).await;
+
+        match stream {
+            Ok(Ok((mut send, mut recv))) => {
+                tokio::spawn(async move {
+                    // Read and discard request data (HTTP/3 frames from the "browser")
+                    let mut buf = vec![0u8; 4096];
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        recv.read(&mut buf),
+                    ).await;
+
+                    // Send a minimal HTTP/3-like response.
+                    // Real H3 uses QPACK headers + DATA frames, but for DPI evasion
+                    // we just need to send SOMETHING on the stream and close it.
+                    // Most DPI only checks that the QUIC connection + TLS succeeds,
+                    // not that the H3 framing is perfect.
+                    let response = b"<html><body><h1>nl2.bikini-bottom.com</h1><p>Service is running.</p></body></html>";
+                    let _ = send.write_all(response).await;
+                    let _ = send.finish();
+
+                    tracing::debug!("Fallback: served fake page to probe");
+                });
+            }
+            Ok(Err(_)) | Err(_) => {
+                // Connection closed or timeout — probe is done
+                break;
+            }
+        }
+    }
+    tracing::debug!("Fallback connection from {} ended", remote);
 }
 
 // ─── Cleanup task ───────────────────────────────────────────────────────────

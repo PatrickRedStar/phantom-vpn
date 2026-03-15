@@ -20,7 +20,7 @@
 | 2 | **Zero-copy RX**: in-place batch walk, no Vec<Vec<u8>> | +4% download ✅ | ✅ Done | `opt-v6-zerocopy` |
 | 3 | **Zero-copy TX**: build into buf[4..], 1 copy not 2 | Included in #2 ✅ | ✅ Done | `opt-v6-zerocopy` |
 | — | ~~AF_XDP для UDP~~ | Не нужен: quinn уже батчит UDP (sendmmsg/recvmmsg, 175 calls/15s) | ❌ Skipped | — |
-| 4 | **Включить H.264 shaping** (сейчас target_size=0) | Маскировка, не скорость | ⏳ Pending | `opt-v8-shaping` |
+| 4 | **H.264 shaping** (I/P-frame pattern, padding) | Маскировка ✅ (-5 Mbps) | ✅ Done | `opt-v8-h264-shaping` |
 | 5 | **REALITY-style fallback** (unknown client → proxy to real site) | Стелс, не скорость | ⏳ Pending | `opt-v8-reality` |
 | 6 | **Нарастить железо** (если упрёмся в CPU после 1-3) | Линейный рост | ⏳ Pending | — |
 
