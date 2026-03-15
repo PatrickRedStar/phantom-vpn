@@ -9,14 +9,15 @@
 | opt-v3 | N=4 multi-stream + Noise | ~150 Mbps | ~170 Mbps | `opt-v3-multistream` |
 | opt-v4 | Убрали Noise, mTLS, probe fix | 147 Mbps | 132 Mbps | `opt-v4-no-noise` |
 | opt-v5 | Unlimited CC (без BBR) + streams | **169 Mbps** | **152 Mbps** | `opt-v5-unlimited-cc` |
+| opt-v6 | Zero-copy batch (in-place RX, merged TX buf) | 142 Mbps | **158 Mbps** | `opt-v6-zerocopy` |
 
 ## Roadmap оптимизаций
 
 | # | Что | Ожидаемый прирост | Статус | Git tag |
 |---|-----|-------------------|--------|---------|
 | 1 | ~~QUIC datagrams~~ → **Unlimited CC** (streams + no BBR) | +15% ✅ (169/152 Mbps) | ✅ Done | `opt-v5-unlimited-cc` |
-| 2 | **Zero-copy RX**: `extract_batch_packets` → `Vec<&[u8]>` | +10-15% | ⏳ Pending | `opt-v6-zerocopy` |
-| 3 | **Zero-copy TX**: убрать frame alloc, писать в reusable buf | +5-10% | ⏳ Pending | `opt-v6-zerocopy` |
+| 2 | **Zero-copy RX**: in-place batch walk, no Vec<Vec<u8>> | +4% download ✅ | ✅ Done | `opt-v6-zerocopy` |
+| 3 | **Zero-copy TX**: build into buf[4..], 1 copy not 2 | Included in #2 ✅ | ✅ Done | `opt-v6-zerocopy` |
 | 4 | **Включить H.264 shaping** (сейчас target_size=0) | Маскировка, не скорость | ⏳ Pending | `opt-v7-shaping` |
 | 5 | **REALITY-style fallback** (unknown client → proxy to real site) | Стелс, не скорость | ⏳ Pending | `opt-v8-reality` |
 | 6 | **Нарастить железо** (если упрёмся в CPU после 1-3) | Линейный рост | ⏳ Pending | — |

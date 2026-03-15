@@ -7,6 +7,7 @@ pub mod mtu;
 pub mod config;
 pub mod quic;
 pub mod congestion;
+pub mod tun_uring;
 
 pub use error::*;
 pub use wire::*;
