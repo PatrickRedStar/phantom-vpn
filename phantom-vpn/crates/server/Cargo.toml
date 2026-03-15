@@ -25,6 +25,7 @@ toml            = "0.8"
 libc            = "0.2"
 dashmap         = "5"
 base64          = "0.22"
+bytes           = "1"
 hex             = "0.4"
 rand            = "0.8"
 clap            = { version = "4", features = ["derive"] }

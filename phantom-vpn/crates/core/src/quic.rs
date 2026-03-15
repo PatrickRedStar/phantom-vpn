@@ -92,11 +92,13 @@ pub fn make_server_config(
             .map_err(|e| anyhow::anyhow!("Invalid idle timeout: {}", e))?,
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
-    transport.initial_mtu(1400);
+    transport.initial_mtu(1450);
     transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
     transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
     transport.send_window(16 * 1024 * 1024);
-    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    transport.datagram_receive_buffer_size(Some(4 * 1024 * 1024));
+    transport.datagram_send_buffer_size(4 * 1024 * 1024);
+    transport.congestion_controller_factory(Arc::new(crate::congestion::UnlimitedConfig));
 
     server_config.transport_config(Arc::new(transport));
     Ok(server_config)
@@ -141,11 +143,13 @@ pub fn make_client_config(
         quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30)).unwrap(),
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
-    transport.initial_mtu(1400);
+    transport.initial_mtu(1450);
     transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
     transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
     transport.send_window(16 * 1024 * 1024);
-    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    transport.datagram_receive_buffer_size(Some(4 * 1024 * 1024));
+    transport.datagram_send_buffer_size(4 * 1024 * 1024);
+    transport.congestion_controller_factory(Arc::new(crate::congestion::UnlimitedConfig));
 
     client_config.transport_config(Arc::new(transport));
     Ok(client_config)
