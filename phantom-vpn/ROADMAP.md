@@ -10,6 +10,7 @@
 | opt-v4 | Убрали Noise, mTLS, probe fix | 147 Mbps | 132 Mbps | `opt-v4-no-noise` |
 | opt-v5 | Unlimited CC (без BBR) + streams | **169 Mbps** | **152 Mbps** | `opt-v5-unlimited-cc` |
 | opt-v6 | Zero-copy batch (in-place RX, merged TX buf) | 142 Mbps | **158 Mbps** | `opt-v6-zerocopy` |
+| opt-v7 | io_uring TUN I/O (batch syscalls) | 165 Mbps | **173 Mbps** | `opt-v7-io-uring` |
 
 ## Roadmap оптимизаций
 
@@ -18,7 +19,8 @@
 | 1 | ~~QUIC datagrams~~ → **Unlimited CC** (streams + no BBR) | +15% ✅ (169/152 Mbps) | ✅ Done | `opt-v5-unlimited-cc` |
 | 2 | **Zero-copy RX**: in-place batch walk, no Vec<Vec<u8>> | +4% download ✅ | ✅ Done | `opt-v6-zerocopy` |
 | 3 | **Zero-copy TX**: build into buf[4..], 1 copy not 2 | Included in #2 ✅ | ✅ Done | `opt-v6-zerocopy` |
-| 4 | **Включить H.264 shaping** (сейчас target_size=0) | Маскировка, не скорость | ⏳ Pending | `opt-v7-shaping` |
+| — | ~~AF_XDP для UDP~~ | Не нужен: quinn уже батчит UDP (sendmmsg/recvmmsg, 175 calls/15s) | ❌ Skipped | — |
+| 4 | **Включить H.264 shaping** (сейчас target_size=0) | Маскировка, не скорость | ⏳ Pending | `opt-v8-shaping` |
 | 5 | **REALITY-style fallback** (unknown client → proxy to real site) | Стелс, не скорость | ⏳ Pending | `opt-v8-reality` |
 | 6 | **Нарастить железо** (если упрёмся в CPU после 1-3) | Линейный рост | ⏳ Pending | — |
 
