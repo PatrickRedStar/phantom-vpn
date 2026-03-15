@@ -64,6 +64,10 @@ pub struct QuicConfig {
     pub alpn: Option<String>,
     /// Idle timeout в секундах (default: 30)
     pub idle_timeout_secs: Option<u64>,
+    /// Путь к CA сертификату PEM для mTLS:
+    /// - сервер: CA для проверки клиентских сертификатов
+    /// - клиент: CA для проверки серверного сертификата (None = принять любой)
+    pub ca_cert_path: Option<String>,
 }
 
 // ─── Клиентская сетевая секция ────────────────────────────────────────────────
@@ -157,6 +161,8 @@ pub struct ClientConfig {
     pub keys:    Option<KeysConfig>,
     #[serde(default)]
     pub shaper:  Option<ShaperConfig>,
+    #[serde(default)]
+    pub quic:    Option<QuicConfig>,
 }
 
 impl ClientConfig {

@@ -1,10 +1,11 @@
-//! QUIC server: accepts QUIC connections, performs Noise IK handshake per client,
-//! forwards stream frames between QUIC streams and TUN interface.
+//! QUIC server: accepts connections, forwards stream frames between QUIC streams and TUN.
+//! Authentication is handled by mTLS at the TLS layer.
+//! Wire format per stream frame: [4B total_len][batch plaintext]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use dashmap::DashMap;
@@ -12,7 +13,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
-    crypto::{KeyPair, NoiseHandshake, NoiseSession},
     mtu::clamp_tcp_mss,
     shaper::H264Shaper,
     wire::{build_batch_plaintext, extract_batch_packets, flow_stream_idx, BATCH_MAX_PLAINTEXT, N_DATA_STREAMS, QUIC_TUNNEL_MSS},
@@ -22,8 +22,6 @@ use phantom_core::{
 
 pub struct QuicSession {
     pub connection: quinn::Connection,
-    pub noise:      NoiseSession,
-    pub send_nonce: AtomicU64,
     pub data_sends: Vec<mpsc::Sender<Vec<u8>>>,
     pub shaper:     Mutex<H264Shaper>,
     pub last_seen:  AtomicU64,
@@ -47,7 +45,6 @@ impl QuicSession {
     }
 }
 
-/// Sessions keyed by tunnel IP address for efficient routing of return traffic.
 pub type QuicSessionMap = Arc<DashMap<IpAddr, Arc<QuicSession>>>;
 
 pub fn new_quic_session_map() -> QuicSessionMap {
@@ -57,10 +54,9 @@ pub fn new_quic_session_map() -> QuicSessionMap {
 // ─── Accept loop ────────────────────────────────────────────────────────────
 
 pub async fn run_accept_loop(
-    endpoint:    quinn::Endpoint,
-    tun_tx:      mpsc::Sender<Vec<u8>>,
-    sessions:    QuicSessionMap,
-    server_keys: Arc<KeyPair>,
+    endpoint: quinn::Endpoint,
+    tun_tx:   mpsc::Sender<Vec<u8>>,
+    sessions: QuicSessionMap,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
 ) -> anyhow::Result<()> {
@@ -75,9 +71,8 @@ pub async fn run_accept_loop(
             }
         };
 
-        let tun_tx = tun_tx.clone();
+        let tun_tx   = tun_tx.clone();
         let sessions = sessions.clone();
-        let server_keys = server_keys.clone();
 
         tokio::spawn(async move {
             let remote = incoming.remote_address();
@@ -91,7 +86,7 @@ pub async fn run_accept_loop(
                 }
             };
 
-            if let Err(e) = handle_connection(connection, tun_tx, sessions, server_keys, tun_network, tun_prefix).await {
+            if let Err(e) = handle_connection(connection, tun_tx, sessions, tun_network, tun_prefix).await {
                 tracing::warn!("Connection handler error from {}: {}", remote, e);
             }
         });
@@ -106,68 +101,23 @@ async fn handle_connection(
     connection:  quinn::Connection,
     tun_tx:      mpsc::Sender<Vec<u8>>,
     sessions:    QuicSessionMap,
-    server_keys: Arc<KeyPair>,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
 ) -> anyhow::Result<()> {
     let remote = connection.remote_address();
 
-    // 1. Accept control stream for Noise handshake
-    let (mut send, mut recv) = connection
-        .accept_bi()
-        .await
-        .context("Failed to accept control stream")?;
-
-    // 2. Read Noise IK msg1: [4B length][payload]
-    let mut len_buf = [0u8; 4];
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        recv.read_exact(&mut len_buf),
-    )
-    .await
-    .context("Handshake init timeout")?
-    .context("Failed to read handshake init length")?;
-
-    let msg1_len = u32::from_be_bytes(len_buf) as usize;
-    if msg1_len > 4096 {
-        anyhow::bail!("Handshake init too large: {} bytes", msg1_len);
+    // Log mTLS identity if client presented a certificate
+    if let Some(identity) = connection.peer_identity() {
+        if let Some(certs) = identity.downcast_ref::<Vec<rustls::pki_types::CertificateDer>>() {
+            tracing::debug!("Client {} presented {} TLS cert(s)", remote, certs.len());
+        }
     }
-
-    let mut msg1_buf = vec![0u8; msg1_len];
-    recv.read_exact(&mut msg1_buf)
-        .await
-        .context("Failed to read handshake init")?;
-
-    tracing::debug!("Received Noise IK init ({} bytes) from {}", msg1_len, remote);
-
-    // 3. Noise IK respond
-    let mut responder = NoiseHandshake::respond(&server_keys)
-        .context("Noise respond init failed")?;
-    responder
-        .read_initiator_message(&msg1_buf)
-        .context("Noise read_initiator_message failed")?;
-    let response = responder
-        .write_response()
-        .context("Noise write_response failed")?;
-
-    // 4. Send response: [4B length][payload]
-    let resp_len_bytes = (response.len() as u32).to_be_bytes();
-    send.write_all(&resp_len_bytes).await.context("Failed to send response length")?;
-    send.write_all(&response).await.context("Failed to send response")?;
-    let _ = send.finish();
-
-    tracing::info!("Noise handshake completed with {}", remote);
-
-    // 5. Transition to transport
-    let noise_session = responder
-        .into_transport()
-        .context("Noise into_transport failed")?;
 
     let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
-    // 6. Accept N_DATA_STREAMS data streams; spawn per-stream write loops
-    let mut frame_txs: Vec<mpsc::Sender<Vec<u8>>> = Vec::with_capacity(N_DATA_STREAMS);
-    let mut data_recvs: Vec<quinn::RecvStream> = Vec::with_capacity(N_DATA_STREAMS);
+    // Accept N_DATA_STREAMS bidirectional data streams; spawn per-stream write loops
+    let mut frame_txs:  Vec<mpsc::Sender<Vec<u8>>> = Vec::with_capacity(N_DATA_STREAMS);
+    let mut data_recvs: Vec<quinn::RecvStream>      = Vec::with_capacity(N_DATA_STREAMS);
 
     for i in 0..N_DATA_STREAMS {
         let (ds, dr) = tokio::time::timeout(
@@ -188,8 +138,6 @@ async fn handle_connection(
 
     let session = Arc::new(QuicSession {
         connection: connection.clone(),
-        noise:      noise_session,
-        send_nonce: AtomicU64::new(0),
         data_sends: frame_txs,
         shaper:     Mutex::new(shaper),
         last_seen:  AtomicU64::new(
@@ -200,9 +148,9 @@ async fn handle_connection(
         ),
     });
 
-    // 7. Run N stream RX loops — share registered_ip so only one registers
+    // Run N stream RX loops
     let registered_ip: Arc<Mutex<Option<IpAddr>>> = Arc::new(Mutex::new(None));
-    let reg_ip_clone = registered_ip.clone();
+    let reg_ip_clone  = registered_ip.clone();
     let sessions_clone = sessions.clone();
 
     let mut set = tokio::task::JoinSet::new();
@@ -219,10 +167,9 @@ async fn handle_connection(
         ));
     }
 
-    // Wait for all RX loops to exit (connection closed or error)
     while set.join_next().await.is_some() {}
 
-    // 8. Cleanup: unregister session
+    // Cleanup
     if let Some(ip) = reg_ip_clone.lock().await.take() {
         sessions_clone.remove(&ip);
         tracing::info!("Session unregistered for tunnel IP {} ({})", ip, remote);
@@ -243,9 +190,8 @@ async fn stream_rx_loop(
     tun_prefix:    u8,
     remote:        SocketAddr,
 ) -> anyhow::Result<()> {
-    let buf_size = BATCH_MAX_PLAINTEXT + 64;
-    let mut ct_buf = vec![0u8; buf_size];
-    let mut pt_buf = vec![0u8; buf_size];
+    let buf_size = BATCH_MAX_PLAINTEXT + 16;
+    let mut frame_buf = vec![0u8; buf_size];
 
     loop {
         // 1. Read frame header: [4B total_len]
@@ -255,31 +201,19 @@ async fn stream_rx_loop(
             .map_err(|e| anyhow::anyhow!("stream closed: {}", e))?;
         let frame_len = u32::from_be_bytes(len_buf) as usize;
 
-        if frame_len < 24 || frame_len > buf_size {
+        if frame_len < 4 || frame_len > buf_size {
             return Err(anyhow::anyhow!("invalid frame_len={}", frame_len));
         }
 
-        // 2. Read [8B nonce][ciphertext]
-        recv.read_exact(&mut ct_buf[..frame_len])
+        // 2. Read plaintext batch
+        recv.read_exact(&mut frame_buf[..frame_len])
             .await
             .map_err(|e| anyhow::anyhow!("stream read frame: {}", e))?;
 
-        let nonce = u64::from_be_bytes(ct_buf[..8].try_into().unwrap());
-        let ciphertext = &ct_buf[8..frame_len];
-
         session.touch();
 
-        // 3. Decrypt (NoiseSession methods take &self — no lock needed)
-        let pt_len = match session.noise.decrypt(nonce, ciphertext, &mut pt_buf) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::trace!("decrypt failed: {}", e);
-                continue;
-            }
-        };
-
-        // 4. Extract batch packets
-        let packets = match extract_batch_packets(&pt_buf[..pt_len]) {
+        // 3. Extract batch packets
+        let packets = match extract_batch_packets(&frame_buf[..frame_len]) {
             Ok(pkts) => pkts,
             Err(e) => {
                 tracing::trace!("extract_batch failed: {}", e);
@@ -292,7 +226,7 @@ async fn stream_rx_loop(
                 continue;
             }
 
-            // Register session by first IPv4 packet within the tunnel subnet
+            // Register session by first IPv4 packet within tunnel subnet
             if registered_ip.lock().await.is_none() && (ip_data[0] >> 4) == 4 {
                 let src_v4 = Ipv4Addr::new(
                     ip_data[12], ip_data[13], ip_data[14], ip_data[15],
@@ -338,7 +272,7 @@ pub async fn tun_reader_loop(
             Ok(n) => n,
         };
         if len < 20 || (buf[0] >> 4) != 4 {
-            continue; // only IPv4
+            continue;
         }
         if pkt_tx.send(buf[..len].to_vec()).await.is_err() {
             break;
@@ -352,21 +286,18 @@ pub async fn tun_to_quic_loop(
     mut pkt_rx: mpsc::Receiver<Vec<u8>>,
     sessions:   QuicSessionMap,
 ) -> anyhow::Result<()> {
-    let buf_size = BATCH_MAX_PLAINTEXT + 64;
-    let batch_limit = BATCH_MAX_PLAINTEXT - 16; // запас на AEAD tag
+    let buf_size  = BATCH_MAX_PLAINTEXT + 16;
+    let batch_limit = BATCH_MAX_PLAINTEXT - 16;
     let mut pt_buf = vec![0u8; buf_size];
-    let mut ct_buf = vec![0u8; buf_size];
 
     tracing::info!("TUN→QUIC loop started");
 
     loop {
-        // Wait for the first packet
         let first = match pkt_rx.recv().await {
             Some(p) => p,
             None => break,
         };
 
-        // Route by destination IP
         let dst_ip = IpAddr::V4(Ipv4Addr::new(
             first[16], first[17], first[18], first[19],
         ));
@@ -381,8 +312,7 @@ pub async fn tun_to_quic_loop(
 
         let n_streams = session.data_sends.len();
 
-        // Собираем per-stream батчи: каждый TCP-flow всегда попадает на один поток.
-        // Так сохраняется порядок пакетов внутри flow → нет TCP out-of-order.
+        // Per-stream batch collection: each TCP flow always goes to the same stream
         let mut stream_batches: Vec<Vec<Vec<u8>>> = vec![Vec::new(); n_streams];
         let first_idx = flow_stream_idx(&first, n_streams);
         stream_batches[first_idx].push(first);
@@ -402,7 +332,7 @@ pub async fn tun_to_quic_loop(
             }
         }
 
-        // Шифруем и отправляем каждый per-stream батч независимо
+        // Build and send each per-stream batch
         for (idx, packets) in stream_batches.iter().enumerate() {
             if packets.is_empty() {
                 continue;
@@ -417,20 +347,13 @@ pub async fn tun_to_quic_loop(
                 }
             };
 
-            let nonce = session.send_nonce.fetch_add(1, Ordering::Relaxed);
-            let ct_len = match session.noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::trace!("encrypt error stream {}: {}", idx, e);
-                    continue;
-                }
-            };
+            // Frame: [4B pt_len][plaintext batch]
+            let mut frame = vec![0u8; 4 + pt_len];
+            frame[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+            frame[4..].copy_from_slice(&pt_buf[..pt_len]);
 
-            let total_len = 8 + ct_len;
-            let mut frame = vec![0u8; 4 + total_len];
-            frame[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
-            frame[4..12].copy_from_slice(&nonce.to_be_bytes());
-            frame[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
+            // Suppress unused variable warning
+            let _ = batch_limit;
 
             if session.data_sends[idx].send(frame).await.is_err() {
                 tracing::warn!("session write channel closed for stream {}", idx);
@@ -442,15 +365,11 @@ pub async fn tun_to_quic_loop(
 }
 
 // ─── Per-session write loop ──────────────────────────────────────────────────
-//
-// Получает готовые зашифрованные фреймы из канала и пишет в QUIC stream.
-// Работает параллельно с tun_to_quic_loop: пока tun_to_quic шифрует батч N+1,
-// этот loop отправляет батч N в сеть.
 
 async fn session_write_loop(
     mut frame_rx: mpsc::Receiver<Vec<u8>>,
-    mut send: quinn::SendStream,
-    remote: SocketAddr,
+    mut send:     quinn::SendStream,
+    remote:       SocketAddr,
 ) {
     while let Some(frame) = frame_rx.recv().await {
         if let Err(e) = send.write_all(&frame).await {
