@@ -391,8 +391,9 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
     tracing::info!("Creating TUN interface {}...", tun_name);
     let tun_file = create_tun(tun_name, tun_addr, tun_mtu)?;
-    let async_tun = AsyncTun::new(tun_file).context("Failed to create async TUN")?;
-    let (mut tun_reader, mut tun_writer) = tokio::io::split(async_tun);
+    let tun_fd = tun_file.as_raw_fd();
+    // Keep tun_file alive (fd ownership) but don't wrap in AsyncTun
+    std::mem::forget(tun_file);
 
     // Default route (with split routing for server IP)
     let _cleanup_guard = if cfg.network.default_gw.is_some() {
@@ -407,38 +408,13 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         None
     };
 
-    // ─── Channels ────────────────────────────────────────────────────────
-    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
-    let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
-
-    // ─── TUN writer: decrypted packets → TUN ─────────────────────────────
-    tokio::spawn(async move {
-        use tokio::io::AsyncWriteExt;
-        while let Some(pkt) = quic_pkt_rx.recv().await {
-            if let Err(e) = tun_writer.write_all(&pkt).await {
-                tracing::error!("TUN write error: {}", e);
-            }
-        }
-    });
-
-    // ─── TUN reader: TUN → channel ───────────────────────────────────────
-    tokio::spawn(async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            match tun_reader.read(&mut buf).await {
-                Ok(0) => continue,
-                Ok(n) => {
-                    if tun_pkt_tx.send(buf[..n].to_vec()).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("TUN read error: {}", e);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-            }
-        }
-    });
+    // ─── io_uring TUN I/O ────────────────────────────────────────────────
+    // tun_pkt_rx: packets read from TUN (io_uring reader → this channel)
+    // quic_pkt_tx: packets to write to TUN (send here → io_uring writer)
+    let (tun_pkt_rx, quic_pkt_tx) =
+        phantom_core::tun_uring::spawn(tun_fd, 4096)
+            .context("Failed to start io_uring TUN handler")?;
+    tracing::info!("io_uring TUN handler started");
 
     // ─── Разделяем N data streams на sends и recvs ───────────────────────
     let (sends, recvs): (Vec<_>, Vec<_>) = streams.into_iter().unzip();

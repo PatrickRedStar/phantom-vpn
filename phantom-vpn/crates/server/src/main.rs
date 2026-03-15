@@ -144,23 +144,14 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    // Wrap TUN в async
-    let async_tun = tun_iface::AsyncTun::new(tun.into_file())
-        .context("Failed to create async TUN")?;
-    let (tun_reader, mut tun_writer) = tokio::io::split(async_tun);
+    // ─── io_uring TUN I/O ──────────────────────────────────────────────────
+    let tun_file = tun.into_file();
+    let tun_fd = std::os::unix::io::AsRawFd::as_raw_fd(&tun_file);
+    std::mem::forget(tun_file); // keep fd alive
 
-    // MPSC канал: worker (RX) → TUN writer
-    let (tun_tx, mut tun_rx) = mpsc::channel::<Vec<u8>>(1024);
-
-    // ─── TUN writer task ────────────────────────────────────────────────────
-    tokio::spawn(async move {
-        while let Some(pkt) = tun_rx.recv().await {
-            if let Err(e) = tun_writer.write_all(&pkt).await {
-                tracing::error!("TUN write error: {}", e);
-            }
-        }
-        tracing::warn!("TUN writer channel closed");
-    });
+    let (mut tun_read_rx, tun_tx) = phantom_core::tun_uring::spawn(tun_fd, 4096)
+        .context("Failed to start io_uring TUN handler")?;
+    tracing::info!("io_uring TUN handler started");
 
     // ─── QUIC endpoint ──────────────────────────────────────────────────────
 
@@ -176,19 +167,11 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(300);
     tokio::spawn(quic_server::cleanup_task(sessions.clone(), idle_secs));
 
-    // ─── TUN reader → channel ───────────────────────────────────────────────
-    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
-    {
-        tokio::spawn(async move {
-            quic_server::tun_reader_loop(tun_reader, tun_pkt_tx).await;
-        });
-    }
-
-    // ─── TUN → QUIC loop (batching from channel) ────────────────────────────
+    // ─── TUN → QUIC loop (io_uring reader feeds directly) ─────────────────
     {
         let sess = sessions.clone();
         tokio::spawn(async move {
-            if let Err(e) = quic_server::tun_to_quic_loop(tun_pkt_rx, sess).await {
+            if let Err(e) = quic_server::tun_to_quic_loop(tun_read_rx, sess).await {
                 tracing::error!("tun_to_quic_loop exited: {}", e);
             }
         });
