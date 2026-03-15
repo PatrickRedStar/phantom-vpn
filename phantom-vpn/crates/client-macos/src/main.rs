@@ -321,10 +321,10 @@ fn create_utun(addr_cidr: &str, mtu: u32) -> anyhow::Result<(RawFd, String)> {
     let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom");
 
     tracing::info!("Connecting to {} (SNI: {}) via QUIC...", server_addr, server_name);
-    let (connection, noise_session, data_send, data_recv) = client_common::connect_and_handshake(
+    let (connection, noise_session, streams) = client_common::connect_and_handshake(
         &endpoint, server_addr, server_name, &client_keys, &server_public,
     ).await.context("QUIC handshake failed")?;
-    tracing::info!("QUIC + Noise handshake complete!");
+    tracing::info!("QUIC + Noise handshake complete ({} data streams)!", streams.len());
 
     // ─── TUN interface ───────────────────────────────────────────────────
     let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
@@ -382,21 +382,25 @@ fn create_utun(addr_cidr: &str, mtu: u32) -> anyhow::Result<(RawFd, String)> {
         }
     });
 
-    // ─── QUIC stream RX (server → decrypt → TUN) ─────────────────────────
-    {
+    // ─── Разделяем N data streams на sends и recvs ───────────────────────
+    let (sends, recvs): (Vec<_>, Vec<_>) = streams.into_iter().unzip();
+
+    // ─── QUIC stream RX: N параллельных потоков → TUN ────────────────────
+    for recv in recvs {
         let noise_rx = noise_arc.clone();
+        let pkt_tx = quic_pkt_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = client_common::quic_stream_rx_loop(data_recv, noise_rx, quic_pkt_tx).await {
+            if let Err(e) = client_common::quic_stream_rx_loop(recv, noise_rx, pkt_tx).await {
                 tracing::error!("quic_stream_rx_loop exited: {}", e);
             }
         });
     }
 
-    // ─── TUN → batch → encrypt → QUIC stream ─────────────────────────────
+    // ─── TUN → N параллельных QUIC streams ───────────────────────────────
     {
         let noise_tx = noise_arc.clone();
         tokio::spawn(async move {
-            if let Err(e) = client_common::quic_stream_tx_loop(tun_pkt_rx, data_send, noise_tx).await {
+            if let Err(e) = client_common::quic_stream_tx_loop(tun_pkt_rx, sends, noise_tx).await {
                 tracing::error!("quic_stream_tx_loop exited: {}", e);
             }
         });

@@ -27,6 +27,29 @@ pub const QUIC_TUNNEL_MSS: u16 = 1310;
 /// Maximum batch plaintext (H.264 I-frame up to 50 KB + overhead)
 pub const BATCH_MAX_PLAINTEXT: usize = 65_536;
 
+/// Number of parallel QUIC data streams per connection.
+/// More streams = less head-of-line blocking on packet loss.
+pub const N_DATA_STREAMS: usize = 4;
+
+/// Map an IPv4 packet to a stream index in [0, n) using 5-tuple hash.
+/// Symmetric: A→B hashes to the same index as B→A (XOR/addition are commutative).
+/// Ensures packets from the same TCP flow always use the same stream.
+pub fn flow_stream_idx(pkt: &[u8], n: usize) -> usize {
+    if n <= 1 || pkt.len() < 20 || (pkt[0] >> 4) != 4 {
+        return 0;
+    }
+    let src = u32::from_be_bytes([pkt[12], pkt[13], pkt[14], pkt[15]]);
+    let dst = u32::from_be_bytes([pkt[16], pkt[17], pkt[18], pkt[19]]);
+    let proto = pkt[9] as u32;
+    let mut h = src.wrapping_add(dst).wrapping_add(proto);
+    if pkt.len() >= 24 && (proto == 6 || proto == 17) {
+        let sp = u16::from_be_bytes([pkt[20], pkt[21]]) as u32;
+        let dp = u16::from_be_bytes([pkt[22], pkt[23]]) as u32;
+        h = h.wrapping_add(sp ^ dp);
+    }
+    h as usize % n
+}
+
 /// Version=2, P=0, X=0, CC=0
 pub const RTP_VERSION_FLAGS: u8 = 0x80;
 /// Marker=0, PayloadType=97 (H.264)

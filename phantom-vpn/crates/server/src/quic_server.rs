@@ -15,7 +15,7 @@ use phantom_core::{
     crypto::{KeyPair, NoiseHandshake, NoiseSession},
     mtu::clamp_tcp_mss,
     shaper::H264Shaper,
-    wire::{build_batch_plaintext, extract_batch_packets, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
+    wire::{build_batch_plaintext, extract_batch_packets, flow_stream_idx, BATCH_MAX_PLAINTEXT, N_DATA_STREAMS, QUIC_TUNNEL_MSS},
 };
 
 // ─── Session types ──────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ pub struct QuicSession {
     pub connection: quinn::Connection,
     pub noise:      NoiseSession,
     pub send_nonce: AtomicU64,
-    pub data_send:  mpsc::Sender<Vec<u8>>,
+    pub data_sends: Vec<mpsc::Sender<Vec<u8>>>,
     pub shaper:     Mutex<H264Shaper>,
     pub last_seen:  AtomicU64,
 }
@@ -163,29 +163,34 @@ async fn handle_connection(
         .into_transport()
         .context("Noise into_transport failed")?;
 
-    // 6. Accept data stream (client opens it immediately after handshake)
-    let (data_send, data_recv) = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        connection.accept_bi(),
-    )
-    .await
-    .context("Data stream accept timeout")?
-    .context("Failed to accept data stream")?;
-
-    tracing::debug!("Data stream accepted from {}", remote);
-
     let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
-    // Pipeline: tun_to_quic_loop шлёт готовые фреймы в канал,
-    // session_write_loop пишет их в QUIC stream независимо.
-    let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(128);
-    tokio::spawn(session_write_loop(frame_rx, data_send, remote));
+    // 6. Accept N_DATA_STREAMS data streams; spawn per-stream write loops
+    let mut frame_txs: Vec<mpsc::Sender<Vec<u8>>> = Vec::with_capacity(N_DATA_STREAMS);
+    let mut data_recvs: Vec<quinn::RecvStream> = Vec::with_capacity(N_DATA_STREAMS);
+
+    for i in 0..N_DATA_STREAMS {
+        let (ds, dr) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            connection.accept_bi(),
+        )
+        .await
+        .with_context(|| format!("Data stream {} accept timeout", i))?
+        .with_context(|| format!("Failed to accept data stream {}", i))?;
+
+        let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(128);
+        tokio::spawn(session_write_loop(frame_rx, ds, remote));
+        frame_txs.push(frame_tx);
+        data_recvs.push(dr);
+    }
+
+    tracing::debug!("{} data streams accepted from {}", N_DATA_STREAMS, remote);
 
     let session = Arc::new(QuicSession {
         connection: connection.clone(),
         noise:      noise_session,
         send_nonce: AtomicU64::new(0),
-        data_send:  frame_tx,
+        data_sends: frame_txs,
         shaper:     Mutex::new(shaper),
         last_seen:  AtomicU64::new(
             SystemTime::now()
@@ -195,30 +200,32 @@ async fn handle_connection(
         ),
     });
 
-    // 7. Run stream RX loop — register session once we know the client's tunnel IP
+    // 7. Run N stream RX loops — share registered_ip so only one registers
     let registered_ip: Arc<Mutex<Option<IpAddr>>> = Arc::new(Mutex::new(None));
     let reg_ip_clone = registered_ip.clone();
     let sessions_clone = sessions.clone();
-    let rx_result = stream_rx_loop(
-        data_recv,
-        session.clone(),
-        tun_tx,
-        sessions.clone(),
-        registered_ip.clone(),
-        tun_network,
-        tun_prefix,
-        remote,
-    )
-    .await;
 
-    // 8. Cleanup: unregister session on disconnect
+    let mut set = tokio::task::JoinSet::new();
+    for data_recv in data_recvs {
+        set.spawn(stream_rx_loop(
+            data_recv,
+            session.clone(),
+            tun_tx.clone(),
+            sessions.clone(),
+            registered_ip.clone(),
+            tun_network,
+            tun_prefix,
+            remote,
+        ));
+    }
+
+    // Wait for all RX loops to exit (connection closed or error)
+    while set.join_next().await.is_some() {}
+
+    // 8. Cleanup: unregister session
     if let Some(ip) = reg_ip_clone.lock().await.take() {
         sessions_clone.remove(&ip);
         tracing::info!("Session unregistered for tunnel IP {} ({})", ip, remote);
-    }
-
-    if let Err(e) = rx_result {
-        tracing::debug!("Stream RX loop ended for {}: {}", remote, e);
     }
 
     Ok(())
@@ -372,52 +379,62 @@ pub async fn tun_to_quic_loop(
             }
         };
 
-        // Drain all available packets for this destination — no coalescing timer
-        let mut batch_data_bytes = 2 + first.len() + 2; // first pkt + terminator
-        let mut packets: Vec<Vec<u8>> = vec![first];
-        while packets.len() < 64 && batch_data_bytes + 2 + 1350 <= batch_limit {
+        let n_streams = session.data_sends.len();
+
+        // Собираем per-stream батчи: каждый TCP-flow всегда попадает на один поток.
+        // Так сохраняется порядок пакетов внутри flow → нет TCP out-of-order.
+        let mut stream_batches: Vec<Vec<Vec<u8>>> = vec![Vec::new(); n_streams];
+        let first_idx = flow_stream_idx(&first, n_streams);
+        stream_batches[first_idx].push(first);
+
+        let mut collected = 1usize;
+        while collected < 64 {
             match pkt_rx.try_recv() {
                 Ok(pkt) if pkt.len() >= 20 => {
                     let d = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
                     if d == dst_ip {
-                        batch_data_bytes += 2 + pkt.len();
-                        packets.push(pkt);
+                        let idx = flow_stream_idx(&pkt, n_streams);
+                        stream_batches[idx].push(pkt);
+                        collected += 1;
                     }
                 }
                 _ => break,
             }
         }
 
-        let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
-
-        // При высоком трафике шейпер не нужен — padding только для idle
-        let pt_len = match build_batch_plaintext(&refs, 0, &mut pt_buf) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::trace!("build_batch error for {}: {}", dst_ip, e);
+        // Шифруем и отправляем каждый per-stream батч независимо
+        for (idx, packets) in stream_batches.iter().enumerate() {
+            if packets.is_empty() {
                 continue;
             }
-        };
 
-        // Encrypt + write under single data_send lock to minimize contention
-        let nonce = session.send_nonce.fetch_add(1, Ordering::Relaxed);
-        let ct_len = match session.noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::trace!("encrypt error for {}: {}", dst_ip, e);
-                continue;
+            let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
+            let pt_len = match build_batch_plaintext(&refs, 0, &mut pt_buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::trace!("build_batch error stream {}: {}", idx, e);
+                    continue;
+                }
+            };
+
+            let nonce = session.send_nonce.fetch_add(1, Ordering::Relaxed);
+            let ct_len = match session.noise.encrypt(nonce, &pt_buf[..pt_len], &mut ct_buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::trace!("encrypt error stream {}: {}", idx, e);
+                    continue;
+                }
+            };
+
+            let total_len = 8 + ct_len;
+            let mut frame = vec![0u8; 4 + total_len];
+            frame[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
+            frame[4..12].copy_from_slice(&nonce.to_be_bytes());
+            frame[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
+
+            if session.data_sends[idx].send(frame).await.is_err() {
+                tracing::warn!("session write channel closed for stream {}", idx);
             }
-        };
-
-        // Формируем фрейм и отправляем в write loop сессии (без блокирующего await на сети)
-        let total_len = 8 + ct_len;
-        let mut frame = vec![0u8; 4 + total_len];
-        frame[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
-        frame[4..12].copy_from_slice(&nonce.to_be_bytes());
-        frame[12..12 + ct_len].copy_from_slice(&ct_buf[..ct_len]);
-
-        if session.data_send.send(frame).await.is_err() {
-            tracing::warn!("session write channel closed for {}", dst_ip);
         }
     }
 
