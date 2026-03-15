@@ -282,8 +282,9 @@ pub async fn tun_to_quic_loop(
 ) -> anyhow::Result<()> {
     let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
     let mut frame_buf = vec![0u8; buf_size];
+    let mut shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
-    tracing::info!("TUN→QUIC loop started");
+    tracing::info!("TUN→QUIC loop started (H.264 shaping enabled)");
 
     loop {
         let first = match pkt_rx.recv().await {
@@ -332,7 +333,8 @@ pub async fn tun_to_quic_loop(
             }
 
             let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
-            let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
+            let frame = shaper.next_frame();
+            let pt_len = match build_batch_plaintext(&refs, frame.target_bytes, &mut frame_buf[4..]) {
                 Ok(n) => n,
                 Err(e) => {
                     tracing::trace!("build_batch error stream {}: {}", idx, e);

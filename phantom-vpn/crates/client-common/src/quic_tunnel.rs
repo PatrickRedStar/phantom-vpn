@@ -4,6 +4,7 @@
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
+    shaper::H264Shaper,
     wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
 use tokio::io::AsyncWriteExt;
@@ -121,6 +122,7 @@ async fn collect_and_batch(
     frame_tx: mpsc::Sender<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let mut buf = vec![0u8; BUF];
+    let mut shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
     loop {
         let first = match pkt_rx.recv().await {
@@ -148,8 +150,11 @@ async fn collect_and_batch(
 
         let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
 
-        // Build batch directly at offset 4, leaving room for length header
-        let pt_len = match build_batch_plaintext(&refs, 0, &mut buf[4..]) {
+        // H.264 shaping: pad batch to match video frame size pattern
+        let frame = shaper.next_frame();
+        let target_size = frame.target_bytes;
+
+        let pt_len = match build_batch_plaintext(&refs, target_size, &mut buf[4..]) {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!("build_batch: {}", e);
