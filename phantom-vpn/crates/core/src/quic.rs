@@ -56,7 +56,10 @@ pub fn load_pem_cert_chain(cert_path: &Path) -> anyhow::Result<Vec<CertificateDe
 // ─── Quinn server config ────────────────────────────────────────────────────
 
 /// Builds a `quinn::ServerConfig`.
-/// If `client_ca` is Some, requires mTLS: clients must present a cert signed by that CA.
+/// If `client_ca` is Some, enables optional mTLS:
+///   - clients WITH a valid cert → tunnel mode
+///   - clients WITHOUT cert → fallback mode (REALITY-style)
+/// This ensures DPI probes see a normal TLS handshake, not a connection error.
 pub fn make_server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
@@ -68,7 +71,10 @@ pub fn make_server_config(
         for cert in ca_certs {
             roots.add(cert)?;
         }
+        // allow_unauthenticated: if client has cert → verify it; if no cert → allow anyway
+        // This is key for REALITY-style fallback: DPI probes connect without cert and see a normal site
         let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
+            .allow_unauthenticated()
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build client cert verifier: {}", e))?;
         rustls::ServerConfig::builder()
