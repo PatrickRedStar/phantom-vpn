@@ -16,6 +16,7 @@ vdsina raw internet: 562/902 Mbps. VLESS через тот же хост: 241/22
 | opt-v9 | REALITY-style fallback | — | — | `opt-v9-reality-fallback` |
 | opt-v10 | Fix packet loss in server batching | 150/148 | — | `opt-v10-fix-pkt-loss` |
 | opt-v11 | Multiqueue TUN (IFF_MULTI_QUEUE) | 146/152 | 117/91 | `opt-v11-multiqueue-tun` |
+| opt-v12 | ~~Pipeline collapse (3→2 hops)~~ | 140/141 | **102/85 РЕГРЕССИЯ** | reverted |
 
 ## Выполненные оптимизации
 
@@ -36,7 +37,7 @@ vdsina raw internet: 562/902 Mbps. VLESS через тот же хост: 241/22
 |---|-----|------------------|-----------|--------|
 | 7 | **FIX: потеря пакетов в серверном batching** | Корректность + меньше retransmit | Низкая | 🔨 In progress |
 | 8 | **Multiqueue TUN** (`IFF_MULTI_QUEUE`) | ~2x TUN throughput на 2+ CPU | Средняя | ⏳ Pending |
-| 9 | **Схлопнуть async pipeline** (4 hop → 2) | -50% wakeups, +15-20% | Средняя | ⏳ Pending |
+| 9 | ~~Схлопнуть async pipeline~~ | **Регрессия** (102/85 vs 117/91). Mutex serializes writes. | ❌ Reverted | — |
 | 10 | **Buffer pool** (BytesMut slab) | -30K alloc/s | Средняя | ⏳ Pending |
 
 ### Баг #7: потеря пакетов в tun_to_quic_loop
