@@ -1,6 +1,5 @@
 //! QUIC stream tunnel loops: TUN ↔ QUIC streams.
-//! Zero-copy optimized: batch built directly into frame buffer,
-//! written to QUIC stream without intermediate allocations.
+//! Optimized pipeline: dispatcher → per-stream [batch+write] (2 hops, not 3).
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
@@ -24,7 +23,6 @@ pub async fn quic_stream_rx_loop(
     tracing::info!("QUIC stream RX loop started");
 
     loop {
-        // 1. Read frame header: [4B total_len]
         let mut len_buf = [0u8; 4];
         recv.read_exact(&mut len_buf)
             .await
@@ -35,13 +33,11 @@ pub async fn quic_stream_rx_loop(
             return Err(anyhow::anyhow!("stream RX: invalid frame_len={}", frame_len));
         }
 
-        // 2. Read plaintext batch into frame_buf
         recv.read_exact(&mut frame_buf[..frame_len])
             .await
             .map_err(|e| anyhow::anyhow!("stream RX: read frame: {}", e))?;
 
-        // 3. Walk batch in-place: [2B len][data]...[2B 0x0000]
-        //    No intermediate Vec<Vec<u8>> — process each packet directly from frame_buf.
+        // Walk batch in-place
         let mut offset = 0;
         loop {
             if offset + 2 > frame_len { break; }
@@ -49,13 +45,11 @@ pub async fn quic_stream_rx_loop(
                 frame_buf[offset], frame_buf[offset + 1],
             ]) as usize;
             offset += 2;
-            if pkt_len == 0 { break; } // end-of-batch
+            if pkt_len == 0 { break; }
             if offset + pkt_len > frame_len { break; }
 
             if pkt_len >= 20 && (frame_buf[offset] >> 4) == 4 {
-                // Clamp MSS in-place (modifies frame_buf directly)
                 let _ = clamp_tcp_mss(&mut frame_buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
-                // Single copy: frame_buf slice → owned Vec for channel send
                 if tun_tx.send(frame_buf[offset..offset + pkt_len].to_vec()).await.is_err() {
                     return Ok(());
                 }
@@ -65,7 +59,13 @@ pub async fn quic_stream_rx_loop(
     }
 }
 
-// ─── QUIC stream TX: N parallel pipelines (zero-copy batch+write) ───────────
+// ─── QUIC stream TX: dispatcher → per-stream batch+write ────────────────────
+//
+// Old (3 hops): dispatcher → mpsc → collect_and_batch → mpsc → write_loop → QUIC
+// New (2 hops): dispatcher → mpsc → [batch + write_all] → QUIC
+//
+// With unlimited CC (128MB window), write_all returns instantly (quinn buffers).
+// No need for pipeline parallelism between batch and write.
 
 pub async fn quic_stream_tx_loop(
     tun_rx: mpsc::Receiver<Vec<u8>>,
@@ -76,31 +76,19 @@ pub async fn quic_stream_tx_loop(
 
     for send in sends {
         let (pkt_tx, pkt_rx) = mpsc::channel::<Vec<u8>>(512);
-        let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(64);
         stream_txs.push(pkt_tx);
 
-        // Stage 1: collect + batch → frame channel (pipelined)
+        // Single task: collect batch + write directly to QUIC stream.
+        // No intermediate frame channel (eliminated 1 hop).
         tokio::spawn(async move {
-            if let Err(e) = collect_and_batch(pkt_rx, frame_tx).await {
-                tracing::warn!("TX stage1: {}", e);
-            }
-        });
-
-        // Stage 2: write frames to QUIC stream
-        tokio::spawn(async move {
-            let mut s = send;
-            let mut fr = frame_rx;
-            while let Some(frame) = fr.recv().await {
-                if let Err(e) = s.write_all(&frame).await {
-                    tracing::warn!("TX write: {}", e);
-                    break;
-                }
+            if let Err(e) = batch_and_write(pkt_rx, send).await {
+                tracing::warn!("TX pipeline: {}", e);
             }
         });
     }
 
     // Dispatcher: route packets to streams by flow-hash
-    tracing::info!("QUIC multi-stream TX started ({} streams)", n);
+    tracing::info!("QUIC TX started ({} streams, 2-hop pipeline)", n);
     let mut tun_rx = tun_rx;
     while let Some(pkt) = tun_rx.recv().await {
         let idx = flow_stream_idx(&pkt, n);
@@ -112,14 +100,11 @@ pub async fn quic_stream_tx_loop(
     Ok(())
 }
 
-// ─── Collect + batch (zero-copy: 1 copy instead of 2) ───────────────────────
-//
-// Old: build_batch → pt_buf → alloc frame Vec → copy pt_buf into frame (2 copies)
-// New: build_batch directly at buf[4..] → prepend header → to_vec once (1 copy)
+// ─── Batch + write in one task ──────────────────────────────────────────────
 
-async fn collect_and_batch(
+async fn batch_and_write(
     mut pkt_rx: mpsc::Receiver<Vec<u8>>,
-    frame_tx: mpsc::Sender<Vec<u8>>,
+    mut send: quinn::SendStream,
 ) -> anyhow::Result<()> {
     let mut buf = vec![0u8; BUF];
     let mut shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
@@ -150,11 +135,8 @@ async fn collect_and_batch(
 
         let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
 
-        // H.264 shaping: pad batch to match video frame size pattern
         let frame = shaper.next_frame();
-        let target_size = frame.target_bytes;
-
-        let pt_len = match build_batch_plaintext(&refs, target_size, &mut buf[4..]) {
+        let pt_len = match build_batch_plaintext(&refs, frame.target_bytes, &mut buf[4..]) {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!("build_batch: {}", e);
@@ -162,11 +144,13 @@ async fn collect_and_batch(
             }
         };
 
-        // Prepend header, then single to_vec (1 copy instead of 2)
         buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-        if frame_tx.send(buf[..4 + pt_len].to_vec()).await.is_err() {
-            break;
-        }
+
+        // Direct write to QUIC stream — no frame channel.
+        // With unlimited CC, quinn always has buffer space, write_all returns fast.
+        send.write_all(&buf[..4 + pt_len])
+            .await
+            .map_err(|e| anyhow::anyhow!("stream TX write: {}", e))?;
     }
 
     Ok(())
