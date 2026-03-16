@@ -158,3 +158,70 @@ fn writer_loop(
 
     Ok(())
 }
+
+// ─── Multiqueue: spawn io_uring reader+writer per TUN queue FD ──────────────
+
+/// Spawns io_uring handler threads for multiple TUN queue FDs.
+/// All readers merge into one Receiver, all writers share one Sender.
+pub fn spawn_multiqueue(
+    fds: Vec<RawFd>,
+    channel_size: usize,
+) -> anyhow::Result<(mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>)> {
+    if fds.is_empty() {
+        anyhow::bail!("spawn_multiqueue: no FDs provided");
+    }
+    if fds.len() == 1 {
+        return spawn(fds[0], channel_size);
+    }
+
+    let (merged_tx, merged_rx) = mpsc::channel::<Vec<u8>>(channel_size);
+    let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(channel_size);
+    let stop = Arc::new(AtomicBool::new(false));
+    let n_queues = fds.len();
+
+    // Reader thread per queue — all merge into merged_tx
+    for (i, &fd) in fds.iter().enumerate() {
+        let tx = merged_tx.clone();
+        let stop = stop.clone();
+        std::thread::Builder::new()
+            .name(format!("tun-mq-read-{}", i))
+            .spawn(move || {
+                if let Err(e) = reader_loop(fd, tx, stop) {
+                    tracing::error!("io_uring reader queue {}: {}", i, e);
+                }
+            })?;
+    }
+    drop(merged_tx);
+
+    // Writer thread per queue + round-robin dispatcher
+    let mut writer_txs: Vec<mpsc::Sender<Vec<u8>>> = Vec::with_capacity(n_queues);
+    for (i, &fd) in fds.iter().enumerate() {
+        let (wtx, wrx) = mpsc::channel::<Vec<u8>>(channel_size / n_queues + 1);
+        writer_txs.push(wtx);
+        let stop = stop.clone();
+        std::thread::Builder::new()
+            .name(format!("tun-mq-write-{}", i))
+            .spawn(move || {
+                if let Err(e) = writer_loop(fd, wrx, stop) {
+                    tracing::error!("io_uring writer queue {}: {}", i, e);
+                }
+            })?;
+    }
+
+    // Fan-out: write_rx → round-robin to writer threads
+    std::thread::Builder::new()
+        .name("tun-mq-dispatch".into())
+        .spawn(move || {
+            let mut idx = 0usize;
+            let mut rx = write_rx;
+            while let Some(pkt) = rx.blocking_recv() {
+                if writer_txs[idx].blocking_send(pkt).is_err() {
+                    break;
+                }
+                idx = (idx + 1) % n_queues;
+            }
+        })?;
+
+    tracing::info!("io_uring multiqueue TUN: {} queues", n_queues);
+    Ok((merged_rx, write_tx))
+}
