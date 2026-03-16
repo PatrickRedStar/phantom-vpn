@@ -14,6 +14,8 @@ vdsina raw internet: 562/902 Mbps. VLESS через тот же хост: 241/22
 | opt-v7 | io_uring TUN I/O | 165/**173** | 98/79 | `opt-v7-io-uring` |
 | opt-v8 | H.264 traffic shaping | 164/150 | **125/110** | `opt-v8-h264-shaping` |
 | opt-v9 | REALITY-style fallback | — | — | `opt-v9-reality-fallback` |
+| opt-v10 | Fix packet loss in server batching | 150/148 | — | `opt-v10-fix-pkt-loss` |
+| opt-v11 | Multiqueue TUN (IFF_MULTI_QUEUE) | 146/152 | 117/91 | `opt-v11-multiqueue-tun` |
 
 ## Выполненные оптимизации
 
