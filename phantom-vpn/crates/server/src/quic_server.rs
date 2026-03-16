@@ -301,61 +301,68 @@ pub async fn tun_to_quic_loop(
             None => break,
         };
 
-        let dst_ip = IpAddr::V4(Ipv4Addr::new(
-            first[16], first[17], first[18], first[19],
-        ));
+        // Collect packets for ALL sessions (not just one dst_ip).
+        // Key = dst tunnel IP, Value = Vec of packets for that client.
+        let mut per_session: std::collections::HashMap<IpAddr, Vec<Vec<u8>>> =
+            std::collections::HashMap::new();
 
-        let session = match sessions.get(&dst_ip) {
-            Some(entry) => entry.value().clone(),
-            None => {
-                tracing::trace!("No session for dst IP {}", dst_ip);
-                continue;
-            }
-        };
+        // Add first packet
+        if first.len() >= 20 {
+            let dst = IpAddr::V4(Ipv4Addr::new(first[16], first[17], first[18], first[19]));
+            per_session.entry(dst).or_default().push(first);
+        }
 
-        let n_streams = session.data_sends.len();
-
-        // Per-stream batch collection: each TCP flow always goes to the same stream
-        let mut stream_batches: Vec<Vec<Vec<u8>>> = vec![Vec::new(); n_streams];
-        let first_idx = flow_stream_idx(&first, n_streams);
-        stream_batches[first_idx].push(first);
-
+        // Drain more from channel (up to 64 total)
         let mut collected = 1usize;
         while collected < 64 {
             match pkt_rx.try_recv() {
                 Ok(pkt) if pkt.len() >= 20 => {
-                    let d = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
-                    if d == dst_ip {
-                        let idx = flow_stream_idx(&pkt, n_streams);
-                        stream_batches[idx].push(pkt);
-                        collected += 1;
-                    }
+                    let dst = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
+                    per_session.entry(dst).or_default().push(pkt);
+                    collected += 1;
                 }
                 _ => break,
             }
         }
 
-        // Build and send each per-stream batch
-        for (idx, packets) in stream_batches.iter().enumerate() {
-            if packets.is_empty() {
-                continue;
-            }
-
-            let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
-            let frame = shaper.next_frame();
-            let pt_len = match build_batch_plaintext(&refs, frame.target_bytes, &mut frame_buf[4..]) {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::trace!("build_batch error stream {}: {}", idx, e);
+        // Send batches per session, per stream
+        for (dst_ip, packets) in &per_session {
+            let session = match sessions.get(dst_ip) {
+                Some(entry) => entry.value().clone(),
+                None => {
+                    tracing::trace!("No session for dst IP {}", dst_ip);
                     continue;
                 }
             };
 
-            // Write header directly, send [4B header + batch] as one Vec
-            frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+            let n_streams = session.data_sends.len();
 
-            if session.data_sends[idx].send(frame_buf[..4 + pt_len].to_vec()).await.is_err() {
-                tracing::warn!("session write channel closed for stream {}", idx);
+            // Group by flow-hash → stream index
+            let mut stream_batches: Vec<Vec<&[u8]>> = vec![Vec::new(); n_streams];
+            for pkt in packets {
+                let idx = flow_stream_idx(pkt, n_streams);
+                stream_batches[idx].push(pkt.as_slice());
+            }
+
+            for (idx, refs) in stream_batches.iter().enumerate() {
+                if refs.is_empty() {
+                    continue;
+                }
+
+                let frame = shaper.next_frame();
+                let pt_len = match build_batch_plaintext(refs, frame.target_bytes, &mut frame_buf[4..]) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::trace!("build_batch error stream {}: {}", idx, e);
+                        continue;
+                    }
+                };
+
+                frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+
+                if session.data_sends[idx].send(frame_buf[..4 + pt_len].to_vec()).await.is_err() {
+                    tracing::warn!("session write channel closed for stream {}", idx);
+                }
             }
         }
     }
