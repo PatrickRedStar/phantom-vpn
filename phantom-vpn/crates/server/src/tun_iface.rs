@@ -12,9 +12,10 @@ use tokio::io::unix::AsyncFd;
 
 // ─── ioctl constants ─────────────────────────────────────────────────────────
 
-const TUNSETIFF: libc::c_ulong = 0x400454CA;
-const IFF_TUN:   libc::c_short = 0x0001;
-const IFF_NO_PI: libc::c_short = 0x1000;
+const TUNSETIFF:       libc::c_ulong = 0x400454CA;
+const IFF_TUN:         libc::c_short = 0x0001;
+const IFF_NO_PI:       libc::c_short = 0x1000;
+const IFF_MULTI_QUEUE: libc::c_short = 0x0100;
 
 #[repr(C)]
 struct Ifreq {
@@ -33,6 +34,24 @@ pub struct TunInterface {
 impl TunInterface {
     /// Открывает /dev/net/tun и настраивает интерфейс через ioctl TUNSETIFF
     pub fn create(name: &str) -> io::Result<Self> {
+        let file = Self::open_queue(name, IFF_TUN | IFF_NO_PI)?;
+        Ok(TunInterface { name: name.to_string(), file })
+    }
+
+    /// Create TUN with multiqueue support. Returns N file descriptors (one per queue).
+    /// First FD creates the interface, subsequent FDs attach to additional queues.
+    /// Each queue can be read/written independently by a separate thread.
+    pub fn create_multiqueue(name: &str, n_queues: usize) -> io::Result<(Self, Vec<File>)> {
+        let flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE;
+        let first = Self::open_queue(name, flags)?;
+        let mut extra_fds = Vec::with_capacity(n_queues.saturating_sub(1));
+        for _ in 1..n_queues {
+            extra_fds.push(Self::open_queue(name, flags)?);
+        }
+        Ok((TunInterface { name: name.to_string(), file: first }, extra_fds))
+    }
+
+    fn open_queue(name: &str, flags: libc::c_short) -> io::Result<File> {
         let file = unsafe {
             let fd = libc::open(
                 b"/dev/net/tun\0".as_ptr() as *const libc::c_char,
@@ -46,7 +65,7 @@ impl TunInterface {
 
         let mut ifr = Ifreq {
             ifr_name:  [0; libc::IFNAMSIZ],
-            ifr_flags: IFF_TUN | IFF_NO_PI,
+            ifr_flags: flags,
             _pad:      [0; 22],
         };
         let copy_len = name.len().min(libc::IFNAMSIZ - 1);
@@ -59,7 +78,7 @@ impl TunInterface {
             return Err(io::Error::last_os_error());
         }
 
-        Ok(TunInterface { name: name.to_string(), file })
+        Ok(file)
     }
 
     pub fn configure(&self, addr_cidr: &str, mtu: u32) -> io::Result<()> {

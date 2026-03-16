@@ -124,34 +124,50 @@ async fn main() -> anyhow::Result<()> {
     let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.1/24");
     let tun_mtu  = cfg.network.tun_mtu.unwrap_or(1350);
 
-    tracing::info!("Creating TUN interface {} ...", tun_name);
-    let tun = tun_iface::TunInterface::create(tun_name)
-        .with_context(|| format!("Failed to create TUN interface {}", tun_name))?;
-    tun.configure(tun_addr, tun_mtu as u32)
-        .with_context(|| "Failed to configure TUN interface")?;
+    // ─── Multiqueue TUN + io_uring I/O ──────────────────────────────────────
+    let n_queues: usize = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
+    tracing::info!("Creating TUN {} with {} queue(s)...", tun_name, n_queues);
+
+    let mut tun_fds: Vec<std::os::unix::io::RawFd> = Vec::new();
+    if n_queues > 1 {
+        let (tun_main, extra) = tun_iface::TunInterface::create_multiqueue(tun_name, n_queues)
+            .with_context(|| format!("Failed to create multiqueue TUN {}", tun_name))?;
+        tun_main.configure(tun_addr, tun_mtu as u32)?;
+
+        let f0 = tun_main.into_file();
+        tun_fds.push(std::os::unix::io::AsRawFd::as_raw_fd(&f0));
+        std::mem::forget(f0);
+        for f in extra {
+            tun_fds.push(std::os::unix::io::AsRawFd::as_raw_fd(&f));
+            std::mem::forget(f);
+        }
+    } else {
+        let tun = tun_iface::TunInterface::create(tun_name)
+            .with_context(|| format!("Failed to create TUN {}", tun_name))?;
+        tun.configure(tun_addr, tun_mtu as u32)?;
+        let f = tun.into_file();
+        tun_fds.push(std::os::unix::io::AsRawFd::as_raw_fd(&f));
+        std::mem::forget(f);
+    }
     tracing::info!("TUN {} configured: addr={} mtu={}", tun_name, tun_addr, tun_mtu);
 
-    // Настраиваем NAT если задан WAN интерфейс
+    // NAT
     let nat_info = if let Some(ref wan) = cfg.network.wan_iface {
         let subnet = cidr_to_network(tun_addr);
-        // Сначала сносим старые правила (идемпотентно — на случай грязного рестарта)
         tun_iface::teardown_nat(tun_name, wan, &subnet);
         tun_iface::setup_nat(tun_name, wan, &subnet)
-            .unwrap_or_else(|e| tracing::warn!("NAT setup failed (may need root): {}", e));
+            .unwrap_or_else(|e| tracing::warn!("NAT setup failed: {}", e));
         tracing::info!("NAT configured: {} -> {} (subnet {})", tun_name, wan, subnet);
         Some((tun_name.to_string(), wan.clone(), subnet))
     } else {
         None
     };
 
-    // ─── io_uring TUN I/O ──────────────────────────────────────────────────
-    let tun_file = tun.into_file();
-    let tun_fd = std::os::unix::io::AsRawFd::as_raw_fd(&tun_file);
-    std::mem::forget(tun_file); // keep fd alive
-
-    let (mut tun_read_rx, tun_tx) = phantom_core::tun_uring::spawn(tun_fd, 4096)
+    let (mut tun_read_rx, tun_tx) = phantom_core::tun_uring::spawn_multiqueue(tun_fds, 4096)
         .context("Failed to start io_uring TUN handler")?;
-    tracing::info!("io_uring TUN handler started");
 
     // ─── QUIC endpoint ──────────────────────────────────────────────────────
 
