@@ -21,9 +21,10 @@ use phantom_core::{
 // ─── Session types ──────────────────────────────────────────────────────────
 
 pub struct QuicSession {
-    pub connection:   quinn::Connection,
-    pub stream_sends: Vec<Mutex<quinn::SendStream>>,
-    pub last_seen:    AtomicU64,
+    pub connection: quinn::Connection,
+    pub data_sends: Vec<mpsc::Sender<Vec<u8>>>,
+    pub shaper:     Mutex<H264Shaper>,
+    pub last_seen:  AtomicU64,
 }
 
 impl QuicSession {
@@ -121,9 +122,11 @@ async fn handle_connection(
 
     tracing::info!("Authenticated VPN client from {}", remote);
 
-    // Accept N_DATA_STREAMS bidirectional data streams
-    let mut stream_sends: Vec<Mutex<quinn::SendStream>> = Vec::with_capacity(N_DATA_STREAMS);
-    let mut data_recvs:   Vec<quinn::RecvStream>         = Vec::with_capacity(N_DATA_STREAMS);
+    let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
+
+    // Accept N_DATA_STREAMS bidirectional data streams; spawn per-stream write loops
+    let mut frame_txs:  Vec<mpsc::Sender<Vec<u8>>> = Vec::with_capacity(N_DATA_STREAMS);
+    let mut data_recvs: Vec<quinn::RecvStream>      = Vec::with_capacity(N_DATA_STREAMS);
 
     for i in 0..N_DATA_STREAMS {
         let (ds, dr) = tokio::time::timeout(
@@ -134,7 +137,9 @@ async fn handle_connection(
         .with_context(|| format!("Data stream {} accept timeout", i))?
         .with_context(|| format!("Failed to accept data stream {}", i))?;
 
-        stream_sends.push(Mutex::new(ds));
+        let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(128);
+        tokio::spawn(session_write_loop(frame_rx, ds, remote));
+        frame_txs.push(frame_tx);
         data_recvs.push(dr);
     }
 
@@ -142,7 +147,8 @@ async fn handle_connection(
 
     let session = Arc::new(QuicSession {
         connection: connection.clone(),
-        stream_sends,
+        data_sends: frame_txs,
+        shaper:     Mutex::new(shaper),
         last_seen:  AtomicU64::new(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -329,7 +335,7 @@ pub async fn tun_to_quic_loop(
                 }
             };
 
-            let n_streams = session.stream_sends.len();
+            let n_streams = session.data_sends.len();
 
             // Group by flow-hash → stream index
             let mut stream_batches: Vec<Vec<&[u8]>> = vec![Vec::new(); n_streams];
@@ -354,10 +360,8 @@ pub async fn tun_to_quic_loop(
 
                 frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
 
-                // Direct write to QUIC stream — no intermediate channel
-                let mut stream = session.stream_sends[idx].lock().await;
-                if let Err(e) = stream.write_all(&frame_buf[..4 + pt_len]).await {
-                    tracing::warn!("stream write to {} failed: {}", dst_ip, e);
+                if session.data_sends[idx].send(frame_buf[..4 + pt_len].to_vec()).await.is_err() {
+                    tracing::warn!("session write channel closed for stream {}", idx);
                 }
             }
         }
@@ -366,7 +370,21 @@ pub async fn tun_to_quic_loop(
     Ok(())
 }
 
-// session_write_loop removed — writes happen directly in tun_to_quic_loop
+// ─── Per-session write loop ──────────────────────────────────────────────────
+
+async fn session_write_loop(
+    mut frame_rx: mpsc::Receiver<Vec<u8>>,
+    mut send:     quinn::SendStream,
+    remote:       SocketAddr,
+) {
+    while let Some(frame) = frame_rx.recv().await {
+        if let Err(e) = send.write_all(&frame).await {
+            tracing::warn!("session write to {} failed: {}", remote, e);
+            break;
+        }
+    }
+    tracing::debug!("session write loop ended for {}", remote);
+}
 
 // ─── REALITY fallback: serve fake HTTP/3 page to unauthenticated clients ────
 
