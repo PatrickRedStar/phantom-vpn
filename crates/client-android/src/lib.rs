@@ -105,7 +105,7 @@ pub extern "system" fn Java_com_phantom_vpn_PhantomVpnService_nativeStart(
                     insecure, &cert_path_str, &key_path_str,
                     shutdown_rx,
                 ).await {
-                    log::error!("Tunnel error: {}", e);
+                    log::error!("Tunnel error: {:#}", e);
                 }
                 unsafe { libc::close(fd); }
                 log::info!("Tunnel stopped");
