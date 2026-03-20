@@ -122,14 +122,10 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Android NDK r27
-        run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "ndk;27.2.12479018" --sdk_root=$ANDROID_HOME
-
       - name: Build Rust .so for arm64-v8a
         env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          # Use pre-installed NDK (ANDROID_NDK_ROOT is set by the runner)
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
         run: |
           cargo ndk -t arm64-v8a --platform 26 \
             build --release -p phantom-client-android
