@@ -1,0 +1,201 @@
+name: Build & Release
+
+# Trigger: push a version tag (v1.0, v1.2.3, etc.)
+# Or run manually via Actions → Run workflow
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create GitHub Release
+
+jobs:
+
+# ─────────────────────────────────────────────────────────────────────────────
+  build-linux:
+    name: Linux client (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Build Linux client
+        run: cargo build --release -p phantom-client-linux
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phantom-client-linux
+          path: target/release/phantom-client-linux
+
+# ─────────────────────────────────────────────────────────────────────────────
+  build-macos:
+    name: macOS client (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      - name: Build macOS client
+        run: cargo build --release -p phantom-client-macos
+
+      - name: Package into .dmg
+        run: |
+          mkdir -p PhantomVPN
+          cp target/release/phantom-client-macos PhantomVPN/
+
+          cat > PhantomVPN/README.txt <<'EOF'
+          PhantomVPN macOS client
+          =======================
+          Run as root:
+            sudo ./phantom-client-macos -c /etc/phantom-vpn/client.toml -vv
+
+          Config example: https://github.com/PatrickRedStar/phantom-vpn
+          EOF
+
+          hdiutil create \
+            -volname "PhantomVPN" \
+            -srcfolder PhantomVPN \
+            -ov -format UDZO \
+            PhantomVPN-macOS.dmg
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhantomVPN-macOS
+          path: PhantomVPN-macOS.dmg
+
+# ─────────────────────────────────────────────────────────────────────────────
+  build-android:
+    name: Android client (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: android-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: android-cargo-
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Android NDK r27
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;27.2.12479018" --sdk_root=$ANDROID_HOME
+
+      - name: Build Rust .so for arm64-v8a
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          cargo ndk -t arm64-v8a --platform 26 \
+            build --release -p phantom-client-android
+
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/libphantom_android.so \
+            android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Generate Gradle wrapper
+        run: cd android && gradle wrapper --gradle-version 8.7
+
+      - name: Build debug APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhantomVPN-Android
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+# ─────────────────────────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos, build-android]
+    runs-on: ubuntu-latest
+    # Only create release when triggered by a version tag
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: List artifacts
+        run: find artifacts/ -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "PhantomVPN ${{ github.ref_name }}"
+          body: |
+            ## PhantomVPN ${{ github.ref_name }}
+
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | Linux x86_64 | `phantom-client-linux` |
+            | macOS | `PhantomVPN-macOS.dmg` |
+            | Android (arm64) | `app-debug.apk` |
+
+            ### Android install
+            ```
+            adb install app-debug.apk
+            ```
+            Or enable "Unknown sources" and open the APK on device.
+
+            ### Config
+            See [config examples](config/) in the repository.
+          files: |
+            artifacts/phantom-client-linux/phantom-client-linux
+            artifacts/PhantomVPN-macOS/PhantomVPN-macOS.dmg
+            artifacts/PhantomVPN-Android/app-debug.apk
+          draft: false
+          prerelease: false
