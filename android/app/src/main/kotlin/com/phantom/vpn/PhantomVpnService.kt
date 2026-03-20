@@ -22,7 +22,9 @@ class PhantomVpnService : VpnService() {
             tunFd: Int,
             serverAddr: String,
             serverName: String,
-            insecure: Boolean
+            insecure: Boolean,
+            certPath: String,
+            keyPath: String,
         ): Int
 
         @JvmStatic external fun nativeStop()
@@ -33,6 +35,8 @@ class PhantomVpnService : VpnService() {
         const val EXTRA_SERVER_ADDR = "server_addr"
         const val EXTRA_SERVER_NAME = "server_name"
         const val EXTRA_INSECURE    = "insecure"
+        const val EXTRA_CERT_PATH   = "cert_path"
+        const val EXTRA_KEY_PATH    = "key_path"
 
         private const val NOTIFICATION_CHANNEL = "phantom_vpn_channel"
         private const val NOTIFICATION_ID      = 1001
@@ -48,39 +52,38 @@ class PhantomVpnService : VpnService() {
         val serverAddr = intent?.getStringExtra(EXTRA_SERVER_ADDR) ?: return START_NOT_STICKY
         val serverName = intent?.getStringExtra(EXTRA_SERVER_NAME)
             ?: serverAddr.substringBefore(":")
-        val insecure   = intent?.getBooleanExtra(EXTRA_INSECURE, true) ?: true
+        val insecure   = intent?.getBooleanExtra(EXTRA_INSECURE, false) ?: false
+        val certPath   = intent?.getStringExtra(EXTRA_CERT_PATH) ?: ""
+        val keyPath    = intent?.getStringExtra(EXTRA_KEY_PATH)  ?: ""
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
-        startTunnel(serverAddr, serverName, insecure)
+        startTunnel(serverAddr, serverName, insecure, certPath, keyPath)
 
         return START_STICKY
     }
 
-    private fun startTunnel(serverAddr: String, serverName: String, insecure: Boolean) {
-        // Build TUN interface (Android gives us a fd)
+    private fun startTunnel(
+        serverAddr: String, serverName: String,
+        insecure: Boolean, certPath: String, keyPath: String,
+    ) {
         val builder = Builder()
             .setSession("PhantomVPN")
             .addAddress("10.7.0.2", 24)
-            .addRoute("0.0.0.0", 0)        // full tunnel
+            .addRoute("0.0.0.0", 0)
             .setMtu(1350)
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
 
-        vpnInterface = builder.establish() ?: run {
-            stopSelf()
-            return
-        }
+        vpnInterface = builder.establish() ?: run { stopSelf(); return }
 
-        // detachFd() transfers ownership — Rust will close it when done
         val fd = vpnInterface!!.detachFd()
-        val result = nativeStart(fd, serverAddr, serverName, insecure)
+        val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath)
         if (result != 0) {
             stopSelf()
             return
         }
 
-        // Update notification to Connected
         val nm = getSystemService(NotificationManager::class.java)
         nm?.notify(NOTIFICATION_ID, buildNotification("Connected to $serverAddr"))
     }
@@ -96,17 +99,12 @@ class PhantomVpnService : VpnService() {
         super.onDestroy()
     }
 
-    // ─── Notification ────────────────────────────────────────────────────────
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL,
-                "PhantomVPN",
-                NotificationManager.IMPORTANCE_LOW
+                NOTIFICATION_CHANNEL, "PhantomVPN", NotificationManager.IMPORTANCE_LOW
             ).apply { description = "VPN tunnel status" }
-            getSystemService(NotificationManager::class.java)
-                ?.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 
@@ -116,24 +114,16 @@ class PhantomVpnService : VpnService() {
             Intent(this, PhantomVpnService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             Notification.Builder(this, NOTIFICATION_CHANNEL)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-        }
+        else @Suppress("DEPRECATION") Notification.Builder(this)
 
         return builder
             .setContentTitle("PhantomVPN")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
-            .addAction(
-                Notification.Action.Builder(
-                    null, "Disconnect", stopIntent
-                ).build()
-            )
+            .addAction(Notification.Action.Builder(null, "Disconnect", stopIntent).build())
             .build()
     }
 }

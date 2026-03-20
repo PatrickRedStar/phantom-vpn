@@ -1,6 +1,6 @@
 //! phantom-client-android: Android VPN client via JNI.
 //!
-//! Java VpnService calls nativeStart(tunFd, serverAddr, serverName, insecure)
+//! Java VpnService calls nativeStart(tunFd, serverAddr, serverName, insecure, certPath, keyPath)
 //! and receives a TUN fd. Rust runs the QUIC tunnel in a background thread.
 //!
 //! Build:
@@ -9,6 +9,7 @@
 
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::task::Poll;
@@ -29,7 +30,8 @@ static TUNNEL: Mutex<Option<TunnelHandle>> = Mutex::new(None);
 
 // ─── JNI entry points ────────────────────────────────────────────────────────
 
-/// Called by Java: PhantomVpnService.nativeStart(tunFd, serverAddr, serverName, insecure)
+/// Called by Java: PhantomVpnService.nativeStart(...)
+/// certPath / keyPath — paths to PEM files; pass empty string to skip mTLS.
 /// Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "system" fn Java_com_phantom_vpn_PhantomVpnService_nativeStart(
@@ -39,29 +41,29 @@ pub extern "system" fn Java_com_phantom_vpn_PhantomVpnService_nativeStart(
     server_addr: JString,
     server_name: JString,
     insecure: jboolean,
+    cert_path: JString,
+    key_path: JString,
 ) -> jint {
-    // Initialize logcat output (safe to call multiple times)
     let _ = android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
             .with_tag("PhantomVPN"),
     );
 
-    let server_addr_str: String = match env.get_string(&server_addr) {
-        Ok(s) => s.into(),
-        Err(_) => {
-            log::error!("nativeStart: bad serverAddr");
-            return -1;
-        }
-    };
-    let server_name_str: String = match env.get_string(&server_name) {
-        Ok(s) => s.into(),
-        Err(_) => {
-            log::error!("nativeStart: bad serverName");
-            return -1;
-        }
-    };
-    let insecure = insecure != 0;
+    macro_rules! jstr {
+        ($name:expr, $field:literal) => {
+            match env.get_string(&$name) {
+                Ok(s) => String::from(s),
+                Err(_) => { log::error!("nativeStart: bad {}", $field); return -1; }
+            }
+        };
+    }
+
+    let server_addr_str = jstr!(server_addr, "serverAddr");
+    let server_name_str = jstr!(server_name, "serverName");
+    let cert_path_str   = jstr!(cert_path,   "certPath");
+    let key_path_str    = jstr!(key_path,     "keyPath");
+    let insecure        = insecure != 0;
 
     // Dup the fd so Java's ParcelFileDescriptor can be closed independently
     let fd = unsafe { libc::dup(tun_fd as RawFd) };
@@ -69,8 +71,6 @@ pub extern "system" fn Java_com_phantom_vpn_PhantomVpnService_nativeStart(
         log::error!("nativeStart: dup() failed: {}", io::Error::last_os_error());
         return -1;
     }
-
-    // Make non-blocking
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL, 0);
         libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
@@ -95,8 +95,16 @@ pub extern "system" fn Java_com_phantom_vpn_PhantomVpnService_nativeStart(
             };
 
             rt.block_on(async move {
-                log::info!("Tunnel starting: server={} sni={} insecure={}", server_addr_str, server_name_str, insecure);
-                if let Err(e) = run_tunnel(fd, &server_addr_str, &server_name_str, insecure, shutdown_rx).await {
+                log::info!(
+                    "Tunnel starting: server={} sni={} insecure={} cert={}",
+                    server_addr_str, server_name_str, insecure,
+                    if cert_path_str.is_empty() { "none" } else { &cert_path_str }
+                );
+                if let Err(e) = run_tunnel(
+                    fd, &server_addr_str, &server_name_str,
+                    insecure, &cert_path_str, &key_path_str,
+                    shutdown_rx,
+                ).await {
                     log::error!("Tunnel error: {}", e);
                 }
                 unsafe { libc::close(fd); }
@@ -128,20 +136,31 @@ async fn run_tunnel(
     server_addr: &str,
     server_name: &str,
     insecure: bool,
+    cert_path: &str,
+    key_path: &str,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::mpsc;
 
-    // Ring crypto provider (safe to call multiple times — install_default returns Err on dup)
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // QUIC client config
-    let client_config = phantom_core::quic::make_client_config(insecure, None, None)
+    // Load client cert/key for mTLS if paths are provided
+    let client_identity = if !cert_path.is_empty() && !key_path.is_empty() {
+        log::info!("Loading client cert: {}", cert_path);
+        Some(
+            phantom_core::quic::load_pem_certs(Path::new(cert_path), Path::new(key_path))
+                .context("Failed to load client cert/key")?,
+        )
+    } else {
+        log::warn!("No client cert configured — server may reject connection (REALITY fallback)");
+        None
+    };
+
+    let client_config = phantom_core::quic::make_client_config(insecure, None, client_identity)
         .context("Failed to build QUIC client config")?;
 
-    // QUIC endpoint (no SO_MARK needed — Android routes VPN traffic through system)
     let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")
         .context("Failed to bind UDP socket")?;
     std_socket.set_nonblocking(true)?;
@@ -156,7 +175,6 @@ async fn run_tunnel(
     ).context("Failed to create QUIC endpoint")?;
     endpoint.set_default_client_config(client_config);
 
-    // Connect + open data streams
     let server_addr: std::net::SocketAddr = server_addr.parse()
         .context("Invalid server address")?;
     let (connection, streams) = client_common::connect_and_handshake(&endpoint, server_addr, server_name)
@@ -165,14 +183,12 @@ async fn run_tunnel(
 
     log::info!("QUIC connected ({} streams)", streams.len());
 
-    // Async TUN wrapper
     let async_tun = AsyncTunFd::new(fd).context("Failed to wrap TUN fd")?;
     let (mut tun_reader, tun_writer) = tokio::io::split(async_tun);
 
     let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
     let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
 
-    // TUN writer: QUIC → TUN
     tokio::spawn(async move {
         let mut writer = tun_writer;
         while let Some(pkt) = quic_pkt_rx.recv().await {
@@ -183,7 +199,6 @@ async fn run_tunnel(
         }
     });
 
-    // TUN reader: TUN → QUIC
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
         loop {
@@ -202,29 +217,19 @@ async fn run_tunnel(
         }
     });
 
-    // QUIC stream loops
     let (sends, recvs): (Vec<_>, Vec<_>) = streams.into_iter().unzip();
     let mut set = tokio::task::JoinSet::new();
 
     for recv in recvs {
         let tx = quic_pkt_tx.clone();
-        set.spawn(async move {
-            client_common::quic_stream_rx_loop(recv, tx).await
-        });
+        set.spawn(async move { client_common::quic_stream_rx_loop(recv, tx).await });
     }
-    set.spawn(async move {
-        client_common::quic_stream_tx_loop(tun_pkt_rx, sends).await
-    });
+    set.spawn(async move { client_common::quic_stream_tx_loop(tun_pkt_rx, sends).await });
 
-    // Wait for shutdown signal or tunnel error
     tokio::select! {
-        _ = shutdown_rx => {
-            log::info!("Shutdown received");
-        }
+        _ = shutdown_rx => { log::info!("Shutdown received"); }
         Some(res) = set.join_next() => {
-            if let Ok(Err(e)) = res {
-                log::error!("Tunnel task failed: {}", e);
-            }
+            if let Ok(Err(e)) = res { log::error!("Tunnel task failed: {}", e); }
         }
     }
 
@@ -232,7 +237,7 @@ async fn run_tunnel(
     Ok(())
 }
 
-// ─── Async TUN fd wrapper (like macOS client, without 4-byte AF prefix) ──────
+// ─── Async TUN fd wrapper ─────────────────────────────────────────────────────
 
 struct AsyncTunFd {
     inner: AsyncFd<std::fs::File>,
@@ -247,9 +252,7 @@ impl AsyncTunFd {
 
 impl AsyncRead for AsyncTunFd {
     fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut ReadBuf<'_>,
+        self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         loop {
             let mut guard = match self.inner.poll_read_ready(cx) {
@@ -259,13 +262,7 @@ impl AsyncRead for AsyncTunFd {
             };
             let unfilled = buf.initialize_unfilled();
             match guard.try_io(|inner| {
-                let n = unsafe {
-                    libc::read(
-                        inner.as_raw_fd(),
-                        unfilled.as_mut_ptr() as *mut libc::c_void,
-                        unfilled.len(),
-                    )
-                };
+                let n = unsafe { libc::read(inner.as_raw_fd(), unfilled.as_mut_ptr() as *mut libc::c_void, unfilled.len()) };
                 if n < 0 { Err(io::Error::last_os_error()) } else { Ok(n as usize) }
             }) {
                 Ok(Ok(n)) => { buf.advance(n); return Poll::Ready(Ok(())); }
@@ -278,9 +275,7 @@ impl AsyncRead for AsyncTunFd {
 
 impl AsyncWrite for AsyncTunFd {
     fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        data: &[u8],
+        self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, data: &[u8],
     ) -> Poll<io::Result<usize>> {
         loop {
             let mut guard = match self.inner.poll_write_ready(cx) {
@@ -289,13 +284,7 @@ impl AsyncWrite for AsyncTunFd {
                 Poll::Pending       => return Poll::Pending,
             };
             match guard.try_io(|inner| {
-                let n = unsafe {
-                    libc::write(
-                        inner.as_raw_fd(),
-                        data.as_ptr() as *const libc::c_void,
-                        data.len(),
-                    )
-                };
+                let n = unsafe { libc::write(inner.as_raw_fd(), data.as_ptr() as *const libc::c_void, data.len()) };
                 if n < 0 { Err(io::Error::last_os_error()) } else { Ok(n as usize) }
             }) {
                 Ok(result)    => return Poll::Ready(result),
@@ -303,16 +292,6 @@ impl AsyncWrite for AsyncTunFd {
             }
         }
     }
-
-    fn poll_flush(
-        self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>,
-    ) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(
-        self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>,
-    ) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<io::Result<()>> { Poll::Ready(Ok(())) }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<io::Result<()>> { Poll::Ready(Ok(())) }
 }
