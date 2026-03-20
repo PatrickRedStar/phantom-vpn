@@ -37,6 +37,7 @@ class PhantomVpnService : VpnService() {
         const val EXTRA_INSECURE    = "insecure"
         const val EXTRA_CERT_PATH   = "cert_path"
         const val EXTRA_KEY_PATH    = "key_path"
+        const val EXTRA_TUN_ADDR    = "tun_addr"
 
         private const val NOTIFICATION_CHANNEL = "phantom_vpn_channel"
         private const val NOTIFICATION_ID      = 1001
@@ -50,15 +51,16 @@ class PhantomVpnService : VpnService() {
         }
 
         val serverAddr = intent?.getStringExtra(EXTRA_SERVER_ADDR) ?: return START_NOT_STICKY
-        val serverName = intent?.getStringExtra(EXTRA_SERVER_NAME)
+        val serverName = intent.getStringExtra(EXTRA_SERVER_NAME)
             ?: serverAddr.substringBefore(":")
-        val insecure   = intent?.getBooleanExtra(EXTRA_INSECURE, false) ?: false
-        val certPath   = intent?.getStringExtra(EXTRA_CERT_PATH) ?: ""
-        val keyPath    = intent?.getStringExtra(EXTRA_KEY_PATH)  ?: ""
+        val insecure   = intent.getBooleanExtra(EXTRA_INSECURE, false)
+        val certPath   = intent.getStringExtra(EXTRA_CERT_PATH) ?: ""
+        val keyPath    = intent.getStringExtra(EXTRA_KEY_PATH)  ?: ""
+        val tunAddr    = intent.getStringExtra(EXTRA_TUN_ADDR)  ?: "10.7.0.2/24"
 
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting…"))
-        startTunnel(serverAddr, serverName, insecure, certPath, keyPath)
+        startForeground(NOTIFICATION_ID, buildNotification("Подключение…"))
+        startTunnel(serverAddr, serverName, insecure, certPath, keyPath, tunAddr)
 
         return START_STICKY
     }
@@ -66,10 +68,16 @@ class PhantomVpnService : VpnService() {
     private fun startTunnel(
         serverAddr: String, serverName: String,
         insecure: Boolean, certPath: String, keyPath: String,
+        tunAddr: String,
     ) {
+        // Разбираем "10.7.0.6/24" → ip="10.7.0.6", prefix=24
+        val parts     = tunAddr.split("/")
+        val tunIp     = parts.getOrElse(0) { "10.7.0.2" }
+        val tunPrefix = parts.getOrNull(1)?.toIntOrNull() ?: 24
+
         val builder = Builder()
             .setSession("PhantomVPN")
-            .addAddress("10.7.0.2", 24)
+            .addAddress(tunIp, tunPrefix)
             .addRoute("0.0.0.0", 0)
             .setMtu(1350)
             .addDnsServer("8.8.8.8")
@@ -85,7 +93,7 @@ class PhantomVpnService : VpnService() {
         }
 
         val nm = getSystemService(NotificationManager::class.java)
-        nm?.notify(NOTIFICATION_ID, buildNotification("Connected to $serverAddr"))
+        nm?.notify(NOTIFICATION_ID, buildNotification("Подключено: $serverAddr"))
     }
 
     private fun stopTunnel() {
@@ -103,7 +111,7 @@ class PhantomVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL, "PhantomVPN", NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "VPN tunnel status" }
+            ).apply { description = "Статус VPN туннеля" }
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
@@ -123,7 +131,7 @@ class PhantomVpnService : VpnService() {
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, "Disconnect", stopIntent).build())
+            .addAction(Notification.Action.Builder(null, "Отключить", stopIntent).build())
             .build()
     }
 }

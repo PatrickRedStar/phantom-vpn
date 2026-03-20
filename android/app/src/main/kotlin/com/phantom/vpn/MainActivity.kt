@@ -3,15 +3,19 @@ package com.phantom.vpn
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
+import android.util.Base64
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import org.json.JSONObject
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var etConnStr:    EditText
     private lateinit var etServerAddr: EditText
     private lateinit var etServerName: EditText
     private lateinit var cbInsecure:   CheckBox
@@ -30,6 +34,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        etConnStr    = findViewById(R.id.et_conn_str)
         etServerAddr = findViewById(R.id.et_server_addr)
         etServerName = findViewById(R.id.et_server_name)
         cbInsecure   = findViewById(R.id.cb_insecure)
@@ -37,19 +42,18 @@ class MainActivity : AppCompatActivity() {
         etKeyPath    = findViewById(R.id.et_key_path)
         tvStatus     = findViewById(R.id.tv_status)
 
-        // Default cert dir = app's external files dir (no storage permission needed)
-        // Push files with: adb push client.crt <path shown below>
-        val defaultCertDir = getExternalFilesDir(null)?.absolutePath ?: filesDir.absolutePath
-
         val prefs = getSharedPreferences("phantom", MODE_PRIVATE)
         etServerAddr.setText(prefs.getString("server_addr", "89.110.109.128:8443"))
         etServerName.setText(prefs.getString("server_name", "nl2.bikini-bottom.com"))
         cbInsecure.isChecked = prefs.getBoolean("insecure", false)
-        etCertPath.setText(prefs.getString("cert_path", "$defaultCertDir/client.crt"))
-        etKeyPath.setText(prefs.getString("key_path",   "$defaultCertDir/client.key"))
+        etCertPath.setText(prefs.getString("cert_path", ""))
+        etKeyPath.setText(prefs.getString("key_path",   ""))
 
-        tvStatus.text = "Cert dir: $defaultCertDir"
+        tvStatus.text = "Не подключено"
 
+        findViewById<Button>(R.id.btn_import).setOnClickListener {
+            importConnStr()
+        }
         findViewById<Button>(R.id.btn_connect).setOnClickListener {
             savePrefs()
             val permIntent = VpnService.prepare(this)
@@ -61,6 +65,54 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ── Импорт строки подключения ─────────────────────────────────────────────
+
+    private fun importConnStr() {
+        val raw = etConnStr.text.toString().trim()
+        if (raw.isEmpty()) {
+            tvStatus.text = "Вставьте строку подключения в поле выше"
+            return
+        }
+        try {
+            // base64url без паддинга → добавляем =
+            val padded = raw + "=".repeat((4 - raw.length % 4) % 4)
+            val bytes  = Base64.decode(padded, Base64.URL_SAFE or Base64.NO_WRAP)
+            val obj    = JSONObject(String(bytes, Charsets.UTF_8))
+
+            val addr = obj.getString("addr")
+            val sni  = obj.getString("sni")
+            val tun  = obj.getString("tun")
+            val cert = obj.getString("cert")
+            val key  = obj.getString("key")
+
+            // Сохраняем cert/key во внутреннее хранилище (не требует разрешений)
+            val certFile = File(filesDir, "client.crt")
+            val keyFile  = File(filesDir, "client.key")
+            certFile.writeText(cert)
+            keyFile.writeText(key)
+
+            // Заполняем поля
+            etServerAddr.setText(addr)
+            etServerName.setText(sni)
+            etCertPath.setText(certFile.absolutePath)
+            etKeyPath.setText(keyFile.absolutePath)
+            cbInsecure.isChecked = false
+
+            // Сохраняем tun_addr отдельно (нет UI-поля, передаётся в сервис)
+            getSharedPreferences("phantom", MODE_PRIVATE).edit()
+                .putString("tun_addr", tun)
+                .apply()
+
+            savePrefs()
+            etConnStr.text.clear()
+            tvStatus.text = "Импортировано  ·  $addr  ·  tun $tun"
+        } catch (e: Exception) {
+            tvStatus.text = "Ошибка импорта: ${e.message}"
+        }
+    }
+
+    // ── Сохранение настроек ───────────────────────────────────────────────────
+
     private fun savePrefs() {
         getSharedPreferences("phantom", MODE_PRIVATE).edit()
             .putString("server_addr", etServerAddr.text.toString())
@@ -71,9 +123,14 @@ class MainActivity : AppCompatActivity() {
             .apply()
     }
 
+    // ── VPN управление ────────────────────────────────────────────────────────
+
     private fun startVpn() {
         val serverAddr = etServerAddr.text.toString().trim()
-        if (serverAddr.isEmpty()) { tvStatus.text = "Enter server address"; return }
+        if (serverAddr.isEmpty()) { tvStatus.text = "Введите адрес сервера"; return }
+
+        val prefs   = getSharedPreferences("phantom", MODE_PRIVATE)
+        val tunAddr = prefs.getString("tun_addr", "10.7.0.2/24") ?: "10.7.0.2/24"
 
         val intent = Intent(this, PhantomVpnService::class.java).apply {
             action = PhantomVpnService.ACTION_START
@@ -83,15 +140,16 @@ class MainActivity : AppCompatActivity() {
             putExtra(PhantomVpnService.EXTRA_INSECURE,  cbInsecure.isChecked)
             putExtra(PhantomVpnService.EXTRA_CERT_PATH, etCertPath.text.toString().trim())
             putExtra(PhantomVpnService.EXTRA_KEY_PATH,  etKeyPath.text.toString().trim())
+            putExtra(PhantomVpnService.EXTRA_TUN_ADDR,  tunAddr)
         }
         startForegroundService(intent)
-        tvStatus.text = "Connecting to $serverAddr…"
+        tvStatus.text = "Подключение к $serverAddr…"
     }
 
     private fun stopVpn() {
         startService(Intent(this, PhantomVpnService::class.java).apply {
             action = PhantomVpnService.ACTION_STOP
         })
-        tvStatus.text = "Disconnected"
+        tvStatus.text = "Не подключено"
     }
 }

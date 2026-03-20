@@ -9,6 +9,7 @@ Usage (on the server):
       --server-name nl2.bikini-bottom.com
 """
 import argparse
+import base64
 import json
 import os
 import re
@@ -364,6 +365,56 @@ def show_client(keyring, server_ip, server_port, server_name):
     print_android_instructions(name, item["cert_path"], item["key_path"])
 
 
+def export_conn_str(keyring, server_ip, server_port, server_name):
+    """Генерирует строку подключения (base64url JSON) для вставки в приложение."""
+    clients = keyring["clients"]
+    names   = sorted(clients.keys())
+    if not names:
+        print("Клиентов нет.")
+        return
+
+    print("Выберите клиента для экспорта:")
+    for i, n in enumerate(names, 1):
+        item = clients[n]
+        print(f"  {i}) {n}  (tun={item.get('tun_addr', '?')})")
+    raw = input("> ").strip()
+    try:
+        idx = int(raw) - 1
+    except ValueError:
+        print("Неверный ввод.")
+        return
+    if idx < 0 or idx >= len(names):
+        print("Неверный выбор.")
+        return
+
+    name = names[idx]
+    item = clients[name]
+
+    try:
+        cert_pem = Path(item["cert_path"]).read_text(encoding="utf-8")
+        key_pem  = Path(item["key_path"]).read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"[ОШИБКА] Не удалось прочитать файлы сертификата: {e}")
+        return
+
+    payload = {
+        "v":    1,
+        "addr": f"{server_ip}:{server_port}",
+        "sni":  server_name,
+        "tun":  item["tun_addr"],
+        "cert": cert_pem,
+        "key":  key_pem,
+    }
+    json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    conn_str   = base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
+
+    print(f"\nСтрока подключения для {name!r}:")
+    print("─" * 60)
+    print(conn_str)
+    print("─" * 60)
+    print("\nВставьте в приложение PhantomVPN → поле «Строка подключения» → Импортировать.")
+
+
 def remove_client(keyring, keyring_path):
     clients = keyring["clients"]
     names   = sorted(clients.keys())
@@ -462,6 +513,7 @@ def main():
     print("2) Удалить клиента")
     print("3) Список клиентов")
     print("4) Показать конфиг клиента")
+    print("5) Экспорт строки подключения (для Android)")
     choice = input("> ").strip()
 
     if choice == "1":
@@ -473,6 +525,8 @@ def main():
         list_clients(keyring["clients"])
     elif choice == "4":
         show_client(keyring, server_ip, server_port, server_name)
+    elif choice == "5":
+        export_conn_str(keyring, server_ip, server_port, server_name)
     else:
         print("Неизвестная опция.")
 
