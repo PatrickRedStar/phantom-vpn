@@ -1,2 +1,56 @@
 .claude
 log*
+# macOS
+.DS_Store
+
+# Rust build artifacts
+target/
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Local environment / secrets
+.env
+.env.*
+
+# Runtime/local client configs (keep template instead)
+config/client.toml
+config/clients.json
+
+# Optional local overrides
+*.local.toml
+
+# Sensitive infrastructure files
+vdsina.json
+vps_balancer.json
+vps_nl.json
+api_ishostig.yaml
+.tmp/
+# macOS
+.DS_Store
+
+# Rust build artifacts
+target/
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Local environment / secrets
+.env
+.env.*
+
+# Runtime/local client configs (keep template instead)
+config/client.toml
+config/clients.json
+
+# Optional local overrides
+*.local.toml
+
+# Sensitive infrastructure files
+vdsina.json
+vps_balancer.json
+vps_nl.json
+api_ishostig.yaml
+.tmp/
