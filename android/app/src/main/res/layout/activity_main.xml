@@ -12,75 +12,63 @@
         android:text="PhantomVPN"
         android:textSize="28sp"
         android:textStyle="bold"
-        android:layout_marginBottom="32dp" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Server address (ip:port)"
-        android:textSize="12sp"
-        android:textColor="#666666" />
-
-    <EditText
-        android:id="@+id/et_server_addr"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="89.110.109.128:8443"
-        android:inputType="textUri"
-        android:singleLine="true"
-        android:layout_marginBottom="12dp" />
-
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="SNI / server name (leave blank = use IP)"
-        android:textSize="12sp"
-        android:textColor="#666666" />
-
-    <EditText
-        android:id="@+id/et_server_name"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="example.com  (optional)"
-        android:inputType="textUri"
-        android:singleLine="true"
-        android:layout_marginBottom="12dp" />
-
-    <CheckBox
-        android:id="@+id/cb_insecure"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Skip TLS certificate verification"
         android:layout_marginBottom="24dp" />
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginBottom="16dp">
+    <!-- Server address -->
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Server address (ip:port)" android:textSize="12sp" android:textColor="#666" />
+    <EditText android:id="@+id/et_server_addr"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:hint="89.110.109.128:8443" android:inputType="textUri"
+        android:singleLine="true" android:layout_marginBottom="12dp" />
 
-        <Button
-            android:id="@+id/btn_connect"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Connect" />
+    <!-- SNI -->
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Server name (SNI)" android:textSize="12sp" android:textColor="#666" />
+    <EditText android:id="@+id/et_server_name"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:hint="nl2.bikini-bottom.com" android:inputType="textUri"
+        android:singleLine="true" android:layout_marginBottom="12dp" />
 
-        <Button
-            android:id="@+id/btn_disconnect"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Disconnect"
+    <!-- Insecure -->
+    <CheckBox android:id="@+id/cb_insecure"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Skip TLS certificate verification (insecure)"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Cert path -->
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Client certificate path (.crt)" android:textSize="12sp" android:textColor="#666" />
+    <EditText android:id="@+id/et_cert_path"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:hint="/sdcard/Android/data/com.phantom.vpn/files/client.crt"
+        android:inputType="textUri" android:singleLine="true"
+        android:layout_marginBottom="8dp" />
+
+    <!-- Key path -->
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Client private key path (.key)" android:textSize="12sp" android:textColor="#666" />
+    <EditText android:id="@+id/et_key_path"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:hint="/sdcard/Android/data/com.phantom.vpn/files/client.key"
+        android:inputType="textUri" android:singleLine="true"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Buttons -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:layout_marginBottom="16dp">
+        <Button android:id="@+id/btn_connect"
+            android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="Connect" />
+        <Button android:id="@+id/btn_disconnect"
+            android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:text="Disconnect"
             android:layout_marginStart="8dp" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/tv_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Disconnected"
-        android:textSize="16sp"
-        android:textColor="#333333" />
+    <!-- Status -->
+    <TextView android:id="@+id/tv_status"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Disconnected" android:textSize="14sp" android:textColor="#333" />
 
 </LinearLayout>
