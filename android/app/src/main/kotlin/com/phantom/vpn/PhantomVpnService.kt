@@ -4,7 +4,9 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.ServiceInfo
 import android.content.Intent
+import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -59,7 +61,12 @@ class PhantomVpnService : VpnService() {
         val tunAddr    = intent.getStringExtra(EXTRA_TUN_ADDR)  ?: "10.7.0.2/24"
 
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Подключение…"))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, buildNotification("Подключение…"),
+                FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("Подключение…"))
+        }
         startTunnel(serverAddr, serverName, insecure, certPath, keyPath, tunAddr)
 
         return START_STICKY
