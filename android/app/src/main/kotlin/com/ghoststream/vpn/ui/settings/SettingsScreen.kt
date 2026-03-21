@@ -477,7 +477,7 @@ fun SettingsScreen(
             SettingsSection("О приложении") {
                 Text("GhostStream VPN", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Версия 1.0",
+                    "v${com.ghoststream.vpn.BuildConfig.VERSION_NAME}",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )

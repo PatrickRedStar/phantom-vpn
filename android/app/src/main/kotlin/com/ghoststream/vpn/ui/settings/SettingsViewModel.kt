@@ -232,6 +232,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     data class AppInfo(
         val packageName: String,
         val label: String,
+        // true only for pure system apps never updated by user (background daemons, etc.)
+        // Pre-installed apps that have been updated (Chrome, YouTube, etc.) are NOT isSystem
         val isSystem: Boolean,
     )
 
@@ -244,10 +246,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val pm = getApplication<Application>().packageManager
             _installedApps.value = pm.getInstalledApplications(PackageManager.GET_META_DATA)
                 .map { info ->
+                    val isSystemPartition = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    val isUpdated = (info.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
                     AppInfo(
                         packageName = info.packageName,
                         label = pm.getApplicationLabel(info).toString(),
-                        isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+                        // Pure system partition app (never updated) — hide from picker
+                        isSystem = isSystemPartition && !isUpdated,
                     )
                 }
                 .sortedWith(compareBy({ it.isSystem }, { it.label.lowercase() }))
