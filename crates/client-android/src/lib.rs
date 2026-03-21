@@ -436,8 +436,15 @@ async fn run_tunnel(
     ).context("Failed to create QUIC endpoint")?;
     endpoint.set_default_client_config(client_config);
 
-    let server_addr: std::net::SocketAddr = server_addr.parse()
-        .context("Invalid server address")?;
+    let server_addr: std::net::SocketAddr = if let Ok(addr) = server_addr.parse() {
+        addr
+    } else {
+        log::info!("Resolving DNS for {}", server_addr);
+        tokio::net::lookup_host(server_addr).await
+            .context("DNS lookup failed")?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", server_addr))?
+    };
     let (connection, streams) =
         client_common::connect_and_handshake(&endpoint, server_addr, server_name)
             .await

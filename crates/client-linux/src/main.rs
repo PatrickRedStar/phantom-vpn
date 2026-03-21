@@ -321,10 +321,19 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         helpers::load_config(&args.config)?
     };
 
-    let server_addr: SocketAddr = if let Some(ref sa) = args.server {
-        sa.parse().context("Invalid --server address")?
+    let raw_addr = if let Some(ref sa) = args.server {
+        sa.clone()
     } else {
-        cfg.network.server_addr.parse().context("Invalid config server_addr")?
+        cfg.network.server_addr.clone()
+    };
+    let server_addr: SocketAddr = if let Ok(addr) = raw_addr.parse() {
+        addr
+    } else {
+        tracing::info!("Resolving DNS for {}", raw_addr);
+        tokio::net::lookup_host(&raw_addr).await
+            .context("DNS lookup failed")?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", raw_addr))?
     };
     tracing::info!("Server address: {}", server_addr);
 
