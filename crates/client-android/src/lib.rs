@@ -174,6 +174,34 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     };
     let socket_fd = std_socket.as_raw_fd();
 
+    // Increase UDP socket buffers — critical for download throughput.
+    // Default Android SO_RCVBUF is ~200KB; at high pps QUIC packets get dropped.
+    unsafe {
+        let buf_size: libc::c_int = 4 * 1024 * 1024;
+        libc::setsockopt(
+            socket_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+            &buf_size as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        libc::setsockopt(
+            socket_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+            &buf_size as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        let mut actual_rcv: libc::c_int = 0;
+        let mut actual_snd: libc::c_int = 0;
+        let mut len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        libc::getsockopt(
+            socket_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+            &mut actual_rcv as *mut _ as *mut libc::c_void, &mut len,
+        );
+        libc::getsockopt(
+            socket_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+            &mut actual_snd as *mut _ as *mut libc::c_void, &mut len,
+        );
+        log::info!("UDP buffers: SO_RCVBUF={}KB SO_SNDBUF={}KB", actual_rcv / 1024, actual_snd / 1024);
+    }
+
     let protected = env
         .call_method(&this, "protect", "(I)Z", &[JValue::Int(socket_fd)])
         .ok()
@@ -345,8 +373,8 @@ async fn run_tunnel(
         return Err(anyhow::anyhow!("dup fd for writer failed: {}", io::Error::last_os_error()));
     }
 
-    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
-    let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(4096);
+    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(8192);
+    let (quic_pkt_tx, mut quic_pkt_rx) = mpsc::channel::<Vec<u8>>(8192);
 
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
@@ -388,8 +416,8 @@ async fn run_tunnel(
                 BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
                 PKTS_RX.fetch_add(1, Ordering::Relaxed);
                 unsafe { libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len()); }
-                // Batch: drain up to 63 more packets without blocking
-                for _ in 0..63 {
+                // Batch: drain up to 255 more packets without blocking
+                for _ in 0..255 {
                     match quic_pkt_rx.try_recv() {
                         Ok(pkt) => {
                             BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);

@@ -178,10 +178,14 @@ async fn handle_connection(
 
     while set.join_next().await.is_some() {}
 
-    // Cleanup
+    // Cleanup — only remove if our session is still the one in the map.
+    // A newer connection may have replaced our entry with a different Arc.
     if let Some(ip) = reg_ip_clone.lock().await.take() {
-        sessions_clone.remove(&ip);
-        tracing::info!("Session unregistered for tunnel IP {} ({})", ip, remote);
+        if sessions_clone.remove_if(&ip, |_, v| Arc::ptr_eq(v, &session)).is_some() {
+            tracing::info!("Session unregistered for tunnel IP {} ({})", ip, remote);
+        } else {
+            tracing::debug!("Session for {} ({}) already replaced, skip remove", ip, remote);
+        }
     }
 
     Ok(())
@@ -443,7 +447,8 @@ pub async fn cleanup_task(sessions: QuicSessionMap, idle_secs: u64) {
             }
         }
         for ip in &to_remove {
-            if let Some((_, session)) = sessions.remove(ip) {
+            // Re-check is_idle at removal time — a new session may have registered
+            if let Some((_, session)) = sessions.remove_if(ip, |_, v| v.is_idle(idle_secs)) {
                 session.connection.close(0u32.into(), b"idle timeout");
                 tracing::info!("Session expired (idle): tunnel IP {}", ip);
             }
