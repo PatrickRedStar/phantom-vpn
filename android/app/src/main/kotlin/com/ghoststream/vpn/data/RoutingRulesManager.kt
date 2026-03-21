@@ -20,6 +20,7 @@ class RoutingRulesManager(private val context: Context) {
         val label: String,
         val sizeKb: Long,
         val lastUpdated: Long,
+        val cidrCount: Int = 0,
     )
 
     companion object {
@@ -42,7 +43,10 @@ class RoutingRulesManager(private val context: Context) {
         return AVAILABLE_COUNTRIES.mapNotNull { (code, label) ->
             val file = File(rulesDir, "$code.txt")
             if (file.exists()) {
-                RuleInfo(code, label, file.length() / 1024, file.lastModified())
+                val count = file.bufferedReader().useLines { lines ->
+                    lines.count { it.isNotBlank() }
+                }
+                RuleInfo(code, label, file.length() / 1024, file.lastModified(), count)
             } else {
                 null
             }

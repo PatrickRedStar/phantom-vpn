@@ -21,6 +21,20 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val preferencesStore = PreferencesStore(application)
     val routingRulesManager = RoutingRulesManager(application)
 
+    private val _downloadedRules = MutableStateFlow<Map<String, RoutingRulesManager.RuleInfo>>(emptyMap())
+    val downloadedRules: StateFlow<Map<String, RoutingRulesManager.RuleInfo>> = _downloadedRules
+
+    private val _downloading = MutableStateFlow<Set<String>>(emptySet())
+    val downloading: StateFlow<Set<String>> = _downloading
+
+    init {
+        refreshDownloadedRules()
+    }
+
+    private fun refreshDownloadedRules() {
+        _downloadedRules.value = routingRulesManager.getDownloadedRules().associateBy { it.code }
+    }
+
     val config: StateFlow<VpnConfig> = preferencesStore.config
         .stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
@@ -123,15 +137,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun downloadCountryRules(code: String) {
         viewModelScope.launch {
+            _downloading.value = _downloading.value + code
             _downloadStatus.value = "Загрузка $code..."
             routingRulesManager.downloadRuleList(code).fold(
                 onSuccess = { size ->
                     _downloadStatus.value = "$code загружен (${size / 1024} КБ)"
+                    refreshDownloadedRules()
                 },
                 onFailure = { e ->
                     _downloadStatus.value = "Ошибка загрузки $code: ${e.message}"
                 },
             )
+            _downloading.value = _downloading.value - code
         }
     }
 
@@ -140,13 +157,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             val codes = config.value.directCountries.ifEmpty {
                 listOf("ru") // default
             }
+            _downloading.value = codes.toSet()
             _downloadStatus.value = "Загрузка ${codes.joinToString(", ")}..."
             var ok = 0
             for (code in codes) {
                 routingRulesManager.downloadRuleList(code).fold(
-                    onSuccess = { ok++ },
+                    onSuccess = { ok++; refreshDownloadedRules() },
                     onFailure = {},
                 )
+                _downloading.value = _downloading.value - code
             }
             _downloadStatus.value = "Загружено $ok/${codes.size} списков"
         }
