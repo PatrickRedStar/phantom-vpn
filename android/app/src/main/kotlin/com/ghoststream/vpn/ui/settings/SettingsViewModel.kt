@@ -52,6 +52,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 certFile.writeText(parsed.cert)
                 keyFile.writeText(parsed.key)
 
+                // Save CA cert if present in connection string
+                var caPath: String? = null
+                if (parsed.ca != null) {
+                    val caFile = File(ctx.filesDir, "ca.crt")
+                    caFile.writeText(parsed.ca)
+                    caPath = caFile.absolutePath
+                }
+
                 viewModelScope.launch {
                     preferencesStore.saveConfig(
                         VpnConfig(
@@ -60,6 +68,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                             insecure   = false,
                             certPath   = certFile.absolutePath,
                             keyPath    = keyFile.absolutePath,
+                            caCertPath = caPath,
                             tunAddr    = parsed.tun,
                             dnsServers = config.value.dnsServers,
                         ),

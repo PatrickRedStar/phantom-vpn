@@ -28,27 +28,36 @@ pub fn load_pem_certs(
 ) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
     let cert_data = std::fs::read(cert_path)?;
     let key_data = std::fs::read(key_path)?;
+    parse_pem_identity(&cert_data, &key_data)
+}
 
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_data[..])
+/// Parse certificate + private key from PEM byte slices (inline or from file).
+pub fn parse_pem_identity(
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> anyhow::Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_pem[..])
         .collect::<Result<Vec<_>, _>>()?;
-
     if certs.is_empty() {
-        anyhow::bail!("No certificates found in {}", cert_path.display());
+        anyhow::bail!("No certificates found in PEM data");
     }
-
-    let key = rustls_pemfile::private_key(&mut &key_data[..])?
-        .ok_or_else(|| anyhow::anyhow!("No private key found in {}", key_path.display()))?;
-
+    let key = rustls_pemfile::private_key(&mut &key_pem[..])?
+        .ok_or_else(|| anyhow::anyhow!("No private key found in PEM data"))?;
     Ok((certs, key))
 }
 
 /// Loads only the PEM certificate chain (no key).
 pub fn load_pem_cert_chain(cert_path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let cert_data = std::fs::read(cert_path)?;
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_data[..])
+    parse_pem_cert_chain(&cert_data)
+}
+
+/// Parse certificate chain from PEM byte slice (inline or from file).
+pub fn parse_pem_cert_chain(cert_pem: &[u8]) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_pem[..])
         .collect::<Result<Vec<_>, _>>()?;
     if certs.is_empty() {
-        anyhow::bail!("No certificates found in {}", cert_path.display());
+        anyhow::bail!("No certificates found in PEM data");
     }
     Ok(certs)
 }

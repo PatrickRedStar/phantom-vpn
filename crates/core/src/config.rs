@@ -58,6 +58,10 @@ pub struct QuicConfig {
     pub cert_path: Option<String>,
     /// Путь к PEM приватному ключу
     pub key_path:  Option<String>,
+    /// Inline PEM сертификат (альтернатива cert_path, приоритет выше)
+    pub cert_pem: Option<String>,
+    /// Inline PEM приватный ключ (альтернатива key_path, приоритет выше)
+    pub key_pem: Option<String>,
     /// Subject Alternative Names для self-signed сертификата
     pub cert_subjects: Option<Vec<String>>,
     /// ALPN протокол (default: "h3")
@@ -68,6 +72,8 @@ pub struct QuicConfig {
     /// - сервер: CA для проверки клиентских сертификатов
     /// - клиент: CA для проверки серверного сертификата (None = принять любой)
     pub ca_cert_path: Option<String>,
+    /// Inline CA cert PEM (альтернатива ca_cert_path, приоритет выше)
+    pub ca_cert_pem: Option<String>,
     /// Путь к clients.json с разрешёнными fingerprint'ами (сервер).
     /// Если задан — только клиенты из этого списка могут подключиться.
     /// Перезагружается по SIGHUP без рестарта.

@@ -378,7 +378,7 @@ def show_client(keyring, server_ip, server_port, server_name):
     print_android_instructions(name, item["cert_path"], item["key_path"])
 
 
-def export_conn_str(keyring, server_ip, server_port, server_name):
+def export_conn_str(keyring, server_ip, server_port, server_name, ca_cert_path=None):
     """Генерирует строку подключения (base64url JSON) для вставки в приложение."""
     clients = keyring["clients"]
     names   = sorted(clients.keys())
@@ -418,6 +418,14 @@ def export_conn_str(keyring, server_ip, server_port, server_name):
         "cert": cert_pem,
         "key":  key_pem,
     }
+
+    # Embed CA cert for full self-contained connection string
+    if ca_cert_path:
+        try:
+            payload["ca"] = Path(ca_cert_path).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"[ВНИМАНИЕ] Не удалось прочитать CA cert ({ca_cert_path}): {e}")
+
     json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     conn_str   = base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
 
@@ -425,7 +433,10 @@ def export_conn_str(keyring, server_ip, server_port, server_name):
     print("─" * 60)
     print(conn_str)
     print("─" * 60)
-    print("\nВставьте в приложение PhantomVPN → поле «Строка подключения» → Импортировать.")
+    print(f"\nИспользование:")
+    print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
+    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str}'")
+    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str}'")
 
 
 def remove_client(keyring, keyring_path):
@@ -526,7 +537,7 @@ def main():
     print("2) Удалить клиента")
     print("3) Список клиентов")
     print("4) Показать конфиг клиента")
-    print("5) Экспорт строки подключения (для Android)")
+    print("5) Экспорт строки подключения (Android / Linux / macOS)")
     choice = input("> ").strip()
 
     if choice == "1":
@@ -539,7 +550,7 @@ def main():
     elif choice == "4":
         show_client(keyring, server_ip, server_port, server_name)
     elif choice == "5":
-        export_conn_str(keyring, server_ip, server_port, server_name)
+        export_conn_str(keyring, server_ip, server_port, server_name, ca_cert_path)
     else:
         print("Неизвестная опция.")
 
