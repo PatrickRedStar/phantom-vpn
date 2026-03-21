@@ -318,6 +318,47 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         .unwrap_or(std::ptr::null_mut())
 }
 
+// ─── Routing ────────────────────────────────────────────────────────────────
+
+/// Compute VPN routes (complement of "direct" CIDRs).
+/// Input: path to a text file with one CIDR per line.
+/// Output: JSON array of {"addr":"...","prefix":N} objects, or null on error.
+#[no_mangle]
+pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeComputeVpnRoutes(
+    mut env: JNIEnv,
+    _class: JClass,
+    direct_cidrs_path: JString,
+) -> jstring {
+    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
+
+    let path_str = match env.get_string(&direct_cidrs_path) {
+        Ok(s) => String::from(s),
+        Err(_) => {
+            log::error!("nativeComputeVpnRoutes: bad path string");
+            return std::ptr::null_mut();
+        }
+    };
+
+    let text = match std::fs::read_to_string(&path_str) {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!("nativeComputeVpnRoutes: failed to read {}: {}", path_str, e);
+            return std::ptr::null_mut();
+        }
+    };
+
+    let table = phantom_core::routing::RoutingTable::from_cidrs(&text);
+    log::info!("Routing: loaded {} direct CIDRs from {}", table.direct_count(), path_str);
+
+    let routes = table.compute_vpn_routes();
+    log::info!("Routing: computed {} VPN routes", routes.len());
+
+    let json = phantom_core::routing::routes_to_json(&routes);
+    env.new_string(&json)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 // ─── Tunnel runner ───────────────────────────────────────────────────────────
 
 async fn run_tunnel(
