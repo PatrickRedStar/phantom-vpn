@@ -1,0 +1,22 @@
+[
+    {
+        "merged": "com.ghoststream.vpn.app-debug-60:/xml_file_paths.xml.flat",
+        "source": "com.ghoststream.vpn.app-main-62:/xml/file_paths.xml"
+    },
+    {
+        "merged": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-debug-60:/drawable_ic_launcher_foreground.xml.flat",
+        "source": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-main-62:/drawable/ic_launcher_foreground.xml"
+    },
+    {
+        "merged": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-debug-60:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-main-62:/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+        "merged": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-debug-60:/drawable_ic_launcher_background.xml.flat",
+        "source": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-main-62:/drawable/ic_launcher_background.xml"
+    },
+    {
+        "merged": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-debug-60:/drawable_ic_notification.xml.flat",
+        "source": "/home/spongebob/.gradle/daemon/8.7/com.ghoststream.vpn.app-main-62:/drawable/ic_notification.xml"
+    }
+]
