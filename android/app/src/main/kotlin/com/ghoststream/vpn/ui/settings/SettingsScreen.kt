@@ -260,7 +260,6 @@ fun SettingsScreen(
                     RoutingRulesManager.AVAILABLE_COUNTRIES.forEach { (code, label) ->
                         val isSelected = code in config.directCountries
                         val ruleInfo = downloadedRules[code]
-                        val isDownloaded = ruleInfo != null
                         val isDownloading = code in downloading
                         Row(
                             Modifier
