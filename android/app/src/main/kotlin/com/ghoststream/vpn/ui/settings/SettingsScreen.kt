@@ -15,15 +15,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.ui.theme.TextSecondary
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -207,6 +211,181 @@ fun SettingsScreen(
                         checked = config.insecure,
                         onCheckedChange = { viewModel.setInsecure(it) },
                     )
+                }
+            }
+        }
+
+        // ── Routing ────────────────────────────────────────────────
+        item {
+            val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
+
+            SettingsSection("Маршрутизация") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Раздельная маршрутизация")
+                        Text(
+                            "Трафик к выбранным странам идёт напрямую",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                        )
+                    }
+                    Switch(
+                        checked = config.splitRouting,
+                        onCheckedChange = { viewModel.setSplitRouting(it) },
+                    )
+                }
+
+                if (config.splitRouting) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Страны (напрямую):",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    RoutingRulesManager.AVAILABLE_COUNTRIES.forEach { (code, label) ->
+                        val isSelected = code in config.directCountries
+                        val isDownloaded = viewModel.routingRulesManager.isDownloaded(code)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.toggleDirectCountry(code) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = isSelected,
+                                onCheckedChange = { viewModel.toggleDirectCountry(code) },
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(label)
+                                if (!isDownloaded) {
+                                    Text(
+                                        "не загружен",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary,
+                                    )
+                                }
+                            }
+                            if (!isDownloaded || isSelected) {
+                                IconButton(onClick = { viewModel.downloadCountryRules(code) }) {
+                                    Icon(Icons.Filled.Download, "Загрузить")
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { viewModel.downloadAllSelected() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Обновить списки") }
+                    if (downloadStatus.isNotBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(downloadStatus, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        // ── Per-app ───────────────────────────────────────────────
+        item {
+            SettingsSection("Приложения") {
+                listOf(
+                    "none" to "Все через VPN",
+                    "disallowed" to "Все, кроме выбранных",
+                    "allowed" to "Только выбранные",
+                ).forEach { (value, label) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.setPerAppMode(value) }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = config.perAppMode == value,
+                            onClick = { viewModel.setPerAppMode(value) },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(label)
+                    }
+                }
+
+                if (config.perAppMode != "none") {
+                    var showAppPicker by remember { mutableStateOf(false) }
+                    Spacer(Modifier.height(8.dp))
+                    if (config.perAppList.isNotEmpty()) {
+                        Text(
+                            "${config.perAppList.size} приложений выбрано",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    OutlinedButton(onClick = {
+                        viewModel.loadInstalledApps()
+                        showAppPicker = true
+                    }) { Text("Выбрать приложения") }
+
+                    if (showAppPicker) {
+                        val apps by viewModel.installedApps.collectAsStateWithLifecycle()
+                        var search by remember { mutableStateOf("") }
+                        AlertDialog(
+                            onDismissRequest = { showAppPicker = false },
+                            title = { Text("Приложения") },
+                            text = {
+                                Column {
+                                    OutlinedTextField(
+                                        value = search,
+                                        onValueChange = { search = it },
+                                        label = { Text("Поиск") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    val filtered = apps.filter {
+                                        !it.isSystem && (search.isBlank() ||
+                                            it.label.contains(search, ignoreCase = true) ||
+                                            it.packageName.contains(search, ignoreCase = true))
+                                    }
+                                    LazyColumn {
+                                        items(filtered, key = { it.packageName }) { app ->
+                                            Row(
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { viewModel.togglePerApp(app.packageName) }
+                                                    .padding(vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Checkbox(
+                                                    checked = app.packageName in config.perAppList,
+                                                    onCheckedChange = { viewModel.togglePerApp(app.packageName) },
+                                                )
+                                                Spacer(Modifier.width(8.dp))
+                                                Column {
+                                                    Text(app.label, maxLines = 1)
+                                                    Text(
+                                                        app.packageName,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = TextSecondary,
+                                                        maxLines = 1,
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showAppPicker = false }) { Text("Готово") }
+                            },
+                        )
+                    }
                 }
             }
         }

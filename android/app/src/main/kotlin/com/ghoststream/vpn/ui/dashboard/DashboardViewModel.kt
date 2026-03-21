@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.data.PreferencesStore
+import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.data.VpnStats
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
@@ -23,6 +24,7 @@ import java.time.Instant
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferencesStore = PreferencesStore(application)
+    private val routingRulesManager = RoutingRulesManager(application)
     val vpnState = VpnStateManager.state
     val config = preferencesStore.config.stateIn(viewModelScope, SharingStarted.Eagerly, com.ghoststream.vpn.data.VpnConfig())
 
@@ -95,6 +97,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
             putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)
             putExtra(GhostStreamVpnService.EXTRA_DNS_SERVERS, cfg.dnsServers.joinToString(","))
+            putExtra(GhostStreamVpnService.EXTRA_SPLIT_ROUTING, cfg.splitRouting)
+            if (cfg.splitRouting && cfg.directCountries.isNotEmpty()) {
+                val mergedPath = routingRulesManager.mergeSelectedLists(cfg.directCountries)
+                putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, mergedPath ?: "")
+            }
+            putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
+            putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
         }
         ctx.startForegroundService(intent)
     }

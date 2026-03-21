@@ -1,10 +1,13 @@
 package com.ghoststream.vpn.ui.settings
 
 import android.app.Application
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.data.ConnStringParser
 import com.ghoststream.vpn.data.PreferencesStore
+import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.data.VpnConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,6 +19,7 @@ import java.io.File
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferencesStore = PreferencesStore(application)
+    val routingRulesManager = RoutingRulesManager(application)
 
     val config: StateFlow<VpnConfig> = preferencesStore.config
         .stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
@@ -86,6 +90,98 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setDnsServers(servers: List<String>) {
         viewModelScope.launch {
             preferencesStore.saveConfig(config.value.copy(dnsServers = servers))
+        }
+    }
+
+    // ── Routing ──────────────────────────────────────────────────────
+
+    private val _downloadStatus = MutableStateFlow("")
+    val downloadStatus: StateFlow<String> = _downloadStatus
+
+    fun setSplitRouting(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesStore.saveConfig(config.value.copy(splitRouting = enabled))
+        }
+    }
+
+    fun toggleDirectCountry(code: String) {
+        viewModelScope.launch {
+            val current = config.value.directCountries.toMutableList()
+            if (code in current) current.remove(code) else current.add(code)
+            preferencesStore.saveConfig(config.value.copy(directCountries = current))
+        }
+    }
+
+    fun downloadCountryRules(code: String) {
+        viewModelScope.launch {
+            _downloadStatus.value = "Загрузка $code..."
+            routingRulesManager.downloadRuleList(code).fold(
+                onSuccess = { size ->
+                    _downloadStatus.value = "$code загружен (${size / 1024} КБ)"
+                },
+                onFailure = { e ->
+                    _downloadStatus.value = "Ошибка загрузки $code: ${e.message}"
+                },
+            )
+        }
+    }
+
+    fun downloadAllSelected() {
+        viewModelScope.launch {
+            val codes = config.value.directCountries.ifEmpty {
+                listOf("ru") // default
+            }
+            _downloadStatus.value = "Загрузка ${codes.joinToString(", ")}..."
+            var ok = 0
+            for (code in codes) {
+                routingRulesManager.downloadRuleList(code).fold(
+                    onSuccess = { ok++ },
+                    onFailure = {},
+                )
+            }
+            _downloadStatus.value = "Загружено $ok/${codes.size} списков"
+        }
+    }
+
+    // ── Per-app ─────────────────────────────────────────────────────
+
+    data class AppInfo(
+        val packageName: String,
+        val label: String,
+        val isSystem: Boolean,
+    )
+
+    private val _installedApps = MutableStateFlow<List<AppInfo>>(emptyList())
+    val installedApps: StateFlow<List<AppInfo>> = _installedApps
+
+    fun loadInstalledApps() {
+        if (_installedApps.value.isNotEmpty()) return
+        viewModelScope.launch {
+            val pm = getApplication<Application>().packageManager
+            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+                .map { info ->
+                    AppInfo(
+                        packageName = info.packageName,
+                        label = pm.getApplicationLabel(info).toString(),
+                        isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0,
+                    )
+                }
+                .sortedWith(compareBy({ it.isSystem }, { it.label.lowercase() }))
+            _installedApps.value = apps
+        }
+    }
+
+    fun setPerAppMode(mode: String) {
+        viewModelScope.launch {
+            preferencesStore.saveConfig(config.value.copy(perAppMode = mode))
+        }
+    }
+
+    fun togglePerApp(packageName: String) {
+        viewModelScope.launch {
+            val current = config.value.perAppList.toMutableList()
+            if (packageName in current) current.remove(packageName) else current.add(packageName)
+            preferencesStore.saveConfig(config.value.copy(perAppList = current))
         }
     }
 }

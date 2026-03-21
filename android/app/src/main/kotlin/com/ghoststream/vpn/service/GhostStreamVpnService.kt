@@ -11,7 +11,9 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import com.ghoststream.vpn.R
+import org.json.JSONArray
 
 class GhostStreamVpnService : VpnService() {
 
@@ -37,20 +39,26 @@ class GhostStreamVpnService : VpnService() {
         @JvmStatic external fun nativeStop()
         @JvmStatic external fun nativeGetStats(): String?
         @JvmStatic external fun nativeGetLogs(sinceSeq: Long): String?
+        @JvmStatic external fun nativeComputeVpnRoutes(directCidrsPath: String): String?
 
         const val ACTION_START = "com.ghoststream.vpn.START"
         const val ACTION_STOP  = "com.ghoststream.vpn.STOP"
 
-        const val EXTRA_SERVER_ADDR = "server_addr"
-        const val EXTRA_SERVER_NAME = "server_name"
-        const val EXTRA_INSECURE    = "insecure"
-        const val EXTRA_CERT_PATH   = "cert_path"
-        const val EXTRA_KEY_PATH    = "key_path"
-        const val EXTRA_TUN_ADDR    = "tun_addr"
-        const val EXTRA_DNS_SERVERS = "dns_servers"
+        const val EXTRA_SERVER_ADDR   = "server_addr"
+        const val EXTRA_SERVER_NAME   = "server_name"
+        const val EXTRA_INSECURE      = "insecure"
+        const val EXTRA_CERT_PATH     = "cert_path"
+        const val EXTRA_KEY_PATH      = "key_path"
+        const val EXTRA_TUN_ADDR      = "tun_addr"
+        const val EXTRA_DNS_SERVERS   = "dns_servers"
+        const val EXTRA_SPLIT_ROUTING = "split_routing"
+        const val EXTRA_DIRECT_CIDRS  = "direct_cidrs_path"
+        const val EXTRA_PER_APP_MODE  = "per_app_mode"
+        const val EXTRA_PER_APP_LIST  = "per_app_list"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
+        private const val TAG = "GhostStreamVpn"
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -68,6 +76,11 @@ class GhostStreamVpnService : VpnService() {
         val tunAddr    = intent.getStringExtra(EXTRA_TUN_ADDR)  ?: "10.7.0.2/24"
         val dnsServers = (intent.getStringExtra(EXTRA_DNS_SERVERS) ?: "8.8.8.8,1.1.1.1")
             .split(",").filter { it.isNotBlank() }
+        val splitRouting   = intent.getBooleanExtra(EXTRA_SPLIT_ROUTING, false)
+        val directCidrs    = intent.getStringExtra(EXTRA_DIRECT_CIDRS) ?: ""
+        val perAppMode     = intent.getStringExtra(EXTRA_PER_APP_MODE) ?: "none"
+        val perAppList     = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
+            .split(",").filter { it.isNotBlank() }
 
         createNotificationChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -79,7 +92,10 @@ class GhostStreamVpnService : VpnService() {
             startForeground(NOTIFICATION_ID, buildNotification("Подключение..."))
         }
 
-        startTunnel(serverAddr, serverName, insecure, certPath, keyPath, tunAddr, dnsServers)
+        startTunnel(
+            serverAddr, serverName, insecure, certPath, keyPath,
+            tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
+        )
         return START_STICKY
     }
 
@@ -87,6 +103,8 @@ class GhostStreamVpnService : VpnService() {
         serverAddr: String, serverName: String,
         insecure: Boolean, certPath: String, keyPath: String,
         tunAddr: String, dnsServers: List<String>,
+        splitRouting: Boolean, directCidrsPath: String,
+        perAppMode: String, perAppList: List<String>,
     ) {
         val parts     = tunAddr.split("/")
         val tunIp     = parts.getOrElse(0) { "10.7.0.2" }
@@ -95,11 +113,52 @@ class GhostStreamVpnService : VpnService() {
         val builder = Builder()
             .setSession("GhostStream")
             .addAddress(tunIp, tunPrefix)
-            .addRoute("0.0.0.0", 0)
             .setMtu(1350)
 
+        // ── Routing ──────────────────────────────────────────────────────
+        if (splitRouting && directCidrsPath.isNotBlank()) {
+            val routesJson = nativeComputeVpnRoutes(directCidrsPath)
+            if (routesJson != null) {
+                try {
+                    val arr = JSONArray(routesJson)
+                    var count = 0
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        builder.addRoute(obj.getString("addr"), obj.getInt("prefix"))
+                        count++
+                    }
+                    Log.i(TAG, "Split routing: $count VPN routes added")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to parse VPN routes, falling back to full tunnel", e)
+                    builder.addRoute("0.0.0.0", 0)
+                }
+            } else {
+                Log.w(TAG, "nativeComputeVpnRoutes returned null, falling back to full tunnel")
+                builder.addRoute("0.0.0.0", 0)
+            }
+        } else {
+            builder.addRoute("0.0.0.0", 0)
+        }
+
+        // ── DNS ──────────────────────────────────────────────────────────
         for (dns in dnsServers) {
             try { builder.addDnsServer(dns) } catch (_: Exception) {}
+        }
+
+        // ── Per-app routing ──────────────────────────────────────────────
+        when (perAppMode) {
+            "allowed" -> {
+                for (pkg in perAppList) {
+                    try { builder.addAllowedApplication(pkg) } catch (_: Exception) {}
+                }
+                Log.i(TAG, "Per-app: ${perAppList.size} allowed apps")
+            }
+            "disallowed" -> {
+                for (pkg in perAppList) {
+                    try { builder.addDisallowedApplication(pkg) } catch (_: Exception) {}
+                }
+                Log.i(TAG, "Per-app: ${perAppList.size} excluded apps")
+            }
         }
 
         vpnInterface = builder.establish() ?: run {
