@@ -3,6 +3,7 @@ package com.ghoststream.vpn.ui.logs
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
@@ -59,19 +61,27 @@ fun LogsScreen(viewModel: LogsViewModel) {
 
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier
+            modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            listOf("ALL", "DEBUG", "INFO", "WARN", "ERROR").forEach { level ->
-                FilterChip(
-                    selected = filter == level,
-                    onClick = { viewModel.setFilter(level) },
-                    label = { Text(level, fontSize = 12.sp) },
-                )
+            // Filter chips — scrollable so they don't overflow action buttons
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                listOf("ALL", "DEBUG", "INFO", "WARN", "ERROR").forEach { level ->
+                    FilterChip(
+                        selected = filter == level,
+                        onClick = { viewModel.setFilter(level) },
+                        label = { Text(level, fontSize = 11.sp) },
+                    )
+                }
             }
-            Spacer(Modifier.weight(1f))
+            // Action buttons — always visible on the right
             IconButton(onClick = { viewModel.copyAll(context) }) {
                 Icon(Icons.Filled.ContentCopy, "Копировать все")
             }

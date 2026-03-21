@@ -29,6 +29,7 @@ class GhostStreamVpnService : VpnService() {
         insecure: Boolean,
         certPath: String,
         keyPath: String,
+        caCertPath: String,
     ): Int
 
     companion object {
@@ -40,6 +41,7 @@ class GhostStreamVpnService : VpnService() {
         @JvmStatic external fun nativeGetStats(): String?
         @JvmStatic external fun nativeGetLogs(sinceSeq: Long): String?
         @JvmStatic external fun nativeComputeVpnRoutes(directCidrsPath: String): String?
+        @JvmStatic external fun nativeSetLogLevel(level: String)
 
         const val ACTION_START = "com.ghoststream.vpn.START"
         const val ACTION_STOP  = "com.ghoststream.vpn.STOP"
@@ -55,6 +57,7 @@ class GhostStreamVpnService : VpnService() {
         const val EXTRA_DIRECT_CIDRS  = "direct_cidrs_path"
         const val EXTRA_PER_APP_MODE  = "per_app_mode"
         const val EXTRA_PER_APP_LIST  = "per_app_list"
+        const val EXTRA_CA_CERT_PATH  = "ca_cert_path"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
@@ -81,6 +84,7 @@ class GhostStreamVpnService : VpnService() {
         val perAppMode     = intent.getStringExtra(EXTRA_PER_APP_MODE) ?: "none"
         val perAppList     = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
             .split(",").filter { it.isNotBlank() }
+        val caCertPath     = intent.getStringExtra(EXTRA_CA_CERT_PATH) ?: ""
 
         createNotificationChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -93,7 +97,7 @@ class GhostStreamVpnService : VpnService() {
         }
 
         startTunnel(
-            serverAddr, serverName, insecure, certPath, keyPath,
+            serverAddr, serverName, insecure, certPath, keyPath, caCertPath,
             tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
         )
         return START_STICKY
@@ -101,7 +105,7 @@ class GhostStreamVpnService : VpnService() {
 
     private fun startTunnel(
         serverAddr: String, serverName: String,
-        insecure: Boolean, certPath: String, keyPath: String,
+        insecure: Boolean, certPath: String, keyPath: String, caCertPath: String,
         tunAddr: String, dnsServers: List<String>,
         splitRouting: Boolean, directCidrsPath: String,
         perAppMode: String, perAppList: List<String>,
@@ -169,7 +173,7 @@ class GhostStreamVpnService : VpnService() {
         }
 
         val fd = vpnInterface!!.fd
-        val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath)
+        val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath)
         if (result != 0) {
             vpnInterface?.close()
             vpnInterface = null
@@ -179,19 +183,17 @@ class GhostStreamVpnService : VpnService() {
             return
         }
 
-        VpnStateManager.update(VpnState.Connected(serverName = serverName))
-        val nm = getSystemService(NotificationManager::class.java)
-        nm?.notify(NOTIFICATION_ID, buildNotification("Подключено: $serverAddr"))
-
-        startWatchdog()
+        // Do NOT set Connected here — watchdog will do it once QUIC handshake completes
+        startWatchdog(serverName, serverAddr)
     }
 
     /**
-     * Monitors native tunnel state. Cleans up VPN if:
-     * - QUIC connect never succeeds (60s timeout)
-     * - Tunnel drops after being connected
+     * Monitors native tunnel state and drives VpnState transitions:
+     * - Connecting → Connected when QUIC handshake succeeds (IS_CONNECTED=true)
+     * - Connected → Disconnected if tunnel drops after being up
+     * - Connecting → Error after 60s timeout if handshake never completes
      */
-    private fun startWatchdog() {
+    private fun startWatchdog(serverName: String, serverAddr: String) {
         watchdogThread?.interrupt()
         watchdogThread = Thread {
             var wasConnected = false
@@ -205,9 +207,14 @@ class GhostStreamVpnService : VpnService() {
                 try {
                     val stats = nativeGetStats() ?: continue
                     val connected = stats.contains("\"connected\":true")
-                    if (connected) {
+                    if (connected && !wasConnected) {
                         wasConnected = true
                         timeoutSecs = Int.MAX_VALUE
+                        mainHandler.post {
+                            VpnStateManager.update(VpnState.Connected(serverName = serverName))
+                            val nm = getSystemService(NotificationManager::class.java)
+                            nm?.notify(NOTIFICATION_ID, buildNotification("Подключено: $serverAddr"))
+                        }
                     }
                     if (!connected && wasConnected) {
                         mainHandler.post { stopTunnel() }
