@@ -4,15 +4,23 @@ plugins {
 }
 
 android {
-    namespace = "com.phantom.vpn"
+    namespace = "com.ghoststream.vpn"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.phantom.vpn"
-        minSdk = 26          // Android 8.0+ (API 26), needed for foregroundServiceType
+        applicationId = "com.ghoststream.vpn"
+        minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.10"
     }
 
     buildTypes {
@@ -26,32 +34,49 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
 
-    // Rust .so files built separately with cargo-ndk
-    // Place at: android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.activity:activity-ktx:1.8.2")
-}
+    // Compose BOM
+    val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
+    implementation(composeBom)
 
-// ─── Task to build Rust library with cargo-ndk ────────────────────────────────
-//
-// Prerequisites:
-//   cargo install cargo-ndk
-//   rustup target add aarch64-linux-android
-//
-// The task builds libphantom_android.so and copies it to jniLibs.
+    // Compose
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+
+    // Activity Compose
+    implementation("androidx.activity:activity-compose:1.8.2")
+
+    // Navigation Compose
+    implementation("androidx.navigation:navigation-compose:2.7.7")
+
+    // Lifecycle + ViewModel
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+
+    // DataStore
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+
+    // Core
+    implementation("androidx.core:core-ktx:1.12.0")
+
+    // CameraX + ML Kit for QR
+    implementation("androidx.camera:camera-camera2:1.3.1")
+    implementation("androidx.camera:camera-lifecycle:1.3.1")
+    implementation("androidx.camera:camera-view:1.3.1")
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
+}
 
 val cargoWorkspaceDir = file("${rootProject.rootDir}/..")
 
@@ -65,6 +90,3 @@ tasks.register<Exec>("buildRustAndroid") {
         "build", "--release", "-p", "phantom-client-android"
     )
 }
-
-// If you want Gradle to auto-build Rust before assembling:
-// tasks.named("preBuild") { dependsOn("buildRustAndroid") }

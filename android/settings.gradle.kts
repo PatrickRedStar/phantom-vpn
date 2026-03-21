@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PhantomVPN"
+rootProject.name = "GhostStream"
 include(":app")

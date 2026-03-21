@@ -204,15 +204,28 @@ def generate_client_cert(name, ca_cert_path, ca_key_path, out_dir):
     _run(["openssl", "req", "-new", "-key", str(key_path),
           "-subj", subj, "-out", str(csr_path)])
 
-    # 3. Подписываем CA
-    _run(["openssl", "x509", "-req",
-          "-in",      str(csr_path),
-          "-CA",      str(ca_cert_path),
-          "-CAkey",   str(ca_key_path),
-          "-CAcreateserial",
-          "-days",    "3650",
-          "-sha256",
-          "-out",     str(cert_path)])
+    # 3. Подписываем CA (v3 с расширениями — rustls/webpki требует basicConstraints)
+    ext_content = (
+        "[v3_client]\n"
+        "basicConstraints = CA:FALSE\n"
+        "keyUsage = critical, digitalSignature\n"
+        "extendedKeyUsage = clientAuth\n"
+    )
+    ext_file = out_dir / "client.ext"
+    ext_file.write_text(ext_content)
+    try:
+        _run(["openssl", "x509", "-req",
+              "-in",       str(csr_path),
+              "-CA",       str(ca_cert_path),
+              "-CAkey",    str(ca_key_path),
+              "-CAcreateserial",
+              "-days",     "3650",
+              "-sha256",
+              "-extfile",  str(ext_file),
+              "-extensions", "v3_client",
+              "-out",      str(cert_path)])
+    finally:
+        ext_file.unlink(missing_ok=True)
 
     # Удаляем CSR
     csr_path.unlink(missing_ok=True)
