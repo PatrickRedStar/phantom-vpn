@@ -85,6 +85,10 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     fun setFilter(level: String) {
         _filter.value = level
         applyFilter()
+        // Sync Rust log level: DEBUG chip enables verbose output, all others → INFO
+        try {
+            GhostStreamVpnService.nativeSetLogLevel(if (level == "DEBUG") "debug" else "info")
+        } catch (_: Exception) {}
     }
 
     fun clearLogs() {

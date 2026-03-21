@@ -104,6 +104,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
             putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
             putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
+            putExtra(GhostStreamVpnService.EXTRA_CA_CERT_PATH, cfg.caCertPath ?: "")
         }
         ctx.startForegroundService(intent)
     }

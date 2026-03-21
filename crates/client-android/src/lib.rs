@@ -40,12 +40,20 @@ static LOG_SEQ: AtomicU64 = AtomicU64::new(0);
 static LOG_BUFFER: Mutex<VecDeque<LogEntryData>> = Mutex::new(VecDeque::new());
 static LOG_BUFFER_BYTES: AtomicU64 = AtomicU64::new(0);
 
+// 3=Info (default), 4=Debug, 5=Trace
+static LOG_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(3);
+
 struct GhostStreamLogger;
 static LOGGER: GhostStreamLogger = GhostStreamLogger;
 
 impl log::Log for GhostStreamLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info
+        let max = match LOG_LEVEL.load(Ordering::Relaxed) {
+            4 => log::Level::Debug,
+            5 => log::Level::Trace,
+            _ => log::Level::Info,
+        };
+        metadata.level() <= max
     }
 
     fn log(&self, record: &log::Record) {
@@ -125,6 +133,21 @@ static TUNNEL: Mutex<Option<TunnelHandle>> = Mutex::new(None);
 // ─── JNI entry points ────────────────────────────────────────────────────────
 
 #[no_mangle]
+pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeSetLogLevel(
+    mut env: JNIEnv,
+    _class: JClass,
+    level: JString,
+) {
+    let level_str = env.get_string(&level).map(String::from).unwrap_or_default();
+    match level_str.to_lowercase().as_str() {
+        "debug" => { LOG_LEVEL.store(4, Ordering::Relaxed); log::set_max_level(log::LevelFilter::Debug); }
+        "trace" => { LOG_LEVEL.store(5, Ordering::Relaxed); log::set_max_level(log::LevelFilter::Trace); }
+        _       => { LOG_LEVEL.store(3, Ordering::Relaxed); log::set_max_level(log::LevelFilter::Info);  }
+    }
+    log::info!("Log level → {}", level_str);
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeStart(
     mut env: JNIEnv,
     this: JObject,
@@ -134,8 +157,10 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     insecure: jboolean,
     cert_path: JString,
     key_path: JString,
+    ca_cert_path: JString,
 ) -> jint {
-    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
+    // Set max level permissive; GhostStreamLogger::enabled() gates by LOG_LEVEL
+    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Trace));
 
     macro_rules! jstr {
         ($name:expr, $field:literal) => {
@@ -150,6 +175,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let server_name_str = jstr!(server_name, "serverName");
     let cert_path_str = jstr!(cert_path, "certPath");
     let key_path_str = jstr!(key_path, "keyPath");
+    let ca_cert_path_str = jstr!(ca_cert_path, "caCertPath");
     let insecure = insecure != 0;
 
     reset_stats();
@@ -243,7 +269,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
                 if let Err(e) = run_tunnel(
                     fd, std_socket,
                     &server_addr_str, &server_name_str,
-                    insecure, &cert_path_str, &key_path_str,
+                    insecure, &cert_path_str, &key_path_str, &ca_cert_path_str,
                     shutdown_rx,
                 ).await {
                     log::error!("Tunnel error: {:#}", e);
@@ -369,6 +395,7 @@ async fn run_tunnel(
     insecure: bool,
     cert_path: &str,
     key_path: &str,
+    ca_cert_path: &str,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
@@ -387,7 +414,19 @@ async fn run_tunnel(
         None
     };
 
-    let client_config = phantom_core::quic::make_client_config(insecure, None, client_identity)
+    let server_ca = if !ca_cert_path.is_empty() {
+        match std::fs::read(ca_cert_path) {
+            Ok(bytes) => match phantom_core::quic::parse_pem_cert_chain(&bytes) {
+                Ok(certs) => { log::info!("Loaded CA cert from {}", ca_cert_path); Some(certs) }
+                Err(e)    => { log::error!("Failed to parse CA cert: {}", e); None }
+            },
+            Err(e) => { log::error!("Failed to read CA cert {}: {}", ca_cert_path, e); None }
+        }
+    } else {
+        None
+    };
+
+    let client_config = phantom_core::quic::make_client_config(insecure, server_ca, client_identity)
         .context("Failed to build QUIC client config")?;
 
     let runtime = quinn::default_runtime()
