@@ -378,7 +378,7 @@ def show_client(keyring, server_ip, server_port, server_name):
     print_android_instructions(name, item["cert_path"], item["key_path"])
 
 
-def export_conn_str(keyring, server_ip, server_port, server_name, ca_cert_path=None):
+def export_conn_str(keyring, server_ip, server_port, server_name):
     """Генерирует строку подключения (base64url JSON) для вставки в приложение."""
     clients = keyring["clients"]
     names   = sorted(clients.keys())
@@ -412,19 +412,12 @@ def export_conn_str(keyring, server_ip, server_port, server_name, ca_cert_path=N
 
     payload = {
         "v":    1,
-        "addr": f"{server_ip}:{server_port}",
+        "addr": f"{server_name}:{server_port}",
         "sni":  server_name,
         "tun":  item["tun_addr"],
         "cert": cert_pem,
         "key":  key_pem,
     }
-
-    # Embed CA cert for full self-contained connection string
-    if ca_cert_path:
-        try:
-            payload["ca"] = Path(ca_cert_path).read_text(encoding="utf-8")
-        except OSError as e:
-            print(f"[ВНИМАНИЕ] Не удалось прочитать CA cert ({ca_cert_path}): {e}")
 
     json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     conn_str   = base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
@@ -550,7 +543,7 @@ def main():
     elif choice == "4":
         show_client(keyring, server_ip, server_port, server_name)
     elif choice == "5":
-        export_conn_str(keyring, server_ip, server_port, server_name, ca_cert_path)
+        export_conn_str(keyring, server_ip, server_port, server_name)
     else:
         print("Неизвестная опция.")
 
