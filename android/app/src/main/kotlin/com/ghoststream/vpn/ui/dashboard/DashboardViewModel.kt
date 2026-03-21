@@ -5,7 +5,9 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.data.PreferencesStore
+import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
+import com.ghoststream.vpn.data.VpnConfig
 import com.ghoststream.vpn.data.VpnStats
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
@@ -15,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -24,9 +27,32 @@ import java.time.Instant
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preferencesStore = PreferencesStore(application)
+    private val profilesStore = ProfilesStore.getInstance(application)
     private val routingRulesManager = RoutingRulesManager(application)
     val vpnState = VpnStateManager.state
-    val config = preferencesStore.config.stateIn(viewModelScope, SharingStarted.Eagerly, com.ghoststream.vpn.data.VpnConfig())
+
+    // Combined: active profile (server/cert) + global prefs (DNS/routing/per-app)
+    val config: StateFlow<VpnConfig> = combine(
+        profilesStore.profiles,
+        profilesStore.activeId,
+        preferencesStore.config,
+    ) { profiles, activeId, prefs ->
+        val p = profiles.find { it.id == activeId } ?: profiles.firstOrNull()
+        VpnConfig(
+            serverAddr      = p?.serverAddr ?: "",
+            serverName      = p?.serverName ?: "",
+            insecure        = p?.insecure ?: false,
+            certPath        = p?.certPath ?: "",
+            keyPath         = p?.keyPath ?: "",
+            caCertPath      = p?.caCertPath,
+            tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
+            dnsServers      = prefs.dnsServers,
+            splitRouting    = prefs.splitRouting,
+            directCountries = prefs.directCountries,
+            perAppMode      = prefs.perAppMode,
+            perAppList      = prefs.perAppList,
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
     private val _timerText = MutableStateFlow("00:00:00")
     val timerText: StateFlow<String> = _timerText

@@ -84,7 +84,7 @@ fun AppNavigation() {
                 val settingsViewModel: SettingsViewModel = viewModel(entry)
                 val qrResult = entry.savedStateHandle.get<String>("qr_result")
                 if (qrResult != null) {
-                    settingsViewModel.setConnString(qrResult)
+                    settingsViewModel.setPendingConnString(qrResult)
                     entry.savedStateHandle.remove<String>("qr_result")
                 }
                 SettingsScreen(

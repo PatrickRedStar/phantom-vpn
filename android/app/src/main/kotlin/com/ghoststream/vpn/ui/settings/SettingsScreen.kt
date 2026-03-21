@@ -8,12 +8,12 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -29,6 +30,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ghoststream.vpn.data.RoutingRulesManager
+import com.ghoststream.vpn.data.VpnProfile
 import com.ghoststream.vpn.ui.theme.TextSecondary
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -62,7 +65,10 @@ fun SettingsScreen(
     onNavigateToQrScanner: () -> Unit = {},
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
-    val connString by viewModel.connString.collectAsStateWithLifecycle()
+    val profiles by viewModel.profiles.collectAsStateWithLifecycle()
+    val activeProfileId by viewModel.activeProfileId.collectAsStateWithLifecycle()
+    val pendingConnString by viewModel.pendingConnString.collectAsStateWithLifecycle()
+    val pendingName by viewModel.pendingName.collectAsStateWithLifecycle()
     val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
     val theme by viewModel.theme.collectAsStateWithLifecycle()
     val clipboardManager = LocalClipboardManager.current
@@ -74,52 +80,70 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(vertical = 16.dp),
     ) {
-        // ── Profile ──────────────────────────────────────────────
+
+        // ── Profiles ─────────────────────────────────────────────────────────
         item {
-            SettingsSection("Профиль подключения") {
-                OutlinedTextField(
-                    value = connString,
-                    onValueChange = { viewModel.setConnString(it) },
-                    label = { Text("Строка подключения") },
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                    minLines = 3,
-                    maxLines = 5,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            clipboardManager.getText()?.text?.let { viewModel.setConnString(it) }
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Из буфера") }
-                    OutlinedButton(
-                        onClick = onNavigateToQrScanner,
-                        modifier = Modifier.weight(1f),
-                    ) { Text("QR-код") }
+            var showAddDialog by remember { mutableStateOf(false) }
+
+            SettingsSection("Подключения") {
+                if (profiles.isEmpty()) {
+                    Text(
+                        "Нет профилей. Добавьте подключение.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                } else {
+                    profiles.forEachIndexed { index, profile ->
+                        if (index > 0) HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                        ProfileRow(
+                            profile = profile,
+                            isActive = profile.id == activeProfileId,
+                            onSelect = { viewModel.setActiveProfile(profile.id) },
+                            onDelete = { viewModel.deleteProfile(profile.id) },
+                        )
+                    }
                 }
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { viewModel.importConfig() },
+
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { showAddDialog = true },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("Применить") }
+                ) {
+                    Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Добавить подключение")
+                }
+
                 if (importStatus.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     Text(importStatus, style = MaterialTheme.typography.bodySmall)
                 }
-                if (config.serverAddr.isNotBlank()) {
-                    Spacer(Modifier.height(12.dp))
-                    ConfigRow("Сервер", config.serverAddr)
-                    ConfigRow("SNI", config.serverName)
-                    ConfigRow("TUN", config.tunAddr)
-                    ConfigRow("Сертификат", if (config.certPath.isNotBlank()) "настроен" else "нет")
-                    ConfigRow("Ключ", if (config.keyPath.isNotBlank()) "настроен" else "нет")
-                }
+            }
+
+            if (showAddDialog) {
+                AddProfileDialog(
+                    connString = pendingConnString,
+                    name = pendingName,
+                    onConnStringChange = { viewModel.setPendingConnString(it) },
+                    onNameChange = { viewModel.setPendingName(it) },
+                    onPasteFromClipboard = {
+                        clipboardManager.getText()?.text?.let { viewModel.setPendingConnString(it) }
+                    },
+                    onQrScanner = onNavigateToQrScanner,
+                    onConfirm = {
+                        viewModel.importConfig()
+                        showAddDialog = false
+                    },
+                    onDismiss = {
+                        viewModel.setPendingConnString("")
+                        viewModel.setPendingName("")
+                        showAddDialog = false
+                    },
+                )
             }
         }
 
-        // ── DNS ──────────────────────────────────────────────────
+        // ── DNS ──────────────────────────────────────────────────────────────
         item {
             var showAddDialog by remember { mutableStateOf(false) }
             var newDns by remember { mutableStateOf("") }
@@ -199,7 +223,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── Network ──────────────────────────────────────────────
+        // ── Network ──────────────────────────────────────────────────────────
         item {
             SettingsSection("Сеть") {
                 Row(
@@ -223,7 +247,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── Routing ────────────────────────────────────────────────
+        // ── Routing ──────────────────────────────────────────────────────────
         item {
             val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
             val downloadedRules by viewModel.downloadedRules.collectAsStateWithLifecycle()
@@ -324,7 +348,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── Per-app ───────────────────────────────────────────────
+        // ── Per-app ──────────────────────────────────────────────────────────
         item {
             SettingsSection("Приложения") {
                 listOf(
@@ -422,7 +446,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── Theme ────────────────────────────────────────────────
+        // ── Theme ────────────────────────────────────────────────────────────
         item {
             SettingsSection("Интерфейс") {
                 listOf(
@@ -448,7 +472,7 @@ fun SettingsScreen(
             }
         }
 
-        // ── About ────────────────────────────────────────────────
+        // ── About ────────────────────────────────────────────────────────────
         item {
             SettingsSection("О приложении") {
                 Text("GhostStream VPN", style = MaterialTheme.typography.titleMedium)
@@ -461,6 +485,117 @@ fun SettingsScreen(
         }
     }
 }
+
+// ── Profile row ──────────────────────────────────────────────────────────────
+
+@Composable
+private fun ProfileRow(
+    profile: VpnProfile,
+    isActive: Boolean,
+    onSelect: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onSelect() }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = isActive, onClick = onSelect)
+        Spacer(Modifier.width(4.dp))
+        Column(Modifier.weight(1f)) {
+            Text(profile.name, style = MaterialTheme.typography.bodyMedium)
+            if (profile.serverAddr.isNotBlank()) {
+                Text(
+                    profile.serverAddr,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = TextSecondary,
+                )
+            }
+        }
+        IconButton(onClick = { showDeleteConfirm = true }) {
+            Icon(Icons.Filled.Delete, "Удалить", tint = MaterialTheme.colorScheme.error)
+        }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Удалить профиль?") },
+            text = { Text("«${profile.name}» будет удалён безвозвратно.") },
+            confirmButton = {
+                TextButton(onClick = { onDelete(); showDeleteConfirm = false }) {
+                    Text("Удалить", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Отмена") }
+            },
+        )
+    }
+}
+
+// ── Add profile dialog ───────────────────────────────────────────────────────
+
+@Composable
+private fun AddProfileDialog(
+    connString: String,
+    name: String,
+    onConnStringChange: (String) -> Unit,
+    onNameChange: (String) -> Unit,
+    onPasteFromClipboard: () -> Unit,
+    onQrScanner: () -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Добавить подключение") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = onNameChange,
+                    label = { Text("Название (необязательно)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = connString,
+                    onValueChange = onConnStringChange,
+                    label = { Text("Строка подключения") },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
+                    minLines = 3,
+                    maxLines = 6,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onPasteFromClipboard, modifier = Modifier.weight(1f)) {
+                        Text("Из буфера", fontSize = 12.sp)
+                    }
+                    OutlinedButton(onClick = onQrScanner, modifier = Modifier.weight(1f)) {
+                        Text("QR-код", fontSize = 12.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm, enabled = connString.isNotBlank()) {
+                Text("Добавить")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        },
+    )
+}
+
+// ── Shared composables ───────────────────────────────────────────────────────
 
 @Composable
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
@@ -479,20 +614,5 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
             )
             content()
         }
-    }
-}
-
-@Composable
-private fun ConfigRow(label: String, value: String) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-    ) {
-        Text("$label: ", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-        Text(
-            value,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-        )
     }
 }
