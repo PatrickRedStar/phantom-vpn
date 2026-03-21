@@ -73,7 +73,8 @@ impl TunInterface {
             ifr.ifr_name[i] = b as libc::c_char;
         }
 
-        let ret = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF, &ifr as *const _) };
+        #[allow(clippy::unnecessary_cast)]
+        let ret = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF as _, &ifr as *const _) };
         if ret < 0 {
             return Err(io::Error::last_os_error());
         }

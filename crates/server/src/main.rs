@@ -183,6 +183,48 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(300);
     tokio::spawn(quic_server::cleanup_task(sessions.clone(), idle_secs));
 
+    // ─── Client allowlist (fingerprint-based) ────────────────────────────
+    let allow_list = quic_server::new_allow_list();
+    let allow_list_path = cfg.quic.as_ref()
+        .and_then(|q| q.allowed_clients_path.clone());
+
+    if let Some(ref path) = allow_list_path {
+        match quic_server::load_allow_list(Path::new(path)) {
+            Ok(fps) => {
+                tracing::info!("Loaded {} allowed client fingerprints from {}", fps.len(), path);
+                *allow_list.write().await = fps;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load client allowlist from {}: {} — allowing all", path, e);
+            }
+        }
+    } else {
+        tracing::info!("No allowed_clients_path configured — all authenticated clients accepted");
+    }
+
+    // SIGHUP → hot-reload allowlist
+    {
+        let allow_list = allow_list.clone();
+        let path = allow_list_path.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sighup = signal(SignalKind::hangup()).unwrap();
+            while sighup.recv().await.is_some() {
+                if let Some(ref p) = path {
+                    match quic_server::load_allow_list(Path::new(p)) {
+                        Ok(fps) => {
+                            tracing::info!("SIGHUP: reloaded {} allowed fingerprints from {}", fps.len(), p);
+                            *allow_list.write().await = fps;
+                        }
+                        Err(e) => {
+                            tracing::error!("SIGHUP: failed to reload {}: {}", p, e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // ─── TUN → QUIC loop (io_uring reader feeds directly) ─────────────────
     {
         let sess = sessions.clone();
@@ -216,7 +258,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     tokio::select! {
-        result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, tun_network, tun_prefix) => {
+        result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, tun_network, tun_prefix, allow_list) => {
             if let Err(e) = result {
                 tracing::error!("Accept loop exited: {}", e);
             }

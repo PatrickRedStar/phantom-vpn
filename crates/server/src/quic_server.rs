@@ -2,7 +2,9 @@
 //! Authentication is handled by mTLS at the TLS layer.
 //! Wire format per stream frame: [4B total_len][batch plaintext]
 
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Context;
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
@@ -51,6 +53,44 @@ pub fn new_quic_session_map() -> QuicSessionMap {
     Arc::new(DashMap::new())
 }
 
+// ─── Client allowlist (fingerprint-based) ───────────────────────────────────
+
+/// Set of allowed client certificate SHA-256 fingerprints (hex, lowercase).
+/// Empty set = allow all authenticated clients (no filtering).
+/// Wrapped in RwLock for hot-reload via SIGHUP.
+pub type ClientAllowList = Arc<RwLock<HashSet<String>>>;
+
+pub fn new_allow_list() -> ClientAllowList {
+    Arc::new(RwLock::new(HashSet::new()))
+}
+
+/// Load allowed fingerprints from clients.json.
+/// Expected format: {"clients": {"name": {"fingerprint": "abcd1234..."}, ...}}
+pub fn load_allow_list(path: &Path) -> anyhow::Result<HashSet<String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let val: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+
+    let mut fps = HashSet::new();
+    if let Some(clients) = val.get("clients").and_then(|c| c.as_object()) {
+        for (name, info) in clients {
+            if let Some(fp) = info.get("fingerprint").and_then(|f| f.as_str()) {
+                fps.insert(fp.to_lowercase());
+                tracing::debug!("Allowed client: {} (fp={}…)", name, &fp[..8.min(fp.len())]);
+            }
+        }
+    }
+    Ok(fps)
+}
+
+/// Extract SHA-256 fingerprint from a DER-encoded X.509 certificate.
+fn cert_fingerprint(cert_der: &[u8]) -> String {
+    use sha2::{Sha256, Digest};
+    let hash = Sha256::digest(cert_der);
+    hash.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
 // ─── Accept loop ────────────────────────────────────────────────────────────
 
 pub async fn run_accept_loop(
@@ -59,6 +99,7 @@ pub async fn run_accept_loop(
     sessions: QuicSessionMap,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
+    allow_list:  ClientAllowList,
 ) -> anyhow::Result<()> {
     tracing::info!("QUIC accept loop started");
 
@@ -73,6 +114,7 @@ pub async fn run_accept_loop(
 
         let tun_tx   = tun_tx.clone();
         let sessions = sessions.clone();
+        let allow_list = allow_list.clone();
 
         tokio::spawn(async move {
             let remote = incoming.remote_address();
@@ -86,7 +128,7 @@ pub async fn run_accept_loop(
                 }
             };
 
-            if let Err(e) = handle_connection(connection, tun_tx, sessions, tun_network, tun_prefix).await {
+            if let Err(e) = handle_connection(connection, tun_tx, sessions, tun_network, tun_prefix, allow_list).await {
                 tracing::warn!("Connection handler error from {}: {}", remote, e);
             }
         });
@@ -103,24 +145,36 @@ async fn handle_connection(
     sessions:    QuicSessionMap,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
+    allow_list:  ClientAllowList,
 ) -> anyhow::Result<()> {
     let remote = connection.remote_address();
 
     // ─── REALITY-style: check if client presented a valid mTLS cert ──────
-    let is_authenticated = connection.peer_identity()
+    let peer_certs = connection.peer_identity()
         .and_then(|id| id.downcast_ref::<Vec<rustls::pki_types::CertificateDer>>().cloned())
-        .map(|certs| !certs.is_empty())
-        .unwrap_or(false);
+        .unwrap_or_default();
 
-    if !is_authenticated {
-        // No client cert → DPI probe or curious visitor.
-        // Behave like a normal HTTP/3 server: accept streams, respond with a web page.
+    if peer_certs.is_empty() {
         tracing::info!("Unauthenticated connection from {} → fallback mode", remote);
         handle_fallback(connection, remote).await;
         return Ok(());
     }
 
-    tracing::info!("Authenticated VPN client from {}", remote);
+    // ─── Fingerprint allowlist check ─────────────────────────────────────
+    let client_fp = cert_fingerprint(peer_certs[0].as_ref());
+    {
+        let allowed = allow_list.read().await;
+        if !allowed.is_empty() && !allowed.contains(&client_fp) {
+            tracing::warn!(
+                "Client {} rejected: fingerprint {}… not in allowlist",
+                remote, &client_fp[..16]
+            );
+            connection.close(0u32.into(), b"not authorized");
+            return Ok(());
+        }
+    }
+
+    tracing::info!("Authenticated VPN client from {} (fp={}…)", remote, &client_fp[..16]);
 
     let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
