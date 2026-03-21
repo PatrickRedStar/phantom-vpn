@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -60,35 +61,50 @@ fun ConnectButton(
 
     Box(
         contentAlignment = Alignment.Center,
-        modifier = modifier
-            .size(100.dp)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .shadow(
-                elevation = if (state is VpnState.Connected) 24.dp else 8.dp,
-                shape = CircleShape,
-                ambientColor = animatedColor.copy(alpha = glowAlpha),
-                spotColor = animatedColor.copy(alpha = glowAlpha),
-            )
-            .clip(CircleShape)
-            .background(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        animatedColor,
-                        animatedColor.copy(alpha = 0.7f),
-                    ),
-                ),
-            )
-            .clickable(onClick = onClick),
+        modifier = modifier.size(122.dp),
     ) {
-        Icon(
-            imageVector = when (state) {
-                is VpnState.Connected -> Icons.Filled.Security
-                is VpnState.Error     -> Icons.Filled.Warning
-                else                  -> Icons.Outlined.Security
-            },
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(48.dp),
-        )
+        // Spinning ring visible only while connecting
+        if (state is VpnState.Connecting) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(122.dp),
+                color = AccentPurple,
+                strokeWidth = 3.dp,
+                trackColor = AccentPurple.copy(alpha = 0.2f),
+            )
+        }
+
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(100.dp)
+                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .shadow(
+                    elevation = if (state is VpnState.Connected) 24.dp else 8.dp,
+                    shape = CircleShape,
+                    ambientColor = animatedColor.copy(alpha = glowAlpha),
+                    spotColor = animatedColor.copy(alpha = glowAlpha),
+                )
+                .clip(CircleShape)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            animatedColor,
+                            animatedColor.copy(alpha = 0.7f),
+                        ),
+                    ),
+                )
+                .clickable(onClick = onClick),
+        ) {
+            Icon(
+                imageVector = when (state) {
+                    is VpnState.Connected -> Icons.Filled.Security
+                    is VpnState.Error     -> Icons.Filled.Warning
+                    else                  -> Icons.Outlined.Security
+                },
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(48.dp),
+            )
+        }
     }
 }

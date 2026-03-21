@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,6 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,7 +64,7 @@ fun LogsScreen(viewModel: LogsViewModel) {
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            listOf("ALL", "INFO", "WARN", "ERROR").forEach { level ->
+            listOf("ALL", "DEBUG", "INFO", "WARN", "ERROR").forEach { level ->
                 FilterChip(
                     selected = filter == level,
                     onClick = { viewModel.setFilter(level) },
@@ -76,8 +78,10 @@ fun LogsScreen(viewModel: LogsViewModel) {
             IconButton(onClick = { viewModel.shareLogs(context) }) {
                 Icon(Icons.Filled.Share, "Отправить")
             }
-            IconButton(onClick = { viewModel.clearLogs() }) {
-                Icon(Icons.Filled.Delete, "Очистить")
+            TextButton(onClick = { viewModel.clearLogs() }) {
+                Icon(Icons.Filled.Delete, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Очистить", fontSize = 12.sp)
             }
         }
 

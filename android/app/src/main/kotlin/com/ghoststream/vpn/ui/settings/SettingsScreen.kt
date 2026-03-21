@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,6 +28,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -161,6 +163,12 @@ fun SettingsScreen(
                         )
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Для DNS-over-HTTPS/TLS включите «Личный DNS» в системных настройках Android (Настройки → Сеть → Расширенные → Личный DNS).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
             }
 
             if (showAddDialog) {
@@ -200,9 +208,9 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("Пропускать проверку TLS")
+                        Text("Не проверять сертификат сервера")
                         Text(
-                            "Для серверов без mTLS-сертификата",
+                            "Нужно только при ручной настройке без CA. Строка подключения v0.7+ включает CA автоматически — этот переключатель не требуется.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                         )
@@ -218,6 +226,8 @@ fun SettingsScreen(
         // ── Routing ────────────────────────────────────────────────
         item {
             val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
+            val downloadedRules by viewModel.downloadedRules.collectAsStateWithLifecycle()
+            val downloading by viewModel.downloading.collectAsStateWithLifecycle()
 
             SettingsSection("Маршрутизация") {
                 Row(
@@ -249,7 +259,9 @@ fun SettingsScreen(
                     Spacer(Modifier.height(4.dp))
                     RoutingRulesManager.AVAILABLE_COUNTRIES.forEach { (code, label) ->
                         val isSelected = code in config.directCountries
-                        val isDownloaded = viewModel.routingRulesManager.isDownloaded(code)
+                        val ruleInfo = downloadedRules[code]
+                        val isDownloaded = ruleInfo != null
+                        val isDownloading = code in downloading
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -264,15 +276,36 @@ fun SettingsScreen(
                             Spacer(Modifier.width(4.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(label)
-                                if (!isDownloaded) {
-                                    Text(
+                                when {
+                                    isDownloading -> Text(
+                                        "загрузка...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    ruleInfo != null -> {
+                                        val date = java.text.SimpleDateFormat(
+                                            "dd.MM.yy",
+                                            java.util.Locale.getDefault(),
+                                        ).format(java.util.Date(ruleInfo.lastUpdated))
+                                        Text(
+                                            "${ruleInfo.cidrCount} подсетей · $date",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextSecondary,
+                                        )
+                                    }
+                                    else -> Text(
                                         "не загружен",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = TextSecondary,
                                     )
                                 }
                             }
-                            if (!isDownloaded || isSelected) {
+                            if (isDownloading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
                                 IconButton(onClick = { viewModel.downloadCountryRules(code) }) {
                                     Icon(Icons.Filled.Download, "Загрузить")
                                 }

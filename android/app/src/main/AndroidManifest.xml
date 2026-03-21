@@ -47,4 +47,11 @@
 
     </application>
 
+    <!-- Android 11+: package visibility — needed to list installed apps for per-app VPN -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+    </queries>
+
 </manifest>
