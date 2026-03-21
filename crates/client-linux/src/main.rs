@@ -7,7 +7,6 @@ mod linux {
     use std::fs::{File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::os::unix::io::AsRawFd;
-    use std::path::Path;
     use std::pin::Pin;
     use std::process::Command;
     use std::task::Poll;
@@ -123,7 +122,8 @@ fn create_tun(name: &str, addr_cidr: &str, mtu: u32) -> anyhow::Result<File> {
         req.ifr_name[i] = b as libc::c_char;
     }
 
-    let ret = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF, &req as *const _) };
+    #[allow(clippy::unnecessary_cast)]
+    let ret = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF as _, &req as *const _) };
     if ret < 0 {
         anyhow::bail!("TUNSETIFF ioctl failed: {} (run as root?)", io::Error::last_os_error());
     }
@@ -313,7 +313,13 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
             let _ = shutdown_tx.send(());
         });
 
-    let cfg = helpers::load_config(&args.config)?;
+    // Load config: --conn-string overrides TOML config file
+    let cfg = if let Some(cs_cfg) = helpers::load_conn_string(&args)? {
+        tracing::info!("Config loaded from connection string");
+        cs_cfg
+    } else {
+        helpers::load_config(&args.config)?
+    };
 
     let server_addr: SocketAddr = if let Some(ref sa) = args.server {
         sa.parse().context("Invalid --server address")?
@@ -342,23 +348,11 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     }
     std_socket.set_nonblocking(true)?;
 
-    // Load mTLS client identity (cert + key) if configured
-    let client_identity = if let Some(ref qc) = cfg.quic {
-        if let (Some(ref cp), Some(ref kp)) = (&qc.cert_path, &qc.key_path) {
-            tracing::info!("Loading client TLS certificate from {}", cp);
-            let identity = phantom_core::quic::load_pem_certs(Path::new(cp), Path::new(kp))
-                .context("Failed to load client TLS certificate")?;
-            Some(identity)
-        } else { None }
-    } else { None };
+    // Load mTLS client identity (cert + key) — inline PEM or file path
+    let client_identity = helpers::load_tls_identity(&cfg)?;
 
-    // Load server CA cert if configured (for verifying server cert instead of skip)
-    let server_ca = if let Some(ref qc) = cfg.quic {
-        if let Some(ref ca_path) = qc.ca_cert_path {
-            Some(phantom_core::quic::load_pem_cert_chain(Path::new(ca_path))
-                .context("Failed to load server CA cert")?)
-        } else { None }
-    } else { None };
+    // Load server CA cert — inline PEM or file path
+    let server_ca = helpers::load_server_ca(&cfg)?;
 
     let skip_verify = cfg.network.insecure || (server_ca.is_none() && client_identity.is_none());
     let client_config = phantom_core::quic::make_client_config(skip_verify, server_ca, client_identity)

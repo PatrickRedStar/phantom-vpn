@@ -11,6 +11,7 @@ object ConnStringParser {
         val tun: String,
         val cert: String,
         val key: String,
+        val ca: String? = null,
     )
 
     fun parse(input: String): Result<ParsedConfig> = runCatching {
@@ -36,6 +37,7 @@ object ConnStringParser {
             tun  = obj.getString("tun"),
             cert = obj.getString("cert"),
             key  = obj.getString("key"),
+            ca   = obj.optString("ca", null),
         )
     }
 }

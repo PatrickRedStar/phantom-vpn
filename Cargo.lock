@@ -831,6 +831,7 @@ dependencies = [
  "rand 0.8.5",
  "rustls",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",
