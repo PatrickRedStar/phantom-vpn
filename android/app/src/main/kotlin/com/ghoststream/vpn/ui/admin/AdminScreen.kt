@@ -3,20 +3,33 @@ package com.ghoststream.vpn.ui.admin
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+
+enum class ClientFilter { ALL, ONLINE, DISABLED }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,6 +51,19 @@ fun AdminScreen(
 
     var showAddDialog by remember { mutableStateOf(false) }
     var deleteConfirm by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var activeFilter by remember { mutableStateOf(ClientFilter.ALL) }
+    var showStatsDialog by remember { mutableStateOf<String?>(null) }
+
+    val filteredClients = clients
+        .filter { c ->
+            (searchQuery.isEmpty() || c.name.contains(searchQuery, ignoreCase = true)) &&
+            when (activeFilter) {
+                ClientFilter.ALL      -> true
+                ClientFilter.ONLINE   -> c.connected
+                ClientFilter.DISABLED -> !c.enabled
+            }
+        }
 
     // Show conn string dialog when a new client is created or conn string is fetched
     if (newConnString != null) {
@@ -69,6 +95,20 @@ fun AdminScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deleteConfirm = null }) { Text("Отмена") }
+            },
+        )
+    }
+
+    showStatsDialog?.let { clientName ->
+        val stats by viewModel.clientStats.collectAsStateWithLifecycle()
+        val logs by viewModel.clientLogs.collectAsStateWithLifecycle()
+        ClientDetailsDialog(
+            clientName = clientName,
+            stats = stats,
+            logs = logs,
+            onDismiss = {
+                showStatsDialog = null
+                viewModel.clearClientDetails()
             },
         )
     }
@@ -123,6 +163,49 @@ fun AdminScreen(
                 }
             }
 
+            // Search bar
+            item {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("Поиск клиента") },
+                    leadingIcon = { Icon(Icons.Filled.Search, null) },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Filled.Clear, null)
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // Filter chips
+            item {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(
+                        selected = activeFilter == ClientFilter.ALL,
+                        onClick = { activeFilter = ClientFilter.ALL },
+                        label = { Text("Все (${clients.size})") },
+                    )
+                    FilterChip(
+                        selected = activeFilter == ClientFilter.ONLINE,
+                        onClick = { activeFilter = ClientFilter.ONLINE },
+                        label = { Text("Онлайн (${clients.count { it.connected }})") },
+                    )
+                    FilterChip(
+                        selected = activeFilter == ClientFilter.DISABLED,
+                        onClick = { activeFilter = ClientFilter.DISABLED },
+                        label = { Text("Отключены (${clients.count { !it.enabled }})") },
+                    )
+                }
+            }
+
             // Server status card
             status?.let { s ->
                 item {
@@ -142,19 +225,28 @@ fun AdminScreen(
 
             // Clients header
             item {
+                val countLabel = if (searchQuery.isEmpty() && activeFilter == ClientFilter.ALL)
+                    "Клиенты (${clients.size})"
+                else
+                    "Клиенты (${filteredClients.size} из ${clients.size})"
                 Text(
-                    "Клиенты (${clients.size})",
+                    countLabel,
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(vertical = 4.dp),
                 )
             }
 
-            items(clients, key = { it.name }) { client ->
+            items(filteredClients, key = { it.name }) { client ->
                 ClientCard(
                     client = client,
                     onToggle = { viewModel.toggleEnabled(client.name, client.enabled) },
                     onDelete = { deleteConfirm = client.name },
                     onCopyConnString = { viewModel.getConnString(client.name) },
+                    onShowStats = {
+                        showStatsDialog = client.name
+                        viewModel.loadClientStats(client.name)
+                        viewModel.loadClientLogs(client.name)
+                    },
                 )
             }
         }
@@ -167,6 +259,7 @@ private fun ClientCard(
     onToggle: () -> Unit,
     onDelete: () -> Unit,
     onCopyConnString: () -> Unit,
+    onShowStats: () -> Unit = {},
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -199,6 +292,10 @@ private fun ClientCard(
                 // Copy conn string
                 IconButton(onClick = onCopyConnString, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Filled.QrCode, "Строка подключения", modifier = Modifier.size(18.dp))
+                }
+                // Stats / logs
+                IconButton(onClick = onShowStats, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.QueryStats, "Статистика", modifier = Modifier.size(18.dp))
                 }
                 // Delete
                 IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
@@ -246,13 +343,99 @@ private fun AddClientDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) 
 }
 
 @Composable
+private fun ClientDetailsDialog(
+    clientName: String,
+    stats: List<StatsSample>,
+    logs: List<DestEntry>,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(clientName) },
+        text = {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // Stats section
+                item {
+                    Text("Трафик (последний час)", style = MaterialTheme.typography.titleSmall)
+                }
+                if (stats.isEmpty()) {
+                    item { Text("Нет данных (клиент не подключён или нет истории)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) }
+                } else {
+                    item {
+                        val maxRx = stats.maxOf { it.bytesRx }.coerceAtLeast(1)
+                        val maxTx = stats.maxOf { it.bytesTx }.coerceAtLeast(1)
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("↓ ${formatBytes(stats.last().bytesRx)} total  ↑ ${formatBytes(stats.last().bytesTx)} total", style = MaterialTheme.typography.bodySmall)
+                            // Simple sparkline (last 12 samples)
+                            val recent = stats.takeLast(12)
+                            Canvas(modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                                val w = size.width / recent.size
+                                recent.forEachIndexed { i, s ->
+                                    val rxH = (s.bytesRx.toFloat() / maxRx * size.height * 0.9f).coerceAtLeast(2f)
+                                    val txH = (s.bytesTx.toFloat() / maxTx * size.height * 0.9f).coerceAtLeast(2f)
+                                    drawRect(color = Color(0xFF4CAF50), topLeft = Offset(i * w, size.height - rxH), size = Size(w * 0.4f, rxH))
+                                    drawRect(color = Color(0xFF2196F3), topLeft = Offset(i * w + w * 0.5f, size.height - txH), size = Size(w * 0.4f, txH))
+                                }
+                            }
+                            Row {
+                                Text("■ ↓ RX  ", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4CAF50))
+                                Text("■ ↑ TX", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2196F3))
+                            }
+                        }
+                    }
+                }
+                // Logs section
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Последние подключения (${logs.size})", style = MaterialTheme.typography.titleSmall)
+                }
+                if (logs.isEmpty()) {
+                    item { Text("Нет записей", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) }
+                } else {
+                    items(logs.take(50)) { entry ->
+                        Text(
+                            "${entry.proto.uppercase()}  ${entry.dst}:${entry.port}  ${formatBytes(entry.bytes)}",
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
+
+@Composable
 private fun ConnStringDialog(connString: String, onDismiss: () -> Unit) {
     val context = LocalContext.current
+    val qrBitmap = remember(connString) {
+        runCatching {
+            val size = 512
+            val bits = QRCodeWriter().encode(connString, BarcodeFormat.QR_CODE, size, size)
+            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
+            for (x in 0 until size) for (y in 0 until size) {
+                bmp.setPixel(x, y, if (bits[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+            }
+            bmp.asImageBitmap()
+        }.getOrNull()
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Строка подключения") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                qrBitmap?.let { bm ->
+                    Image(
+                        bitmap = bm,
+                        contentDescription = "QR-код строки подключения",
+                        modifier = Modifier.size(200.dp),
+                    )
+                }
                 Text("Скопируйте и вставьте в приложение PhantomVPN:", style = MaterialTheme.typography.bodySmall)
                 Surface(
                     color = MaterialTheme.colorScheme.surfaceVariant,

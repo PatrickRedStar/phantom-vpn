@@ -11,9 +11,9 @@ android {
         applicationId = "com.ghoststream.vpn"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.8.7"
-        buildConfigField("String", "GIT_TAG", "\"v0.8.7\"")
+        versionCode = 14
+        versionName = "0.8.8"
+        buildConfigField("String", "GIT_TAG", "\"v0.8.8\"")
     }
 
     buildFeatures {
@@ -73,11 +73,14 @@ dependencies {
     // Core
     implementation("androidx.core:core-ktx:1.12.0")
 
-    // CameraX + ML Kit for QR
+    // CameraX + ML Kit for QR scanning
     implementation("androidx.camera:camera-camera2:1.3.1")
     implementation("androidx.camera:camera-lifecycle:1.3.1")
     implementation("androidx.camera:camera-view:1.3.1")
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
+
+    // ZXing core for QR code generation
+    implementation("com.google.zxing:core:3.5.3")
 }
 
 val cargoWorkspaceDir = file("${rootProject.rootDir}/..")

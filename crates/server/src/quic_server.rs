@@ -22,13 +22,33 @@ use phantom_core::{
 
 // ─── Session types ──────────────────────────────────────────────────────────
 
+/// One logged destination visit (client → server direction).
+#[derive(Clone)]
+pub struct DestEntry {
+    pub ts:       u64,
+    pub dst_ip:   std::net::Ipv4Addr,
+    pub dst_port: u16,
+    pub proto:    u8,   // 6=TCP, 17=UDP, 1=ICMP, else raw
+    pub bytes:    u32,
+}
+
+/// One time-series sample (snapshot every 60 s).
+#[derive(Clone)]
+pub struct StatsSample {
+    pub ts:       u64,
+    pub bytes_rx: u64,
+    pub bytes_tx: u64,
+}
+
 pub struct QuicSession {
-    pub connection: quinn::Connection,
-    pub data_sends: Vec<mpsc::Sender<Vec<u8>>>,
-    pub shaper:     Mutex<H264Shaper>,
-    pub last_seen:  AtomicU64,
-    pub bytes_rx:   AtomicU64,
-    pub bytes_tx:   AtomicU64,
+    pub connection:    quinn::Connection,
+    pub data_sends:    Vec<mpsc::Sender<Vec<u8>>>,
+    pub shaper:        Mutex<H264Shaper>,
+    pub last_seen:     AtomicU64,
+    pub bytes_rx:      AtomicU64,
+    pub bytes_tx:      AtomicU64,
+    pub dest_log:      std::sync::Mutex<std::collections::VecDeque<DestEntry>>,
+    pub stats_samples: std::sync::Mutex<std::collections::VecDeque<StatsSample>>,
 }
 
 impl QuicSession {
@@ -204,17 +224,19 @@ async fn handle_connection(
     tracing::debug!("{} data streams accepted from {}", N_DATA_STREAMS, remote);
 
     let session = Arc::new(QuicSession {
-        connection: connection.clone(),
-        data_sends: frame_txs,
-        shaper:     Mutex::new(shaper),
-        last_seen:  AtomicU64::new(
+        connection:    connection.clone(),
+        data_sends:    frame_txs,
+        shaper:        Mutex::new(shaper),
+        last_seen:     AtomicU64::new(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
         ),
-        bytes_rx:   AtomicU64::new(0),
-        bytes_tx:   AtomicU64::new(0),
+        bytes_rx:      AtomicU64::new(0),
+        bytes_tx:      AtomicU64::new(0),
+        dest_log:      std::sync::Mutex::new(std::collections::VecDeque::new()),
+        stats_samples: std::sync::Mutex::new(std::collections::VecDeque::new()),
     });
 
     // Run N stream RX loops
@@ -283,7 +305,7 @@ async fn stream_rx_loop(
             .await
             .map_err(|e| anyhow::anyhow!("stream read frame: {}", e))?;
 
-        session.bytes_rx.fetch_add(frame_len as u64, Ordering::Relaxed);
+        session.bytes_rx.fetch_add((4 + frame_len) as u64, Ordering::Relaxed);
         session.touch();
 
         // 3. Walk batch in-place — no intermediate Vec<Vec<u8>>
@@ -315,8 +337,27 @@ async fn stream_rx_loop(
                 }
             }
 
-            session.touch();
             let _ = clamp_tcp_mss(&mut frame_buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
+
+            // Log destination IP/port for this packet
+            if pkt_len >= 20 && (frame_buf[offset] >> 4) == 4 {
+                let proto = frame_buf[offset + 9];
+                let dst_ip = std::net::Ipv4Addr::new(
+                    frame_buf[offset + 16], frame_buf[offset + 17],
+                    frame_buf[offset + 18], frame_buf[offset + 19],
+                );
+                let ihl = ((frame_buf[offset] & 0x0F) as usize) * 4;
+                let dst_port = if (proto == 6 || proto == 17) && ihl + 4 <= pkt_len {
+                    u16::from_be_bytes([frame_buf[offset + ihl + 2], frame_buf[offset + ihl + 3]])
+                } else {
+                    0
+                };
+                let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                if let Ok(mut log) = session.dest_log.lock() {
+                    if log.len() >= 1000 { log.pop_front(); }
+                    log.push_back(DestEntry { ts, dst_ip, dst_port, proto, bytes: pkt_len as u32 });
+                }
+            }
 
             if let Err(e) = tun_tx.send(frame_buf[offset..offset + pkt_len].to_vec()).await {
                 tracing::error!("tun_tx send error: {}", e);
@@ -504,9 +545,18 @@ pub async fn cleanup_task(sessions: QuicSessionMap, idle_secs: u64) {
         interval.tick().await;
 
         let mut to_remove = Vec::new();
+        let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         for entry in sessions.iter() {
             if entry.value().is_idle(idle_secs) {
                 to_remove.push(*entry.key());
+            } else {
+                // Snapshot traffic counters for time-series
+                let bytes_rx = entry.value().bytes_rx.load(Ordering::Relaxed);
+                let bytes_tx = entry.value().bytes_tx.load(Ordering::Relaxed);
+                if let Ok(mut samples) = entry.value().stats_samples.lock() {
+                    if samples.len() >= 60 { samples.pop_front(); }
+                    samples.push_back(StatsSample { ts: now_ts, bytes_rx, bytes_tx });
+                }
             }
         }
         for ip in &to_remove {
