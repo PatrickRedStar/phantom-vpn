@@ -27,6 +27,7 @@ use phantom_core::{
 pub struct DestEntry {
     pub ts:       u64,
     pub dst_ip:   std::net::Ipv4Addr,
+    pub dst_host: Option<String>,  // resolved hostname from passive DNS cache
     pub dst_port: u16,
     pub proto:    u8,   // 6=TCP, 17=UDP, 1=ICMP, else raw
     pub bytes:    u32,
@@ -49,6 +50,8 @@ pub struct QuicSession {
     pub bytes_tx:      AtomicU64,
     pub dest_log:      std::sync::Mutex<std::collections::VecDeque<DestEntry>>,
     pub stats_samples: std::sync::Mutex<std::collections::VecDeque<StatsSample>>,
+    /// Passive DNS cache: IPv4 → hostname, populated from DNS responses (src_port=53)
+    pub dns_cache:     std::sync::Mutex<std::collections::HashMap<Ipv4Addr, String>>,
 }
 
 impl QuicSession {
@@ -237,6 +240,7 @@ async fn handle_connection(
         bytes_tx:      AtomicU64::new(0),
         dest_log:      std::sync::Mutex::new(std::collections::VecDeque::new()),
         stats_samples: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        dns_cache:     std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Run N stream RX loops
@@ -353,9 +357,11 @@ async fn stream_rx_loop(
                     0
                 };
                 let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                let dst_host = session.dns_cache.lock().ok()
+                    .and_then(|c| c.get(&dst_ip).cloned());
                 if let Ok(mut log) = session.dest_log.lock() {
                     if log.len() >= 1000 { log.pop_front(); }
-                    log.push_back(DestEntry { ts, dst_ip, dst_port, proto, bytes: pkt_len as u32 });
+                    log.push_back(DestEntry { ts, dst_ip, dst_host, dst_port, proto, bytes: pkt_len as u32 });
                 }
             }
 
@@ -444,8 +450,18 @@ pub async fn tun_to_quic_loop(
             let n_streams = session.data_sends.len();
 
             // Group by flow-hash → stream index
+            // Also intercept DNS responses (src_port=53) to populate per-session hostname cache
             let mut stream_batches: Vec<Vec<&[u8]>> = vec![Vec::new(); n_streams];
             for pkt in packets {
+                if pkt.len() >= 28 && pkt[9] == 17 {
+                    let ihl = ((pkt[0] & 0x0F) as usize) * 4;
+                    if ihl + 8 <= pkt.len() {
+                        let src_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+                        if src_port == 53 {
+                            dns_parse_response(&pkt[ihl + 8..], &session);
+                        }
+                    }
+                }
                 let idx = flow_stream_idx(pkt, n_streams);
                 stream_batches[idx].push(pkt.as_slice());
             }
@@ -574,4 +590,113 @@ pub async fn cleanup_task(sessions: QuicSessionMap, idle_secs: u64) {
             );
         }
     }
+}
+
+// ─── Passive DNS cache helpers ────────────────────────────────────────────────
+
+/// Parse a DNS response packet and insert any A-record mappings into the session's dns_cache.
+/// Called for UDP packets with src_port == 53 in tun_to_quic_loop.
+fn dns_parse_response(data: &[u8], session: &QuicSession) {
+    if data.len() < 12 { return; }
+    // Flags: QR=1 (response), RCODE=0 (no error)
+    let flags = u16::from_be_bytes([data[2], data[3]]);
+    if flags & 0x8000 == 0 || flags & 0x000F != 0 { return; }
+
+    let qdcount = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let ancount = u16::from_be_bytes([data[6], data[7]]) as usize;
+    if ancount == 0 { return; }
+
+    let mut pos = 12;
+
+    // Skip question section
+    for _ in 0..qdcount {
+        if !dns_skip_name(data, &mut pos) { return; }
+        pos += 4; // QTYPE + QCLASS
+    }
+
+    // Parse answer section
+    let mut cache = match session.dns_cache.lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    // Limit cache size to avoid unbounded growth
+    if cache.len() > 4096 { cache.clear(); }
+
+    for _ in 0..ancount {
+        let name_start = pos;
+        if !dns_skip_name(data, &mut pos) { return; }
+        let _ = name_start;
+
+        if pos + 10 > data.len() { return; }
+        let rtype  = u16::from_be_bytes([data[pos],     data[pos + 1]]);
+        let rdlen  = u16::from_be_bytes([data[pos + 8], data[pos + 9]]) as usize;
+        pos += 10;
+
+        if pos + rdlen > data.len() { return; }
+
+        if rtype == 1 && rdlen == 4 {
+            // A record: parse the question name for this answer by re-parsing from the start
+            // Instead, parse the name at name_start position
+            let ip = Ipv4Addr::new(data[pos], data[pos + 1], data[pos + 2], data[pos + 3]);
+            // Re-read the name at the beginning of this RR
+            let mut name_pos = pos - rdlen - 10;
+            if let Some(hostname) = dns_read_name(data, &mut name_pos) {
+                if !hostname.is_empty() {
+                    cache.insert(ip, hostname);
+                }
+            }
+        }
+        pos += rdlen;
+    }
+}
+
+/// Skip over a DNS name (handles pointer compression). Returns false on error.
+fn dns_skip_name(data: &[u8], pos: &mut usize) -> bool {
+    let mut jumps = 0;
+    loop {
+        if *pos >= data.len() { return false; }
+        let b = data[*pos];
+        if b == 0 { *pos += 1; return true; }
+        if b & 0xC0 == 0xC0 {
+            if *pos + 1 >= data.len() { return false; }
+            *pos += 2;
+            return true;
+        }
+        *pos += 1 + b as usize;
+        jumps += 1;
+        if jumps > 128 { return false; }
+    }
+}
+
+/// Read a DNS name (handles pointer compression). Returns None on error.
+fn dns_read_name(data: &[u8], pos: &mut usize) -> Option<String> {
+    let mut name = String::with_capacity(64);
+    let mut p = *pos;
+    let mut jumped = false;
+    let mut jumps = 0;
+
+    loop {
+        if p >= data.len() { return None; }
+        let b = data[p];
+        if b == 0 {
+            if !jumped { *pos = p + 1; }
+            break;
+        }
+        if b & 0xC0 == 0xC0 {
+            if p + 1 >= data.len() { return None; }
+            if !jumped { *pos = p + 2; }
+            p = ((b as usize & 0x3F) << 8) | data[p + 1] as usize;
+            jumped = true;
+            jumps += 1;
+            if jumps > 16 { return None; }
+            continue;
+        }
+        let len = b as usize;
+        p += 1;
+        if p + len > data.len() { return None; }
+        if !name.is_empty() { name.push('.'); }
+        name.push_str(std::str::from_utf8(&data[p..p + len]).unwrap_or("?"));
+        p += len;
+    }
+    Some(name)
 }

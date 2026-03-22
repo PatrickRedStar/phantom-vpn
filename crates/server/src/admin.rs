@@ -334,7 +334,7 @@ async fn get_client_logs(
             s.dest_log.lock().ok()
                 .map(|log| log.iter().rev().take(200).map(|e| serde_json::json!({
                     "ts":    e.ts,
-                    "dst":   e.dst_ip.to_string(),
+                    "dst":   e.dst_host.as_deref().unwrap_or(&e.dst_ip.to_string()),
                     "port":  e.dst_port,
                     "proto": match e.proto { 6 => "tcp", 17 => "udp", 1 => "icmp", _ => "raw" },
                     "bytes": e.bytes,
