@@ -103,8 +103,10 @@ class ProfilesStore private constructor(private val context: Context) {
                     insecure   = p.optBoolean("insecure", false),
                     certPath   = p.optString("certPath", ""),
                     keyPath    = p.optString("keyPath", ""),
-                    caCertPath = p.optString("caCertPath").takeIf { it.isNotBlank() },
-                    tunAddr    = p.optString("tunAddr", "10.7.0.2/24"),
+                    caCertPath  = p.optString("caCertPath").takeIf { it.isNotBlank() },
+                    tunAddr     = p.optString("tunAddr", "10.7.0.2/24"),
+                    adminUrl    = p.optString("adminUrl").takeIf { it.isNotBlank() },
+                    adminToken  = p.optString("adminToken").takeIf { it.isNotBlank() },
                 )
             }
             _activeId.value = obj.optString("activeId").takeIf { it.isNotBlank() }
@@ -125,6 +127,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     put("keyPath", p.keyPath)
                     if (p.caCertPath != null) put("caCertPath", p.caCertPath)
                     put("tunAddr", p.tunAddr)
+                    if (p.adminUrl != null) put("adminUrl", p.adminUrl)
+                    if (p.adminToken != null) put("adminToken", p.adminToken)
                 })
             }
             file.writeText(

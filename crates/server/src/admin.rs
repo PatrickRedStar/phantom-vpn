@@ -98,6 +98,7 @@ async fn get_clients(
                 )
             })
             .unwrap_or((false, 0, 0, 0));
+        let expires_at = info.get("expires_at").and_then(|v| v.as_u64());
         result.push(serde_json::json!({
             "name": name,
             "fingerprint": fp,
@@ -108,6 +109,7 @@ async fn get_clients(
             "bytes_rx": bytes_rx,
             "bytes_tx": bytes_tx,
             "last_seen_secs": last_seen_secs,
+            "expires_at": expires_at,
         }));
     }
     result.sort_by(|a, b| {
@@ -121,6 +123,7 @@ async fn get_clients(
 #[derive(Deserialize)]
 struct CreateClientBody {
     name: String,
+    expires_days: Option<u32>,
 }
 
 async fn create_client(
@@ -175,6 +178,7 @@ async fn create_client(
 
     // Add to clients.json
     let now = chrono_now_iso();
+    let expires_at: Option<u64> = body.expires_days.map(|d| now_secs() + d as u64 * 86400);
     clients.insert(name.clone(), serde_json::json!({
         "fingerprint": fingerprint,
         "cert_path": cert_path.to_string_lossy(),
@@ -182,6 +186,7 @@ async fn create_client(
         "tun_addr":  tun_addr,
         "enabled":   true,
         "created_at": now,
+        "expires_at": expires_at,
     }));
     write_keyring(&state.clients_path, &keyring)?;
 
@@ -243,6 +248,90 @@ async fn enable_client(
     AxPath(name): AxPath<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     set_client_enabled(&state, &name, true).await
+}
+
+// ─── POST /api/clients/:name/subscription ────────────────────────────────────
+// body: {"action": "extend"|"set"|"cancel"|"revoke", "days": N}
+// extend: adds days to current expiry (or from now if expired/no expiry)
+// set:    sets expiry to now + N days
+// cancel: removes expiry (access never expires)
+// revoke: disables immediately + sets expires_at to now
+
+#[derive(Deserialize)]
+struct SubscriptionBody {
+    action: String,
+    days: Option<u32>,
+}
+
+async fn manage_subscription(
+    State(state): State<AdminState>,
+    AxPath(name): AxPath<String>,
+    Json(body): Json<SubscriptionBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut keyring = read_keyring(&state.clients_path)?;
+    let now = now_secs();
+
+    // Collect tun_ip and current expires_at from immutable borrow first
+    let (tun_ip, current_expires): (Option<std::net::IpAddr>, Option<u64>) = {
+        let clients = keyring.get("clients").and_then(|c| c.as_object())
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        let info = clients.get(&name).ok_or(StatusCode::NOT_FOUND)?;
+        let ip = info.get("tun_addr").and_then(|v| v.as_str())
+            .and_then(|s| s.split('/').next()).and_then(|s| s.parse().ok());
+        let exp = info.get("expires_at").and_then(|v| v.as_u64());
+        (ip, exp)
+    };
+
+    let new_expires: Option<u64> = match body.action.as_str() {
+        "cancel" => None,
+        "set" => {
+            let days = body.days.ok_or(StatusCode::BAD_REQUEST)?;
+            Some(now + days as u64 * 86400)
+        }
+        "extend" => {
+            let days = body.days.ok_or(StatusCode::BAD_REQUEST)?;
+            let base = current_expires.map(|e| e.max(now)).unwrap_or(now);
+            Some(base + days as u64 * 86400)
+        }
+        "revoke" => Some(now), // expires right now → cleanup will disable
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let immediately_disable = body.action == "revoke"
+        || new_expires.map(|e| e <= now).unwrap_or(false);
+
+    // Mutate keyring
+    {
+        let clients = keyring.get_mut("clients").and_then(|c| c.as_object_mut())
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        let client = clients.get_mut(&name).ok_or(StatusCode::NOT_FOUND)?;
+        if let Some(obj) = client.as_object_mut() {
+            match new_expires {
+                Some(ts) => { obj.insert("expires_at".to_string(), serde_json::Value::Number(ts.into())); }
+                None     => { obj.remove("expires_at"); }
+            }
+            if immediately_disable {
+                obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
+            } else if new_expires.map(|e| e > now).unwrap_or(true) {
+                // Re-enable if extending/setting a future expiry
+                obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+            }
+        }
+    }
+
+    write_keyring(&state.clients_path, &keyring)?;
+    reload_allow_list(&state.clients_path, &state.allow_list).await;
+
+    if immediately_disable {
+        if let Some(ip) = tun_ip {
+            if let Some((_, session)) = state.sessions.remove(&ip) {
+                tracing::info!("Subscription revoked for '{}', evicting session", name);
+                session.connection.close(quinn::VarInt::from_u32(1), b"Subscription revoked");
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true, "expires_at": new_expires })))
 }
 
 async fn set_client_enabled(
@@ -388,8 +477,9 @@ pub fn make_router(state: AdminState) -> Router {
         .route("/api/clients/:name/disable", post(disable_client))
         .route("/api/clients/:name/enable",  post(enable_client))
         .route("/api/clients/:name/conn_string", get(get_conn_string))
-        .route("/api/clients/:name/logs",  get(get_client_logs))
-        .route("/api/clients/:name/stats", get(get_client_stats))
+        .route("/api/clients/:name/logs",         get(get_client_logs))
+        .route("/api/clients/:name/stats",        get(get_client_stats))
+        .route("/api/clients/:name/subscription", post(manage_subscription))
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
     Router::new().merge(protected).with_state(state)
 }
@@ -489,3 +579,84 @@ fn generate_client_cert(
     Ok((cert_pem, key_pem, fingerprint))
 }
 
+// ─── Subscription expiry checker (spawned from main) ─────────────────────────
+
+pub async fn run_subscription_checker(
+    clients_path: std::path::PathBuf,
+    sessions: QuicSessionMap,
+    allow_list: ClientAllowList,
+) {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+
+        let now = now_secs();
+
+        let content = match std::fs::read_to_string(&clients_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut keyring: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Collect expired clients (immutable pass)
+        let (expired_names, to_evict): (Vec<String>, Vec<std::net::IpAddr>) = {
+            let clients = match keyring.get("clients").and_then(|c| c.as_object()) {
+                Some(c) => c,
+                None => continue,
+            };
+            let mut names = Vec::new();
+            let mut ips = Vec::new();
+            for (name, info) in clients.iter() {
+                let expires_at = info.get("expires_at").and_then(|v| v.as_u64());
+                let enabled = info.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                if expires_at.map(|e| e <= now).unwrap_or(false) && enabled {
+                    names.push(name.clone());
+                    if let Some(ip) = info.get("tun_addr").and_then(|v| v.as_str())
+                        .and_then(|s| s.split('/').next())
+                        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+                    {
+                        ips.push(ip);
+                    }
+                }
+            }
+            (names, ips)
+        };
+
+        if expired_names.is_empty() {
+            continue;
+        }
+
+        // Disable expired clients (mutable pass)
+        {
+            let clients = match keyring.get_mut("clients").and_then(|c| c.as_object_mut()) {
+                Some(c) => c,
+                None => continue,
+            };
+            for name in &expired_names {
+                if let Some(info) = clients.get_mut(name.as_str()) {
+                    if let Some(obj) = info.as_object_mut() {
+                        obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
+                        tracing::info!("Subscription expired for '{}', disabling", name);
+                    }
+                }
+            }
+        }
+
+        if let Ok(content) = serde_json::to_string_pretty(&keyring) {
+            let _ = std::fs::write(&clients_path, content);
+        }
+
+        match crate::quic_server::load_allow_list(&clients_path) {
+            Ok(fps) => { *allow_list.write().await = fps; }
+            Err(e) => tracing::error!("Subscription checker: reload allow list failed: {}", e),
+        }
+
+        for ip in to_evict {
+            if let Some((_, session)) = sessions.remove(&ip) {
+                session.connection.close(quinn::VarInt::from_u32(1), b"Subscription expired");
+            }
+        }
+    }
+}

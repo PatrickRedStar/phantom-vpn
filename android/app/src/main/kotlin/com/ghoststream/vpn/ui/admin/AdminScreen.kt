@@ -23,6 +23,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -54,6 +57,7 @@ fun AdminScreen(
     var searchQuery by remember { mutableStateOf("") }
     var activeFilter by remember { mutableStateOf(ClientFilter.ALL) }
     var showStatsDialog by remember { mutableStateOf<String?>(null) }
+    var showSubDialog by remember { mutableStateOf<ClientInfo?>(null) }
 
     val filteredClients = clients
         .filter { c ->
@@ -75,9 +79,9 @@ fun AdminScreen(
 
     if (showAddDialog) {
         AddClientDialog(
-            onConfirm = { name ->
+            onConfirm = { name, days ->
                 showAddDialog = false
-                viewModel.createClient(name)
+                viewModel.createClient(name, days)
             },
             onDismiss = { showAddDialog = false },
         )
@@ -110,6 +114,17 @@ fun AdminScreen(
                 showStatsDialog = null
                 viewModel.clearClientDetails()
             },
+        )
+    }
+
+    showSubDialog?.let { client ->
+        SubscriptionDialog(
+            client = client,
+            onManage = { action, days ->
+                viewModel.manageSubscription(client.name, action, days)
+                showSubDialog = null
+            },
+            onDismiss = { showSubDialog = null },
         )
     }
 
@@ -247,6 +262,7 @@ fun AdminScreen(
                         viewModel.loadClientStats(client.name)
                         viewModel.loadClientLogs(client.name)
                     },
+                    onSubscription = { showSubDialog = client },
                 )
             }
         }
@@ -260,7 +276,27 @@ private fun ClientCard(
     onDelete: () -> Unit,
     onCopyConnString: () -> Unit,
     onShowStats: () -> Unit = {},
+    onSubscription: () -> Unit = {},
 ) {
+    val nowSecs = System.currentTimeMillis() / 1000
+    val subColor: Color? = client.expiresAt?.let { exp ->
+        val daysLeft = (exp - nowSecs) / 86400
+        when {
+            daysLeft < 0  -> Color(0xFFE53935)
+            daysLeft < 3  -> Color(0xFFE53935)
+            daysLeft < 7  -> Color(0xFFFFA000)
+            else          -> Color(0xFF43A047)
+        }
+    }
+    val subLabel: String? = client.expiresAt?.let { exp ->
+        val daysLeft = (exp - nowSecs) / 86400
+        when {
+            daysLeft < 0  -> "Подписка истекла"
+            daysLeft == 0L -> "Менее суток"
+            else          -> "${daysLeft} дн."
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -281,6 +317,25 @@ private fun ClientCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(client.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                // Subscription badge
+                if (subLabel != null && subColor != null) {
+                    Surface(
+                        color = subColor.copy(alpha = 0.15f),
+                        shape = MaterialTheme.shapes.extraSmall,
+                    ) {
+                        Text(
+                            subLabel,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = subColor,
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
+                }
+                // Subscription management
+                IconButton(onClick = onSubscription, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.CardMembership, "Подписка", modifier = Modifier.size(18.dp))
+                }
                 // Toggle enabled
                 IconButton(onClick = onToggle, modifier = Modifier.size(32.dp)) {
                     Icon(
@@ -319,22 +374,35 @@ private fun ClientCard(
 }
 
 @Composable
-private fun AddClientDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+private fun AddClientDialog(onConfirm: (String, Int?) -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
+    var daysText by remember { mutableStateOf("30") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Новый клиент") },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Имя (a-z, 0-9, дефис)") },
-                singleLine = true,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Имя (a-z, 0-9, дефис)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = daysText,
+                    onValueChange = { daysText = it.filter { c -> c.isDigit() }.take(4) },
+                    label = { Text("Дней подписки (пусто = бессрочно)") },
+                    placeholder = { Text("∞") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         },
         confirmButton = {
             TextButton(
-                onClick = { onConfirm(name.trim()) },
+                onClick = { onConfirm(name.trim(), daysText.toIntOrNull()) },
                 enabled = name.isNotBlank(),
             ) { Text("Создать") }
         },
@@ -400,6 +468,89 @@ private fun ClientDetailsDialog(
                             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                         )
                     }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
+
+@Composable
+private fun SubscriptionDialog(
+    client: ClientInfo,
+    onManage: (action: String, days: Int?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val nowSecs = System.currentTimeMillis() / 1000
+    val currentStatus: String = client.expiresAt?.let { exp ->
+        val daysLeft = (exp - nowSecs) / 86400
+        when {
+            daysLeft < 0  -> "Истекла"
+            daysLeft == 0L -> "Истекает сегодня"
+            else          -> "Активна ещё ${daysLeft} дн."
+        }
+    } ?: "Бессрочная"
+
+    var customDays by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Подписка: ${client.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Статус: $currentStatus",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = client.expiresAt?.let { exp ->
+                        val d = (exp - nowSecs) / 86400
+                        when {
+                            d < 0 -> MaterialTheme.colorScheme.error
+                            d < 7 -> Color(0xFFFFA000)
+                            else  -> Color(0xFF43A047)
+                        }
+                    } ?: MaterialTheme.colorScheme.primary,
+                )
+                Divider()
+                Text("Продлить:", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { onManage("extend", 30) }, modifier = Modifier.weight(1f)) {
+                        Text("+30 дн.", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(onClick = { onManage("extend", 90) }, modifier = Modifier.weight(1f)) {
+                        Text("+90 дн.", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(onClick = { onManage("extend", 365) }, modifier = Modifier.weight(1f)) {
+                        Text("+1 год", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = customDays,
+                        onValueChange = { customDays = it.filter { c -> c.isDigit() }.take(4) },
+                        label = { Text("Дней") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(
+                        onClick = { customDays.toIntOrNull()?.let { onManage("set", it) } },
+                        enabled = customDays.toIntOrNull() != null,
+                    ) { Text("Установить") }
+                }
+                Divider()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { onManage("cancel", null) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Бессрочно", style = MaterialTheme.typography.labelSmall) }
+                    Button(
+                        onClick = { onManage("revoke", null) },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Аннулировать", style = MaterialTheme.typography.labelSmall) }
                 }
             }
         },

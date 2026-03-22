@@ -202,6 +202,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("No allowed_clients_path configured — all authenticated clients accepted");
     }
 
+    // Subscription expiry checker
+    if let Some(ref cp) = allow_list_path {
+        let cp2 = std::path::PathBuf::from(cp);
+        let sessions2 = sessions.clone();
+        let allow_list2 = allow_list.clone();
+        tokio::spawn(admin::run_subscription_checker(cp2, sessions2, allow_list2));
+    }
+
     // SIGHUP → hot-reload allowlist
     {
         let allow_list = allow_list.clone();

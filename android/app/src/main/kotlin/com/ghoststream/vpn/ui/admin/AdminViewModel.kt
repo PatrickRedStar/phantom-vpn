@@ -23,6 +23,7 @@ data class ClientInfo(
     val bytesTx: Long,
     val createdAt: String,
     val lastSeenSecs: Long,
+    val expiresAt: Long? = null,  // Unix timestamp, null = no expiry (unlimited)
 )
 
 data class ServerStatus(
@@ -96,14 +97,15 @@ class AdminViewModel : ViewModel() {
         }
     }
 
-    fun createClient(name: String) {
+    fun createClient(name: String, expiresDays: Int? = null) {
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
             _newConnString.value = null
             try {
-                val body = JSONObject().put("name", name).toString()
-                val result = apiPost("/api/clients", body)
+                val body = JSONObject().put("name", name)
+                if (expiresDays != null) body.put("expires_days", expiresDays)
+                val result = apiPost("/api/clients", body.toString())
                 _newConnString.value = result.optString("conn_string")
                 refresh()
             } catch (e: Exception) {
@@ -148,6 +150,22 @@ class AdminViewModel : ViewModel() {
     }
 
     fun clearNewConnString() { _newConnString.value = null }
+
+    fun manageSubscription(name: String, action: String, days: Int? = null) {
+        viewModelScope.launch {
+            _loading.value = true
+            _error.value = null
+            try {
+                val body = JSONObject().put("action", action)
+                if (days != null) body.put("days", days)
+                apiPost("/api/clients/$name/subscription", body.toString())
+                refresh()
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Ошибка управления подпиской"
+                _loading.value = false
+            }
+        }
+    }
 
     fun loadClientStats(name: String) {
         viewModelScope.launch {
@@ -218,6 +236,7 @@ class AdminViewModel : ViewModel() {
                 bytesTx = o.optLong("bytes_tx"),
                 createdAt = o.optString("created_at"),
                 lastSeenSecs = o.optLong("last_seen_secs"),
+                expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 },
             )
         }
     }
