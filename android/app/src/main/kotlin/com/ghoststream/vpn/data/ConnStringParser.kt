@@ -2,6 +2,7 @@ package com.ghoststream.vpn.data
 
 import android.util.Base64
 import org.json.JSONObject
+import java.io.File
 
 object ConnStringParser {
 
@@ -48,4 +49,35 @@ object ConnStringParser {
             adminToken = adminToken,
         )
     }
+
+    /**
+     * Собирает connection string из профиля (обратная операция к parse).
+     * Читает cert/key/ca с диска. Возвращает null при ошибке чтения файлов.
+     */
+    fun build(profile: VpnProfile): String? = runCatching {
+        val cert = File(profile.certPath).readText()
+        val key  = File(profile.keyPath).readText()
+        val ca   = profile.caCertPath?.let { File(it).readText() }
+
+        val json = JSONObject().apply {
+            put("v",    1)
+            put("addr", profile.serverAddr)
+            put("sni",  profile.serverName)
+            put("tun",  profile.tunAddr)
+            put("cert", cert)
+            put("key",  key)
+            if (ca != null) put("ca", ca)
+            if (profile.adminUrl != null && profile.adminToken != null) {
+                put("admin", JSONObject().apply {
+                    put("url",   profile.adminUrl)
+                    put("token", profile.adminToken)
+                })
+            }
+        }
+
+        Base64.encodeToString(
+            json.toString().toByteArray(Charsets.UTF_8),
+            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
+        )
+    }.getOrNull()
 }
