@@ -8,7 +8,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -20,13 +22,24 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.ui.theme.AccentPurple
@@ -38,7 +51,9 @@ fun ConnectButton(
     state: VpnState,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    focusRequester: FocusRequester? = null,
 ) {
+    var isFocused by remember { mutableStateOf(false) }
     val targetColor = when (state) {
         is VpnState.Disconnected  -> Color(0xFF616161)
         is VpnState.Connecting    -> AccentPurple
@@ -61,7 +76,18 @@ fun ConnectButton(
 
     Box(
         contentAlignment = Alignment.Center,
-        modifier = modifier.size(122.dp),
+        modifier = modifier
+            .size(122.dp)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            .onFocusChanged { isFocused = it.isFocused }
+            .focusable()
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyUp &&
+                    (event.key == Key.DirectionCenter || event.key == Key.Enter)
+                ) {
+                    onClick(); true
+                } else false
+            },
     ) {
         // Spinning ring visible only while connecting
         if (state is VpnState.Connecting) {
@@ -92,6 +118,10 @@ fun ConnectButton(
                             animatedColor.copy(alpha = 0.7f),
                         ),
                     ),
+                )
+                .then(
+                    if (isFocused) Modifier.border(3.dp, Color.White, CircleShape)
+                    else Modifier
                 )
                 .clickable(onClick = onClick),
         ) {
