@@ -3,7 +3,6 @@
 
 pub mod sessions;
 pub mod tun_iface;
-pub mod worker;
 pub mod quic_server;
 pub mod admin;
 
@@ -254,6 +253,7 @@ async fn main() -> anyhow::Result<()> {
                             .and_then(|q| q.allowed_clients_path.as_deref())
                             .unwrap_or("/opt/phantom-vpn/config/clients.json")),
                         token: token.clone(),
+                        admin_url: format!("http://{}", listen_str),
                         started_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()

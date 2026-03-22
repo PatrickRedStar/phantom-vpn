@@ -26,6 +26,7 @@ pub struct AdminState {
     pub sessions: QuicSessionMap,
     pub clients_path: PathBuf,
     pub token: String,
+    pub admin_url: String,
     pub started_at: u64,
     pub allow_list: ClientAllowList,
     pub ca_cert_path: Option<PathBuf>,
@@ -187,8 +188,8 @@ async fn create_client(
     // Reload allow list
     reload_allow_list(&state.clients_path, &state.allow_list).await;
 
-    // Build conn_string
-    let conn_str = build_conn_string(&state.server_addr, &state.server_name, &tun_addr, &cert_pem, &key_pem);
+    // Build conn_string (includes admin URL/token so the Android client can auto-configure admin panel)
+    let conn_str = build_conn_string(&state.server_addr, &state.server_name, &tun_addr, &cert_pem, &key_pem, &state.admin_url, &state.token);
 
     Ok(Json(serde_json::json!({
         "name": name,
@@ -256,12 +257,37 @@ async fn set_client_enabled(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let client = clients.get_mut(name).ok_or(StatusCode::NOT_FOUND)?;
+
+    // Extract tun_addr before mutating (needed to find active session)
+    let tun_ip: Option<std::net::IpAddr> = client
+        .get("tun_addr")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.split('/').next())
+        .and_then(|s| s.parse().ok());
+
     if let Some(obj) = client.as_object_mut() {
         obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
     }
 
     write_keyring(&state.clients_path, &keyring)?;
     reload_allow_list(&state.clients_path, &state.allow_list).await;
+
+    // If disabling, close and REMOVE the active session immediately.
+    // This is fully server-side: even if the client ignores the QUIC CLOSE frame
+    // or uses an old client version, the session is evicted from the routing table
+    // so no further packets are forwarded for that tunnel IP.
+    if !enabled {
+        if let Some(ip) = tun_ip {
+            if let Some((_, session)) = state.sessions.remove(&ip) {
+                tracing::info!("Admin: evicting session and closing connection for disabled client '{}'", name);
+                session.connection.close(
+                    quinn::VarInt::from_u32(1),
+                    b"Disconnected by administrator",
+                );
+            }
+        }
+    }
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -282,9 +308,73 @@ async fn get_conn_string(
 
     let cert_pem = std::fs::read_to_string(cert_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let key_pem  = std::fs::read_to_string(key_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let conn_str = build_conn_string(&state.server_addr, &state.server_name, tun_addr, &cert_pem, &key_pem);
+    let conn_str = build_conn_string(&state.server_addr, &state.server_name, tun_addr, &cert_pem, &key_pem, &state.admin_url, &state.token);
 
     Ok(Json(serde_json::json!({ "conn_string": conn_str })))
+}
+
+// ─── GET /api/clients/:name/logs ─────────────────────────────────────────────
+
+async fn get_client_logs(
+    State(state): State<AdminState>,
+    AxPath(name): AxPath<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let keyring = read_keyring(&state.clients_path)?;
+    let clients = keyring.get("clients").and_then(|c| c.as_object())
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let info = clients.get(&name).ok_or(StatusCode::NOT_FOUND)?;
+    let tun_ip: Option<std::net::IpAddr> = info
+        .get("tun_addr").and_then(|v| v.as_str())
+        .and_then(|s| s.split('/').next())
+        .and_then(|s| s.parse().ok());
+
+    let entries = tun_ip
+        .and_then(|ip| state.sessions.get(&ip))
+        .map(|s| {
+            s.dest_log.lock().ok()
+                .map(|log| log.iter().rev().take(200).map(|e| serde_json::json!({
+                    "ts":    e.ts,
+                    "dst":   e.dst_ip.to_string(),
+                    "port":  e.dst_port,
+                    "proto": match e.proto { 6 => "tcp", 17 => "udp", 1 => "icmp", _ => "raw" },
+                    "bytes": e.bytes,
+                })).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(serde_json::json!(entries)))
+}
+
+// ─── GET /api/clients/:name/stats ────────────────────────────────────────────
+
+async fn get_client_stats(
+    State(state): State<AdminState>,
+    AxPath(name): AxPath<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let keyring = read_keyring(&state.clients_path)?;
+    let clients = keyring.get("clients").and_then(|c| c.as_object())
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let info = clients.get(&name).ok_or(StatusCode::NOT_FOUND)?;
+    let tun_ip: Option<std::net::IpAddr> = info
+        .get("tun_addr").and_then(|v| v.as_str())
+        .and_then(|s| s.split('/').next())
+        .and_then(|s| s.parse().ok());
+
+    let samples = tun_ip
+        .and_then(|ip| state.sessions.get(&ip))
+        .map(|s| {
+            s.stats_samples.lock().ok()
+                .map(|samps| samps.iter().map(|s| serde_json::json!({
+                    "ts":       s.ts,
+                    "bytes_rx": s.bytes_rx,
+                    "bytes_tx": s.bytes_tx,
+                })).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(serde_json::json!(samples)))
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -298,6 +388,8 @@ pub fn make_router(state: AdminState) -> Router {
         .route("/api/clients/:name/disable", post(disable_client))
         .route("/api/clients/:name/enable",  post(enable_client))
         .route("/api/clients/:name/conn_string", get(get_conn_string))
+        .route("/api/clients/:name/logs",  get(get_client_logs))
+        .route("/api/clients/:name/stats", get(get_client_stats))
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
     Router::new().merge(protected).with_state(state)
 }
@@ -345,7 +437,7 @@ async fn reload_allow_list(clients_path: &Path, allow_list: &ClientAllowList) {
     }
 }
 
-fn build_conn_string(server_addr: &str, server_name: &str, tun_addr: &str, cert_pem: &str, key_pem: &str) -> String {
+fn build_conn_string(server_addr: &str, server_name: &str, tun_addr: &str, cert_pem: &str, key_pem: &str, admin_url: &str, admin_token: &str) -> String {
     let payload = serde_json::json!({
         "v": 1,
         "addr": server_addr,
@@ -353,6 +445,10 @@ fn build_conn_string(server_addr: &str, server_name: &str, tun_addr: &str, cert_
         "tun": tun_addr,
         "cert": cert_pem,
         "key": key_pem,
+        "admin": {
+            "url": admin_url,
+            "token": admin_token,
+        },
     });
     let json_bytes = serde_json::to_vec(&payload).unwrap_or_default();
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json_bytes)

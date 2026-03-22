@@ -32,6 +32,20 @@ data class ServerStatus(
     val exitIp: String? = null,
 )
 
+data class StatsSample(
+    val ts: Long,
+    val bytesRx: Long,
+    val bytesTx: Long,
+)
+
+data class DestEntry(
+    val ts: Long,
+    val dst: String,
+    val port: Int,
+    val proto: String,
+    val bytes: Long,
+)
+
 class AdminViewModel : ViewModel() {
 
     private val _status = MutableStateFlow<ServerStatus?>(null)
@@ -48,6 +62,15 @@ class AdminViewModel : ViewModel() {
 
     private val _newConnString = MutableStateFlow<String?>(null)
     val newConnString: StateFlow<String?> = _newConnString
+
+    private val _clientStats = MutableStateFlow<List<StatsSample>>(emptyList())
+    val clientStats: StateFlow<List<StatsSample>> = _clientStats
+
+    private val _clientLogs = MutableStateFlow<List<DestEntry>>(emptyList())
+    val clientLogs: StateFlow<List<DestEntry>> = _clientLogs
+
+    private val _selectedClient = MutableStateFlow<String?>(null)
+    val selectedClient: StateFlow<String?> = _selectedClient
 
     private var baseUrl: String = ""
     private var token: String = ""
@@ -125,6 +148,51 @@ class AdminViewModel : ViewModel() {
     }
 
     fun clearNewConnString() { _newConnString.value = null }
+
+    fun loadClientStats(name: String) {
+        viewModelScope.launch {
+            _selectedClient.value = name
+            try {
+                val arr = apiGetArray("/api/clients/$name/stats")
+                _clientStats.value = (0 until arr.length()).map { i ->
+                    val o = arr.getJSONObject(i)
+                    StatsSample(
+                        ts = o.optLong("ts"),
+                        bytesRx = o.optLong("bytes_rx"),
+                        bytesTx = o.optLong("bytes_tx"),
+                    )
+                }
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Ошибка загрузки статистики"
+            }
+        }
+    }
+
+    fun loadClientLogs(name: String) {
+        viewModelScope.launch {
+            try {
+                val arr = apiGetArray("/api/clients/$name/logs")
+                _clientLogs.value = (0 until arr.length()).map { i ->
+                    val o = arr.getJSONObject(i)
+                    DestEntry(
+                        ts = o.optLong("ts"),
+                        dst = o.optString("dst"),
+                        port = o.optInt("port"),
+                        proto = o.optString("proto"),
+                        bytes = o.optLong("bytes"),
+                    )
+                }
+            } catch (e: Exception) {
+                _error.value = e.message ?: "Ошибка загрузки логов"
+            }
+        }
+    }
+
+    fun clearClientDetails() {
+        _selectedClient.value = null
+        _clientStats.value = emptyList()
+        _clientLogs.value = emptyList()
+    }
 
     private suspend fun fetchStatus(): ServerStatus = withContext(Dispatchers.IO) {
         val obj = apiGet("/api/status")
