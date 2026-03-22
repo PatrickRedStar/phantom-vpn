@@ -17,9 +17,20 @@ import org.json.JSONArray
 
 class GhostStreamVpnService : VpnService() {
 
+    private data class TunnelParams(
+        val serverAddr: String,
+        val serverName: String,
+        val insecure: Boolean,
+        val certPath: String,
+        val keyPath: String,
+        val caCertPath: String,
+    )
+
     private var vpnInterface: ParcelFileDescriptor? = null
     private var watchdogThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var savedParams: TunnelParams? = null
+    @Volatile private var userStopped = false
 
     // Instance method so JNI receives the service object for VpnService.protect()
     external fun nativeStart(
@@ -172,6 +183,9 @@ class GhostStreamVpnService : VpnService() {
             return
         }
 
+        userStopped = false
+        savedParams = TunnelParams(serverAddr, serverName, insecure, certPath, keyPath, caCertPath)
+
         val fd = vpnInterface!!.fd
         val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath)
         if (result != 0) {
@@ -190,7 +204,7 @@ class GhostStreamVpnService : VpnService() {
     /**
      * Monitors native tunnel state and drives VpnState transitions:
      * - Connecting → Connected when QUIC handshake succeeds (IS_CONNECTED=true)
-     * - Connected → Disconnected if tunnel drops after being up
+     * - Connected → Connecting + auto-reconnect (exponential backoff) if tunnel drops
      * - Connecting → Error after 60s timeout if handshake never completes
      */
     private fun startWatchdog(serverName: String, serverAddr: String) {
@@ -198,7 +212,7 @@ class GhostStreamVpnService : VpnService() {
         watchdogThread = Thread {
             var wasConnected = false
             var timeoutSecs = 60
-            while (!Thread.currentThread().isInterrupted) {
+            outer@ while (!Thread.currentThread().isInterrupted) {
                 try {
                     Thread.sleep(1000)
                 } catch (_: InterruptedException) {
@@ -217,8 +231,37 @@ class GhostStreamVpnService : VpnService() {
                         }
                     }
                     if (!connected && wasConnected) {
-                        mainHandler.post { stopTunnel() }
-                        break
+                        wasConnected = false
+                        mainHandler.post {
+                            VpnStateManager.update(VpnState.Connecting)
+                            getSystemService(NotificationManager::class.java)
+                                ?.notify(NOTIFICATION_ID, buildNotification("Переподключение..."))
+                        }
+                        // Exponential backoff: 3s, 6s, 12s, 24s, 48s, 60s, 60s, 60s
+                        var backoffMs = 3_000L
+                        var reconnected = false
+                        for (attempt in 1..8) {
+                            try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { break@outer }
+                            if (userStopped) break@outer
+                            val params = savedParams ?: break@outer
+                            val iface = vpnInterface ?: break@outer
+                            nativeStop()
+                            val r = nativeStart(
+                                iface.fd, params.serverAddr, params.serverName,
+                                params.insecure, params.certPath, params.keyPath, params.caCertPath,
+                            )
+                            if (r == 0) {
+                                timeoutSecs = 60
+                                reconnected = true
+                                break
+                            }
+                            backoffMs = minOf(backoffMs * 2, 60_000L)
+                        }
+                        if (!reconnected) {
+                            mainHandler.post { stopTunnel() }
+                            break@outer
+                        }
+                        continue@outer
                     }
                     timeoutSecs--
                     if (!connected && timeoutSecs <= 0) {
@@ -238,6 +281,7 @@ class GhostStreamVpnService : VpnService() {
     }
 
     private fun stopTunnel() {
+        userStopped = true
         watchdogThread?.interrupt()
         watchdogThread = null
         nativeStop()
