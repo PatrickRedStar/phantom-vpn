@@ -73,7 +73,7 @@ fun LogsScreen(viewModel: LogsViewModel) {
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                listOf("ALL", "DEBUG", "INFO", "WARN", "ERROR").forEach { level ->
+                listOf("ALL", "TRACE", "DEBUG", "INFO", "WARN", "ERROR").forEach { level ->
                     FilterChip(
                         selected = filter == level,
                         onClick = { viewModel.setFilter(level) },
