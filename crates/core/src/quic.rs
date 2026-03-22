@@ -155,7 +155,7 @@ pub fn make_client_config(
 
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(
-        quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30)).unwrap(),
+        quinn::IdleTimeout::try_from(std::time::Duration::from_secs(120)).unwrap(),
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.initial_mtu(1450);
