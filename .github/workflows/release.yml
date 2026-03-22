@@ -44,13 +44,15 @@ jobs:
 
 # ─────────────────────────────────────────────────────────────────────────────
   build-macos:
-    name: macOS client (.dmg)
-    runs-on: macos-latest
+    name: macOS GUI App (.dmg)
+    runs-on: macos-14   # arm64 runner (Apple Silicon)
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
+      - name: Install Rust stable (arm64 + x86_64 targets)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -62,30 +64,46 @@ jobs:
           key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: macos-cargo-
 
-      - name: Build macOS client
-        run: cargo build --release -p phantom-client-macos
+      - name: Build phantom-client-macos (arm64)
+        run: cargo build --release -p phantom-client-macos --target aarch64-apple-darwin
 
-      - name: Package into .dmg
+      - name: Build phantom-client-macos (x86_64)
+        run: cargo build --release -p phantom-client-macos --target x86_64-apple-darwin
+
+      - name: Create universal binary (arm64 + x86_64)
         run: |
-          mkdir -p PhantomVPN
-          cp target/release/phantom-client-macos PhantomVPN/
+          lipo -create \
+            target/aarch64-apple-darwin/release/phantom-client-macos \
+            target/x86_64-apple-darwin/release/phantom-client-macos \
+            -output phantom-client-macos-universal
+          lipo -info phantom-client-macos-universal
 
-          cat > PhantomVPN/README.txt <<'EOF'
-          PhantomVPN macOS client
-          =======================
-          Run as root:
-            sudo ./phantom-client-macos -c /etc/phantom-vpn/client.toml -vv
+      - name: Build SwiftUI app
+        working-directory: phantom-vpn-macos
+        run: swift build -c release
 
-          Config example: https://github.com/PatrickRedStar/phantom-vpn
-          EOF
+      - name: Create .app bundle
+        working-directory: phantom-vpn-macos
+        run: bash build.sh
 
+      - name: Bundle Rust binary into .app
+        run: |
+          cp phantom-client-macos-universal \
+            phantom-vpn-macos/PhantomVPN.app/Contents/MacOS/phantom-client-macos
+          chmod +x phantom-vpn-macos/PhantomVPN.app/Contents/MacOS/phantom-client-macos
+
+      - name: Package as DMG (drag-to-Applications)
+        run: |
+          mkdir dmg-staging
+          cp -r phantom-vpn-macos/PhantomVPN.app dmg-staging/
+          ln -s /Applications dmg-staging/Applications
           hdiutil create \
             -volname "PhantomVPN" \
-            -srcfolder PhantomVPN \
+            -srcfolder dmg-staging \
             -ov -format UDZO \
             PhantomVPN-macOS.dmg
 
-      - name: Upload .dmg
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: PhantomVPN-macOS
@@ -174,17 +192,26 @@ jobs:
             ## PhantomVPN ${{ github.ref_name }}
 
             ### Downloads
-            | Platform | File |
-            |----------|------|
-            | Linux x86_64 | `phantom-client-linux` |
-            | macOS | `PhantomVPN-macOS.dmg` |
-            | Android (arm64) | `app-debug.apk` |
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | macOS (Universal) | `PhantomVPN-macOS.dmg` | Menu bar app, macOS 13+ |
+            | Linux x86_64 | `phantom-client-linux` | CLI |
+            | Android (arm64) | `app-debug.apk` | |
+
+            ### macOS install
+            1. Скачай `PhantomVPN-macOS.dmg`
+            2. Открой DMG, перетащи `PhantomVPN.app` в `/Applications`
+            3. Сними карантин (приложение не подписано):
+            ```bash
+            xattr -dr com.apple.quarantine /Applications/PhantomVPN.app
+            ```
+            4. Запусти — иконка щита появится в menu bar
+            5. Вкладка **Профили** → вставь строку подключения (QR из Admin Panel)
 
             ### Android install
             ```
             adb install app-debug.apk
             ```
-            Or enable "Unknown sources" and open the APK on device.
 
             ### Config
             See [config examples](config/) in the repository.
