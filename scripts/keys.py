@@ -68,6 +68,20 @@ def load_toml(path):
 
 # ─── Server config reader ────────────────────────────────────────────────────
 
+def load_admin_values(server_toml_path):
+    """Читает [admin] секцию из server.toml. Возвращает (admin_addr, admin_token) или (None, None)."""
+    try:
+        data = load_toml(server_toml_path)
+    except Exception:
+        return None, None
+    admin = data.get("admin", {})
+    if not isinstance(admin, dict):
+        return None, None
+    addr  = admin.get("listen_addr") or None
+    token = admin.get("token") or None
+    return addr, token
+
+
 def load_server_values(server_toml_path, server_ip_override=None, server_name_override=None):
     """Возвращает (server_ip, server_port, server_name, ca_cert_path, ca_key_path)."""
     data = load_toml(server_toml_path)
@@ -378,15 +392,14 @@ def show_client(keyring, server_ip, server_port, server_name):
     print_android_instructions(name, item["cert_path"], item["key_path"])
 
 
-def export_conn_str(keyring, server_ip, server_port, server_name):
-    """Генерирует строку подключения (base64url JSON) для вставки в приложение."""
-    clients = keyring["clients"]
-    names   = sorted(clients.keys())
+def _pick_client(clients, prompt="Выберите клиента для экспорта:"):
+    """Общий хелпер: выводит список клиентов и возвращает (name, item) или (None, None)."""
+    names = sorted(clients.keys())
     if not names:
         print("Клиентов нет.")
-        return
+        return None, None
 
-    print("Выберите клиента для экспорта:")
+    print(prompt)
     for i, n in enumerate(names, 1):
         item = clients[n]
         print(f"  {i}) {n}  (tun={item.get('tun_addr', '?')})")
@@ -395,13 +408,20 @@ def export_conn_str(keyring, server_ip, server_port, server_name):
         idx = int(raw) - 1
     except ValueError:
         print("Неверный ввод.")
-        return
+        return None, None
     if idx < 0 or idx >= len(names):
         print("Неверный выбор.")
-        return
+        return None, None
 
     name = names[idx]
-    item = clients[name]
+    return name, clients[name]
+
+
+def export_conn_str(keyring, server_ip, server_port, server_name):
+    """Генерирует строку подключения (base64url JSON) для вставки в приложение."""
+    name, item = _pick_client(keyring["clients"])
+    if name is None:
+        return
 
     try:
         cert_pem = Path(item["cert_path"]).read_text(encoding="utf-8")
@@ -430,6 +450,64 @@ def export_conn_str(keyring, server_ip, server_port, server_name):
     print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
     print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str}'")
     print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str}'")
+
+
+def export_admin_conn_str(keyring, server_ip, server_port, server_name,
+                          admin_addr, admin_token):
+    """Генерирует строку подключения с правами администратора (base64url JSON)."""
+    name, item = _pick_client(keyring["clients"],
+                               prompt="Выберите клиента для экспорта (admin):")
+    if name is None:
+        return
+
+    try:
+        cert_pem = Path(item["cert_path"]).read_text(encoding="utf-8")
+        key_pem  = Path(item["key_path"]).read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"[ОШИБКА] Не удалось прочитать файлы сертификата: {e}")
+        return
+
+    # Resolve admin_addr / admin_token interactively if not provided
+    if not admin_addr:
+        admin_addr = input("Admin listen_addr (e.g. http://10.7.0.1:8080): ").strip()
+        if not admin_addr:
+            print("admin_addr не задан, отменено.")
+            return
+    if not admin_token:
+        admin_token = input("Admin token: ").strip()
+        if not admin_token:
+            print("admin_token не задан, отменено.")
+            return
+
+    # Normalise: ensure http:// prefix
+    if not admin_addr.startswith("http://") and not admin_addr.startswith("https://"):
+        admin_addr = "http://" + admin_addr
+
+    payload = {
+        "v":    1,
+        "addr": f"{server_name}:{server_port}",
+        "sni":  server_name,
+        "tun":  item["tun_addr"],
+        "cert": cert_pem,
+        "key":  key_pem,
+        "admin": {
+            "url":   admin_addr,
+            "token": admin_token,
+        },
+    }
+
+    json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    conn_str   = base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
+
+    print(f"\nAdmin-строка подключения для {name!r}:")
+    print("─" * 60)
+    print(conn_str)
+    print("─" * 60)
+    print(f"\nИспользование:")
+    print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
+    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str}'")
+    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str}'")
+    print(f"\n[admin] url={admin_addr}  token={admin_token[:8]}…")
 
 
 def remove_client(keyring, keyring_path):
@@ -502,6 +580,16 @@ def main():
         default=None,
         help="SNI сервера (e.g. nl2.bikini-bottom.com)",
     )
+    parser.add_argument(
+        "--admin-addr",
+        default=None,
+        help="Admin panel listen addr (e.g. 10.7.0.1:8080 or http://10.7.0.1:8080)",
+    )
+    parser.add_argument(
+        "--admin-token",
+        default=None,
+        help="Admin panel bearer token",
+    )
     args = parser.parse_args()
 
     try:
@@ -521,16 +609,31 @@ def main():
         print(f"[ОШИБКА] {e}")
         raise SystemExit(1)
 
+    # Load admin values: CLI args take priority, then server.toml, then interactive
+    admin_addr  = args.admin_addr
+    admin_token = args.admin_token
+    if not admin_addr or not admin_token:
+        toml_admin_addr, toml_admin_token = load_admin_values(args.server_config)
+        if not admin_addr:
+            admin_addr  = toml_admin_addr
+        if not admin_token:
+            admin_token = toml_admin_token
+
+    admin_configured = bool(admin_addr and admin_token)
+
     print(f"\n=== PhantomVPN Client Manager ===")
     print(f"Сервер:    {server_ip}:{server_port}  SNI: {server_name}")
     print(f"CA cert:   {ca_cert_path}")
     print(f"Keyring:   {args.keyring}  ({len(keyring['clients'])} клиентов)")
+    if admin_configured:
+        print(f"Admin:     {admin_addr}")
     print()
     print("1) Добавить клиента")
     print("2) Удалить клиента")
     print("3) Список клиентов")
     print("4) Показать конфиг клиента")
     print("5) Экспорт строки подключения (Android / Linux / macOS)")
+    print("6) Экспорт строки подключения (с правами администратора)")
     choice = input("> ").strip()
 
     if choice == "1":
@@ -544,6 +647,9 @@ def main():
         show_client(keyring, server_ip, server_port, server_name)
     elif choice == "5":
         export_conn_str(keyring, server_ip, server_port, server_name)
+    elif choice == "6":
+        export_admin_conn_str(keyring, server_ip, server_port, server_name,
+                              admin_addr, admin_token)
     else:
         print("Неизвестная опция.")
 

@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -63,6 +64,7 @@ import com.ghoststream.vpn.ui.theme.TextSecondary
 fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
     onNavigateToQrScanner: () -> Unit = {},
+    onAdminNavigate: (String) -> Unit = {},
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val profiles by viewModel.profiles.collectAsStateWithLifecycle()
@@ -100,6 +102,9 @@ fun SettingsScreen(
                             isActive = profile.id == activeProfileId,
                             onSelect = { viewModel.setActiveProfile(profile.id) },
                             onDelete = { viewModel.deleteProfile(profile.id) },
+                            onAdminClick = if (profile.adminUrl != null) {
+                                { onAdminNavigate(profile.id) }
+                            } else null,
                         )
                     }
                 }
@@ -494,6 +499,7 @@ private fun ProfileRow(
     isActive: Boolean,
     onSelect: () -> Unit,
     onDelete: () -> Unit,
+    onAdminClick: (() -> Unit)? = null,
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -514,6 +520,11 @@ private fun ProfileRow(
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = TextSecondary,
                 )
+            }
+        }
+        if (onAdminClick != null) {
+            IconButton(onClick = onAdminClick, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Filled.AdminPanelSettings, "Управление сервером", modifier = Modifier.size(18.dp))
             }
         }
         IconButton(onClick = { showDeleteConfirm = true }) {

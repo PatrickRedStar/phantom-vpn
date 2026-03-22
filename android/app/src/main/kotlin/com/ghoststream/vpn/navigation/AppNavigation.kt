@@ -18,6 +18,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ghoststream.vpn.ui.admin.AdminScreen
 import com.ghoststream.vpn.ui.components.QrScannerScreen
 import com.ghoststream.vpn.ui.dashboard.DashboardScreen
 import com.ghoststream.vpn.ui.logs.LogsScreen
@@ -90,6 +92,7 @@ fun AppNavigation() {
                 SettingsScreen(
                     viewModel = settingsViewModel,
                     onNavigateToQrScanner = { navController.navigate("qr_scanner") },
+                    onAdminNavigate = { profileId -> navController.navigate("admin/$profileId") },
                 )
             }
             composable("qr_scanner") {
@@ -101,6 +104,19 @@ fun AppNavigation() {
                     },
                     onBack = { navController.popBackStack() },
                 )
+            }
+            composable("admin/{profileId}") { backEntry ->
+                val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
+                val settingsViewModel: SettingsViewModel = viewModel()
+                val profile = settingsViewModel.profiles.collectAsStateWithLifecycle().value
+                    .find { it.id == profileId }
+                if (profile?.adminUrl != null && profile.adminToken != null) {
+                    AdminScreen(
+                        adminUrl = profile.adminUrl,
+                        adminToken = profile.adminToken,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
             }
         }
     }
