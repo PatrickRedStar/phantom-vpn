@@ -165,7 +165,7 @@ class AdminManager: ObservableObject {
                 bytesTx: (o["bytes_tx"] as? NSNumber)?.int64Value ?? 0,
                 createdAt: o["created_at"] as? String ?? "",
                 lastSeenSecs: (o["last_seen_secs"] as? NSNumber)?.int64Value ?? 0,
-                expiresAt: (o["expires_at"] as? NSNumber)?.int64Value.flatMap { $0 > 0 ? $0 : nil }
+                expiresAt: (o["expires_at"] as? NSNumber).flatMap { n in let v = n.int64Value; return v > 0 ? v : nil }
             )
         }
     }

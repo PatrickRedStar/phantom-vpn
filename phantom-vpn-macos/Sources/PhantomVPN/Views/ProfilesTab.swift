@@ -78,7 +78,7 @@ private struct ProfileRow: View {
         HStack(spacing: 10) {
             Button(action: onSelect) {
                 Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isActive ? .accentColor : .secondary)
+                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
             }
             .buttonStyle(.plain)
 
@@ -138,7 +138,7 @@ struct AddProfileView: View {
                     TextEditor(text: $connString)
                         .font(.system(.caption, design: .monospaced))
                         .frame(height: 80)
-                        .onChange(of: connString) { _, v in validate(v) }
+                        .onChange(of: connString) { v in validate(v) }
 
                     Button("Вставить из буфера") {
                         connString = NSPasteboard.general
