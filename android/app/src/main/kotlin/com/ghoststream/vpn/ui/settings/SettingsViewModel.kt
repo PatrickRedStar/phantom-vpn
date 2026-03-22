@@ -9,6 +9,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.data.ConnStringParser
+import com.ghoststream.vpn.data.PairingClient
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
@@ -255,6 +256,32 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             } catch (_: Exception) {}
         }
     }
+
+    // ── Share to TV ──────────────────────────────────────────────────────────
+
+    private val _sendToTvStatus = MutableStateFlow<String?>(null)
+    val sendToTvStatus: StateFlow<String?> = _sendToTvStatus
+
+    fun sendToTv(profileId: String, pairingQrText: String) {
+        val profile = profiles.value.find { it.id == profileId } ?: return
+        val connString = ConnStringParser.build(profile) ?: run {
+            _sendToTvStatus.value = "Ошибка: не удалось собрать строку подключения"
+            return
+        }
+        val payload = PairingClient.parsePairingQr(pairingQrText) ?: run {
+            _sendToTvStatus.value = "Ошибка: не распознан QR-код TV"
+            return
+        }
+        viewModelScope.launch {
+            _sendToTvStatus.value = "Отправка..."
+            PairingClient.send(payload, connString).fold(
+                onSuccess = { _sendToTvStatus.value = "Отправлено на TV!" },
+                onFailure = { _sendToTvStatus.value = "Ошибка: ${it.message}" },
+            )
+        }
+    }
+
+    fun clearSendToTvStatus() { _sendToTvStatus.value = null }
 
     // ── Debug report ──────────────────────────────────────────────────────────
 

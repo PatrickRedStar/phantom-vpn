@@ -24,6 +24,7 @@ import com.ghoststream.vpn.ui.components.QrScannerScreen
 import com.ghoststream.vpn.ui.dashboard.DashboardScreen
 import com.ghoststream.vpn.ui.logs.LogsScreen
 import com.ghoststream.vpn.ui.logs.LogsViewModel
+import com.ghoststream.vpn.ui.pairing.TvPairingScreen
 import com.ghoststream.vpn.ui.settings.SettingsScreen
 import com.ghoststream.vpn.ui.settings.SettingsViewModel
 
@@ -89,10 +90,18 @@ fun AppNavigation() {
                     settingsViewModel.setPendingConnString(qrResult)
                     entry.savedStateHandle.remove<String>("qr_result")
                 }
+                val pairResult = entry.savedStateHandle.get<String>("pair_qr_result")
+                if (pairResult != null) {
+                    val (profileId, qrText) = pairResult.split("|||", limit = 2)
+                    settingsViewModel.sendToTv(profileId, qrText)
+                    entry.savedStateHandle.remove<String>("pair_qr_result")
+                }
                 SettingsScreen(
                     viewModel = settingsViewModel,
                     onNavigateToQrScanner = { navController.navigate("qr_scanner") },
                     onAdminNavigate = { profileId -> navController.navigate("admin/$profileId") },
+                    onShareToTv = { profileId -> navController.navigate("qr_scanner_pair/$profileId") },
+                    onGetFromPhone = { navController.navigate("tv_pairing") },
                 )
             }
             composable("qr_scanner") {
@@ -105,6 +114,26 @@ fun AppNavigation() {
                     onBack = { navController.popBackStack() },
                 )
             }
+            // QR scanner в режиме pairing (телефон → TV)
+            composable("qr_scanner_pair/{profileId}") { backEntry ->
+                val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
+                QrScannerScreen(
+                    onResult = { qrText ->
+                        navController.previousBackStackEntry
+                            ?.savedStateHandle?.set("pair_qr_result", "$profileId|||$qrText")
+                        navController.popBackStack()
+                    },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+
+            // TV pairing screen (TV сторона)
+            composable("tv_pairing") {
+                TvPairingScreen(
+                    onDone = { navController.popBackStack() },
+                )
+            }
+
             composable("admin/{profileId}") { backEntry ->
                 val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
                 val settingsViewModel: SettingsViewModel = viewModel()

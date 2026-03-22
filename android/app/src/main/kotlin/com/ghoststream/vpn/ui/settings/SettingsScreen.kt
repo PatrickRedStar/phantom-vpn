@@ -22,13 +22,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -46,6 +50,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,6 +79,8 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
     onNavigateToQrScanner: () -> Unit = {},
     onAdminNavigate: (String) -> Unit = {},
+    onShareToTv: (profileId: String) -> Unit = {},
+    onGetFromPhone: () -> Unit = {},
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val profiles by viewModel.profiles.collectAsStateWithLifecycle()
@@ -85,12 +92,28 @@ fun SettingsScreen(
     val pingResults by viewModel.pingResults.collectAsStateWithLifecycle()
     val pinging by viewModel.pinging.collectAsStateWithLifecycle()
     val profileSubscriptions by viewModel.profileSubscriptions.collectAsStateWithLifecycle()
+    val sendToTvStatus by viewModel.sendToTvStatus.collectAsStateWithLifecycle()
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
+    val isAndroidTv = remember {
+        context.packageManager.hasSystemFeature("android.software.leanback")
+    }
+    val snackbarHostState = remember { SnackbarHostState() }
 
+    LaunchedEffect(sendToTvStatus) {
+        val msg = sendToTvStatus ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(msg)
+        viewModel.clearSendToTvStatus()
+    }
+
+    androidx.compose.material3.Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { innerPadding ->
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
+            .padding(innerPadding)
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         contentPadding = PaddingValues(vertical = 16.dp),
@@ -117,6 +140,9 @@ fun SettingsScreen(
                             onDelete = { viewModel.deleteProfile(profile.id) },
                             onAdminClick = if (profile.adminUrl != null) {
                                 { onAdminNavigate(profile.id) }
+                            } else null,
+                            onShareToTv = if (!isAndroidTv) {
+                                { onShareToTv(profile.id) }
                             } else null,
                             latencyMs = pingResults[profile.id],
                             isPinging = profile.id in pinging,
@@ -516,6 +542,20 @@ fun SettingsScreen(
             }
         }
 
+        // ── TV Pairing (только на Android TV) ────────────────────────────────
+        if (isAndroidTv) {
+            item {
+                OutlinedButton(
+                    onClick = onGetFromPhone,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.Tv, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Получить подключение с телефона")
+                }
+            }
+        }
+
         // ── Debug share ───────────────────────────────────────────────────────
         item {
             OutlinedButton(
@@ -528,6 +568,7 @@ fun SettingsScreen(
             }
         }
     }
+    } // Scaffold
 }
 
 // ── Profile row ──────────────────────────────────────────────────────────────
@@ -539,6 +580,7 @@ private fun ProfileRow(
     onSelect: () -> Unit,
     onDelete: () -> Unit,
     onAdminClick: (() -> Unit)? = null,
+    onShareToTv: (() -> Unit)? = null,
     latencyMs: Long? = null,
     isPinging: Boolean = false,
     onPing: () -> Unit = {},
@@ -607,6 +649,11 @@ private fun ProfileRow(
                         )
                     }
                 }
+            }
+        }
+        if (onShareToTv != null) {
+            IconButton(onClick = onShareToTv, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Filled.Cast, "Отправить на TV", modifier = Modifier.size(18.dp))
             }
         }
         if (onAdminClick != null) {
