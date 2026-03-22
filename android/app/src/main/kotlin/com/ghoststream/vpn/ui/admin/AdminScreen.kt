@@ -129,7 +129,10 @@ fun AdminScreen(
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("Сервер", style = MaterialTheme.typography.titleMedium)
-                            Text("Адрес: ${s.serverAddr}", style = MaterialTheme.typography.bodySmall)
+                            Text("Вход: ${s.serverAddr}", style = MaterialTheme.typography.bodySmall)
+                            if (s.exitIp != null) {
+                                Text("Выход: ${s.exitIp}", style = MaterialTheme.typography.bodySmall)
+                            }
                             Text("Аптайм: ${formatUptime(s.uptimeSecs)}", style = MaterialTheme.typography.bodySmall)
                             Text("Активных сессий: ${s.sessionsActive}", style = MaterialTheme.typography.bodySmall)
                         }

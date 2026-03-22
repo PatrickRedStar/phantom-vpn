@@ -32,6 +32,7 @@ pub struct AdminState {
     pub ca_key_path: Option<PathBuf>,
     pub server_addr: String,
     pub server_name: String,
+    pub exit_ip: Option<String>,
 }
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ async fn get_status(State(state): State<AdminState>) -> Json<serde_json::Value> 
         "uptime_secs": now.saturating_sub(state.started_at),
         "sessions_active": state.sessions.len(),
         "server_addr": state.server_addr,
+        "exit_ip": state.exit_ip,
     }))
 }
 

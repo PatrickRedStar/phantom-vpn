@@ -263,6 +263,7 @@ async fn main() -> anyhow::Result<()> {
                         ca_key_path,
                         server_addr: cfg.network.listen_addr.clone(),
                         server_name,
+                        exit_ip: cfg.network.exit_ip.clone(),
                     };
                     tokio::spawn(async move {
                         if let Err(e) = admin::run(admin_addr, admin_state).await {

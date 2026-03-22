@@ -29,6 +29,7 @@ data class ServerStatus(
     val uptimeSecs: Long,
     val sessionsActive: Int,
     val serverAddr: String,
+    val exitIp: String? = null,
 )
 
 class AdminViewModel : ViewModel() {
@@ -131,6 +132,7 @@ class AdminViewModel : ViewModel() {
             uptimeSecs = obj.optLong("uptime_secs"),
             sessionsActive = obj.optInt("sessions_active"),
             serverAddr = obj.optString("server_addr"),
+            exitIp = obj.optString("exit_ip").takeIf { it.isNotEmpty() && it != "null" },
         )
     }
 
