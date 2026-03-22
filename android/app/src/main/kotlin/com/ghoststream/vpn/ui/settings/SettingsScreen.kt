@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.SnackbarHost
@@ -588,24 +589,45 @@ private fun ProfileRow(
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
+    val latencyColor = when {
+        latencyMs == null -> TextSecondary
+        latencyMs < 100   -> GreenConnected
+        latencyMs < 300   -> YellowWarning
+        else              -> RedError
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onSelect() }
-            .padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.Top,
     ) {
-        RadioButton(selected = isActive, onClick = onSelect)
+        RadioButton(
+            selected = isActive,
+            onClick = onSelect,
+            modifier = Modifier.padding(top = 2.dp),
+        )
         Spacer(Modifier.width(4.dp))
         Column(Modifier.weight(1f)) {
-            Text(profile.name, style = MaterialTheme.typography.bodyMedium)
+            // Название — полная строка
+            Text(
+                profile.name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // Адрес сервера — полная строка, одна строка с ellipsis
             if (profile.serverAddr.isNotBlank()) {
                 Text(
                     profile.serverAddr,
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            // Подписка — полная строка
             if (subscriptionText != null) {
                 Text(
                     "Подписка: $subscriptionText",
@@ -613,56 +635,59 @@ private fun ProfileRow(
                     color = if (subscriptionText.contains("⚠")) RedError else TextSecondary,
                 )
             }
-        }
-        // Latency badge
-        if (isPinging) {
-            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            Spacer(Modifier.width(4.dp))
-        } else {
-            val latencyColor = when {
-                latencyMs == null -> Color.Unspecified
-                latencyMs < 100   -> GreenConnected
-                latencyMs < 300   -> YellowWarning
-                else              -> RedError
-            }
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = Color.Transparent,
-                modifier = Modifier.clickable(onClick = onPing),
+            // Кнопки действий — компактная строка внизу
+            Spacer(Modifier.height(4.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                // Ping
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.Transparent,
+                    modifier = Modifier.clickable(onClick = onPing),
                 ) {
-                    Icon(
-                        Icons.Filled.NetworkCheck,
-                        "Ping",
-                        modifier = Modifier.size(14.dp),
-                        tint = if (latencyMs != null) latencyColor else TextSecondary,
-                    )
-                    if (latencyMs != null) {
-                        Spacer(Modifier.width(2.dp))
-                        Text(
-                            "${latencyMs}ms",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = latencyColor,
-                        )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (isPinging) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(
+                                Icons.Filled.NetworkCheck,
+                                "Ping",
+                                modifier = Modifier.size(14.dp),
+                                tint = if (latencyMs != null) latencyColor else TextSecondary,
+                            )
+                            if (latencyMs != null) {
+                                Spacer(Modifier.width(2.dp))
+                                Text(
+                                    "${latencyMs}ms",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = latencyColor,
+                                )
+                            }
+                        }
                     }
                 }
+
+                Spacer(Modifier.width(4.dp))
+
+                if (onShareToTv != null) {
+                    IconButton(onClick = onShareToTv, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Filled.Cast, "Отправить на TV", modifier = Modifier.size(16.dp), tint = TextSecondary)
+                    }
+                }
+                if (onAdminClick != null) {
+                    IconButton(onClick = onAdminClick, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Filled.AdminPanelSettings, "Управление сервером", modifier = Modifier.size(16.dp), tint = TextSecondary)
+                    }
+                }
+                IconButton(onClick = { showDeleteConfirm = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.Delete, "Удалить", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
+                }
             }
-        }
-        if (onShareToTv != null) {
-            IconButton(onClick = onShareToTv, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.Cast, "Отправить на TV", modifier = Modifier.size(18.dp))
-            }
-        }
-        if (onAdminClick != null) {
-            IconButton(onClick = onAdminClick, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.AdminPanelSettings, "Управление сервером", modifier = Modifier.size(18.dp))
-            }
-        }
-        IconButton(onClick = { showDeleteConfirm = true }) {
-            Icon(Icons.Filled.Delete, "Удалить", tint = MaterialTheme.colorScheme.error)
         }
     }
 
