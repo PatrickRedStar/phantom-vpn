@@ -200,12 +200,21 @@ impl AsRawFd for AsyncTun {
 
 // ─── NAT ─────────────────────────────────────────────────────────────────────
 
-pub fn setup_nat(tun_name: &str, wan_iface: &str, subnet: &str) -> io::Result<()> {
+pub fn setup_nat(tun_name: &str, wan_iface: &str, subnet: &str, exit_ip: Option<&str>) -> io::Result<()> {
     let comment = format!("phantom-vpn-{}", tun_name);
     let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
-    let _ = run_cmd("iptables", &["-t", "nat", "-A", "POSTROUTING",
-        "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
-        "-m", "comment", "--comment", &comment]);
+    if let Some(ip) = exit_ip {
+        // SNAT: трафик выходит с конкретного IP (второй IP сервера)
+        let _ = run_cmd("iptables", &["-t", "nat", "-I", "POSTROUTING", "1",
+            "-s", subnet, "-o", wan_iface, "-j", "SNAT", "--to-source", ip,
+            "-m", "comment", "--comment", &comment]);
+        tracing::info!("NAT: {} → {} via SNAT {} (subnet {})", tun_name, wan_iface, ip, subnet);
+    } else {
+        let _ = run_cmd("iptables", &["-t", "nat", "-A", "POSTROUTING",
+            "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
+            "-m", "comment", "--comment", &comment]);
+        tracing::info!("NAT: {} → {} via MASQUERADE (subnet {})", tun_name, wan_iface, subnet);
+    }
     let _ = run_cmd("iptables", &["-A", "FORWARD",
         "-i", tun_name, "-o", wan_iface, "-j", "ACCEPT",
         "-m", "comment", "--comment", &comment]);
@@ -214,15 +223,20 @@ pub fn setup_nat(tun_name: &str, wan_iface: &str, subnet: &str) -> io::Result<()
         "-m", "state", "--state", "RELATED,ESTABLISHED",
         "-j", "ACCEPT",
         "-m", "comment", "--comment", &comment]);
-    tracing::info!("NAT: {} → {} (subnet {})", tun_name, wan_iface, subnet);
     Ok(())
 }
 
-pub fn teardown_nat(tun_name: &str, wan_iface: &str, subnet: &str) {
+pub fn teardown_nat(tun_name: &str, wan_iface: &str, subnet: &str, exit_ip: Option<&str>) {
     let comment = format!("phantom-vpn-{}", tun_name);
-    let _ = run_cmd("iptables", &["-t", "nat", "-D", "POSTROUTING",
-        "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
-        "-m", "comment", "--comment", &comment]);
+    if let Some(ip) = exit_ip {
+        let _ = run_cmd("iptables", &["-t", "nat", "-D", "POSTROUTING",
+            "-s", subnet, "-o", wan_iface, "-j", "SNAT", "--to-source", ip,
+            "-m", "comment", "--comment", &comment]);
+    } else {
+        let _ = run_cmd("iptables", &["-t", "nat", "-D", "POSTROUTING",
+            "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
+            "-m", "comment", "--comment", &comment]);
+    }
     let _ = run_cmd("iptables", &["-D", "FORWARD",
         "-i", tun_name, "-o", wan_iface, "-j", "ACCEPT",
         "-m", "comment", "--comment", &comment]);
@@ -231,7 +245,7 @@ pub fn teardown_nat(tun_name: &str, wan_iface: &str, subnet: &str) {
         "-m", "state", "--state", "RELATED,ESTABLISHED",
         "-j", "ACCEPT",
         "-m", "comment", "--comment", &comment]);
-    tracing::info!("NAT teardown: {} → {} (subnet {})", tun_name, wan_iface, subnet);
+    tracing::info!("NAT teardown: {} → {}", tun_name, wan_iface);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

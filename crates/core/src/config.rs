@@ -36,6 +36,9 @@ pub struct ServerNetworkConfig {
     pub tun_mtu:     Option<u32>,
     /// WAN интерфейс для NAT masquerade (e.g. "eth0")
     pub wan_iface:   Option<String>,
+    /// IP адрес для исходящего трафика (SNAT). Если задан — используется SNAT
+    /// вместо MASQUERADE, трафик выходит с этого IP (e.g. второй IP сервера).
+    pub exit_ip:     Option<String>,
 }
 
 impl Default for ServerNetworkConfig {
@@ -46,6 +49,7 @@ impl Default for ServerNetworkConfig {
             tun_addr:    None,
             tun_mtu:     None,
             wan_iface:   None,
+            exit_ip:     None,
         }
     }
 }

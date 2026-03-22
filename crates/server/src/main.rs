@@ -157,11 +157,11 @@ async fn main() -> anyhow::Result<()> {
     // NAT
     let nat_info = if let Some(ref wan) = cfg.network.wan_iface {
         let subnet = cidr_to_network(tun_addr);
-        tun_iface::teardown_nat(tun_name, wan, &subnet);
-        tun_iface::setup_nat(tun_name, wan, &subnet)
+        let exit_ip = cfg.network.exit_ip.as_deref();
+        tun_iface::teardown_nat(tun_name, wan, &subnet, exit_ip);
+        tun_iface::setup_nat(tun_name, wan, &subnet, exit_ip)
             .unwrap_or_else(|e| tracing::warn!("NAT setup failed: {}", e));
-        tracing::info!("NAT configured: {} -> {} (subnet {})", tun_name, wan, subnet);
-        Some((tun_name.to_string(), wan.clone(), subnet))
+        Some((tun_name.to_string(), wan.clone(), subnet, exit_ip.map(str::to_string)))
     } else {
         None
     };
@@ -270,8 +270,8 @@ async fn main() -> anyhow::Result<()> {
 
     // ─── Cleanup ────────────────────────────────────────────────────────────
     endpoint.close(0u32.into(), b"server shutdown");
-    if let Some((tun, wan, subnet)) = nat_info {
-        tun_iface::teardown_nat(&tun, &wan, &subnet);
+    if let Some((tun, wan, subnet, exit_ip)) = nat_info {
+        tun_iface::teardown_nat(&tun, &wan, &subnet, exit_ip.as_deref());
     }
     tracing::info!("Server stopped.");
 
