@@ -43,7 +43,7 @@ struct ContentView: View {
         .onAppear {
             syncAdminManager()
         }
-        .onChange(of: profileStore.activeProfileId) { _, _ in
+        .onChange(of: profileStore.activeProfileId) { _ in
             syncAdminManager()
         }
     }

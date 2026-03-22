@@ -177,7 +177,7 @@ private struct AdminClientRow: View {
 
             Button(action: onToggle) {
                 Image(systemName: client.enabled ? "toggle.on" : "toggle.off")
-                    .foregroundStyle(client.enabled ? .accentColor : .secondary)
+                    .foregroundStyle(client.enabled ? Color.accentColor : Color.secondary)
             }
             .buttonStyle(.plain)
             .help(client.enabled ? "Отключить" : "Включить")

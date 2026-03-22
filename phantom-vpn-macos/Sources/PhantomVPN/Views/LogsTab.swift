@@ -40,7 +40,7 @@ struct LogsTab: View {
                     }
                     .padding(8)
                 }
-                .onChange(of: vpnManager.logLines.count) { _, _ in
+                .onChange(of: vpnManager.logLines.count) { _ in
                     if autoScroll, let last = vpnManager.logLines.indices.last {
                         proxy.scrollTo(last, anchor: .bottom)
                     }
