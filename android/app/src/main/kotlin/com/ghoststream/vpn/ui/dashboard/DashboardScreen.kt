@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -22,9 +23,12 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -46,22 +50,37 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val timerText by viewModel.timerText.collectAsStateWithLifecycle()
     val subscriptionText by viewModel.subscriptionText.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val isAndroidTv = remember {
+        context.packageManager.hasSystemFeature("android.software.leanback")
+    }
+    val focusRequester = remember { FocusRequester() }
 
     val vpnPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { if (it.resultCode == Activity.RESULT_OK) viewModel.startVpn() }
 
+    // На TV автоматически фокусируемся на кнопке подключения
+    LaunchedEffect(Unit) {
+        if (isAndroidTv) runCatching { focusRequester.requestFocus() }
+    }
+
+    val hPadding = if (isAndroidTv) 64.dp else 24.dp
+    val btnSize = if (isAndroidTv) 160.dp else 122.dp
+    val topSpacer = if (isAndroidTv) 64.dp else 48.dp
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
+            .padding(horizontal = hPadding, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(topSpacer))
 
         ConnectButton(
             state = vpnState,
+            focusRequester = focusRequester,
+            modifier = Modifier.size(btnSize + 22.dp),
             onClick = {
                 when (vpnState) {
                     is VpnState.Connected, is VpnState.Connecting -> viewModel.stopVpn()
