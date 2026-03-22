@@ -13,6 +13,7 @@ import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.service.VpnStateManager
 import com.ghoststream.vpn.util.FormatUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,7 +21,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.time.Duration
 import java.time.Instant
 
@@ -60,6 +64,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _stats = MutableStateFlow(VpnStats())
     val stats: StateFlow<VpnStats> = _stats
 
+    private val _subscriptionText = MutableStateFlow<String?>(null)
+    val subscriptionText: StateFlow<String?> = _subscriptionText
+
     init {
         viewModelScope.launch {
             vpnState.collect { state ->
@@ -67,10 +74,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     is VpnState.Connected -> {
                         startTimer(state.since)
                         startStatsPolling(state.since)
+                        fetchSubscriptionInfo()
                     }
                     else -> {
                         _timerText.value = "00:00:00"
                         _stats.value = VpnStats()
+                        _subscriptionText.value = null
                     }
                 }
             }
@@ -105,6 +114,55 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 } catch (_: Exception) {}
                 delay(1000)
             }
+        }
+    }
+
+    private fun fetchSubscriptionInfo() {
+        val profile = profilesStore.getActiveProfile() ?: return
+        val adminUrl = profile.adminUrl ?: return
+        val adminToken = profile.adminToken ?: return
+        val myTunIp = profile.tunAddr.substringBefore('/')
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val url = URL("${adminUrl.trimEnd('/')}/api/clients")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.setRequestProperty("Authorization", "Bearer $adminToken")
+                conn.connectTimeout = 5000
+                conn.readTimeout = 10000
+                if (conn.responseCode == 200) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val arr = JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
+                            val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
+                            _subscriptionText.value = formatExpiry(expiresAt)
+                            break
+                        }
+                    }
+                } else {
+                    conn.disconnect()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun formatExpiry(expiresAt: Long?): String {
+        if (expiresAt == null) return "Подписка: бессрочно"
+        val remaining = expiresAt - (System.currentTimeMillis() / 1000)
+        return if (remaining > 0) {
+            val days = remaining / 86400
+            val hours = (remaining % 86400) / 3600
+            when {
+                days > 1  -> "Подписка: ${days}д ${hours}ч"
+                days == 1L -> "Подписка: 1д ${hours}ч"
+                hours > 0 -> "Подписка: ${hours}ч"
+                else      -> "Подписка: < 1ч ⚠"
+            }
+        } else {
+            "Подписка истекла ⚠"
         }
     }
 

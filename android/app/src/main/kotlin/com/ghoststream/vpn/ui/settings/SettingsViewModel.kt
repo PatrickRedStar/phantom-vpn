@@ -1,8 +1,11 @@
 package com.ghoststream.vpn.ui.settings
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.data.ConnStringParser
@@ -11,6 +14,9 @@ import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.data.VpnConfig
 import com.ghoststream.vpn.data.VpnProfile
+import com.ghoststream.vpn.service.GhostStreamVpnService
+import com.ghoststream.vpn.service.VpnStateManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -18,7 +24,13 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URL
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -158,9 +170,171 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _downloadStatus = MutableStateFlow("")
     val downloadStatus: StateFlow<String> = _downloadStatus
 
+    // ── Ping ─────────────────────────────────────────────────────────────────
+
+    private val _pingResults = MutableStateFlow<Map<String, Long?>>(emptyMap())
+    val pingResults: StateFlow<Map<String, Long?>> = _pingResults
+
+    private val _pinging = MutableStateFlow<Set<String>>(emptySet())
+    val pinging: StateFlow<Set<String>> = _pinging
+
+    fun pingProfile(id: String) {
+        val profile = profiles.value.find { it.id == id } ?: return
+        if (id in _pinging.value) return
+        viewModelScope.launch {
+            _pinging.value = _pinging.value + id
+            val latency = measureTcpLatency(profile.serverAddr)
+            _pingResults.value = _pingResults.value + (id to latency)
+            _pinging.value = _pinging.value - id
+        }
+    }
+
+    fun pingAll() = profiles.value.forEach { pingProfile(it.id) }
+
+    private suspend fun measureTcpLatency(serverAddr: String): Long? = withContext(Dispatchers.IO) {
+        try {
+            val lastColon = serverAddr.lastIndexOf(':')
+            val host = if (lastColon > 0) serverAddr.substring(0, lastColon) else serverAddr
+            val port = if (lastColon > 0) serverAddr.substring(lastColon + 1).toIntOrNull() ?: 8443 else 8443
+            val start = System.currentTimeMillis()
+            Socket().use { it.connect(InetSocketAddress(host, port), 3000) }
+            System.currentTimeMillis() - start
+        } catch (_: Exception) { null }
+    }
+
+    // ── Subscription info ─────────────────────────────────────────────────────
+
+    private val _profileSubscriptions = MutableStateFlow<Map<String, String>>(emptyMap())
+    val profileSubscriptions: StateFlow<Map<String, String>> = _profileSubscriptions
+
+    private fun fetchAllSubscriptions() {
+        profiles.value
+            .filter { it.adminUrl != null && it.adminToken != null }
+            .forEach { fetchProfileSubscription(it) }
+    }
+
+    private fun fetchProfileSubscription(profile: VpnProfile) {
+        val adminUrl = profile.adminUrl ?: return
+        val adminToken = profile.adminToken ?: return
+        val myTunIp = profile.tunAddr.substringBefore('/')
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val url = URL("${adminUrl.trimEnd('/')}/api/clients")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.setRequestProperty("Authorization", "Bearer $adminToken")
+                conn.connectTimeout = 5000
+                conn.readTimeout = 10000
+                if (conn.responseCode == 200) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    conn.disconnect()
+                    val arr = JSONArray(body)
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
+                            val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
+                            val text = if (expiresAt == null) {
+                                "бессрочно"
+                            } else {
+                                val rem = expiresAt - (System.currentTimeMillis() / 1000)
+                                if (rem > 0) {
+                                    val d = rem / 86400
+                                    val h = (rem % 86400) / 3600
+                                    when {
+                                        d > 0 -> "${d}д"
+                                        h > 0 -> "${h}ч"
+                                        else  -> "< 1ч ⚠"
+                                    }
+                                } else "истекла ⚠"
+                            }
+                            _profileSubscriptions.value = _profileSubscriptions.value + (profile.id to text)
+                            break
+                        }
+                    }
+                } else conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
+    // ── Debug report ──────────────────────────────────────────────────────────
+
+    fun shareDebugReport(context: Context) {
+        viewModelScope.launch {
+            val sb = StringBuilder()
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+            sb.appendLine("=== GhostStream VPN Debug Report ===")
+            sb.appendLine("Дата: ${sdf.format(java.util.Date())}")
+            sb.appendLine()
+            sb.appendLine("--- Приложение ---")
+            sb.appendLine("Версия: ${com.ghoststream.vpn.BuildConfig.VERSION_NAME} (${com.ghoststream.vpn.BuildConfig.VERSION_CODE})")
+            sb.appendLine("Git tag: ${com.ghoststream.vpn.BuildConfig.GIT_TAG}")
+            sb.appendLine()
+            sb.appendLine("--- Устройство ---")
+            sb.appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
+            sb.appendLine("Устройство: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+            sb.appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
+            sb.appendLine()
+            sb.appendLine("--- Активный профиль ---")
+            val activeProfile = profilesStore.getActiveProfile()
+            if (activeProfile != null) {
+                sb.appendLine("Имя: ${activeProfile.name}")
+                sb.appendLine("Сервер: ${activeProfile.serverAddr}")
+                sb.appendLine("SNI: ${activeProfile.serverName}")
+                sb.appendLine("Insecure: ${activeProfile.insecure}")
+                sb.appendLine("TUN: ${activeProfile.tunAddr}")
+                sb.appendLine("CA cert: ${if (activeProfile.caCertPath != null) "есть" else "нет"}")
+                sb.appendLine("Admin URL: ${if (activeProfile.adminUrl != null) "настроен" else "нет"}")
+            } else {
+                sb.appendLine("Нет активного профиля")
+            }
+            sb.appendLine()
+            sb.appendLine("--- Конфигурация ---")
+            val cfg = config.value
+            sb.appendLine("DNS: ${cfg.dnsServers.joinToString()}")
+            sb.appendLine("Раздельная маршрутизация: ${cfg.splitRouting}")
+            if (cfg.splitRouting) sb.appendLine("Прямые страны: ${cfg.directCountries.joinToString()}")
+            sb.appendLine("Per-app режим: ${cfg.perAppMode}")
+            if (cfg.perAppMode != "none") sb.appendLine("Приложений выбрано: ${cfg.perAppList.size}")
+            sb.appendLine()
+            sb.appendLine("--- Состояние VPN ---")
+            sb.appendLine("Состояние: ${VpnStateManager.state.value}")
+            sb.appendLine()
+            sb.appendLine("--- Логи (последние 500 строк) ---")
+            try {
+                val json = GhostStreamVpnService.nativeGetLogs(-1L)
+                if (json != null && json != "[]") {
+                    val arr = JSONArray(json)
+                    val start = maxOf(0, arr.length() - 500)
+                    for (i in start until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        sb.appendLine("${o.optString("ts")} [${o.optString("level")}] ${o.optString("msg")}")
+                    }
+                } else {
+                    sb.appendLine("Логи пусты")
+                }
+            } catch (e: Exception) {
+                sb.appendLine("Ошибка получения логов: ${e.message}")
+            }
+
+            val dir = File(context.cacheDir, "debug")
+            dir.mkdirs()
+            val file = File(dir, "ghoststream-debug.txt")
+            file.writeText(sb.toString())
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, "GhostStream VPN Debug Report")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Поделиться отладочной информацией"))
+        }
+    }
+
     init {
         refreshDownloadedRules()
         migrateLegacyIfNeeded()
+        fetchAllSubscriptions()
     }
 
     private fun migrateLegacyIfNeeded() {

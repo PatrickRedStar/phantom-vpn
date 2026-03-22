@@ -21,9 +21,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -31,6 +34,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Surface
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -48,7 +52,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -57,7 +63,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.data.VpnProfile
+import com.ghoststream.vpn.ui.theme.GreenConnected
+import com.ghoststream.vpn.ui.theme.RedError
 import com.ghoststream.vpn.ui.theme.TextSecondary
+import com.ghoststream.vpn.ui.theme.YellowWarning
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -73,7 +82,11 @@ fun SettingsScreen(
     val pendingName by viewModel.pendingName.collectAsStateWithLifecycle()
     val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
     val theme by viewModel.theme.collectAsStateWithLifecycle()
+    val pingResults by viewModel.pingResults.collectAsStateWithLifecycle()
+    val pinging by viewModel.pinging.collectAsStateWithLifecycle()
+    val profileSubscriptions by viewModel.profileSubscriptions.collectAsStateWithLifecycle()
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     LazyColumn(
         modifier = Modifier
@@ -105,18 +118,32 @@ fun SettingsScreen(
                             onAdminClick = if (profile.adminUrl != null) {
                                 { onAdminNavigate(profile.id) }
                             } else null,
+                            latencyMs = pingResults[profile.id],
+                            isPinging = profile.id in pinging,
+                            onPing = { viewModel.pingProfile(profile.id) },
+                            subscriptionText = profileSubscriptions[profile.id],
                         )
                     }
                 }
 
                 Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { showAddDialog = true },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Добавить подключение")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { showAddDialog = true },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Добавить")
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.pingAll() },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(Icons.Filled.Refresh, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Ping все")
+                    }
                 }
 
                 if (importStatus.isNotEmpty()) {
@@ -488,6 +515,18 @@ fun SettingsScreen(
                 )
             }
         }
+
+        // ── Debug share ───────────────────────────────────────────────────────
+        item {
+            OutlinedButton(
+                onClick = { viewModel.shareDebugReport(context) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Filled.BugReport, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Поделиться отладочной информацией")
+            }
+        }
     }
 }
 
@@ -500,6 +539,10 @@ private fun ProfileRow(
     onSelect: () -> Unit,
     onDelete: () -> Unit,
     onAdminClick: (() -> Unit)? = null,
+    latencyMs: Long? = null,
+    isPinging: Boolean = false,
+    onPing: () -> Unit = {},
+    subscriptionText: String? = null,
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -520,6 +563,50 @@ private fun ProfileRow(
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = TextSecondary,
                 )
+            }
+            if (subscriptionText != null) {
+                Text(
+                    "Подписка: $subscriptionText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (subscriptionText.contains("⚠")) RedError else TextSecondary,
+                )
+            }
+        }
+        // Latency badge
+        if (isPinging) {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(4.dp))
+        } else {
+            val latencyColor = when {
+                latencyMs == null -> Color.Unspecified
+                latencyMs < 100   -> GreenConnected
+                latencyMs < 300   -> YellowWarning
+                else              -> RedError
+            }
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = Color.Transparent,
+                modifier = Modifier.clickable(onClick = onPing),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.NetworkCheck,
+                        "Ping",
+                        modifier = Modifier.size(14.dp),
+                        tint = if (latencyMs != null) latencyColor else TextSecondary,
+                    )
+                    if (latencyMs != null) {
+                        Spacer(Modifier.width(2.dp))
+                        Text(
+                            "${latencyMs}ms",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = latencyColor,
+                        )
+                    }
+                }
             }
         }
         if (onAdminClick != null) {

@@ -26,12 +26,16 @@ data class LogEntry(
 
 class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
+    companion object {
+        private val LEVEL_ORDER = listOf("TRACE", "DEBUG", "INFO", "WARN", "ERROR")
+    }
+
     private val allLogs = mutableListOf<LogEntry>()
 
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs
 
-    private val _filter = MutableStateFlow("ALL")
+    private val _filter = MutableStateFlow("INFO")
     val filter: StateFlow<String> = _filter
 
     private val _autoScroll = MutableStateFlow(true)
@@ -78,16 +82,27 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         _logs.value = if (_filter.value == "ALL") {
             allLogs.toList()
         } else {
-            allLogs.filter { it.level == _filter.value }
+            val minIdx = LEVEL_ORDER.indexOf(_filter.value).let { if (it < 0) 0 else it }
+            allLogs.filter {
+                val idx = LEVEL_ORDER.indexOf(it.level)
+                idx < 0 || idx >= minIdx
+            }
         }
     }
 
     fun setFilter(level: String) {
         _filter.value = level
         applyFilter()
-        // Sync Rust log level: DEBUG chip enables verbose output, all others → INFO
+        val rustLevel = when (level) {
+            "TRACE" -> "trace"
+            "DEBUG" -> "debug"
+            "INFO"  -> "info"
+            "WARN"  -> "warn"
+            "ERROR" -> "error"
+            else    -> "trace"  // ALL → show everything
+        }
         try {
-            GhostStreamVpnService.nativeSetLogLevel(if (level == "DEBUG") "debug" else "info")
+            GhostStreamVpnService.nativeSetLogLevel(rustLevel)
         } catch (_: Exception) {}
     }
 

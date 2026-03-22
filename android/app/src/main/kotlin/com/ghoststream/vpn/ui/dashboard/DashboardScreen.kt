@@ -44,6 +44,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val timerText by viewModel.timerText.collectAsStateWithLifecycle()
+    val subscriptionText by viewModel.subscriptionText.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     val vpnPermLauncher = rememberLauncherForActivityResult(
@@ -107,6 +108,14 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 style = MaterialTheme.typography.bodySmall,
                 color = TextSecondary,
             )
+            if (subscriptionText != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = subscriptionText!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (subscriptionText!!.contains("⚠")) RedError else TextSecondary,
+                )
+            }
         }
 
         Spacer(Modifier.height(32.dp))
