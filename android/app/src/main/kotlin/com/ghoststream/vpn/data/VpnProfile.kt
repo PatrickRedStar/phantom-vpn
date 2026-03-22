@@ -10,4 +10,6 @@ data class VpnProfile(
     val keyPath: String = "",
     val caCertPath: String? = null,
     val tunAddr: String = "10.7.0.2/24",
+    val adminUrl: String? = null,
+    val adminToken: String? = null,
 )

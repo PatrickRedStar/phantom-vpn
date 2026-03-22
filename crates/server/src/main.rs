@@ -5,9 +5,10 @@ pub mod sessions;
 pub mod tun_iface;
 pub mod worker;
 pub mod quic_server;
+pub mod admin;
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -223,6 +224,55 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
+    }
+
+    // ─── Admin HTTP API ──────────────────────────────────────────────────────────
+    if let Some(ref admin_cfg) = cfg.admin {
+        if let Some(ref token) = admin_cfg.token {
+            let listen_str = admin_cfg.listen_addr.as_deref().unwrap_or("10.7.0.1:8080");
+            match listen_str.parse::<SocketAddr>() {
+                Ok(admin_addr) => {
+                    // Resolve server SNI from cert path
+                    let server_name = cfg.quic.as_ref()
+                        .and_then(|q| q.cert_path.as_deref())
+                        .and_then(|p| {
+                            // Extract domain from /etc/letsencrypt/live/<domain>/fullchain.pem
+                            p.split('/').find(|s| s.contains('.') && !s.contains("letsencrypt")).map(String::from)
+                        })
+                        .unwrap_or_else(|| cfg.network.listen_addr.clone());
+
+                    let ca_cert_path = admin_cfg.ca_cert_path.as_ref()
+                        .map(PathBuf::from)
+                        .or_else(|| cfg.quic.as_ref().and_then(|q| q.ca_cert_path.as_deref()).map(PathBuf::from));
+                    let ca_key_path = admin_cfg.ca_key_path.as_ref()
+                        .map(PathBuf::from)
+                        .or_else(|| ca_cert_path.as_ref().map(|p| p.with_extension("key")));
+
+                    let admin_state = admin::AdminState {
+                        sessions: sessions.clone(),
+                        clients_path: PathBuf::from(cfg.quic.as_ref()
+                            .and_then(|q| q.allowed_clients_path.as_deref())
+                            .unwrap_or("/opt/phantom-vpn/config/clients.json")),
+                        token: token.clone(),
+                        started_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        allow_list: allow_list.clone(),
+                        ca_cert_path,
+                        ca_key_path,
+                        server_addr: cfg.network.listen_addr.clone(),
+                        server_name,
+                    };
+                    tokio::spawn(async move {
+                        if let Err(e) = admin::run(admin_addr, admin_state).await {
+                            tracing::error!("Admin server error: {}", e);
+                        }
+                    });
+                }
+                Err(e) => tracing::warn!("Invalid admin listen_addr '{}': {}", listen_str, e),
+            }
+        }
     }
 
     // ─── TUN → QUIC loop (io_uring reader feeds directly) ─────────────────

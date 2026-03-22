@@ -12,6 +12,8 @@ object ConnStringParser {
         val cert: String,
         val key: String,
         val ca: String? = null,
+        val adminUrl: String? = null,
+        val adminToken: String? = null,
     )
 
     fun parse(input: String): Result<ParsedConfig> = runCatching {
@@ -31,13 +33,19 @@ object ConnStringParser {
 
         val obj = JSONObject(json)
 
+        val adminObj = obj.optJSONObject("admin")
+        val adminUrl   = adminObj?.optString("url")?.takeIf { it.isNotEmpty() }
+        val adminToken = adminObj?.optString("token")?.takeIf { it.isNotEmpty() }
+
         ParsedConfig(
-            addr = obj.getString("addr"),
-            sni  = obj.getString("sni"),
-            tun  = obj.getString("tun"),
-            cert = obj.getString("cert"),
-            key  = obj.getString("key"),
-            ca   = obj.optString("ca", null),
+            addr       = obj.getString("addr"),
+            sni        = obj.getString("sni"),
+            tun        = obj.getString("tun"),
+            cert       = obj.getString("cert"),
+            key        = obj.getString("key"),
+            ca         = obj.optString("ca", null),
+            adminUrl   = adminUrl,
+            adminToken = adminToken,
         )
     }
 }

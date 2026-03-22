@@ -27,6 +27,8 @@ pub struct QuicSession {
     pub data_sends: Vec<mpsc::Sender<Vec<u8>>>,
     pub shaper:     Mutex<H264Shaper>,
     pub last_seen:  AtomicU64,
+    pub bytes_rx:   AtomicU64,
+    pub bytes_tx:   AtomicU64,
 }
 
 impl QuicSession {
@@ -75,9 +77,11 @@ pub fn load_allow_list(path: &Path) -> anyhow::Result<HashSet<String>> {
     let mut fps = HashSet::new();
     if let Some(clients) = val.get("clients").and_then(|c| c.as_object()) {
         for (name, info) in clients {
-            if let Some(fp) = info.get("fingerprint").and_then(|f| f.as_str()) {
-                fps.insert(fp.to_lowercase());
-                tracing::debug!("Allowed client: {} (fp={}…)", name, &fp[..8.min(fp.len())]);
+            if info.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true) {
+                if let Some(fp) = info.get("fingerprint").and_then(|f| f.as_str()) {
+                    fps.insert(fp.to_lowercase());
+                    tracing::debug!("Allowed client: {} (fp={}…)", name, &fp[..8.min(fp.len())]);
+                }
             }
         }
     }
@@ -209,6 +213,8 @@ async fn handle_connection(
                 .unwrap_or_default()
                 .as_secs(),
         ),
+        bytes_rx:   AtomicU64::new(0),
+        bytes_tx:   AtomicU64::new(0),
     });
 
     // Run N stream RX loops
@@ -277,6 +283,7 @@ async fn stream_rx_loop(
             .await
             .map_err(|e| anyhow::anyhow!("stream read frame: {}", e))?;
 
+        session.bytes_rx.fetch_add(frame_len as u64, Ordering::Relaxed);
         session.touch();
 
         // 3. Walk batch in-place — no intermediate Vec<Vec<u8>>
@@ -420,6 +427,8 @@ pub async fn tun_to_quic_loop(
 
                 if session.data_sends[idx].send(frame_buf[..4 + pt_len].to_vec()).await.is_err() {
                     tracing::warn!("session write channel closed for stream {}", idx);
+                } else {
+                    session.bytes_tx.fetch_add((4 + pt_len) as u64, Ordering::Relaxed);
                 }
             }
         }

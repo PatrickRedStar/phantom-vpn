@@ -110,6 +110,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         keyPath    = keyFile.absolutePath,
                         caCertPath = caPath,
                         tunAddr    = parsed.tun,
+                        adminUrl   = parsed.adminUrl,
+                        adminToken = parsed.adminToken,
                     ),
                 )
 

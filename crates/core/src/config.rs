@@ -142,6 +142,20 @@ pub struct ShaperConfig {
     pub idle_fps:        Option<u32>,
 }
 
+// ─── Admin API ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AdminConfig {
+    /// Listen address for admin HTTP API (default: "10.7.0.1:8080")
+    pub listen_addr: Option<String>,
+    /// Bearer token for auth (required to enable admin API)
+    pub token: Option<String>,
+    /// Path to CA cert for signing new client certs
+    pub ca_cert_path: Option<String>,
+    /// Path to CA key for signing new client certs
+    pub ca_key_path: Option<String>,
+}
+
 // ─── ServerConfig ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +170,8 @@ pub struct ServerConfig {
     pub shaper:   Option<ShaperConfig>,
     #[serde(default)]
     pub quic:     Option<QuicConfig>,
+    #[serde(default)]
+    pub admin:    Option<AdminConfig>,
 }
 
 impl ServerConfig {
