@@ -11,20 +11,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary       = AccentPurple,
-    secondary     = AccentIndigo,
-    tertiary      = AccentPurpleLight,
-    background    = DarkBackground,
-    surface       = DarkSurface,
+    primary        = AccentPurple,
+    secondary      = AccentTeal,
+    tertiary       = AccentPurpleLight,
+    background     = DarkBackground,
+    surface        = DarkSurface,
     surfaceVariant = DarkSurfaceVariant,
-    onBackground  = TextPrimary,
-    onSurface     = TextPrimary,
-    error         = RedError,
+    onBackground   = TextPrimary,
+    onSurface      = TextPrimary,
+    error          = RedError,
 )
 
 private val LightColorScheme = lightColorScheme(
     primary   = AccentPurple,
-    secondary = AccentIndigo,
+    secondary = AccentTeal,
     tertiary  = AccentPurpleLight,
 )
 

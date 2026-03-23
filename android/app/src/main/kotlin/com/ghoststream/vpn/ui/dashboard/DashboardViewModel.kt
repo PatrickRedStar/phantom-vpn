@@ -67,6 +67,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _subscriptionText = MutableStateFlow<String?>(null)
     val subscriptionText: StateFlow<String?> = _subscriptionText
 
+    private val _countryFlag = MutableStateFlow("🌐")
+    val countryFlag: StateFlow<String> = _countryFlag
+
     init {
         viewModelScope.launch {
             vpnState.collect { state ->
@@ -84,6 +87,37 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
         }
+        viewModelScope.launch {
+            config.collect { cfg ->
+                if (cfg.serverAddr.isNotBlank()) fetchCountryFlag(cfg.serverAddr)
+            }
+        }
+    }
+
+    private fun fetchCountryFlag(serverAddr: String) {
+        val ip = serverAddr.substringBefore(':')
+        if (ip.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val conn = java.net.URL("https://ipinfo.io/$ip/country")
+                    .openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 5000
+                if (conn.responseCode == 200) {
+                    val code = conn.inputStream.bufferedReader().readText().trim()
+                    conn.disconnect()
+                    _countryFlag.value = countryCodeToFlag(code)
+                } else {
+                    conn.disconnect()
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun countryCodeToFlag(code: String): String {
+        if (code.length != 2 || !code.all { it.isLetter() }) return "🌐"
+        val offset = 0x1F1E6 - 'A'.code
+        return code.uppercase().map { String(Character.toChars(it.code + offset)) }.joinToString("")
     }
 
     private fun startTimer(since: Instant) {
