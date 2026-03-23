@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -22,15 +21,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ghoststream.vpn.ui.theme.CardBg
-import com.ghoststream.vpn.ui.theme.CardBorder
-import com.ghoststream.vpn.ui.theme.TextPrimary
-import com.ghoststream.vpn.ui.theme.TextTertiary
+import com.ghoststream.vpn.ui.theme.LocalGhostColors
 
 @Composable
 fun CubeButton(
@@ -42,10 +40,11 @@ fun CubeButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val gc = LocalGhostColors.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.94f else 1f,
+        targetValue = if (isPressed) 0.96f else 1f,
         label = "cube_scale",
     )
 
@@ -53,11 +52,23 @@ fun CubeButton(
         modifier = modifier
             .graphicsLayer(scaleX = scale, scaleY = scale)
             .clip(RoundedCornerShape(18.dp))
-            .background(CardBg)
-            .border(0.5.dp, CardBorder, RoundedCornerShape(18.dp))
+            .background(gc.cardBg)
+            .border(0.5.dp, gc.cardBorder, RoundedCornerShape(18.dp))
             .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
             .padding(16.dp),
     ) {
+        // Subtle radial glow (mimics .cube::before)
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(iconTint.copy(alpha = 0.08f), Color.Transparent),
+                        radius = 300f,
+                    ),
+                ),
+        )
+
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -73,19 +84,21 @@ fun CubeButton(
             }
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge,
-                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = gc.textPrimary,
             )
             Text(
                 text = sublabel,
-                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 14.sp),
-                color = TextTertiary,
+                fontSize = 10.sp,
+                lineHeight = 14.sp,
+                color = gc.textTertiary,
             )
         }
         Text(
             text = "›",
-            style = MaterialTheme.typography.titleMedium,
-            color = TextTertiary,
+            fontSize = 14.sp,
+            color = gc.textTertiary,
             modifier = Modifier.align(Alignment.BottomEnd),
         )
     }

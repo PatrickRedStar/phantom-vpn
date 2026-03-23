@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -16,10 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.ghoststream.vpn.ui.theme.CardBg
-import com.ghoststream.vpn.ui.theme.CardBorder
-import com.ghoststream.vpn.ui.theme.TextPrimary
-import com.ghoststream.vpn.ui.theme.TextTertiary
+import com.ghoststream.vpn.ui.theme.LocalGhostColors
 
 @Composable
 fun ServerCard(
@@ -28,11 +24,12 @@ fun ServerCard(
     subscriptionText: String?,
     modifier: Modifier = Modifier,
 ) {
+    val gc = LocalGhostColors.current
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(CardBg)
-            .border(0.5.dp, CardBorder, RoundedCornerShape(12.dp))
+            .background(gc.cardBg)
+            .border(0.5.dp, gc.cardBorder, RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -41,8 +38,9 @@ fun ServerCard(
         Column {
             Text(
                 text = host,
-                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
-                color = TextPrimary,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                color = gc.textSecondary,
             )
             val meta = buildString {
                 if (subscriptionText != null) append("$subscriptionText · ")
@@ -50,8 +48,8 @@ fun ServerCard(
             }
             Text(
                 text = meta,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextTertiary,
+                fontSize = 10.sp,
+                color = gc.textTertiary,
             )
         }
     }

@@ -11,25 +11,21 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.ghoststream.vpn.ui.theme.CardBg
-import com.ghoststream.vpn.ui.theme.CardBorder
-import com.ghoststream.vpn.ui.theme.TextPrimary
-import com.ghoststream.vpn.ui.theme.TextTertiary
+import androidx.compose.ui.unit.sp
+import com.ghoststream.vpn.ui.theme.LocalGhostColors
 
 @Composable
 fun StatCard(
-    icon: ImageVector,
+    iconChar: String,
     label: String,
     value: String,
     subValue: String? = null,
@@ -37,11 +33,12 @@ fun StatCard(
     iconBg: Color,
     modifier: Modifier = Modifier,
 ) {
+    val gc = LocalGhostColors.current
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
-            .background(CardBg)
-            .border(0.5.dp, CardBorder, RoundedCornerShape(14.dp))
+            .background(gc.cardBg)
+            .border(0.5.dp, gc.cardBorder, RoundedCornerShape(14.dp))
             .padding(12.dp),
     ) {
         Row(
@@ -55,21 +52,29 @@ fun StatCard(
                     .clip(RoundedCornerShape(6.dp))
                     .background(iconBg),
             ) {
-                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(11.dp))
+                Text(iconChar, fontSize = 11.sp, color = iconTint)
             }
-            Text(text = label, style = MaterialTheme.typography.labelSmall, color = TextTertiary)
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                color = gc.textTertiary,
+            )
         }
         Spacer(Modifier.height(6.dp))
         Text(
             text = value,
-            style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
-            color = TextPrimary,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Medium,
+            color = gc.textPrimary,
         )
         if (subValue != null) {
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = subValue,
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                color = TextTertiary,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp,
+                color = gc.textTertiary,
             )
         }
     }

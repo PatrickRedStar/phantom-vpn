@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -23,30 +22,43 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ghoststream.vpn.service.VpnState
-import com.ghoststream.vpn.ui.theme.BlueDebug
+import com.ghoststream.vpn.ui.theme.ConnectingBlue
 import com.ghoststream.vpn.ui.theme.GreenConnected
 import com.ghoststream.vpn.ui.theme.RedError
 
 @Composable
 fun ConnectionPill(vpnState: VpnState, modifier: Modifier = Modifier) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pill")
-    val dotAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.35f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(700, easing = EaseInOut), RepeatMode.Reverse),
+    val inf = rememberInfiniteTransition(label = "pill")
+
+    // Connected: dot pulse (alpha)
+    val dotAlpha by inf.animateFloat(
+        0.42f, 1f,
+        infiniteRepeatable(tween(1800, easing = EaseInOut), RepeatMode.Reverse),
         label = "dot_alpha",
     )
+    // Connecting: dot scale + opacity
+    val connectDotScale by inf.animateFloat(
+        0.9f, 1.35f,
+        infiniteRepeatable(tween(900, easing = EaseInOut), RepeatMode.Reverse),
+        label = "dot_scale",
+    )
+    val connectDotAlpha by inf.animateFloat(
+        0.55f, 1f,
+        infiniteRepeatable(tween(900, easing = EaseInOut), RepeatMode.Reverse),
+        label = "dot_connect_alpha",
+    )
 
-    val (bgColor, dotColor, text, animateDot) = when (vpnState) {
-        is VpnState.Connected    -> Quad(GreenConnected.copy(.14f), GreenConnected,                         "Подключён",       true)
-        is VpnState.Connecting   -> Quad(BlueDebug.copy(.12f),      BlueDebug,                              "Подключение...",  true)
-        is VpnState.Error        -> Quad(RedError.copy(.12f),        RedError,                               "Ошибка",          false)
-        is VpnState.Disconnecting -> Quad(Color.White.copy(.06f),   Color.White.copy(.42f),                 "Отключение...",   false)
-        else                     -> Quad(Color.White.copy(.06f),     Color.White.copy(.42f),                 "Отключён",        false)
+    val (bgColor, dotColor, text) = when (vpnState) {
+        is VpnState.Connected    -> Triple(GreenConnected.copy(.12f), GreenConnected, "Подключён")
+        is VpnState.Connecting   -> Triple(ConnectingBlue.copy(.12f), ConnectingBlue, "Подключение...")
+        is VpnState.Error        -> Triple(RedError.copy(.12f), RedError, "Ошибка")
+        is VpnState.Disconnecting -> Triple(Color.White.copy(.06f), Color.White.copy(.52f), "Отключение...")
+        else                     -> Triple(Color.White.copy(.06f), Color.White.copy(.52f), "Отключён")
     }
 
     Row(
@@ -61,18 +73,28 @@ fun ConnectionPill(vpnState: VpnState, modifier: Modifier = Modifier) {
         Box(
             modifier = Modifier
                 .size(6.dp)
+                .graphicsLayer {
+                    when (vpnState) {
+                        is VpnState.Connected -> {
+                            alpha = dotAlpha
+                        }
+                        is VpnState.Connecting -> {
+                            scaleX = connectDotScale
+                            scaleY = connectDotScale
+                            alpha = connectDotAlpha
+                        }
+                        else -> {}
+                    }
+                }
                 .clip(CircleShape)
-                .background(dotColor.copy(alpha = if (animateDot) dotAlpha else 0.5f)),
+                .background(dotColor),
         )
         Text(
             text = text,
-            style = MaterialTheme.typography.labelMedium.copy(
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.4.sp,
-            ),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.4.sp,
             color = dotColor,
         )
     }
 }
-
-private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
