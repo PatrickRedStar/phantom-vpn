@@ -119,10 +119,21 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun copyAll(context: Context) {
-        val text = allLogs.joinToString("\n") { "${it.timestamp} ${it.level} ${it.message}" }
-        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText("logs", text))
-        Toast.makeText(context, "Все логи скопированы (${allLogs.size})", Toast.LENGTH_SHORT).show()
+        // Clipboard Binder ограничен ~1 MB — берём последние 500 строк, остальное — через share
+        val limit = 500
+        val source = if (allLogs.size > limit) allLogs.takeLast(limit) else allLogs
+        val text = source.joinToString("\n") { "${it.timestamp} ${it.level} ${it.message}" }
+        try {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("logs", text))
+            val msg = if (allLogs.size > limit)
+                "Скопированы последние $limit строк из ${allLogs.size}"
+            else
+                "Скопировано ${allLogs.size} строк"
+            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            Toast.makeText(context, "Слишком много данных — используй «Поделиться»", Toast.LENGTH_LONG).show()
+        }
     }
 
     fun shareLogs(context: Context) {

@@ -114,6 +114,26 @@ class GhostStreamVpnService : VpnService() {
         return START_STICKY
     }
 
+    /**
+     * Резолвит hostname в IP ДО того, как поднимается VPN-интерфейс.
+     * После builder.establish() весь трафик (включая DNS) идёт через туннель,
+     * поэтому DNS-запрос при реконнекте уходит в недоступный туннель → ошибка резолвинга.
+     * Кешируем IP один раз и используем его во всех reconnect-попытках.
+     */
+    private fun resolveAddr(serverAddr: String): String {
+        val colonIdx = serverAddr.lastIndexOf(':')
+        val host = if (colonIdx > 0) serverAddr.substring(0, colonIdx) else return serverAddr
+        val port = serverAddr.substring(colonIdx + 1)
+        return try {
+            val ip = java.net.InetAddress.getByName(host).hostAddress ?: return serverAddr
+            Log.i(TAG, "Resolved $host → $ip")
+            "$ip:$port"
+        } catch (e: Exception) {
+            Log.w(TAG, "DNS resolve failed for $host: ${e.message}, using original addr")
+            serverAddr
+        }
+    }
+
     private fun startTunnel(
         serverAddr: String, serverName: String,
         insecure: Boolean, certPath: String, keyPath: String, caCertPath: String,
@@ -121,6 +141,9 @@ class GhostStreamVpnService : VpnService() {
         splitRouting: Boolean, directCidrsPath: String,
         perAppMode: String, perAppList: List<String>,
     ) {
+        // Резолвим hostname → IP пока DNS ещё работает (до establish())
+        val resolvedAddr = resolveAddr(serverAddr)
+
         val parts     = tunAddr.split("/")
         val tunIp     = parts.getOrElse(0) { "10.7.0.2" }
         val tunPrefix = parts.getOrNull(1)?.toIntOrNull() ?: 24
@@ -184,10 +207,12 @@ class GhostStreamVpnService : VpnService() {
         }
 
         userStopped = false
-        savedParams = TunnelParams(serverAddr, serverName, insecure, certPath, keyPath, caCertPath)
+        // Сохраняем resolvedAddr (IP), а не оригинальный hostname —
+        // чтобы watchdog reconnect не делал DNS-запрос через уже поднятый туннель
+        savedParams = TunnelParams(resolvedAddr, serverName, insecure, certPath, keyPath, caCertPath)
 
         val fd = vpnInterface!!.fd
-        val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath)
+        val result = nativeStart(fd, resolvedAddr, serverName, insecure, certPath, keyPath, caCertPath)
         if (result != 0) {
             vpnInterface?.close()
             vpnInterface = null
@@ -198,7 +223,7 @@ class GhostStreamVpnService : VpnService() {
         }
 
         // Do NOT set Connected here — watchdog will do it once QUIC handshake completes
-        startWatchdog(serverName, serverAddr)
+        startWatchdog(serverName, resolvedAddr)
     }
 
     /**
