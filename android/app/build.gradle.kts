@@ -1,19 +1,20 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.ghoststream.vpn"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.ghoststream.vpn"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 19
-        versionName = "0.10.2"
-        buildConfigField("String", "GIT_TAG", "\"v0.10.2\"")
+        targetSdk = 35
+        versionCode = 22
+        versionName = "0.11.0"
+        buildConfigField("String", "GIT_TAG", "\"v0.11.0\"")
     }
 
     buildFeatures {
@@ -21,9 +22,7 @@ android {
         buildConfig = true
     }
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.10"
-    }
+    // composeOptions блок убран — с Kotlin 2.0+ Compose Compiler встроен в Kotlin plugin
 
     buildTypes {
         release {
@@ -48,7 +47,7 @@ android {
 
 dependencies {
     // Compose BOM
-    val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
+    val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
     implementation(composeBom)
 
     // Compose
@@ -58,25 +57,25 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     // Activity Compose
-    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.activity:activity-compose:1.9.3")
 
     // Navigation Compose
-    implementation("androidx.navigation:navigation-compose:2.7.7")
+    implementation("androidx.navigation:navigation-compose:2.8.5")
 
     // Lifecycle + ViewModel
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     // DataStore
-    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("androidx.datastore:datastore-preferences:1.1.2")
 
     // Core
-    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.core:core-ktx:1.15.0")
 
     // CameraX + ML Kit for QR scanning
-    implementation("androidx.camera:camera-camera2:1.3.1")
-    implementation("androidx.camera:camera-lifecycle:1.3.1")
-    implementation("androidx.camera:camera-view:1.3.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
 
     // ZXing core for QR code generation
@@ -86,11 +85,12 @@ dependencies {
 val cargoWorkspaceDir = file("${rootProject.rootDir}/..")
 
 tasks.register<Exec>("buildRustAndroid") {
-    description = "Build Rust JNI library for Android arm64-v8a"
+    description = "Build Rust JNI library for Android arm64-v8a + armeabi-v7a"
     workingDir = cargoWorkspaceDir
     commandLine(
         "cargo", "ndk",
         "-t", "arm64-v8a",
+        "-t", "armeabi-v7a",
         "-o", "${projectDir}/src/main/jniLibs",
         "build", "--release", "-p", "phantom-client-android"
     )
