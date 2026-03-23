@@ -4,38 +4,71 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ghoststream.vpn.ui.theme.AccentPurple
+import com.ghoststream.vpn.ui.theme.AccentTeal
+import com.ghoststream.vpn.ui.theme.DangerRose
+import com.ghoststream.vpn.ui.theme.LocalGhostColors
+import com.ghoststream.vpn.ui.theme.RedError
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 
 enum class ClientFilter { ALL, ONLINE, DISABLED }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminScreen(
     adminUrl: String,
@@ -43,9 +76,10 @@ fun AdminScreen(
     onBack: () -> Unit,
     viewModel: AdminViewModel = viewModel(),
 ) {
-    LaunchedEffect(adminUrl, adminToken) {
-        viewModel.init(adminUrl, adminToken)
-    }
+    val gc = LocalGhostColors.current
+    val context = LocalContext.current
+
+    LaunchedEffect(adminUrl, adminToken) { viewModel.init(adminUrl, adminToken) }
 
     val status by viewModel.status.collectAsStateWithLifecycle()
     val clients by viewModel.clients.collectAsStateWithLifecycle()
@@ -60,34 +94,25 @@ fun AdminScreen(
     var showStatsDialog by remember { mutableStateOf<String?>(null) }
     var showSubDialog by remember { mutableStateOf<ClientInfo?>(null) }
 
-    val filteredClients = clients
-        .filter { c ->
-            (searchQuery.isEmpty() || c.name.contains(searchQuery, ignoreCase = true)) &&
-            when (activeFilter) {
-                ClientFilter.ALL      -> true
-                ClientFilter.ONLINE   -> c.connected
-                ClientFilter.DISABLED -> !c.enabled
-            }
+    val filteredClients = clients.filter { c ->
+        (searchQuery.isEmpty() || c.name.contains(searchQuery, ignoreCase = true)) &&
+        when (activeFilter) {
+            ClientFilter.ALL -> true
+            ClientFilter.ONLINE -> c.connected
+            ClientFilter.DISABLED -> !c.enabled
         }
-
-    // Show conn string dialog when a new client is created or conn string is fetched
-    if (newConnString != null) {
-        ConnStringDialog(
-            connString = newConnString!!,
-            onDismiss = { viewModel.clearNewConnString() },
-        )
     }
 
+    // Dialogs
+    if (newConnString != null) {
+        ConnStringDialog(connString = newConnString!!, onDismiss = { viewModel.clearNewConnString() })
+    }
     if (showAddDialog) {
         AddClientDialog(
-            onConfirm = { name, days ->
-                showAddDialog = false
-                viewModel.createClient(name, days)
-            },
+            onConfirm = { name, days -> showAddDialog = false; viewModel.createClient(name, days) },
             onDismiss = { showAddDialog = false },
         )
     }
-
     deleteConfirm?.let { name ->
         AlertDialog(
             onDismissRequest = { deleteConfirm = null },
@@ -95,7 +120,7 @@ fun AdminScreen(
             text = { Text("Удалить «$name»? Это действие нельзя отменить.") },
             confirmButton = {
                 TextButton(onClick = { viewModel.deleteClient(name); deleteConfirm = null }) {
-                    Text("Удалить", color = MaterialTheme.colorScheme.error)
+                    Text("Удалить", color = RedError)
                 }
             },
             dismissButton = {
@@ -103,7 +128,6 @@ fun AdminScreen(
             },
         )
     }
-
     showStatsDialog?.let { clientName ->
         val stats by viewModel.clientStats.collectAsStateWithLifecycle()
         val logs by viewModel.clientLogs.collectAsStateWithLifecycle()
@@ -111,91 +135,92 @@ fun AdminScreen(
             clientName = clientName,
             stats = stats,
             logs = logs,
-            onDismiss = {
-                showStatsDialog = null
-                viewModel.clearClientDetails()
-            },
+            onDismiss = { showStatsDialog = null; viewModel.clearClientDetails() },
         )
     }
-
     showSubDialog?.let { client ->
         SubscriptionDialog(
             client = client,
-            onManage = { action, days ->
-                viewModel.manageSubscription(client.name, action, days)
-                showSubDialog = null
-            },
+            onManage = { action, days -> viewModel.manageSubscription(client.name, action, days); showSubDialog = null },
             onDismiss = { showSubDialog = null },
         )
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Администрирование") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
-                    }
-                },
-                actions = {
-                    if (loading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp).padding(end = 8.dp),
-                            strokeWidth = 2.dp,
-                        )
-                    } else {
-                        IconButton(onClick = { viewModel.refresh() }) {
-                            Icon(Icons.Filled.Refresh, "Обновить")
-                        }
-                    }
-                },
-            )
-        },
-        floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
-                Icon(Icons.Filled.PersonAdd, "Добавить клиента")
-            }
-        },
-    ) { padding ->
+    Box(Modifier.fillMaxSize()) {
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             // Error banner
             if (error != null) {
                 item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    Text(
+                        error!!,
+                        fontSize = 12.sp,
+                        color = RedError,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(RedError.copy(alpha = 0.1f))
+                            .border(0.5.dp, RedError.copy(alpha = 0.22f), RoundedCornerShape(14.dp))
+                            .padding(12.dp),
+                    )
+                }
+            }
+
+            // Hero card
+            status?.let { s ->
+                item { AdminHeroCard(status = s) }
+            }
+
+            // KPIs
+            status?.let { s ->
+                item {
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Text(
-                            error!!,
-                            modifier = Modifier.padding(12.dp),
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                        )
+                        KpiCard("Аптайм", formatUptime(s.uptimeSecs), "uptime", Modifier.weight(1f))
+                        KpiCard("Сессии", "${s.sessionsActive}", "active", Modifier.weight(1f))
+                        KpiCard("Транспорт", "QUIC", "h3", Modifier.weight(1f))
                     }
                 }
             }
 
-            // Search bar
+            // Search
             item {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    label = { Text("Поиск клиента") },
-                    leadingIcon = { Icon(Icons.Filled.Search, null) },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Filled.Clear, null)
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.White.copy(alpha = 0.04f))
+                        .border(0.5.dp, gc.cardBorder, RoundedCornerShape(14.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("🔍", fontSize = 14.sp)
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 12.sp, color = gc.textPrimary),
+                        cursorBrush = SolidColor(AccentPurple),
+                        decorationBox = { inner ->
+                            if (searchQuery.isEmpty()) Text("Поиск клиента...", fontSize = 12.sp, color = gc.textTertiary)
+                            inner()
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        Text(
+                            "✕",
+                            fontSize = 12.sp,
+                            color = gc.textTertiary,
+                            modifier = Modifier.clickable { searchQuery = "" },
+                        )
+                    }
+                }
             }
 
             // Filter chips
@@ -204,56 +229,55 @@ fun AdminScreen(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    FilterChip(
-                        selected = activeFilter == ClientFilter.ALL,
-                        onClick = { activeFilter = ClientFilter.ALL },
-                        label = { Text("Все (${clients.size})") },
-                    )
-                    FilterChip(
-                        selected = activeFilter == ClientFilter.ONLINE,
-                        onClick = { activeFilter = ClientFilter.ONLINE },
-                        label = { Text("Онлайн (${clients.count { it.connected }})") },
-                    )
-                    FilterChip(
-                        selected = activeFilter == ClientFilter.DISABLED,
-                        onClick = { activeFilter = ClientFilter.DISABLED },
-                        label = { Text("Отключены (${clients.count { !it.enabled }})") },
-                    )
-                }
-            }
-
-            // Server status card
-            status?.let { s ->
-                item {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Сервер", style = MaterialTheme.typography.titleMedium)
-                            Text("Вход: ${s.serverAddr}", style = MaterialTheme.typography.bodySmall)
-                            if (s.exitIp != null) {
-                                Text("Выход: ${s.exitIp}", style = MaterialTheme.typography.bodySmall)
-                            }
-                            Text("Аптайм: ${formatUptime(s.uptimeSecs)}", style = MaterialTheme.typography.bodySmall)
-                            Text("Активных сессий: ${s.sessionsActive}", style = MaterialTheme.typography.bodySmall)
-                        }
+                    AdminFilterChip("Все (${clients.size})", activeFilter == ClientFilter.ALL) {
+                        activeFilter = ClientFilter.ALL
+                    }
+                    AdminFilterChip("Онлайн (${clients.count { it.connected }})", activeFilter == ClientFilter.ONLINE) {
+                        activeFilter = ClientFilter.ONLINE
+                    }
+                    AdminFilterChip("Отключены (${clients.count { !it.enabled }})", activeFilter == ClientFilter.DISABLED) {
+                        activeFilter = ClientFilter.DISABLED
                     }
                 }
             }
 
-            // Clients header
+            // Section header
             item {
-                val countLabel = if (searchQuery.isEmpty() && activeFilter == ClientFilter.ALL)
-                    "Клиенты (${clients.size})"
-                else
-                    "Клиенты (${filteredClients.size} из ${clients.size})"
-                Text(
-                    countLabel,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(vertical = 4.dp),
-                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val countLabel = if (searchQuery.isEmpty() && activeFilter == ClientFilter.ALL)
+                        "Клиенты" else "Результат"
+                    Text(countLabel, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = gc.textPrimary)
+                    Text(
+                        "${filteredClients.size} из ${clients.size}",
+                        fontSize = 11.sp,
+                        color = gc.textTertiary,
+                    )
+                }
             }
 
+            // Client cards
+            if (filteredClients.isEmpty()) {
+                item {
+                    Text(
+                        "Нет клиентов по заданным фильтрам.",
+                        fontSize = 12.sp,
+                        color = gc.textTertiary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(0.5.dp, gc.cardBorder, RoundedCornerShape(16.dp))
+                            .background(Color.White.copy(alpha = 0.03f))
+                            .padding(20.dp),
+                    )
+                }
+            }
             items(filteredClients, key = { it.name }) { client ->
-                ClientCard(
+                GlassClientCard(
                     client = client,
                     onToggle = { viewModel.toggleEnabled(client.name, client.enabled) },
                     onDelete = { deleteConfirm = client.name },
@@ -266,112 +290,326 @@ fun AdminScreen(
                     onSubscription = { showSubDialog = client },
                 )
             }
+
+            item { Spacer(Modifier.height(72.dp)) }
+        }
+
+        // FAB
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(18.dp)
+                .size(56.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Brush.linearGradient(listOf(Color(0xFF7c6af7), Color(0xFFa855f7))))
+                .clickable { showAddDialog = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.Add, "Добавить клиента", tint = Color.White, modifier = Modifier.size(24.dp))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Sub-composables
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun AdminHeroCard(status: ServerStatus) {
+    val gc = LocalGhostColors.current
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF7c6af7).copy(alpha = 0.22f),
+                        Color(0xFF1a1c34).copy(alpha = 0.96f),
+                        Color(0xFF0b0f1c).copy(alpha = 0.98f),
+                    ),
+                    start = Offset(0f, 0f),
+                    end = Offset(600f, 400f),
+                ),
+            )
+            .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
+            .drawBehind {
+                // Decorative teal circle top-right
+                drawCircle(
+                    color = Color(0xFF22d3a0).copy(alpha = 0.22f),
+                    radius = 70f,
+                    center = Offset(size.width + 34f, -52f),
+                )
+                // Decorative blue circle bottom-left
+                drawCircle(
+                    color = Color(0xFF60a5fa).copy(alpha = 0.16f),
+                    radius = 60f,
+                    center = Offset(-44f, size.height + 54f),
+                )
+            }
+            .padding(18.dp),
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column {
+                    Text(
+                        "Phantom VPN",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.2.sp,
+                        color = Color.White.copy(alpha = 0.56f),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text("Сервер", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Color.White, letterSpacing = 0.2.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "QUIC/H3 туннель, шифрование Noise IK",
+                        fontSize = 11.sp,
+                        color = Color.White.copy(alpha = 0.62f),
+                        lineHeight = 15.5.sp,
+                    )
+                }
+                // Status pill
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(AccentTeal.copy(alpha = 0.12f))
+                        .border(0.5.dp, AccentTeal.copy(alpha = 0.26f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF7af0cc)),
+                    )
+                    Text("Online", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF7af0cc))
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            // Divider
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(0.5.dp)
+                    .background(Color.White.copy(alpha = 0.08f)),
+            )
+            Spacer(Modifier.height(12.dp))
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column {
+                    Text("Вход", fontSize = 10.sp, letterSpacing = 1.sp, color = Color.White.copy(alpha = 0.5f))
+                    Text(status.serverAddr, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                }
+                if (status.exitIp != null) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Выход", fontSize = 10.sp, letterSpacing = 1.sp, color = Color.White.copy(alpha = 0.5f))
+                        Text(status.exitIp, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ClientCard(
+private fun KpiCard(label: String, value: String, sub: String, modifier: Modifier = Modifier) {
+    val gc = LocalGhostColors.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color.White.copy(alpha = 0.04f))
+            .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
+            .padding(12.dp),
+    ) {
+        Text(label, fontSize = 10.sp, letterSpacing = 0.9.sp, color = gc.textTertiary)
+        Spacer(Modifier.height(8.dp))
+        Text(value, fontSize = 16.sp, fontFamily = FontFamily.Monospace, color = gc.textPrimary)
+        Spacer(Modifier.height(4.dp))
+        Text(sub, fontSize = 10.sp, color = gc.textTertiary)
+    }
+}
+
+@Composable
+private fun AdminFilterChip(text: String, isActive: Boolean, onClick: () -> Unit) {
+    val gc = LocalGhostColors.current
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.03f)
+    val border = if (isActive) AccentPurple.copy(alpha = 0.34f) else gc.cardBorder
+    val textColor = if (isActive) Color(0xFFe2ddff) else gc.textSecondary
+
+    Text(
+        text = text,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = textColor,
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(bg)
+            .border(0.5.dp, border, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    )
+}
+
+@Composable
+private fun GlassClientCard(
     client: ClientInfo,
     onToggle: () -> Unit,
     onDelete: () -> Unit,
     onCopyConnString: () -> Unit,
-    onShowStats: () -> Unit = {},
-    onSubscription: () -> Unit = {},
+    onShowStats: () -> Unit,
+    onSubscription: () -> Unit,
 ) {
+    val gc = LocalGhostColors.current
     val nowSecs = System.currentTimeMillis() / 1000
+
     val subColor: Color? = client.expiresAt?.let { exp ->
         val daysLeft = (exp - nowSecs) / 86400
         when {
-            daysLeft < 0  -> Color(0xFFE53935)
-            daysLeft < 3  -> Color(0xFFE53935)
-            daysLeft < 7  -> Color(0xFFFFA000)
-            else          -> Color(0xFF43A047)
+            daysLeft < 3 -> DangerRose
+            daysLeft < 7 -> Color(0xFFFFA000)
+            else -> AccentTeal
         }
     }
     val subLabel: String? = client.expiresAt?.let { exp ->
         val daysLeft = (exp - nowSecs) / 86400
         when {
-            daysLeft < 0  -> "Подписка истекла"
-            daysLeft == 0L -> "Менее суток"
-            else          -> "${daysLeft} дн."
+            daysLeft < 0 -> "Истекла"
+            daysLeft == 0L -> "< 1 дня"
+            else -> "${daysLeft} дн."
         }
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (!client.enabled)
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            else MaterialTheme.colorScheme.surface,
-        ),
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.White.copy(alpha = 0.05f), Color.White.copy(alpha = 0.025f)),
+                ),
+            )
+            .border(0.5.dp, gc.cardBorder, RoundedCornerShape(18.dp))
+            .padding(14.dp),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Connected dot
-                Icon(
-                    if (client.connected) Icons.Filled.Circle else Icons.Filled.RadioButtonUnchecked,
-                    null,
-                    tint = if (client.connected) MaterialTheme.colorScheme.primary
-                           else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(12.dp),
+        // Main row: dot + name + tag
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                // Client dot
+                Box(
+                    Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .then(
+                            if (client.connected)
+                                Modifier
+                                    .background(AccentPurple)
+                                    .border(1.dp, AccentPurple.copy(alpha = 0.4f), CircleShape)
+                            else
+                                Modifier
+                                    .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape),
+                        ),
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(client.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                // Subscription badge
-                if (subLabel != null && subColor != null) {
-                    Surface(
-                        color = subColor.copy(alpha = 0.15f),
-                        shape = MaterialTheme.shapes.extraSmall,
-                    ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            subLabel,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = subColor,
+                            client.name,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = gc.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
+                        if (client.connected) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "online",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF86efac),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(AccentTeal.copy(alpha = 0.12f))
+                                    .border(0.5.dp, AccentTeal.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                            )
+                        }
                     }
-                    Spacer(Modifier.width(4.dp))
-                }
-                // Subscription management
-                IconButton(onClick = onSubscription, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Filled.CardMembership, "Подписка", modifier = Modifier.size(18.dp))
-                }
-                // Toggle enabled
-                IconButton(onClick = onToggle, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        if (client.enabled) Icons.Filled.ToggleOn else Icons.Filled.ToggleOff,
-                        if (client.enabled) "Отключить" else "Включить",
-                        tint = if (client.enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                    )
-                }
-                // Copy conn string
-                IconButton(onClick = onCopyConnString, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Filled.QrCode, "Строка подключения", modifier = Modifier.size(18.dp))
-                }
-                // Stats / logs
-                IconButton(onClick = onShowStats, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Filled.QueryStats, "Статистика", modifier = Modifier.size(18.dp))
-                }
-                // Delete
-                IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Filled.DeleteOutline, "Удалить", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                 }
             }
-            Spacer(Modifier.height(4.dp))
-            Text(client.tunAddr, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-            if (client.connected) {
+            // Sub badge
+            if (subLabel != null && subColor != null) {
                 Text(
-                    "↓ ${formatBytes(client.bytesRx)}  ↑ ${formatBytes(client.bytesTx)}  · ${client.lastSeenSecs}s ago",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline,
+                    subLabel,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = subColor,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(subColor.copy(alpha = 0.12f))
+                        .border(0.5.dp, subColor.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
                 )
-            }
-            if (!client.enabled) {
-                Text("Отключён", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
         }
+
+        Spacer(Modifier.height(5.dp))
+        Text(client.tunAddr, fontSize = 11.sp, color = gc.textTertiary, fontFamily = FontFamily.Monospace)
+
+        if (client.connected) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "↓ ${formatBytes(client.bytesRx)}  ↑ ${formatBytes(client.bytesTx)}  · ${client.lastSeenSecs}s ago",
+                fontSize = 11.sp,
+                color = gc.textTertiary,
+            )
+        }
+        if (!client.enabled) {
+            Spacer(Modifier.height(4.dp))
+            Text("Отключён", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = RedError)
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        // Actions row
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ClientAction("⏻") { onToggle() }
+            ClientAction("📋") { onCopyConnString() }
+            ClientAction("📊") { onShowStats() }
+            ClientAction("⏱") { onSubscription() }
+            ClientAction("🗑", isDanger = true) { onDelete() }
+        }
     }
+}
+
+@Composable
+private fun ClientAction(icon: String, isDanger: Boolean = false, onClick: () -> Unit) {
+    val gc = LocalGhostColors.current
+    Text(
+        icon,
+        fontSize = 16.sp,
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(4.dp),
+    )
 }
 
 @Composable
@@ -383,29 +621,64 @@ private fun AddClientDialog(onConfirm: (String, Int?) -> Unit, onDismiss: () -> 
         title = { Text("Новый клиент") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
+                val gc = LocalGhostColors.current
+                BasicTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Имя (a-z, 0-9, дефис)") },
                     singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = gc.textPrimary),
+                    cursorBrush = SolidColor(AccentPurple),
+                    decorationBox = { inner ->
+                        Column {
+                            Text("Имя (a-z, 0-9, дефис)", fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp, color = gc.textTertiary)
+                            Spacer(Modifier.height(6.dp))
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.White.copy(alpha = 0.04f))
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                                    .padding(12.dp),
+                            ) {
+                                if (name.isEmpty()) Text("alice", fontSize = 13.sp, color = gc.textTertiary.copy(alpha = 0.5f))
+                                inner()
+                            }
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                OutlinedTextField(
+                BasicTextField(
                     value = daysText,
                     onValueChange = { daysText = it.filter { c -> c.isDigit() }.take(4) },
-                    label = { Text("Дней подписки (пусто = бессрочно)") },
-                    placeholder = { Text("∞") },
                     singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = gc.textPrimary),
+                    cursorBrush = SolidColor(AccentPurple),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    decorationBox = { inner ->
+                        Column {
+                            Text("Дней подписки (пусто = бессрочно)", fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp, color = gc.textTertiary)
+                            Spacer(Modifier.height(6.dp))
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.White.copy(alpha = 0.04f))
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                                    .padding(12.dp),
+                            ) {
+                                if (daysText.isEmpty()) Text("∞", fontSize = 13.sp, color = gc.textTertiary.copy(alpha = 0.5f))
+                                inner()
+                            }
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = { onConfirm(name.trim(), daysText.toIntOrNull()) },
-                enabled = name.isNotBlank(),
-            ) { Text("Создать") }
+            TextButton(onClick = { onConfirm(name.trim(), daysText.toIntOrNull()) }, enabled = name.isNotBlank()) {
+                Text("Создать")
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
     )
@@ -422,51 +695,28 @@ private fun ClientDetailsDialog(
         onDismissRequest = onDismiss,
         title = { Text(clientName) },
         text = {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                // Stats section
-                item {
-                    Text("Трафик (последний час)", style = MaterialTheme.typography.titleSmall)
-                }
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { Text("Трафик (последний час)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                 if (stats.isEmpty()) {
-                    item { Text("Нет данных (клиент не подключён или нет истории)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) }
+                    item { Text("Нет данных", fontSize = 11.sp, color = LocalGhostColors.current.textTertiary) }
                 } else {
                     item {
-                        val maxRx = stats.maxOf { it.bytesRx }.coerceAtLeast(1)
-                        val maxTx = stats.maxOf { it.bytesTx }.coerceAtLeast(1)
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("↓ ${formatBytes(stats.last().bytesRx)} total  ↑ ${formatBytes(stats.last().bytesTx)} total", style = MaterialTheme.typography.bodySmall)
-                            // Simple sparkline (last 12 samples)
-                            val recent = stats.takeLast(12)
-                            Canvas(modifier = Modifier.fillMaxWidth().height(48.dp)) {
-                                val w = size.width / recent.size
-                                recent.forEachIndexed { i, s ->
-                                    val rxH = (s.bytesRx.toFloat() / maxRx * size.height * 0.9f).coerceAtLeast(2f)
-                                    val txH = (s.bytesTx.toFloat() / maxTx * size.height * 0.9f).coerceAtLeast(2f)
-                                    drawRect(color = Color(0xFF4CAF50), topLeft = Offset(i * w, size.height - rxH), size = Size(w * 0.4f, rxH))
-                                    drawRect(color = Color(0xFF2196F3), topLeft = Offset(i * w + w * 0.5f, size.height - txH), size = Size(w * 0.4f, txH))
-                                }
-                            }
-                            Row {
-                                Text("■ ↓ RX  ", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4CAF50))
-                                Text("■ ↑ TX", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2196F3))
-                            }
-                        }
+                        Text(
+                            "↓ ${formatBytes(stats.last().bytesRx)} total  ↑ ${formatBytes(stats.last().bytesTx)} total",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                        )
                     }
                 }
-                // Logs section
-                item {
-                    Spacer(Modifier.height(8.dp))
-                    Text("Последние подключения (${logs.size})", style = MaterialTheme.typography.titleSmall)
-                }
+                item { Spacer(Modifier.height(8.dp)); Text("Последние подключения (${logs.size})", fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                 if (logs.isEmpty()) {
-                    item { Text("Нет записей", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline) }
+                    item { Text("Нет записей", fontSize = 11.sp, color = LocalGhostColors.current.textTertiary) }
                 } else {
                     items(logs.take(50)) { entry ->
                         Text(
                             "${entry.proto.uppercase()}  ${entry.dst}:${entry.port}  ${formatBytes(entry.bytes)}",
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
                         )
                     }
                 }
@@ -482,13 +732,14 @@ private fun SubscriptionDialog(
     onManage: (action: String, days: Int?) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val gc = LocalGhostColors.current
     val nowSecs = System.currentTimeMillis() / 1000
-    val currentStatus: String = client.expiresAt?.let { exp ->
+    val currentStatus = client.expiresAt?.let { exp ->
         val daysLeft = (exp - nowSecs) / 86400
         when {
-            daysLeft < 0  -> "Истекла"
+            daysLeft < 0 -> "Истекла"
             daysLeft == 0L -> "Истекает сегодня"
-            else          -> "Активна ещё ${daysLeft} дн."
+            else -> "Активна ещё ${daysLeft} дн."
         }
     } ?: "Бессрочная"
 
@@ -501,61 +752,90 @@ private fun SubscriptionDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     "Статус: $currentStatus",
-                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
                     color = client.expiresAt?.let { exp ->
                         val d = (exp - nowSecs) / 86400
                         when {
-                            d < 0 -> MaterialTheme.colorScheme.error
+                            d < 0 -> RedError
                             d < 7 -> Color(0xFFFFA000)
-                            else  -> Color(0xFF43A047)
+                            else -> AccentTeal
                         }
-                    } ?: MaterialTheme.colorScheme.primary,
+                    } ?: AccentPurple,
                 )
-                HorizontalDivider()
-                Text("Продлить:", style = MaterialTheme.typography.labelMedium)
+                Box(Modifier.fillMaxWidth().height(0.5.dp).background(gc.cardBorder))
+                Text("Продлить:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = gc.textTertiary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onManage("extend", 30) }, modifier = Modifier.weight(1f)) {
-                        Text("+30 дн.", style = MaterialTheme.typography.labelSmall)
-                    }
-                    OutlinedButton(onClick = { onManage("extend", 90) }, modifier = Modifier.weight(1f)) {
-                        Text("+90 дн.", style = MaterialTheme.typography.labelSmall)
-                    }
-                    OutlinedButton(onClick = { onManage("extend", 365) }, modifier = Modifier.weight(1f)) {
-                        Text("+1 год", style = MaterialTheme.typography.labelSmall)
-                    }
+                    SubActionButton("+30 дн.", Modifier.weight(1f)) { onManage("extend", 30) }
+                    SubActionButton("+90 дн.", Modifier.weight(1f)) { onManage("extend", 90) }
+                    SubActionButton("+1 год", Modifier.weight(1f)) { onManage("extend", 365) }
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    OutlinedTextField(
+                    BasicTextField(
                         value = customDays,
                         onValueChange = { customDays = it.filter { c -> c.isDigit() }.take(4) },
-                        label = { Text("Дней") },
                         singleLine = true,
+                        textStyle = TextStyle(fontSize = 13.sp, color = gc.textPrimary),
+                        cursorBrush = SolidColor(AccentPurple),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        decorationBox = { inner ->
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(Color.White.copy(alpha = 0.04f))
+                                    .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                                    .padding(12.dp),
+                            ) {
+                                if (customDays.isEmpty()) Text("Дней", fontSize = 13.sp, color = gc.textTertiary.copy(alpha = 0.5f))
+                                inner()
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                     )
-                    Button(
-                        onClick = { customDays.toIntOrNull()?.let { onManage("set", it) } },
-                        enabled = customDays.toIntOrNull() != null,
-                    ) { Text("Установить") }
+                    SubActionButton("Установить") {
+                        customDays.toIntOrNull()?.let { onManage("set", it) }
+                    }
                 }
-                HorizontalDivider()
+                Box(Modifier.fillMaxWidth().height(0.5.dp).background(gc.cardBorder))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { onManage("cancel", null) },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Бессрочно", style = MaterialTheme.typography.labelSmall) }
-                    Button(
-                        onClick = { onManage("revoke", null) },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Аннулировать", style = MaterialTheme.typography.labelSmall) }
+                    SubActionButton("Бессрочно", Modifier.weight(1f)) { onManage("cancel", null) }
+                    Text(
+                        "Аннулировать",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(RedError)
+                            .clickable { onManage("revoke", null) }
+                            .padding(10.dp),
+                    )
                 }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
+
+@Composable
+private fun SubActionButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val gc = LocalGhostColors.current
+    Text(
+        text = text,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Medium,
+        color = gc.textSecondary,
+        textAlign = TextAlign.Center,
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(10.dp),
     )
 }
 
@@ -582,23 +862,19 @@ private fun ConnStringDialog(connString: String, onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 qrBitmap?.let { bm ->
-                    Image(
-                        bitmap = bm,
-                        contentDescription = "QR-код строки подключения",
-                        modifier = Modifier.size(200.dp),
-                    )
+                    Image(bitmap = bm, contentDescription = "QR", modifier = Modifier.size(200.dp))
                 }
-                Text("Скопируйте и вставьте в приложение PhantomVPN:", style = MaterialTheme.typography.bodySmall)
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = MaterialTheme.shapes.small,
-                ) {
-                    Text(
-                        connString.take(120) + if (connString.length > 120) "…" else "",
-                        modifier = Modifier.padding(8.dp),
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    )
-                }
+                Text("Скопируйте и вставьте в приложение PhantomVPN:", fontSize = 11.sp, color = LocalGhostColors.current.textSecondary)
+                Text(
+                    connString.take(120) + if (connString.length > 120) "…" else "",
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = LocalGhostColors.current.textTertiary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.White.copy(alpha = 0.04f))
+                        .padding(8.dp),
+                )
             }
         },
         confirmButton = {
