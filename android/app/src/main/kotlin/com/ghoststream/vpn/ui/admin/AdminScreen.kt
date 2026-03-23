@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -134,7 +135,7 @@ fun AdminScreen(
                 title = { Text("Администрирование") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, null)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
                     }
                 },
                 actions = {
@@ -510,7 +511,7 @@ private fun SubscriptionDialog(
                         }
                     } ?: MaterialTheme.colorScheme.primary,
                 )
-                Divider()
+                HorizontalDivider()
                 Text("Продлить:", style = MaterialTheme.typography.labelMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { onManage("extend", 30) }, modifier = Modifier.weight(1f)) {
@@ -540,7 +541,7 @@ private fun SubscriptionDialog(
                         enabled = customDays.toIntOrNull() != null,
                     ) { Text("Установить") }
                 }
-                Divider()
+                HorizontalDivider()
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = { onManage("cancel", null) },
