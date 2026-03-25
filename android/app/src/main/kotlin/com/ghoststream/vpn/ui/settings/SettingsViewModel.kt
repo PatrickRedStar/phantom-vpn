@@ -42,7 +42,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val profiles: StateFlow<List<VpnProfile>> = profilesStore.profiles
     val activeProfileId: StateFlow<String?> = profilesStore.activeId
 
-    // Combined config: active profile server fields + global DNS/routing/per-app settings
+    // Combined config: profile overrides first, global prefs as fallback
     val config: StateFlow<VpnConfig> = combine(
         profilesStore.profiles,
         profilesStore.activeId,
@@ -57,11 +57,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             keyPath         = p?.keyPath ?: "",
             caCertPath      = p?.caCertPath,
             tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
-            dnsServers      = prefs.dnsServers,
-            splitRouting    = prefs.splitRouting,
-            directCountries = prefs.directCountries,
-            perAppMode      = prefs.perAppMode,
-            perAppList      = prefs.perAppList,
+            dnsServers      = p?.dnsServers ?: prefs.dnsServers,
+            splitRouting    = p?.splitRouting ?: prefs.splitRouting,
+            directCountries = p?.directCountries ?: prefs.directCountries,
+            perAppMode      = p?.perAppMode ?: prefs.perAppMode,
+            perAppList      = p?.perAppList ?: prefs.perAppList,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
@@ -157,7 +157,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setDnsServers(servers: List<String>) {
-        viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(dnsServers = servers)) }
+        val profile = profilesStore.getActiveProfile()
+        if (profile != null) {
+            profilesStore.updateProfile(profile.copy(dnsServers = servers))
+        } else {
+            viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(dnsServers = servers)) }
+        }
     }
 
     // ── Routing ──────────────────────────────────────────────────────────────
@@ -234,6 +239,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         val o = arr.getJSONObject(i)
                         if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
                             val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
+                            val enabled = o.optBoolean("enabled", true)
                             val text = if (expiresAt == null) {
                                 "бессрочно"
                             } else {
@@ -249,6 +255,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                                 } else "истекла ⚠"
                             }
                             _profileSubscriptions.value = _profileSubscriptions.value + (profile.id to text)
+                            profilesStore.updateProfile(
+                                profile.copy(cachedExpiresAt = expiresAt, cachedEnabled = enabled),
+                            )
                             break
                         }
                     }
@@ -385,14 +394,22 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setSplitRouting(enabled: Boolean) {
-        viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(splitRouting = enabled)) }
+        val profile = profilesStore.getActiveProfile()
+        if (profile != null) {
+            profilesStore.updateProfile(profile.copy(splitRouting = enabled))
+        } else {
+            viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(splitRouting = enabled)) }
+        }
     }
 
     fun toggleDirectCountry(code: String) {
-        viewModelScope.launch {
-            val current = config.value.directCountries.toMutableList()
-            if (code in current) current.remove(code) else current.add(code)
-            preferencesStore.saveConfig(config.value.copy(directCountries = current))
+        val current = config.value.directCountries.toMutableList()
+        if (code in current) current.remove(code) else current.add(code)
+        val profile = profilesStore.getActiveProfile()
+        if (profile != null) {
+            profilesStore.updateProfile(profile.copy(directCountries = current))
+        } else {
+            viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(directCountries = current)) }
         }
     }
 
@@ -463,14 +480,22 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setPerAppMode(mode: String) {
-        viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(perAppMode = mode)) }
+        val profile = profilesStore.getActiveProfile()
+        if (profile != null) {
+            profilesStore.updateProfile(profile.copy(perAppMode = mode))
+        } else {
+            viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(perAppMode = mode)) }
+        }
     }
 
     fun togglePerApp(packageName: String) {
-        viewModelScope.launch {
-            val current = config.value.perAppList.toMutableList()
-            if (packageName in current) current.remove(packageName) else current.add(packageName)
-            preferencesStore.saveConfig(config.value.copy(perAppList = current))
+        val current = config.value.perAppList.toMutableList()
+        if (packageName in current) current.remove(packageName) else current.add(packageName)
+        val profile = profilesStore.getActiveProfile()
+        if (profile != null) {
+            profilesStore.updateProfile(profile.copy(perAppList = current))
+        } else {
+            viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(perAppList = current)) }
         }
     }
 }

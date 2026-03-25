@@ -35,7 +35,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val routingRulesManager = RoutingRulesManager(application)
     val vpnState = VpnStateManager.state
 
-    // Combined: active profile (server/cert) + global prefs (DNS/routing/per-app)
+    // Combined: active profile (server/cert + per-profile overrides) + global prefs fallback
     val config: StateFlow<VpnConfig> = combine(
         profilesStore.profiles,
         profilesStore.activeId,
@@ -50,11 +50,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             keyPath         = p?.keyPath ?: "",
             caCertPath      = p?.caCertPath,
             tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
-            dnsServers      = prefs.dnsServers,
-            splitRouting    = prefs.splitRouting,
-            directCountries = prefs.directCountries,
-            perAppMode      = prefs.perAppMode,
-            perAppList      = prefs.perAppList,
+            dnsServers      = p?.dnsServers ?: prefs.dnsServers,
+            splitRouting    = p?.splitRouting ?: prefs.splitRouting,
+            directCountries = p?.directCountries ?: prefs.directCountries,
+            perAppMode      = p?.perAppMode ?: prefs.perAppMode,
+            perAppList      = p?.perAppList ?: prefs.perAppList,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
@@ -66,6 +66,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _subscriptionText = MutableStateFlow<String?>(null)
     val subscriptionText: StateFlow<String?> = _subscriptionText
+
+    private val _preflightWarning = MutableStateFlow<String?>(null)
+    val preflightWarning: StateFlow<String?> = _preflightWarning
 
     init {
         viewModelScope.launch {
@@ -138,7 +141,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                         val o = arr.getJSONObject(i)
                         if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
                             val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
+                            val enabled = o.optBoolean("enabled", true)
                             _subscriptionText.value = formatExpiry(expiresAt)
+                            profilesStore.updateProfile(
+                                profile.copy(cachedExpiresAt = expiresAt, cachedEnabled = enabled),
+                            )
                             break
                         }
                     }
@@ -166,9 +173,31 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun dismissPreflightWarning() { _preflightWarning.value = null }
+
     fun startVpn() {
         val cfg = config.value
         if (cfg.serverAddr.isBlank()) return
+
+        val profile = profilesStore.getActiveProfile()
+        if (profile != null) {
+            val cachedExp = profile.cachedExpiresAt
+            if (cachedExp != null && cachedExp > 0) {
+                val remaining = cachedExp - (System.currentTimeMillis() / 1000)
+                if (remaining <= 0) {
+                    _preflightWarning.value = "Подписка истекла. Обновите подписку у администратора."
+                    VpnStateManager.update(VpnState.Error("Подписка истекла"))
+                    return
+                }
+            }
+            if (profile.cachedEnabled == false) {
+                _preflightWarning.value = "Клиент отключён администратором."
+                VpnStateManager.update(VpnState.Error("Клиент отключён"))
+                return
+            }
+        }
+
+        _preflightWarning.value = null
         VpnStateManager.update(VpnState.Connecting)
         val ctx = getApplication<Application>()
         val intent = Intent(ctx, GhostStreamVpnService::class.java).apply {

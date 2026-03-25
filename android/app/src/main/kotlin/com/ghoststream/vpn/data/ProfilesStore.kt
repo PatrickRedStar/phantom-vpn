@@ -107,6 +107,16 @@ class ProfilesStore private constructor(private val context: Context) {
                     tunAddr     = p.optString("tunAddr", "10.7.0.2/24"),
                     adminUrl    = p.optString("adminUrl").takeIf { it.isNotBlank() },
                     adminToken  = p.optString("adminToken").takeIf { it.isNotBlank() },
+                    dnsServers  = p.optString("dnsServers").takeIf { it.isNotBlank() }
+                        ?.split(",")?.filter { it.isNotBlank() },
+                    splitRouting    = if (p.has("splitRouting")) p.optBoolean("splitRouting") else null,
+                    directCountries = p.optString("directCountries").takeIf { it.isNotBlank() }
+                        ?.split(",")?.filter { it.isNotBlank() },
+                    perAppMode  = p.optString("perAppMode").takeIf { it.isNotBlank() },
+                    perAppList  = p.optString("perAppList").takeIf { it.isNotBlank() }
+                        ?.split(",")?.filter { it.isNotBlank() },
+                    cachedExpiresAt = p.optLong("cachedExpiresAt", 0).takeIf { it > 0 },
+                    cachedEnabled   = if (p.has("cachedEnabled")) p.optBoolean("cachedEnabled") else null,
                 )
             }
             _activeId.value = obj.optString("activeId").takeIf { it.isNotBlank() }
@@ -129,6 +139,13 @@ class ProfilesStore private constructor(private val context: Context) {
                     put("tunAddr", p.tunAddr)
                     if (p.adminUrl != null) put("adminUrl", p.adminUrl)
                     if (p.adminToken != null) put("adminToken", p.adminToken)
+                    if (p.dnsServers != null) put("dnsServers", p.dnsServers.joinToString(","))
+                    if (p.splitRouting != null) put("splitRouting", p.splitRouting)
+                    if (p.directCountries != null) put("directCountries", p.directCountries.joinToString(","))
+                    if (p.perAppMode != null) put("perAppMode", p.perAppMode)
+                    if (p.perAppList != null) put("perAppList", p.perAppList.joinToString(","))
+                    if (p.cachedExpiresAt != null) put("cachedExpiresAt", p.cachedExpiresAt)
+                    if (p.cachedEnabled != null) put("cachedEnabled", p.cachedEnabled)
                 })
             }
             file.writeText(

@@ -90,7 +90,13 @@ class AdminViewModel : ViewModel() {
                 _status.value = fetchStatus()
                 _clients.value = fetchClients()
             } catch (e: Exception) {
-                _error.value = e.message ?: "Ошибка подключения"
+                val msg = e.message ?: "Ошибка подключения"
+                _error.value = if (msg.contains("connect", ignoreCase = true) ||
+                    msg.contains("timeout", ignoreCase = true) ||
+                    msg.contains("refused", ignoreCase = true) ||
+                    msg.contains("unreachable", ignoreCase = true))
+                    "$msg\n\nAdmin API доступен только через VPN-туннель. Подключитесь к VPN и повторите."
+                else msg
             } finally {
                 _loading.value = false
             }

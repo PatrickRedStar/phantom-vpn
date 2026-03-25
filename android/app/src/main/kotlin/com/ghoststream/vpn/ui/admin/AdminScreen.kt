@@ -54,6 +54,7 @@ fun AdminScreen(
 
     var showAddDialog by remember { mutableStateOf(false) }
     var deleteConfirm by remember { mutableStateOf<String?>(null) }
+    var toggleConfirm by remember { mutableStateOf<ClientInfo?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var activeFilter by remember { mutableStateOf(ClientFilter.ALL) }
     var showStatsDialog by remember { mutableStateOf<String?>(null) }
@@ -99,6 +100,31 @@ fun AdminScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deleteConfirm = null }) { Text("Отмена") }
+            },
+        )
+    }
+
+    toggleConfirm?.let { client ->
+        val action = if (client.enabled) "отключить" else "включить"
+        AlertDialog(
+            onDismissRequest = { toggleConfirm = null },
+            title = { Text("${action.replaceFirstChar { it.uppercase() }} клиента?") },
+            text = {
+                Text(
+                    if (client.enabled)
+                        "Клиент «${client.name}» будет отключён. Текущая сессия сохранится, но повторное подключение будет невозможно."
+                    else
+                        "Клиент «${client.name}» будет включён и сможет подключаться.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.toggleEnabled(client.name, client.enabled)
+                    toggleConfirm = null
+                }) { Text(action.replaceFirstChar { it.uppercase() }) }
+            },
+            dismissButton = {
+                TextButton(onClick = { toggleConfirm = null }) { Text("Отмена") }
             },
         )
     }
@@ -162,18 +188,23 @@ fun AdminScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // Error banner
+            // Error banner with retry
             if (error != null) {
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(
-                            error!!,
-                            modifier = Modifier.padding(12.dp),
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                        )
+                        Column(Modifier.padding(12.dp)) {
+                            Text(
+                                error!!,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(onClick = { viewModel.refresh() }) {
+                                Text("Повторить")
+                            }
+                        }
                     }
                 }
             }
@@ -254,7 +285,7 @@ fun AdminScreen(
             items(filteredClients, key = { it.name }) { client ->
                 ClientCard(
                     client = client,
-                    onToggle = { viewModel.toggleEnabled(client.name, client.enabled) },
+                    onToggle = { toggleConfirm = client },
                     onDelete = { deleteConfirm = client.name },
                     onCopyConnString = { viewModel.getConnString(client.name) },
                     onShowStats = {

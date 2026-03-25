@@ -258,7 +258,7 @@ class GhostStreamVpnService : VpnService() {
                             backoffMs = minOf(backoffMs * 2, 60_000L)
                         }
                         if (!reconnected) {
-                            mainHandler.post { stopTunnel() }
+                            mainHandler.post { failTunnel("Не удалось переподключиться к серверу") }
                             break@outer
                         }
                         continue@outer
@@ -288,6 +288,18 @@ class GhostStreamVpnService : VpnService() {
         vpnInterface?.close()
         vpnInterface = null
         VpnStateManager.update(VpnState.Disconnected)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun failTunnel(message: String) {
+        userStopped = true
+        watchdogThread?.interrupt()
+        watchdogThread = null
+        nativeStop()
+        vpnInterface?.close()
+        vpnInterface = null
+        VpnStateManager.update(VpnState.Error(message))
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

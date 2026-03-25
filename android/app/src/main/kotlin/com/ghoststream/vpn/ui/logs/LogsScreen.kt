@@ -31,7 +31,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -41,8 +40,6 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ghoststream.vpn.ui.theme.BlueDebug
 import com.ghoststream.vpn.ui.theme.RedError
-import com.ghoststream.vpn.ui.theme.TextPrimary
-import com.ghoststream.vpn.ui.theme.TextSecondary
 import com.ghoststream.vpn.ui.theme.YellowWarning
 
 @Composable
@@ -99,7 +96,7 @@ fun LogsScreen(viewModel: LogsViewModel) {
             state = listState,
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFF0A0A0A))
+                .background(MaterialTheme.colorScheme.background)
                 .padding(horizontal = 8.dp),
         ) {
             items(logs) { entry ->
@@ -116,7 +113,7 @@ private fun LogEntryRow(entry: LogEntry, onLongClick: () -> Unit) {
         "ERROR" -> RedError
         "WARN"  -> YellowWarning
         "DEBUG" -> BlueDebug
-        else    -> TextSecondary
+        else    -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(
         Modifier
@@ -129,7 +126,7 @@ private fun LogEntryRow(entry: LogEntry, onLongClick: () -> Unit) {
             style = MaterialTheme.typography.bodySmall.copy(
                 fontFamily = FontFamily.Monospace, fontSize = 11.sp,
             ),
-            color = TextSecondary,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(6.dp))
         Text(
@@ -145,7 +142,7 @@ private fun LogEntryRow(entry: LogEntry, onLongClick: () -> Unit) {
             style = MaterialTheme.typography.bodySmall.copy(
                 fontFamily = FontFamily.Monospace, fontSize = 11.sp,
             ),
-            color = TextPrimary,
+            color = MaterialTheme.colorScheme.onSurface,
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
