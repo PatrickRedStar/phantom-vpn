@@ -177,6 +177,9 @@ jobs:
               -configuration Release \
               -sdk iphonesimulator \
               CODE_SIGNING_ALLOWED=NO \
+              ARCHS=arm64 \
+              ONLY_ACTIVE_ARCH=YES \
+              EXCLUDED_ARCHS=x86_64 \
               -derivedDataPath "$PWD/build/ios-derived" \
               build
 

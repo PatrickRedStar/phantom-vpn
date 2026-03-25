@@ -270,7 +270,12 @@
 				INFOPLIST_FILE = PacketTunnel/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/../target/aarch64-apple-ios/release",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(SRCROOT)/../target/aarch64-apple-ios-sim/release",
 				);
 				OTHER_LDFLAGS = (
@@ -298,7 +303,12 @@
 				INFOPLIST_FILE = PacketTunnel/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
 					"$(SRCROOT)/../target/aarch64-apple-ios/release",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
 					"$(SRCROOT)/../target/aarch64-apple-ios-sim/release",
 				);
 				OTHER_LDFLAGS = (
