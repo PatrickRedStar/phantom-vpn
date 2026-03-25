@@ -10,10 +10,12 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.service.GhostStreamVpnService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
 
@@ -52,30 +54,35 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun fetchNewLogs() {
-        try {
-            val json = GhostStreamVpnService.nativeGetLogs(lastSeq) ?: return
-            if (json == "[]") return
-            val arr = JSONArray(json)
-            var changed = false
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val seq = obj.optLong("seq", -1)
-                if (seq <= lastSeq) continue
-                allLogs.add(
-                    LogEntry(
-                        seq = seq,
-                        timestamp = obj.optString("ts", ""),
-                        level = obj.optString("level", "INFO"),
-                        message = obj.optString("msg", ""),
-                    ),
-                )
-                if (seq > lastSeq) lastSeq = seq
-                changed = true
+    private suspend fun fetchNewLogs() {
+        val changed = withContext(Dispatchers.Default) {
+            try {
+                val json = GhostStreamVpnService.nativeGetLogs(lastSeq) ?: return@withContext false
+                if (json == "[]") return@withContext false
+                val arr = JSONArray(json)
+                var hasChanges = false
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val seq = obj.optLong("seq", -1)
+                    if (seq <= lastSeq) continue
+                    allLogs.add(
+                        LogEntry(
+                            seq = seq,
+                            timestamp = obj.optString("ts", ""),
+                            level = obj.optString("level", "INFO"),
+                            message = obj.optString("msg", ""),
+                        ),
+                    )
+                    if (seq > lastSeq) lastSeq = seq
+                    hasChanges = true
+                }
+                while (allLogs.size > 50000) allLogs.removeAt(0)
+                hasChanges
+            } catch (_: Exception) {
+                false
             }
-            while (allLogs.size > 50000) allLogs.removeAt(0)
-            if (changed) applyFilter()
-        } catch (_: Exception) {}
+        }
+        if (changed) applyFilter()
     }
 
     private fun applyFilter() {
@@ -137,21 +144,26 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun shareLogs(context: Context) {
-        val text = allLogs.joinToString("\n") { "${it.timestamp} ${it.level} ${it.message}" }
-        if (text.isBlank()) {
-            Toast.makeText(context, "Логи пусты", Toast.LENGTH_SHORT).show()
-            return
+        viewModelScope.launch {
+            val uri = withContext(Dispatchers.IO) {
+                val text = allLogs.joinToString("\n") { "${it.timestamp} ${it.level} ${it.message}" }
+                if (text.isBlank()) return@withContext null
+                val logsDir = File(context.cacheDir, "logs")
+                logsDir.mkdirs()
+                val file = File(logsDir, "ghoststream-logs.txt")
+                file.writeText(text)
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            }
+            if (uri == null) {
+                Toast.makeText(context, "Логи пусты", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Отправить логи"))
         }
-        val logsDir = File(context.cacheDir, "logs")
-        logsDir.mkdirs()
-        val file = File(logsDir, "ghoststream-logs.txt")
-        file.writeText(text)
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(Intent.createChooser(intent, "Отправить логи"))
     }
 }

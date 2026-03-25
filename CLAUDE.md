@@ -69,37 +69,33 @@ ghoststream/
 
 ### Важные ограничения
 
-> **На локальной машине (CachyOS) `cargo` НЕ установлен.**
-> Rust сборка для server/linux/macos происходит ТОЛЬКО через SSH на сервер vdsina.
-> Android `.so` собирается там же через `cargo ndk`.
-> APK собирается локально через `gradlew` (JDK 17 установлен: `/usr/lib/jvm/java-17-openjdk`).
+> **Сборка выполняется только локально.**
+> На сервер отправляются только готовые бинарники (`scp`/`install`), без `rsync` исходников и без `cargo build` на сервере.
+> APK собирается локально через `gradlew` (JDK 17: `/usr/lib/jvm/java-17-openjdk`).
 
-### Rust — Server / Linux клиент (через SSH)
+### Rust — Server / Linux клиент (локально)
 
 ```bash
-# Синхронизировать исходники на сервер
-rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
+source ~/.cargo/env
 
-# Собрать на сервере
-ssh -i ~/.ssh/personal root@89.110.109.128 \
-  "source ~/.cargo/env && cd /opt/phantom-vpn/src && cargo build --release -p phantom-server"
+# Сервер
+cargo build --release -p phantom-server --target x86_64-unknown-linux-musl
 
-# Скачать клиент (опционально)
-scp -i ~/.ssh/personal root@89.110.109.128:/opt/phantom-vpn/src/target/release/phantom-client-linux \
-  /tmp/phantom-client-linux
-sudo install -m 0755 /tmp/phantom-client-linux /usr/local/bin/phantom-client-linux
+# Linux клиент
+cargo build --release -p phantom-client-linux --target x86_64-unknown-linux-musl
+
+# Установить Linux клиент локально (опционально)
+sudo install -m 0755 target/x86_64-unknown-linux-musl/release/phantom-client-linux \
+  /usr/local/bin/phantom-client-linux
 ```
 
-### Android .so (через SSH на vdsina)
+### Android .so (локально)
 
 ```bash
-rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
-ssh -i ~/.ssh/personal root@89.110.109.128 \
-  "source ~/.cargo/env && cd /opt/phantom-vpn/src && \
-   export ANDROID_NDK_HOME=\$ANDROID_NDK_ROOT && \
-   cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android"
-scp -i ~/.ssh/personal \
-  root@89.110.109.128:/opt/phantom-vpn/src/target/aarch64-linux-android/release/libphantom_android.so \
+source ~/.cargo/env
+export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
+cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android
+cp target/aarch64-linux-android/release/libphantom_android.so \
   android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
 ```
 
@@ -138,13 +134,15 @@ bash build.sh   # → PhantomVPN.app
 # Полный деплой
 bash ./scripts/deploy.sh root@89.110.109.128 ~/.ssh/personal
 
-# Быстрое обновление (только crates)
-rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
+# Быстрое обновление (локальная сборка + деплой бинарника)
+source ~/.cargo/env
+cargo build --release -p phantom-server --target x86_64-unknown-linux-musl
+scp -i ~/.ssh/personal target/x86_64-unknown-linux-musl/release/phantom-server \
+  root@89.110.109.128:/tmp/phantom-server
 ssh -i ~/.ssh/personal root@89.110.109.128 \
-  "source ~/.cargo/env && cd /opt/phantom-vpn/src && \
-   cargo build --release -p phantom-server && \
-   install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server && \
-   systemctl restart phantom-server.service"
+  "systemctl stop phantom-server.service && \
+   install -m 0755 /tmp/phantom-server /opt/phantom-vpn/phantom-server && \
+   systemctl start phantom-server.service"
 
 # Статус и логи
 ssh -i ~/.ssh/personal root@89.110.109.128 "systemctl status phantom-server.service"
@@ -535,7 +533,7 @@ curl -H "Authorization: Bearer <token>" http://10.7.0.1:8080/api/clients
 
 | Проблема | Решение |
 |----------|---------|
-| `cargo not found` | Сборка только через SSH на vdsina |
+| `cargo not found` | Установить Rust локально (`rustup`) и собирать на локальной машине |
 | `JAVA_HOME not set` | `JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew ...` |
 | `git push github` | Remote называется `origin`, не `github` |
 | `adminUrl/adminToken` не сохраняются | Баг исправлен в v0.8.7: `ProfilesStore` теперь сериализует оба поля |

@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,11 +42,9 @@ import com.ghoststream.vpn.ui.theme.LocalGhostColors
 import com.ghoststream.vpn.ui.theme.RedError
 import com.ghoststream.vpn.ui.theme.YellowWarning
 
-private val LOG_BG = Color(0xFF0A0A0A)
-private val CONTROLS_BG = Color(0xEA0A0A0A)
-
 @Composable
 fun LogsScreen(viewModel: LogsViewModel) {
+    val gc = LocalGhostColors.current
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     val filter by viewModel.filter.collectAsStateWithLifecycle()
     val autoScroll by viewModel.autoScroll.collectAsStateWithLifecycle()
@@ -58,11 +57,11 @@ fun LogsScreen(viewModel: LogsViewModel) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(LOG_BG)) {
+    Box(Modifier.fillMaxSize().testTag("overlay_logs")) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
-            contentPadding = PaddingValues(top = 56.dp, bottom = 8.dp),
+            contentPadding = PaddingValues(top = 48.dp, bottom = 8.dp),
         ) {
             items(logs) { entry ->
                 LogEntryRow(entry, onLongClick = { viewModel.copyEntry(context, entry) })
@@ -73,7 +72,8 @@ fun LogsScreen(viewModel: LogsViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(CONTROLS_BG)
+                .background(gc.cardBg)
+                .border(0.5.dp, gc.cardBorder)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -97,9 +97,10 @@ fun LogsScreen(viewModel: LogsViewModel) {
 
 @Composable
 private fun LogFilterChip(text: String, isActive: Boolean, onClick: () -> Unit) {
+    val gc = LocalGhostColors.current
     val bg = if (isActive) AccentPurple.copy(alpha = 0.12f) else Color.Transparent
-    val border = if (isActive) AccentPurple.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.09f)
-    val textColor = if (isActive) AccentPurple else Color.White.copy(alpha = 0.35f)
+    val border = if (isActive) AccentPurple.copy(alpha = 0.5f) else gc.cardBorder
+    val textColor = if (isActive) AccentPurple else gc.textTertiary
 
     Text(
         text = text,

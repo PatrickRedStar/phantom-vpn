@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -26,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -33,8 +36,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.ui.components.GhostToggle
-import com.ghoststream.vpn.ui.components.SegmentRow
 import com.ghoststream.vpn.ui.theme.AccentPurple
 import com.ghoststream.vpn.ui.theme.AccentTeal
 import com.ghoststream.vpn.ui.theme.LocalGhostColors
@@ -51,16 +54,24 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
     val downloading by viewModel.downloading.collectAsStateWithLifecycle()
     val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
     var newRoute by remember { mutableStateOf("") }
-    var routeType by remember { mutableStateOf("Direct") }
+    var addRuleStatus by remember { mutableStateOf("") }
+    val availableCodes = remember {
+        RoutingRulesManager.AVAILABLE_COUNTRIES.map { it.first }.toSet()
+    }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier
+            .testTag("overlay_routes")
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         // Split toggle section
         RouteSection("Основные настройки") {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White.copy(alpha = 0.03f))
+                    .background(Color.White.copy(alpha = 0.05f))
                     .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
                     .padding(12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -70,7 +81,7 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                     Text("Раздельная маршрутизация", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = gc.textPrimary)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Домены, IP и CIDR можно отправлять напрямую или через туннель.",
+                        "Поддерживаются правила по кодам стран из geoip (например: ru, by, kz).",
                         fontSize = 10.sp,
                         color = gc.textTertiary,
                         lineHeight = 14.5.sp,
@@ -79,6 +90,7 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                 Spacer(Modifier.width(12.dp))
                 GhostToggle(
                     checked = config.splitRouting,
+                    modifier = Modifier.testTag("routes_split_toggle"),
                     onCheckedChange = { viewModel.setSplitRouting(it) },
                 )
             }
@@ -98,7 +110,7 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .border(0.5.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.02f))
+                            .background(Color.White.copy(alpha = 0.05f))
                             .padding(14.dp),
                     )
                 } else {
@@ -136,14 +148,14 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                         cursorBrush = SolidColor(AccentPurple),
                         decorationBox = { inner ->
                             if (newRoute.isEmpty()) {
-                                Text("ru, us, 10.0.0.0/8...", fontSize = 12.sp, color = gc.textTertiary.copy(alpha = 0.5f), fontFamily = FontFamily.Monospace)
+                                Text("ru, by, kz, ua, cn...", fontSize = 12.sp, color = gc.textTertiary.copy(alpha = 0.5f), fontFamily = FontFamily.Monospace)
                             }
                             inner()
                         },
                         modifier = Modifier
                             .weight(1f)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.04f))
+                            .background(Color.White.copy(alpha = 0.05f))
                             .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
                             .padding(12.dp),
                     )
@@ -154,13 +166,18 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                         color = AccentPurple,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
+                            .testTag("routes_add_rule")
                             .clip(RoundedCornerShape(12.dp))
                             .background(AccentPurple.copy(alpha = 0.1f))
                             .border(0.5.dp, AccentPurple.copy(alpha = 0.28f), RoundedCornerShape(12.dp))
                             .clickable {
                                 val trimmed = newRoute.trim().lowercase()
-                                if (trimmed.isNotBlank() && trimmed !in config.directCountries) {
+                                if (trimmed.isBlank()) return@clickable
+                                if (trimmed !in availableCodes) {
+                                    addRuleStatus = "Поддерживаются только коды стран: ${availableCodes.joinToString(", ")}"
+                                } else if (trimmed !in config.directCountries) {
                                     viewModel.toggleDirectCountry(trimmed)
+                                    addRuleStatus = ""
                                     newRoute = ""
                                 }
                             }
@@ -169,12 +186,13 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                 }
 
                 Spacer(Modifier.height(10.dp))
-
-                SegmentRow(
-                    options = listOf("Direct", "VPN"),
-                    selected = routeType,
-                    onSelect = { routeType = it },
-                )
+                if (addRuleStatus.isNotBlank()) {
+                    Text(
+                        addRuleStatus,
+                        fontSize = 10.sp,
+                        color = YellowWarning,
+                    )
+                }
             }
 
             // Presets
@@ -188,7 +206,7 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                         CountryChip(
                             code = code.uppercase(),
                             isActive = isActive,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).testTag("routes_country_$code"),
                         ) { viewModel.toggleDirectCountry(code) }
                     }
                 }
@@ -200,6 +218,7 @@ fun RoutesOverlay(viewModel: SettingsViewModel) {
                     color = AccentPurple,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
+                        .testTag("routes_download_all")
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(AccentPurple.copy(alpha = 0.08f))
@@ -223,7 +242,7 @@ private fun RouteSection(title: String, content: @Composable () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
             .padding(14.dp),
     ) {
@@ -260,7 +279,7 @@ private fun RouteRuleRow(
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -272,7 +291,7 @@ private fun RouteRuleRow(
                 .size(18.dp)
                 .clip(RoundedCornerShape(5.dp))
                 .border(1.5.dp, if (isActive) checkColor else Color.White.copy(alpha = 0.3f), RoundedCornerShape(5.dp))
-                .background(if (isActive) checkColor.copy(alpha = 0.15f) else Color.Transparent),
+                .background(if (isActive) checkColor.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.05f)),
             contentAlignment = Alignment.Center,
         ) {
             if (isActive) {
@@ -303,7 +322,7 @@ private fun RouteRuleRow(
 @Composable
 private fun CountryChip(code: String, isActive: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val gc = LocalGhostColors.current
-    val bg = if (isActive) AccentPurple.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.04f)
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.05f)
     val border = if (isActive) AccentPurple.copy(alpha = 0.38f) else gc.cardBorder
 
     Text(

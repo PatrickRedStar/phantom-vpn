@@ -73,6 +73,9 @@ class GhostStreamVpnService : VpnService() {
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
         private const val TAG = "GhostStreamVpn"
+        // VpnService.Builder routes are transferred via Binder. Too many routes can crash with
+        // TransactionTooLargeException during establish().
+        private const val MAX_SPLIT_ROUTES = 4000
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -141,6 +144,19 @@ class GhostStreamVpnService : VpnService() {
         splitRouting: Boolean, directCidrsPath: String,
         perAppMode: String, perAppList: List<String>,
     ) {
+        if (perAppMode == "allowed" && perAppList.isEmpty()) {
+            VpnStateManager.update(VpnState.Error("Режим \"Только выбранные\" требует минимум одно приложение"))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        if (splitRouting && directCidrsPath.isBlank()) {
+            VpnStateManager.update(VpnState.Error("Split-routing включен, но файл правил не передан"))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+
         // Резолвим hostname → IP пока DNS ещё работает (до establish())
         val resolvedAddr = resolveAddr(serverAddr)
 
@@ -159,6 +175,17 @@ class GhostStreamVpnService : VpnService() {
             if (routesJson != null) {
                 try {
                     val arr = JSONArray(routesJson)
+                    if (arr.length() > MAX_SPLIT_ROUTES) {
+                        VpnStateManager.update(
+                            VpnState.Error(
+                                "Слишком много split-маршрутов (${arr.length()}). " +
+                                    "Уменьшите список правил или отключите split-routing."
+                            )
+                        )
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return
+                    }
                     var count = 0
                     for (i in 0 until arr.length()) {
                         val obj = arr.getJSONObject(i)
@@ -199,7 +226,22 @@ class GhostStreamVpnService : VpnService() {
             }
         }
 
-        vpnInterface = builder.establish() ?: run {
+        val iface = try {
+            builder.establish()
+        } catch (e: IllegalStateException) {
+            val msg = e.message ?: ""
+            val uiMsg = if (msg.contains("TransactionTooLargeException")) {
+                "Слишком много маршрутов для Android VPN (Binder limit). " +
+                    "Сократите split-правила или отключите split-routing."
+            } else {
+                "Не удалось создать TUN: $msg"
+            }
+            VpnStateManager.update(VpnState.Error(uiMsg))
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        vpnInterface = iface ?: run {
             VpnStateManager.update(VpnState.Error("Не удалось создать TUN"))
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -244,8 +286,8 @@ class GhostStreamVpnService : VpnService() {
                     break
                 }
                 try {
-                    val stats = nativeGetStats() ?: continue
-                    val connected = stats.contains("\"connected\":true")
+                    val stats = nativeGetStats()
+                    val connected = stats?.contains("\"connected\":true") == true
                     if (connected && !wasConnected) {
                         wasConnected = true
                         timeoutSecs = Int.MAX_VALUE
@@ -296,7 +338,18 @@ class GhostStreamVpnService : VpnService() {
                         }
                         break
                     }
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                    if (!wasConnected) {
+                        timeoutSecs--
+                        if (timeoutSecs <= 0) {
+                            mainHandler.post {
+                                VpnStateManager.update(VpnState.Error("Тайм-аут подключения к серверу"))
+                                stopTunnel()
+                            }
+                            break
+                        }
+                    }
+                }
             }
         }.apply {
             name = "vpn-watchdog"

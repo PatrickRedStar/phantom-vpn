@@ -201,30 +201,48 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun startVpn() {
-        val cfg = config.value
-        if (cfg.serverAddr.isBlank()) return
-        VpnStateManager.update(VpnState.Connecting)
-        val ctx = getApplication<Application>()
-        val intent = Intent(ctx, GhostStreamVpnService::class.java).apply {
-            action = GhostStreamVpnService.ACTION_START
-            putExtra(GhostStreamVpnService.EXTRA_SERVER_ADDR, cfg.serverAddr)
-            putExtra(GhostStreamVpnService.EXTRA_SERVER_NAME,
-                cfg.serverName.ifBlank { cfg.serverAddr.substringBefore(":") })
-            putExtra(GhostStreamVpnService.EXTRA_INSECURE, cfg.insecure)
-            putExtra(GhostStreamVpnService.EXTRA_CERT_PATH, cfg.certPath)
-            putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
-            putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)
-            putExtra(GhostStreamVpnService.EXTRA_DNS_SERVERS, cfg.dnsServers.joinToString(","))
-            putExtra(GhostStreamVpnService.EXTRA_SPLIT_ROUTING, cfg.splitRouting)
-            if (cfg.splitRouting && cfg.directCountries.isNotEmpty()) {
-                val mergedPath = routingRulesManager.mergeSelectedLists(cfg.directCountries)
-                putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, mergedPath ?: "")
+        viewModelScope.launch {
+            val cfg = config.value
+            if (cfg.serverAddr.isBlank()) return@launch
+            if (cfg.perAppMode == "allowed" && cfg.perAppList.isEmpty()) {
+                VpnStateManager.update(VpnState.Error("Выберите хотя бы одно приложение для режима \"Только выбранные\""))
+                return@launch
             }
-            putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
-            putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
-            putExtra(GhostStreamVpnService.EXTRA_CA_CERT_PATH, cfg.caCertPath ?: "")
+            val mergedPath = if (cfg.splitRouting) {
+                if (cfg.directCountries.isEmpty()) {
+                    VpnStateManager.update(VpnState.Error("Включен split-routing, но правила не выбраны"))
+                    return@launch
+                }
+                routingRulesManager.mergeSelectedLists(cfg.directCountries).also {
+                    if (it == null) {
+                        VpnStateManager.update(VpnState.Error("Для split-routing сначала загрузите списки выбранных стран"))
+                        return@launch
+                    }
+                }
+            } else null
+
+            VpnStateManager.update(VpnState.Connecting)
+            val ctx = getApplication<Application>()
+            val intent = Intent(ctx, GhostStreamVpnService::class.java).apply {
+                action = GhostStreamVpnService.ACTION_START
+                putExtra(GhostStreamVpnService.EXTRA_SERVER_ADDR, cfg.serverAddr)
+                putExtra(GhostStreamVpnService.EXTRA_SERVER_NAME,
+                    cfg.serverName.ifBlank { cfg.serverAddr.substringBefore(":") })
+                putExtra(GhostStreamVpnService.EXTRA_INSECURE, cfg.insecure)
+                putExtra(GhostStreamVpnService.EXTRA_CERT_PATH, cfg.certPath)
+                putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
+                putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)
+                putExtra(GhostStreamVpnService.EXTRA_DNS_SERVERS, cfg.dnsServers.joinToString(","))
+                putExtra(GhostStreamVpnService.EXTRA_SPLIT_ROUTING, cfg.splitRouting)
+                if (mergedPath != null) {
+                    putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, mergedPath)
+                }
+                putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
+                putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
+                putExtra(GhostStreamVpnService.EXTRA_CA_CERT_PATH, cfg.caCertPath ?: "")
+            }
+            ctx.startForegroundService(intent)
         }
-        ctx.startForegroundService(intent)
     }
 
     fun stopVpn() {

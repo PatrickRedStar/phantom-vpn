@@ -61,7 +61,20 @@ fun AppNavigation() {
     val settingsViewModel: SettingsViewModel = viewModel()
     val gc = LocalGhostColors.current
 
-    var overlay by remember { mutableStateOf<Overlay>(Overlay.None) }
+    var overlayStack by remember { mutableStateOf<List<Overlay>>(emptyList()) }
+    var qrReturnOverlay by remember { mutableStateOf<Overlay>(Overlay.Settings) }
+
+    fun openRootOverlay(overlay: Overlay) {
+        overlayStack = listOf(overlay)
+    }
+
+    fun openSettingsChild(overlay: Overlay) {
+        overlayStack = listOf(Overlay.Settings, overlay)
+    }
+
+    fun popOverlay() {
+        if (overlayStack.isNotEmpty()) overlayStack = overlayStack.dropLast(1)
+    }
 
     Box(
         Modifier
@@ -71,8 +84,8 @@ fun AppNavigation() {
         NavHost(navController, startDestination = "dashboard") {
             composable("dashboard") {
                 DashboardScreen(
-                    onOpenLogs = { overlay = Overlay.Logs },
-                    onOpenSettings = { overlay = Overlay.Settings },
+                    onOpenLogs = { openRootOverlay(Overlay.Logs) },
+                    onOpenSettings = { openRootOverlay(Overlay.Settings) },
                 )
             }
 
@@ -80,10 +93,19 @@ fun AppNavigation() {
                 QrScannerScreen(
                     onResult = { result ->
                         settingsViewModel.setPendingConnString(result)
-                        overlay = Overlay.Settings
+                        overlayStack = when (qrReturnOverlay) {
+                            is Overlay.AddServer -> listOf(Overlay.Settings, Overlay.AddServer)
+                            else -> listOf(Overlay.Settings)
+                        }
                         navController.popBackStack()
                     },
-                    onBack = { navController.popBackStack() },
+                    onBack = {
+                        overlayStack = when (qrReturnOverlay) {
+                            is Overlay.AddServer -> listOf(Overlay.Settings, Overlay.AddServer)
+                            else -> listOf(Overlay.Settings)
+                        }
+                        navController.popBackStack()
+                    },
                 )
             }
 
@@ -92,10 +114,13 @@ fun AppNavigation() {
                 QrScannerScreen(
                     onResult = { qrText ->
                         settingsViewModel.sendToTv(profileId, qrText)
-                        overlay = Overlay.Settings
+                        overlayStack = listOf(Overlay.Settings)
                         navController.popBackStack()
                     },
-                    onBack = { navController.popBackStack() },
+                    onBack = {
+                        overlayStack = listOf(Overlay.Settings)
+                        navController.popBackStack()
+                    },
                 )
             }
 
@@ -108,9 +133,10 @@ fun AppNavigation() {
 
         // Logs overlay
         GhostOverlay(
-            visible = overlay is Overlay.Logs,
-            onDismiss = { overlay = Overlay.None },
+            visible = overlayStack.any { it is Overlay.Logs },
+            onDismiss = { overlayStack = emptyList() },
             title = "Логи",
+            closeTag = "overlay_close_logs",
             titleColor = BlueDebug,
             titleIcon = {
                 Icon(
@@ -128,9 +154,10 @@ fun AppNavigation() {
 
         // Settings overlay
         GhostOverlay(
-            visible = overlay is Overlay.Settings,
-            onDismiss = { overlay = Overlay.None },
+            visible = overlayStack.any { it is Overlay.Settings },
+            onDismiss = { overlayStack = emptyList() },
             title = "Параметры",
+            closeTag = "overlay_close_settings",
             titleColor = AccentPurple,
             titleIcon = {
                 Icon(
@@ -145,31 +172,39 @@ fun AppNavigation() {
         ) {
             SettingsScreen(
                 viewModel = settingsViewModel,
-                onNavigateToQrScanner = { navController.navigate("qr_scanner") },
+                onNavigateToQrScanner = {
+                    qrReturnOverlay = Overlay.Settings
+                    overlayStack = emptyList()
+                    navController.navigate("qr_scanner")
+                },
                 onAdminNavigate = { profileId ->
                     val profiles = settingsViewModel.profiles.value
                     val profile = profiles.find { it.id == profileId }
                     val url = profile?.adminUrl
                     val token = profile?.adminToken
                     if (url != null && token != null) {
-                        overlay = Overlay.Admin(url, token)
+                        openSettingsChild(Overlay.Admin(url, token))
                     }
                 },
-                onShareToTv = { profileId -> navController.navigate("qr_scanner_pair/$profileId") },
+                onShareToTv = { profileId ->
+                    overlayStack = emptyList()
+                    navController.navigate("qr_scanner_pair/$profileId")
+                },
                 onGetFromPhone = { navController.navigate("tv_pairing") },
-                onOpenAddServer = { overlay = Overlay.AddServer },
-                onOpenDns = { overlay = Overlay.Dns },
-                onOpenApps = { overlay = Overlay.Apps },
-                onOpenRoutes = { overlay = Overlay.Routes },
+                onOpenAddServer = { openSettingsChild(Overlay.AddServer) },
+                onOpenDns = { openSettingsChild(Overlay.Dns) },
+                onOpenApps = { openSettingsChild(Overlay.Apps) },
+                onOpenRoutes = { openSettingsChild(Overlay.Routes) },
             )
         }
 
         // Admin overlay
-        val adminOv = overlay as? Overlay.Admin
+        val adminOv = overlayStack.lastOrNull { it is Overlay.Admin } as? Overlay.Admin
         GhostOverlay(
-            visible = adminOv != null,
-            onDismiss = { overlay = Overlay.Settings },
+            visible = overlayStack.any { it is Overlay.Admin },
+            onDismiss = { popOverlay() },
             title = "Администрирование",
+            closeTag = "overlay_close_admin",
             gradientStart = gc.adminSheetStart,
             gradientEnd = gc.adminSheetEnd,
         ) {
@@ -177,31 +212,37 @@ fun AppNavigation() {
                 AdminScreen(
                     adminUrl = adminOv.adminUrl,
                     adminToken = adminOv.adminToken,
-                    onBack = { overlay = Overlay.Settings },
+                    onBack = { popOverlay() },
                 )
             }
         }
 
         // Add Server overlay
         GhostOverlay(
-            visible = overlay is Overlay.AddServer,
-            onDismiss = { overlay = Overlay.Settings },
+            visible = overlayStack.any { it is Overlay.AddServer },
+            onDismiss = { popOverlay() },
             title = "Добавить подключение",
+            closeTag = "overlay_close_add_server",
             gradientStart = com.ghoststream.vpn.ui.theme.AddServerSheetStart,
             gradientEnd = com.ghoststream.vpn.ui.theme.AddServerSheetEnd,
         ) {
             AddServerOverlay(
                 viewModel = settingsViewModel,
-                onQrScanner = { navController.navigate("qr_scanner") },
-                onDone = { overlay = Overlay.Settings },
+                onQrScanner = {
+                    qrReturnOverlay = Overlay.AddServer
+                    overlayStack = emptyList()
+                    navController.navigate("qr_scanner")
+                },
+                onDone = { popOverlay() },
             )
         }
 
         // DNS overlay
         GhostOverlay(
-            visible = overlay is Overlay.Dns,
-            onDismiss = { overlay = Overlay.Settings },
+            visible = overlayStack.any { it is Overlay.Dns },
+            onDismiss = { popOverlay() },
             title = "DNS стек",
+            closeTag = "overlay_close_dns",
             titleColor = com.ghoststream.vpn.ui.theme.AccentTeal,
             gradientStart = com.ghoststream.vpn.ui.theme.DnsSheetStart,
             gradientEnd = com.ghoststream.vpn.ui.theme.DnsSheetEnd,
@@ -211,9 +252,10 @@ fun AppNavigation() {
 
         // Apps overlay
         GhostOverlay(
-            visible = overlay is Overlay.Apps,
-            onDismiss = { overlay = Overlay.Settings },
+            visible = overlayStack.any { it is Overlay.Apps },
+            onDismiss = { popOverlay() },
             title = "Приложения",
+            closeTag = "overlay_close_apps",
             titleColor = AccentPurple,
             gradientStart = com.ghoststream.vpn.ui.theme.AppsSheetStart,
             gradientEnd = com.ghoststream.vpn.ui.theme.AppsSheetEnd,
@@ -223,9 +265,10 @@ fun AppNavigation() {
 
         // Routes overlay
         GhostOverlay(
-            visible = overlay is Overlay.Routes,
-            onDismiss = { overlay = Overlay.Settings },
+            visible = overlayStack.any { it is Overlay.Routes },
+            onDismiss = { popOverlay() },
             title = "Маршрутизация",
+            closeTag = "overlay_close_routes",
             titleColor = com.ghoststream.vpn.ui.theme.YellowWarning,
             gradientStart = com.ghoststream.vpn.ui.theme.RoutesSheetStart,
             gradientEnd = com.ghoststream.vpn.ui.theme.RoutesSheetEnd,

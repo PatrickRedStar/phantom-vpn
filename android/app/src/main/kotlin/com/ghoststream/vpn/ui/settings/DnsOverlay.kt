@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -27,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -34,7 +37,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.ghoststream.vpn.ui.components.SegmentRow
 import com.ghoststream.vpn.ui.theme.AccentPurple
 import com.ghoststream.vpn.ui.theme.AccentTeal
 import com.ghoststream.vpn.ui.theme.LocalGhostColors
@@ -45,23 +47,17 @@ fun DnsOverlay(viewModel: SettingsViewModel) {
     val gc = LocalGhostColors.current
     val config by viewModel.config.collectAsStateWithLifecycle()
     var newDns by remember { mutableStateOf("") }
-    var resolveMode by remember { mutableStateOf("DoH") }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // Section: Resolve mode
-        OvSection("Режим резолва") {
-            SegmentRow(
-                options = listOf("DoH", "DoT", "Plain"),
-                selected = resolveMode,
-                onSelect = { resolveMode = it },
-            )
-            Spacer(Modifier.height(6.dp))
+    Column(
+        modifier = Modifier
+            .testTag("overlay_dns")
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // Section: Mode info
+        OvSection("Режим DNS") {
             Text(
-                when (resolveMode) {
-                    "DoH" -> "DNS-over-HTTPS — максимальная приватность. Запросы шифруются TLS внутри HTTPS."
-                    "DoT" -> "DNS-over-TLS — шифрование DNS через выделенный TLS-канал (порт 853)."
-                    else -> "Классический DNS без шифрования. Быстрый, но провайдер видит запросы."
-                },
+                "Сейчас используется классический DNS по IP-адресам из списка ниже.",
                 fontSize = 10.sp,
                 color = gc.textTertiary,
                 lineHeight = 14.5.sp,
@@ -80,7 +76,7 @@ fun DnsOverlay(viewModel: SettingsViewModel) {
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .border(0.5.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.02f))
+                        .background(Color.White.copy(alpha = 0.05f))
                         .padding(14.dp),
                 )
             } else {
@@ -88,6 +84,7 @@ fun DnsOverlay(viewModel: SettingsViewModel) {
                     OverlayDnsRow(
                         dns = dns,
                         onDelete = { viewModel.setDnsServers(config.dnsServers - dns) },
+                        testTag = "dns_row_delete_${dns.replace(".", "_")}",
                     )
                 }
             }
@@ -119,7 +116,7 @@ fun DnsOverlay(viewModel: SettingsViewModel) {
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.04f))
+                        .background(Color.White.copy(alpha = 0.05f))
                         .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
                         .padding(12.dp),
                 )
@@ -129,6 +126,7 @@ fun DnsOverlay(viewModel: SettingsViewModel) {
                     fontWeight = FontWeight.SemiBold,
                     color = AccentPurple,
                     modifier = Modifier
+                        .testTag("dns_add_server")
                         .clip(RoundedCornerShape(12.dp))
                         .background(AccentPurple.copy(alpha = 0.1f))
                         .border(0.5.dp, AccentPurple.copy(alpha = 0.28f), RoundedCornerShape(12.dp))
@@ -150,10 +148,10 @@ fun DnsOverlay(viewModel: SettingsViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                DnsPreset("Google", listOf("8.8.8.8", "8.8.4.4"), config.dnsServers, viewModel)
-                DnsPreset("Cloudflare", listOf("1.1.1.1", "1.0.0.1"), config.dnsServers, viewModel)
-                DnsPreset("AdGuard", listOf("94.140.14.14", "94.140.15.15"), config.dnsServers, viewModel)
-                DnsPreset("Quad9", listOf("9.9.9.9"), config.dnsServers, viewModel)
+                DnsPreset("Google", listOf("8.8.8.8", "8.8.4.4"), config.dnsServers, viewModel, "dns_preset_google")
+                DnsPreset("Cloudflare", listOf("1.1.1.1", "1.0.0.1"), config.dnsServers, viewModel, "dns_preset_cloudflare")
+                DnsPreset("AdGuard", listOf("94.140.14.14", "94.140.15.15"), config.dnsServers, viewModel, "dns_preset_adguard")
+                DnsPreset("Quad9", listOf("9.9.9.9"), config.dnsServers, viewModel, "dns_preset_quad9")
             }
         }
     }
@@ -166,7 +164,7 @@ private fun OvSection(title: String, content: @Composable () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
             .padding(14.dp),
     ) {
@@ -183,14 +181,14 @@ private fun OvSection(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun OverlayDnsRow(dns: String, onDelete: () -> Unit) {
+private fun OverlayDnsRow(dns: String, onDelete: () -> Unit, testTag: String) {
     val gc = LocalGhostColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -202,6 +200,7 @@ private fun OverlayDnsRow(dns: String, onDelete: () -> Unit) {
         }
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
+                .testTag(testTag)
                 .size(28.dp)
                 .clip(RoundedCornerShape(9.dp))
                 .background(Color.White.copy(alpha = 0.05f))
@@ -219,10 +218,11 @@ private fun DnsPreset(
     servers: List<String>,
     currentServers: List<String>,
     viewModel: SettingsViewModel,
+    testTag: String,
 ) {
     val gc = LocalGhostColors.current
     val isActive = currentServers == servers
-    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.04f)
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f)
     val border = if (isActive) AccentPurple.copy(alpha = 0.4f) else gc.cardBorder
     val textColor = if (isActive) gc.accent else gc.textSecondary
 
@@ -232,6 +232,7 @@ private fun DnsPreset(
         fontWeight = FontWeight.Medium,
         color = textColor,
         modifier = Modifier
+            .testTag(testTag)
             .clip(RoundedCornerShape(7.dp))
             .background(bg)
             .border(0.5.dp, border, RoundedCornerShape(7.dp))

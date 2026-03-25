@@ -75,7 +75,7 @@ class RoutingRulesManager(private val context: Context) {
      * Merge selected country lists into a single file for nativeComputeVpnRoutes().
      * Returns path to merged file, or null if no lists selected/downloaded.
      */
-    fun mergeSelectedLists(countryCodes: List<String>): String? {
+    suspend fun mergeSelectedLists(countryCodes: List<String>): String? = withContext(Dispatchers.IO) {
         val merged = StringBuilder()
         var count = 0
         for (code in countryCodes) {
@@ -86,10 +86,10 @@ class RoutingRulesManager(private val context: Context) {
                 count++
             }
         }
-        if (count == 0) return null
+        if (count == 0) return@withContext null
 
         val outFile = File(rulesDir, "direct_merged.txt")
         outFile.writeText(merged.toString())
-        return outFile.absolutePath
+        outFile.absolutePath
     }
 }

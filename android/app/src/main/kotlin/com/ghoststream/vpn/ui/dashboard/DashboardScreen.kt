@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -60,6 +62,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +80,7 @@ import com.ghoststream.vpn.ui.components.StatCard
 import com.ghoststream.vpn.ui.theme.AccentPurple
 import com.ghoststream.vpn.ui.theme.AccentTeal
 import com.ghoststream.vpn.ui.theme.BlueDebug
+import com.ghoststream.vpn.ui.theme.ConnectingBlue
 import com.ghoststream.vpn.ui.theme.GreenConnected
 import com.ghoststream.vpn.ui.theme.LocalGhostColors
 import com.ghoststream.vpn.ui.theme.RedError
@@ -117,9 +121,21 @@ fun DashboardScreen(
 
     // Connected: ghost float (3.8s)
     val floatY by inf.animateFloat(
-        0f, -7f,
+        0f, -14f,
         infiniteRepeatable(tween(3800, easing = EaseInOut), RepeatMode.Reverse),
         label = "float",
+    )
+    // Idle: slow float for disconnected (4.5s, subtle)
+    val idleFloatY by inf.animateFloat(
+        0f, -6f,
+        infiniteRepeatable(tween(4500, easing = EaseInOut), RepeatMode.Reverse),
+        label = "idle_float",
+    )
+    // Idle: slow pulse for disconnected (3.5s)
+    val idleScale by inf.animateFloat(
+        0.96f, 1.0f,
+        infiniteRepeatable(tween(3500, easing = EaseInOut), RepeatMode.Reverse),
+        label = "idle_scale",
     )
     // Connected: glow pulse (2.8s) — scale + opacity
     val glowScale by inf.animateFloat(
@@ -157,10 +173,14 @@ fun DashboardScreen(
     )
 
     // Per-state derived values
-    val ghostTY = if (vpnState is VpnState.Connected) floatY else 0f
+    val ghostTY = when (vpnState) {
+        is VpnState.Connected -> floatY
+        is VpnState.Disconnected, is VpnState.Disconnecting -> idleFloatY
+        else -> 0f
+    }
     val ghostScale = when (vpnState) {
         is VpnState.Connecting -> breathe
-        is VpnState.Disconnected, is VpnState.Disconnecting -> 0.96f
+        is VpnState.Disconnected, is VpnState.Disconnecting -> idleScale
         else -> 1f
     }
     val ghostAlpha = when (vpnState) {
@@ -170,7 +190,7 @@ fun DashboardScreen(
     }
     val glowColor = when (vpnState) {
         is VpnState.Connected -> GreenConnected
-        is VpnState.Connecting -> AccentPurple
+        is VpnState.Connecting -> ConnectingBlue
         is VpnState.Error -> RedError
         else -> Color.Transparent
     }
@@ -314,6 +334,7 @@ fun DashboardScreen(
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
+                    .testTag("dashboard_connect_toggle")
                     .size(mascotSize)
                     .focusRequester(focusReq)
                     .focusable()
@@ -347,11 +368,15 @@ fun DashboardScreen(
         Spacer(Modifier.height(4.dp))
 
         // Connection status pill
-        ConnectionPill(vpnState = vpnState)
+        ConnectionPill(
+            vpnState = vpnState,
+            modifier = Modifier.testTag("dashboard_connection_pill"),
+        )
 
         // State hint
         val hint = when (vpnState) {
             is VpnState.Disconnected -> "Нажми на духа, чтобы переключить VPN"
+            is VpnState.Connecting -> "Идёт подключение к серверу..."
             is VpnState.Error -> "Нажми, чтобы попробовать снова"
             else -> null
         }
@@ -397,7 +422,7 @@ fun DashboardScreen(
                 .graphicsLayer { alpha = statsAlpha },
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatCard(
                     iconChar = "↓",
                     label = "Download",
@@ -405,7 +430,7 @@ fun DashboardScreen(
                     subValue = FormatUtils.formatBytes(stats.bytesRx),
                     iconTint = StatDlColor,
                     iconBg = StatDlColor.copy(alpha = 0.15f),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
                 )
                 StatCard(
                     iconChar = "↑",
@@ -414,17 +439,17 @@ fun DashboardScreen(
                     subValue = FormatUtils.formatBytes(stats.bytesTx),
                     iconTint = StatUlColor,
                     iconBg = StatUlColor.copy(alpha = 0.15f),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
                 )
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatCard(
                     iconChar = "⏱",
                     label = "Сессия",
                     value = timerText,
                     iconTint = StatSeColor,
                     iconBg = StatSeColor.copy(alpha = 0.15f),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
                 )
                 StatCard(
                     iconChar = "◈",
@@ -433,7 +458,7 @@ fun DashboardScreen(
                     subValue = "${stats.pktsRx} / ${stats.pktsTx}",
                     iconTint = StatPkColor,
                     iconBg = StatPkColor.copy(alpha = 0.15f),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
                 )
             }
         }
@@ -441,7 +466,7 @@ fun DashboardScreen(
         Spacer(Modifier.height(14.dp))
 
         // ── Navigation cubes ────────────────────────────────────────────────
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             CubeButton(
                 icon = Icons.AutoMirrored.Filled.Article,
                 label = "Логи",
@@ -449,7 +474,7 @@ fun DashboardScreen(
                 iconTint = BlueDebug,
                 iconBg = BlueDebug.copy(alpha = 0.15f),
                 onClick = onOpenLogs,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxHeight().testTag("dashboard_open_logs"),
             )
             CubeButton(
                 icon = Icons.Filled.Settings,
@@ -458,7 +483,7 @@ fun DashboardScreen(
                 iconTint = AccentPurple,
                 iconBg = AccentPurple.copy(alpha = 0.15f),
                 onClick = onOpenSettings,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxHeight().testTag("dashboard_open_settings"),
             )
         }
 

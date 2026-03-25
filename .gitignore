@@ -33,3 +33,6 @@ api_ishostig.yaml
 # Android build artifacts
 android/app/build/
 android/.gradle/
+
+# Local real-e2e profile (contains secrets)
+android/local-test-profile.json

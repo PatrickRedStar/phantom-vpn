@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,6 +87,7 @@ fun SettingsScreen(
     }
 
     Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         // ── Подключения ─────────────────────────────────────────────────────
@@ -121,12 +125,14 @@ fun SettingsScreen(
                     text = "+ Добавить подключение",
                     isDashed = true,
                     modifier = Modifier.weight(1f),
+                    testTag = "settings_open_add_server",
                     onClick = onOpenAddServer,
                 )
                 ActionButton(
                     text = "↺ Ping все",
                     isPrimary = true,
                     modifier = Modifier.weight(1f),
+                    testTag = "settings_ping_all",
                     onClick = { viewModel.pingAll() },
                 )
             }
@@ -143,12 +149,12 @@ fun SettingsScreen(
                 Column(Modifier.weight(1f)) {
                     Text("Кастомный DNS стек", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = gc.textPrimary)
                     Text(
-                        "${config.dnsServers.size} сервера",
+                        "${config.dnsServers.size} сервера · plain DNS",
                         fontSize = 10.sp,
                         color = gc.textTertiary,
                     )
                 }
-                GhostBadge("DoH", BadgeVariant.ALT)
+                GhostBadge("DNS", BadgeVariant.ALT)
             }
             Spacer(Modifier.height(10.dp))
             // DNS list preview
@@ -173,7 +179,7 @@ fun SettingsScreen(
                 }
             }
             Spacer(Modifier.height(8.dp))
-            SubButton("Настроить DNS", onClick = onOpenDns)
+            SubButton("Настроить DNS", testTag = "settings_open_dns", onClick = onOpenDns)
         }
 
         // ── Сеть ────────────────────────────────────────────────────────────
@@ -185,6 +191,7 @@ fun SettingsScreen(
             ) {
                 GhostToggle(
                     checked = config.insecure,
+                    modifier = Modifier.testTag("settings_insecure_toggle"),
                     onCheckedChange = { viewModel.setInsecure(it) },
                 )
             }
@@ -207,7 +214,7 @@ fun SettingsScreen(
                     )
                 }
                 GhostBadge(
-                    if (config.splitRouting) "SPLIT ON" else "OFF",
+                    if (config.splitRouting) "SPLIT ON" else "SPLIT OFF",
                     if (config.splitRouting) BadgeVariant.WARN else BadgeVariant.DEFAULT,
                 )
             }
@@ -217,7 +224,7 @@ fun SettingsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White.copy(alpha = 0.03f))
+                    .background(Color.White.copy(alpha = 0.05f))
                     .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
                     .padding(12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -236,11 +243,12 @@ fun SettingsScreen(
                 Spacer(Modifier.width(12.dp))
                 GhostToggle(
                     checked = config.splitRouting,
+                    modifier = Modifier.testTag("settings_split_toggle"),
                     onCheckedChange = { viewModel.setSplitRouting(it) },
                 )
             }
             Spacer(Modifier.height(8.dp))
-            SubButton("Настроить маршруты", onClick = onOpenRoutes)
+            SubButton("Настроить маршруты", testTag = "settings_open_routes", onClick = onOpenRoutes)
         }
 
         // ── Приложения ──────────────────────────────────────────────────────
@@ -273,19 +281,34 @@ fun SettingsScreen(
             }
             Spacer(Modifier.height(10.dp))
             // Mode cards
-            AppModeCard("Все через VPN", "Полный туннель для всех приложений.", config.perAppMode == "none") {
+            AppModeCard(
+                "Все через VPN",
+                "Полный туннель для всех приложений.",
+                config.perAppMode == "none",
+                modifier = Modifier.testTag("settings_perapp_mode_none"),
+            ) {
                 viewModel.setPerAppMode("none")
             }
             Spacer(Modifier.height(8.dp))
-            AppModeCard("Все, кроме выбранных", "Добавь приложения-исключения.", config.perAppMode == "disallowed") {
+            AppModeCard(
+                "Все, кроме выбранных",
+                "Добавь приложения-исключения.",
+                config.perAppMode == "disallowed",
+                modifier = Modifier.testTag("settings_perapp_mode_disallowed"),
+            ) {
                 viewModel.setPerAppMode("disallowed")
             }
             Spacer(Modifier.height(8.dp))
-            AppModeCard("Только выбранные", "Через VPN только выбранные приложения.", config.perAppMode == "allowed") {
+            AppModeCard(
+                "Только выбранные",
+                "Через VPN только выбранные приложения.",
+                config.perAppMode == "allowed",
+                modifier = Modifier.testTag("settings_perapp_mode_allowed"),
+            ) {
                 viewModel.setPerAppMode("allowed")
             }
             Spacer(Modifier.height(8.dp))
-            SubButton("Настроить приложения", onClick = onOpenApps)
+            SubButton("Настроить приложения", testTag = "settings_open_apps", onClick = onOpenApps)
             Spacer(Modifier.height(6.dp))
             Text(
                 "Используй выбор приложений, если нужны банковские исключения или selective routing.",
@@ -317,7 +340,11 @@ fun SettingsScreen(
 
         // ── TV Pairing ──────────────────────────────────────────────────────
         if (isAndroidTv) {
-            SubButton("Получить подключение с телефона", onClick = onGetFromPhone)
+            SubButton(
+                "Получить подключение с телефона",
+                testTag = "settings_open_tv_pairing",
+                onClick = onGetFromPhone,
+            )
         }
 
         // ── Поддержка ───────────────────────────────────────────────────────
@@ -468,11 +495,25 @@ private fun ProfileRow(
                 .padding(start = 50.dp, end = 14.dp, bottom = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            IconAction(Icons.Filled.QrCodeScanner, "QR") { onQrClick() }
+            IconAction(
+                icon = Icons.Filled.QrCodeScanner,
+                desc = "QR",
+                testTag = "profile_qr",
+            ) { onQrClick() }
             if (onAdminClick != null) {
-                IconAction(Icons.Filled.Shield, "Admin", tintHover = AccentPurple) { onAdminClick() }
+                IconAction(
+                    icon = Icons.Filled.Shield,
+                    desc = "Admin",
+                    tintHover = AccentPurple,
+                    testTag = "profile_admin",
+                ) { onAdminClick() }
             }
-            IconAction(Icons.Filled.Delete, "Удалить", tintHover = DangerRose) { showDeleteConfirm = true }
+            IconAction(
+                icon = Icons.Filled.Delete,
+                desc = "Удалить",
+                tintHover = DangerRose,
+                testTag = "profile_delete",
+            ) { showDeleteConfirm = true }
         }
     }
 
@@ -498,15 +539,17 @@ private fun IconAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     desc: String,
     tintHover: Color = LocalGhostColors.current.textSecondary,
+    testTag: String? = null,
     onClick: () -> Unit,
 ) {
     val gc = LocalGhostColors.current
     Box(
         modifier = Modifier
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .size(34.dp)
             .clip(RoundedCornerShape(11.dp))
             .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(11.dp))
-            .background(Color.White.copy(alpha = 0.04f))
+            .background(Color.White.copy(alpha = 0.05f))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -522,7 +565,7 @@ private fun DnsRow(dns: String, onDelete: () -> Unit) {
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -545,7 +588,7 @@ private fun DnsRow(dns: String, onDelete: () -> Unit) {
 @Composable
 private fun PresetChip(text: String, isActive: Boolean, onClick: () -> Unit) {
     val gc = LocalGhostColors.current
-    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.04f)
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f)
     val border = if (isActive) AccentPurple.copy(alpha = 0.4f) else gc.cardBorder
     val textColor = if (isActive) gc.accent else gc.textSecondary
 
@@ -569,13 +612,14 @@ private fun ActionButton(
     modifier: Modifier = Modifier,
     isDashed: Boolean = false,
     isPrimary: Boolean = false,
+    testTag: String? = null,
     onClick: () -> Unit,
 ) {
     val gc = LocalGhostColors.current
     val bg = when {
         isDashed -> AccentPurple.copy(alpha = 0.08f)
         isPrimary -> AccentPurple.copy(alpha = 0.1f)
-        else -> Color.White.copy(alpha = 0.04f)
+        else -> Color.White.copy(alpha = 0.05f)
     }
     val border = when {
         isDashed -> AccentPurple.copy(alpha = 0.3f)
@@ -593,7 +637,10 @@ private fun ActionButton(
         fontSize = 11.sp,
         fontWeight = FontWeight.Medium,
         color = textColor,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .clip(RoundedCornerShape(10.dp))
             .background(bg)
             .border(0.5.dp, border, RoundedCornerShape(10.dp))
@@ -604,13 +651,14 @@ private fun ActionButton(
 }
 
 @Composable
-private fun SubButton(text: String, onClick: () -> Unit) {
+private fun SubButton(text: String, testTag: String? = null, onClick: () -> Unit) {
     val gc = LocalGhostColors.current
     Text(
         text = text,
         fontSize = 11.sp,
         color = gc.textSecondary,
         modifier = Modifier
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
@@ -621,13 +669,19 @@ private fun SubButton(text: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AppModeCard(title: String, desc: String, isActive: Boolean, onClick: () -> Unit) {
+private fun AppModeCard(
+    title: String,
+    desc: String,
+    isActive: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val gc = LocalGhostColors.current
-    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.03f)
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f)
     val border = if (isActive) AccentPurple.copy(alpha = 0.34f) else Color.White.copy(alpha = 0.08f)
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(bg)
@@ -644,7 +698,7 @@ private fun AppModeCard(title: String, desc: String, isActive: Boolean, onClick:
 @Composable
 private fun ThemeOption(label: String, isActive: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val gc = LocalGhostColors.current
-    val bg = if (isActive) AccentPurple.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.04f)
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.05f)
     val border = if (isActive) AccentPurple.copy(alpha = 0.38f) else gc.cardBorder
 
     Text(
@@ -700,7 +754,7 @@ private fun EmptyState(text: String) {
             .padding(16.dp)
             .clip(RoundedCornerShape(14.dp))
             .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.02f))
+            .background(Color.White.copy(alpha = 0.03f))
             .padding(14.dp),
     )
 }

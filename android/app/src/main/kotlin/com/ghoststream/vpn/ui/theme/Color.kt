@@ -20,8 +20,8 @@ val TextPrimary   = Color(0xFFF0EFFF)
 val TextSecondary = Color(0x99F0EFFF)   // ~60%
 val TextTertiary  = Color(0x59F0EFFF)   // ~35%
 
-val CardBg     = Color(0x0DFFFFFF)       // 5%  white
-val CardBorder = Color(0x17FFFFFF)       // 9%  white
+val CardBg     = Color(0x0DFFFFFF)       // 5%  white — per HTML --card
+val CardBorder = Color(0x17FFFFFF)       // 9%  white — per HTML --border
 
 val GreenConnected = Color(0xFF22D3A0)
 val RedError       = Color(0xFFFF5252)
@@ -42,23 +42,23 @@ val PingGood = Color(0xFF34D399)
 val PingMid  = Color(0xFFFBBF24)
 val PingHigh = Color(0xFFFB7185)
 
-// ── Overlay sheet gradients (dark) ──────────────────────────────────────────
-val SheetGradStart     = Color(0xF01E1F3A)  // settings default
-val SheetGradEnd       = Color(0xEB101122)
-val LogsSheetStart     = Color(0xF2141E34)
-val LogsSheetEnd       = Color(0xEB0C101E)
-val SettSheetStart     = Color(0xF21C1534)
-val SettSheetEnd       = Color(0xEB0F0E1F)
-val AdminSheetStart    = Color(0xF2191B2C)
-val AdminSheetEnd      = Color(0xEB11121F)
-val DnsSheetStart      = Color(0xF8122326)
-val DnsSheetEnd        = Color(0xF50A1218)
-val AppsSheetStart     = Color(0xF816142D)
-val AppsSheetEnd       = Color(0xF50B0D1C)
-val RoutesSheetStart   = Color(0xF818152E)
-val RoutesSheetEnd     = Color(0xF50B0E1D)
-val AddServerSheetStart = Color(0xFA1C1836)
-val AddServerSheetEnd   = Color(0xF50E101F)
+// ── Overlay sheet gradients — FULLY OPAQUE (no see-through) ─────────────────
+val SheetGradStart     = Color(0xFF1E1F3A)
+val SheetGradEnd       = Color(0xFF101122)
+val LogsSheetStart     = Color(0xFF141E34)
+val LogsSheetEnd       = Color(0xFF0C101E)
+val SettSheetStart     = Color(0xFF1C1534)
+val SettSheetEnd       = Color(0xFF0F0E1F)
+val AdminSheetStart    = Color(0xFF191B2C)
+val AdminSheetEnd      = Color(0xFF11121F)
+val DnsSheetStart      = Color(0xFF122326)
+val DnsSheetEnd        = Color(0xFF0A1218)
+val AppsSheetStart     = Color(0xFF16142D)
+val AppsSheetEnd       = Color(0xFF0B0D1C)
+val RoutesSheetStart   = Color(0xFF18152E)
+val RoutesSheetEnd     = Color(0xFF0B0E1D)
+val AddServerSheetStart = Color(0xFF1C1836)
+val AddServerSheetEnd   = Color(0xFF0E101F)
 
 // ── Admin hero ──────────────────────────────────────────────────────────────
 val AdminHeroGradStart = Color(0x387C6AF7)
@@ -66,7 +66,7 @@ val AdminHeroGradMid   = Color(0xF51A1C34)
 val AdminHeroGradEnd   = Color(0xFA0B0F1C)
 
 // ── Misc semantic ───────────────────────────────────────────────────────────
-val OverlayBackdrop  = Color(0x6B050412)
+val OverlayBackdrop  = Color(0xCC050412)   // ~80% — strong backdrop (no blur fallback)
 val MiniToastBg      = Color(0xF0121322)
 val ConnectingBlue   = Color(0xFF60A5FA)
 val DangerRose       = Color(0xFFFB7185)
@@ -141,15 +141,15 @@ val LightGhostColors = GhostColors(
     textTertiary    = Color(0x80171B27),
     accent          = Color(0xFF6B57F6),
     accentTeal      = Color(0xFF0F9F85),
-    overlayBackdrop = Color(0x9EEFF3FF),
-    sheetGradStart  = Color(0xF5FFFFFF),
-    sheetGradEnd    = Color(0xEDF3F6FF),
-    logsSheetStart  = Color(0xF8FFFFFF),
-    logsSheetEnd    = Color(0xEBF1F5FF),
-    settSheetStart  = Color(0xF8FFFFFF),
-    settSheetEnd    = Color(0xEDF6F3FF),
-    adminSheetStart = Color(0xF8FFFFFF),
-    adminSheetEnd   = Color(0xEDF5F6FF),
+    overlayBackdrop = Color(0xCC9EAFC0),
+    sheetGradStart  = Color(0xFFFFFFFF),
+    sheetGradEnd    = Color(0xFFF3F6FF),
+    logsSheetStart  = Color(0xFFFFFFFF),
+    logsSheetEnd    = Color(0xFFF1F5FF),
+    settSheetStart  = Color(0xFFFFFFFF),
+    settSheetEnd    = Color(0xFFF6F3FF),
+    adminSheetStart = Color(0xFFFFFFFF),
+    adminSheetEnd   = Color(0xFFF5F6FF),
     miniToastBg     = Color(0xF5FFFFFF),
     shadowColor     = Color(0x33759EAD),
 )

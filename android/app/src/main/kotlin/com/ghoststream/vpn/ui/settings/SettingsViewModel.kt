@@ -91,46 +91,52 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
         ConnStringParser.parse(input).fold(
             onSuccess = { parsed ->
-                val ctx = getApplication<Application>()
-                val id = java.util.UUID.randomUUID().toString()
-                val profileDir = File(ctx.filesDir, "profiles/$id").also { it.mkdirs() }
+                viewModelScope.launch {
+                    runCatching {
+                        val ctx = getApplication<Application>()
+                        val id = java.util.UUID.randomUUID().toString()
+                        val name = _pendingName.value.trim().ifEmpty {
+                            parsed.sni.substringBefore(".").replaceFirstChar { it.uppercase() }
+                                .ifEmpty { "Подключение" }
+                        }
+                        val profile = withContext(Dispatchers.IO) {
+                            val profileDir = File(ctx.filesDir, "profiles/$id").also { it.mkdirs() }
 
-                val certFile = File(profileDir, "client.crt")
-                val keyFile  = File(profileDir, "client.key")
-                certFile.writeText(parsed.cert)
-                keyFile.writeText(parsed.key)
+                            val certFile = File(profileDir, "client.crt")
+                            val keyFile  = File(profileDir, "client.key")
+                            certFile.writeText(parsed.cert)
+                            keyFile.writeText(parsed.key)
 
-                var caPath: String? = null
-                if (parsed.ca != null) {
-                    val caFile = File(profileDir, "ca.crt")
-                    caFile.writeText(parsed.ca)
-                    caPath = caFile.absolutePath
+                            var caPath: String? = null
+                            if (parsed.ca != null) {
+                                val caFile = File(profileDir, "ca.crt")
+                                caFile.writeText(parsed.ca)
+                                caPath = caFile.absolutePath
+                            }
+
+                            VpnProfile(
+                                id         = id,
+                                name       = name,
+                                serverAddr = parsed.addr,
+                                serverName = parsed.sni,
+                                insecure   = false,
+                                certPath   = certFile.absolutePath,
+                                keyPath    = keyFile.absolutePath,
+                                caCertPath = caPath,
+                                tunAddr    = parsed.tun,
+                                adminUrl   = parsed.adminUrl,
+                                adminToken = parsed.adminToken,
+                            )
+                        }
+
+                        profilesStore.addProfile(profile)
+                        _pendingConnString.value = ""
+                        _pendingName.value = ""
+                        _importStatus.value = "Добавлено: $name · ${parsed.addr}"
+                    }.onFailure {
+                        _importStatus.value = "Ошибка: ${it.message}"
+                    }
                 }
-
-                val name = _pendingName.value.trim().ifEmpty {
-                    parsed.sni.substringBefore(".").replaceFirstChar { it.uppercase() }
-                        .ifEmpty { "Подключение" }
-                }
-
-                profilesStore.addProfile(
-                    VpnProfile(
-                        id         = id,
-                        name       = name,
-                        serverAddr = parsed.addr,
-                        serverName = parsed.sni,
-                        insecure   = false,
-                        certPath   = certFile.absolutePath,
-                        keyPath    = keyFile.absolutePath,
-                        caCertPath = caPath,
-                        tunAddr    = parsed.tun,
-                        adminUrl   = parsed.adminUrl,
-                        adminToken = parsed.adminToken,
-                    ),
-                )
-
-                _pendingConnString.value = ""
-                _pendingName.value = ""
-                _importStatus.value = "Добавлено: $name · ${parsed.addr}"
             },
             onFailure = {
                 _importStatus.value = "Ошибка: ${it.message}"
@@ -287,67 +293,69 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun shareDebugReport(context: Context) {
         viewModelScope.launch {
-            val sb = StringBuilder()
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-            sb.appendLine("=== GhostStream VPN Debug Report ===")
-            sb.appendLine("Дата: ${sdf.format(java.util.Date())}")
-            sb.appendLine()
-            sb.appendLine("--- Приложение ---")
-            sb.appendLine("Версия: ${com.ghoststream.vpn.BuildConfig.VERSION_NAME} (${com.ghoststream.vpn.BuildConfig.VERSION_CODE})")
-            sb.appendLine("Git tag: ${com.ghoststream.vpn.BuildConfig.GIT_TAG}")
-            sb.appendLine()
-            sb.appendLine("--- Устройство ---")
-            sb.appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
-            sb.appendLine("Устройство: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-            sb.appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
-            sb.appendLine()
-            sb.appendLine("--- Активный профиль ---")
-            val activeProfile = profilesStore.getActiveProfile()
-            if (activeProfile != null) {
-                sb.appendLine("Имя: ${activeProfile.name}")
-                sb.appendLine("Сервер: ${activeProfile.serverAddr}")
-                sb.appendLine("SNI: ${activeProfile.serverName}")
-                sb.appendLine("Insecure: ${activeProfile.insecure}")
-                sb.appendLine("TUN: ${activeProfile.tunAddr}")
-                sb.appendLine("CA cert: ${if (activeProfile.caCertPath != null) "есть" else "нет"}")
-                sb.appendLine("Admin URL: ${if (activeProfile.adminUrl != null) "настроен" else "нет"}")
-            } else {
-                sb.appendLine("Нет активного профиля")
-            }
-            sb.appendLine()
-            sb.appendLine("--- Конфигурация ---")
-            val cfg = config.value
-            sb.appendLine("DNS: ${cfg.dnsServers.joinToString()}")
-            sb.appendLine("Раздельная маршрутизация: ${cfg.splitRouting}")
-            if (cfg.splitRouting) sb.appendLine("Прямые страны: ${cfg.directCountries.joinToString()}")
-            sb.appendLine("Per-app режим: ${cfg.perAppMode}")
-            if (cfg.perAppMode != "none") sb.appendLine("Приложений выбрано: ${cfg.perAppList.size}")
-            sb.appendLine()
-            sb.appendLine("--- Состояние VPN ---")
-            sb.appendLine("Состояние: ${VpnStateManager.state.value}")
-            sb.appendLine()
-            sb.appendLine("--- Логи (последние 500 строк) ---")
-            try {
-                val json = GhostStreamVpnService.nativeGetLogs(-1L)
-                if (json != null && json != "[]") {
-                    val arr = JSONArray(json)
-                    val start = maxOf(0, arr.length() - 500)
-                    for (i in start until arr.length()) {
-                        val o = arr.getJSONObject(i)
-                        sb.appendLine("${o.optString("ts")} [${o.optString("level")}] ${o.optString("msg")}")
-                    }
+            val uri = withContext(Dispatchers.IO) {
+                val sb = StringBuilder()
+                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                sb.appendLine("=== GhostStream VPN Debug Report ===")
+                sb.appendLine("Дата: ${sdf.format(java.util.Date())}")
+                sb.appendLine()
+                sb.appendLine("--- Приложение ---")
+                sb.appendLine("Версия: ${com.ghoststream.vpn.BuildConfig.VERSION_NAME} (${com.ghoststream.vpn.BuildConfig.VERSION_CODE})")
+                sb.appendLine("Git tag: ${com.ghoststream.vpn.BuildConfig.GIT_TAG}")
+                sb.appendLine()
+                sb.appendLine("--- Устройство ---")
+                sb.appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
+                sb.appendLine("Устройство: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+                sb.appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
+                sb.appendLine()
+                sb.appendLine("--- Активный профиль ---")
+                val activeProfile = profilesStore.getActiveProfile()
+                if (activeProfile != null) {
+                    sb.appendLine("Имя: ${activeProfile.name}")
+                    sb.appendLine("Сервер: ${activeProfile.serverAddr}")
+                    sb.appendLine("SNI: ${activeProfile.serverName}")
+                    sb.appendLine("Insecure: ${activeProfile.insecure}")
+                    sb.appendLine("TUN: ${activeProfile.tunAddr}")
+                    sb.appendLine("CA cert: ${if (activeProfile.caCertPath != null) "есть" else "нет"}")
+                    sb.appendLine("Admin URL: ${if (activeProfile.adminUrl != null) "настроен" else "нет"}")
                 } else {
-                    sb.appendLine("Логи пусты")
+                    sb.appendLine("Нет активного профиля")
                 }
-            } catch (e: Exception) {
-                sb.appendLine("Ошибка получения логов: ${e.message}")
-            }
+                sb.appendLine()
+                sb.appendLine("--- Конфигурация ---")
+                val cfg = config.value
+                sb.appendLine("DNS: ${cfg.dnsServers.joinToString()}")
+                sb.appendLine("Раздельная маршрутизация: ${cfg.splitRouting}")
+                if (cfg.splitRouting) sb.appendLine("Прямые страны: ${cfg.directCountries.joinToString()}")
+                sb.appendLine("Per-app режим: ${cfg.perAppMode}")
+                if (cfg.perAppMode != "none") sb.appendLine("Приложений выбрано: ${cfg.perAppList.size}")
+                sb.appendLine()
+                sb.appendLine("--- Состояние VPN ---")
+                sb.appendLine("Состояние: ${VpnStateManager.state.value}")
+                sb.appendLine()
+                sb.appendLine("--- Логи (последние 500 строк) ---")
+                try {
+                    val json = GhostStreamVpnService.nativeGetLogs(-1L)
+                    if (json != null && json != "[]") {
+                        val arr = JSONArray(json)
+                        val start = maxOf(0, arr.length() - 500)
+                        for (i in start until arr.length()) {
+                            val o = arr.getJSONObject(i)
+                            sb.appendLine("${o.optString("ts")} [${o.optString("level")}] ${o.optString("msg")}")
+                        }
+                    } else {
+                        sb.appendLine("Логи пусты")
+                    }
+                } catch (e: Exception) {
+                    sb.appendLine("Ошибка получения логов: ${e.message}")
+                }
 
-            val dir = File(context.cacheDir, "debug")
-            dir.mkdirs()
-            val file = File(dir, "ghoststream-debug.txt")
-            file.writeText(sb.toString())
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                val dir = File(context.cacheDir, "debug")
+                dir.mkdirs()
+                val file = File(dir, "ghoststream-debug.txt")
+                file.writeText(sb.toString())
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            }
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -381,7 +389,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun refreshDownloadedRules() {
-        _downloadedRules.value = routingRulesManager.getDownloadedRules().associateBy { it.code }
+        viewModelScope.launch(Dispatchers.IO) {
+            val rules = routingRulesManager.getDownloadedRules().associateBy { it.code }
+            _downloadedRules.value = rules
+        }
     }
 
     fun setSplitRouting(enabled: Boolean) {
@@ -445,20 +456,20 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun loadInstalledApps() {
         if (_installedApps.value.isNotEmpty()) return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val pm = getApplication<Application>().packageManager
-            _installedApps.value = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
                 .map { info ->
                     val isSystemPartition = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                     val isUpdated = (info.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
                     AppInfo(
                         packageName = info.packageName,
                         label = pm.getApplicationLabel(info).toString(),
-                        // Pure system partition app (never updated) — hide from picker
                         isSystem = isSystemPartition && !isUpdated,
                     )
                 }
                 .sortedWith(compareBy({ it.isSystem }, { it.label.lowercase() }))
+            _installedApps.value = apps
         }
     }
 

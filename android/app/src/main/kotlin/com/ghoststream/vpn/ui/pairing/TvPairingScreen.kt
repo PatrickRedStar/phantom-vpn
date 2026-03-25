@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -56,6 +57,7 @@ fun TvPairingScreen(
 
     Box(
         modifier = Modifier
+            .testTag("tv_pairing_root")
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center,
@@ -83,9 +85,9 @@ fun TvPairingScreen(
 @Composable
 private fun ReadyContent(qrJson: String) {
     Column(
+        modifier = Modifier.testTag("tv_pairing_ready").padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
-        modifier = Modifier.padding(32.dp),
     ) {
         Text(
             "Подключение с телефона",
@@ -113,6 +115,7 @@ private fun ReadyContent(qrJson: String) {
 @Composable
 private fun ReceivedContent() {
     Column(
+        modifier = Modifier.testTag("tv_pairing_received"),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -134,9 +137,9 @@ private fun ReceivedContent() {
 @Composable
 private fun ErrorContent(message: String, onRetry: () -> Unit) {
     Column(
+        modifier = Modifier.testTag("tv_pairing_error").padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
-        modifier = Modifier.padding(32.dp),
     ) {
         Icon(
             Icons.Filled.Error,
@@ -152,7 +155,7 @@ private fun ErrorContent(message: String, onRetry: () -> Unit) {
             color = RedError,
         )
         Spacer(Modifier.height(24.dp))
-        FilledTonalButton(onClick = onRetry) {
+        FilledTonalButton(onClick = onRetry, modifier = Modifier.testTag("tv_pairing_retry")) {
             Icon(Icons.Filled.Refresh, null)
             Spacer(Modifier.size(8.dp))
             Text("Повторить")

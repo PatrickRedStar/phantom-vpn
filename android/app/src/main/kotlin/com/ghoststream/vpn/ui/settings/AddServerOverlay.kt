@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,6 +26,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -46,7 +49,11 @@ fun AddServerOverlay(
     val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
     val isReady = connString.isNotBlank()
 
-    Column {
+    Column(
+        modifier = Modifier
+            .testTag("overlay_add_server")
+            .verticalScroll(rememberScrollState()),
+    ) {
         // Kicker
         Text(
             "Импорт хоста",
@@ -70,7 +77,7 @@ fun AddServerOverlay(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(18.dp))
-                .background(Color.White.copy(alpha = 0.03f))
+                .background(Color.White.copy(alpha = 0.05f))
                 .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
                 .padding(14.dp),
         ) {
@@ -100,7 +107,7 @@ fun AddServerOverlay(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.04f))
+                    .background(Color.White.copy(alpha = 0.05f))
                     .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
                     .padding(14.dp),
             )
@@ -113,7 +120,7 @@ fun AddServerOverlay(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(18.dp))
-                .background(Color.White.copy(alpha = 0.03f))
+                .background(Color.White.copy(alpha = 0.05f))
                 .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
                 .padding(14.dp),
         ) {
@@ -147,7 +154,7 @@ fun AddServerOverlay(
                     .fillMaxWidth()
                     .height(92.dp)
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.04f))
+                    .background(Color.White.copy(alpha = 0.05f))
                     .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
                     .padding(14.dp),
             )
@@ -194,6 +201,7 @@ fun AddServerOverlay(
                 fontWeight = FontWeight.SemiBold,
                 color = Color(0xFFa999ff),
                 modifier = Modifier
+                    .testTag("add_server_cancel")
                     .clickable(onClick = onDone)
                     .padding(10.dp),
             )
@@ -212,6 +220,7 @@ fun AddServerOverlay(
                 color = btnTextColor,
                 textAlign = TextAlign.Center,
                 modifier = Modifier
+                    .testTag("add_server_submit")
                     .clip(RoundedCornerShape(14.dp))
                     .background(btnBg)
                     .border(0.5.dp, btnBorder, RoundedCornerShape(14.dp))
@@ -237,8 +246,15 @@ private fun GhostButton(text: String, modifier: Modifier = Modifier, onClick: ()
         color = gc.textSecondary,
         textAlign = TextAlign.Center,
         modifier = modifier
+            .testTag(
+                when (text) {
+                    "Из буфера" -> "add_server_paste"
+                    "QR-код" -> "add_server_qr"
+                    else -> "add_server_button"
+                }
+            )
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .padding(12.dp),

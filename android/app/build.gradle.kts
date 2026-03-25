@@ -15,6 +15,7 @@ android {
         versionCode = 25
         versionName = "0.13.0"
         buildConfigField("String", "GIT_TAG", "\"v0.13.0\"")
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -80,6 +81,18 @@ dependencies {
 
     // ZXing core for QR code generation
     implementation("com.google.zxing:core:3.5.3")
+
+    // Unit tests
+    testImplementation("junit:junit:4.13.2")
+
+    // Android instrumentation / Compose UI tests
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 val cargoWorkspaceDir = file("${rootProject.rootDir}/..")

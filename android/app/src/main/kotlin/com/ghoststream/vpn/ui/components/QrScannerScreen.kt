@@ -29,6 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -62,7 +63,10 @@ fun QrScannerScreen(
             TopAppBar(
                 title = { Text("Сканировать QR") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.testTag("qr_scanner_back"),
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад")
                     }
                 },
@@ -71,6 +75,7 @@ fun QrScannerScreen(
     ) { padding ->
         Box(
             Modifier
+                .testTag("qr_scanner_root")
                 .fillMaxSize()
                 .padding(padding),
             contentAlignment = Alignment.Center,
@@ -78,7 +83,7 @@ fun QrScannerScreen(
             if (hasCameraPermission) {
                 CameraPreviewView(onBarcodeDetected = onResult)
             } else {
-                Text("Разрешите доступ к камере")
+                Text("Разрешите доступ к камере", modifier = Modifier.testTag("qr_camera_permission_text"))
             }
         }
     }

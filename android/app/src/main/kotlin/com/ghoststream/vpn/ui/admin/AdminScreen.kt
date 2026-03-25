@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +62,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ghoststream.vpn.ui.theme.AccentPurple
 import com.ghoststream.vpn.ui.theme.AccentTeal
+import com.ghoststream.vpn.ui.theme.AdminHeroGradEnd
+import com.ghoststream.vpn.ui.theme.AdminHeroGradMid
+import com.ghoststream.vpn.ui.theme.AdminHeroGradStart
 import com.ghoststream.vpn.ui.theme.DangerRose
 import com.ghoststream.vpn.ui.theme.LocalGhostColors
 import com.ghoststream.vpn.ui.theme.RedError
@@ -193,7 +197,7 @@ fun AdminScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
-                        .background(Color.White.copy(alpha = 0.04f))
+                        .background(Color.White.copy(alpha = 0.05f))
                         .border(0.5.dp, gc.cardBorder, RoundedCornerShape(14.dp))
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -271,7 +275,7 @@ fun AdminScreen(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(16.dp))
                             .border(0.5.dp, gc.cardBorder, RoundedCornerShape(16.dp))
-                            .background(Color.White.copy(alpha = 0.03f))
+                            .background(Color.White.copy(alpha = 0.05f))
                             .padding(20.dp),
                     )
                 }
@@ -297,6 +301,7 @@ fun AdminScreen(
         // FAB
         Box(
             modifier = Modifier
+                .testTag("admin_fab_add_client")
                 .align(Alignment.BottomEnd)
                 .padding(18.dp)
                 .size(56.dp)
@@ -324,15 +329,15 @@ private fun AdminHeroCard(status: ServerStatus) {
             .background(
                 Brush.linearGradient(
                     colors = listOf(
-                        Color(0xFF7c6af7).copy(alpha = 0.22f),
-                        Color(0xFF1a1c34).copy(alpha = 0.96f),
-                        Color(0xFF0b0f1c).copy(alpha = 0.98f),
+                        AdminHeroGradStart,
+                        AdminHeroGradMid,
+                        AdminHeroGradEnd,
                     ),
                     start = Offset(0f, 0f),
                     end = Offset(600f, 400f),
                 ),
             )
-            .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(22.dp))
+            .border(0.5.dp, gc.cardBorder, RoundedCornerShape(22.dp))
             .drawBehind {
                 // Decorative teal circle top-right
                 drawCircle(
@@ -361,15 +366,15 @@ private fun AdminHeroCard(status: ServerStatus) {
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.2.sp,
-                        color = Color.White.copy(alpha = 0.56f),
+                        color = gc.textTertiary,
                     )
                     Spacer(Modifier.height(6.dp))
-                    Text("Сервер", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Color.White, letterSpacing = 0.2.sp)
+                    Text("Сервер", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = gc.textPrimary, letterSpacing = 0.2.sp)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "QUIC/H3 туннель, шифрование Noise IK",
                         fontSize = 11.sp,
-                        color = Color.White.copy(alpha = 0.62f),
+                        color = gc.textSecondary,
                         lineHeight = 15.5.sp,
                     )
                 }
@@ -399,7 +404,7 @@ private fun AdminHeroCard(status: ServerStatus) {
                 Modifier
                     .fillMaxWidth()
                     .height(0.5.dp)
-                    .background(Color.White.copy(alpha = 0.08f)),
+                    .background(gc.cardBorder),
             )
             Spacer(Modifier.height(12.dp))
 
@@ -408,13 +413,13 @@ private fun AdminHeroCard(status: ServerStatus) {
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Column {
-                    Text("Вход", fontSize = 10.sp, letterSpacing = 1.sp, color = Color.White.copy(alpha = 0.5f))
-                    Text(status.serverAddr, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                    Text("Вход", fontSize = 10.sp, letterSpacing = 1.sp, color = gc.textTertiary)
+                    Text(status.serverAddr, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = gc.textPrimary)
                 }
                 if (status.exitIp != null) {
                     Column(horizontalAlignment = Alignment.End) {
-                        Text("Выход", fontSize = 10.sp, letterSpacing = 1.sp, color = Color.White.copy(alpha = 0.5f))
-                        Text(status.exitIp, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+                        Text("Выход", fontSize = 10.sp, letterSpacing = 1.sp, color = gc.textTertiary)
+                        Text(status.exitIp, fontSize = 13.sp, fontFamily = FontFamily.Monospace, color = gc.textPrimary)
                     }
                 }
             }
@@ -428,7 +433,7 @@ private fun KpiCard(label: String, value: String, sub: String, modifier: Modifie
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
-            .background(Color.White.copy(alpha = 0.04f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
             .padding(12.dp),
     ) {
@@ -443,7 +448,7 @@ private fun KpiCard(label: String, value: String, sub: String, modifier: Modifie
 @Composable
 private fun AdminFilterChip(text: String, isActive: Boolean, onClick: () -> Unit) {
     val gc = LocalGhostColors.current
-    val bg = if (isActive) AccentPurple.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.03f)
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.16f) else Color.Transparent
     val border = if (isActive) AccentPurple.copy(alpha = 0.34f) else gc.cardBorder
     val textColor = if (isActive) Color(0xFFe2ddff) else gc.textSecondary
 
@@ -453,6 +458,7 @@ private fun AdminFilterChip(text: String, isActive: Boolean, onClick: () -> Unit
         fontWeight = FontWeight.SemiBold,
         color = textColor,
         modifier = Modifier
+            .testTag("admin_filter_${text.lowercase().replace(" ", "_")}")
             .clip(RoundedCornerShape(14.dp))
             .background(bg)
             .border(0.5.dp, border, RoundedCornerShape(14.dp))
@@ -496,7 +502,7 @@ private fun GlassClientCard(
             .clip(RoundedCornerShape(18.dp))
             .background(
                 Brush.verticalGradient(
-                    listOf(Color.White.copy(alpha = 0.05f), Color.White.copy(alpha = 0.025f)),
+                    listOf(Color.White.copy(alpha = 0.05f), Color.White.copy(alpha = 0.03f)),
                 ),
             )
             .border(0.5.dp, gc.cardBorder, RoundedCornerShape(18.dp))
@@ -537,6 +543,7 @@ private fun GlassClientCard(
                             color = gc.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
                         if (client.connected) {
                             Spacer(Modifier.width(8.dp))
@@ -591,25 +598,44 @@ private fun GlassClientCard(
 
         // Actions row
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ClientAction("⏻") { onToggle() }
-            ClientAction("📋") { onCopyConnString() }
-            ClientAction("📊") { onShowStats() }
-            ClientAction("⏱") { onSubscription() }
-            ClientAction("🗑", isDanger = true) { onDelete() }
+            val suffix = client.name.lowercase().replace(" ", "_")
+            ClientAction("⏻", testTag = "admin_client_toggle_$suffix") { onToggle() }
+            ClientAction("⊞", testTag = "admin_client_connstring_$suffix") { onCopyConnString() }
+            ClientAction("▤", testTag = "admin_client_stats_$suffix") { onShowStats() }
+            ClientAction("◷", testTag = "admin_client_subscription_$suffix") { onSubscription() }
+            ClientAction("✕", isDanger = true, testTag = "admin_client_delete_$suffix") { onDelete() }
         }
     }
 }
 
 @Composable
-private fun ClientAction(icon: String, isDanger: Boolean = false, onClick: () -> Unit) {
+private fun ClientAction(
+    icon: String,
+    isDanger: Boolean = false,
+    testTag: String? = null,
+    onClick: () -> Unit,
+) {
     val gc = LocalGhostColors.current
-    Text(
-        icon,
-        fontSize = 16.sp,
+    val borderColor = if (isDanger) RedError.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.10f)
+    val bgColor = if (isDanger) RedError.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.05f)
+    val textColor = if (isDanger) RedError else gc.textSecondary
+    Box(
         modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(4.dp),
-    )
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
+            .size(28.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(bgColor)
+            .border(0.5.dp, borderColor, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            icon,
+            fontSize = 14.sp,
+            color = textColor,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 @Composable
@@ -636,7 +662,7 @@ private fun AddClientDialog(onConfirm: (String, Int?) -> Unit, onDismiss: () -> 
                                 Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.White.copy(alpha = 0.04f))
+                                    .background(Color.White.copy(alpha = 0.05f))
                                     .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
                                     .padding(12.dp),
                             ) {
@@ -645,7 +671,7 @@ private fun AddClientDialog(onConfirm: (String, Int?) -> Unit, onDismiss: () -> 
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("admin_add_client_name_input"),
                 )
                 BasicTextField(
                     value = daysText,
@@ -662,7 +688,7 @@ private fun AddClientDialog(onConfirm: (String, Int?) -> Unit, onDismiss: () -> 
                                 Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.White.copy(alpha = 0.04f))
+                                    .background(Color.White.copy(alpha = 0.05f))
                                     .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
                                     .padding(12.dp),
                             ) {
@@ -671,16 +697,16 @@ private fun AddClientDialog(onConfirm: (String, Int?) -> Unit, onDismiss: () -> 
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("admin_add_client_days_input"),
                 )
             }
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(name.trim(), daysText.toIntOrNull()) }, enabled = name.isNotBlank()) {
-                Text("Создать")
+                Text("Создать", modifier = Modifier.testTag("admin_add_client_confirm"))
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена", modifier = Modifier.testTag("admin_add_client_cancel")) } },
     )
 }
 
@@ -766,9 +792,9 @@ private fun SubscriptionDialog(
                 Box(Modifier.fillMaxWidth().height(0.5.dp).background(gc.cardBorder))
                 Text("Продлить:", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = gc.textTertiary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SubActionButton("+30 дн.", Modifier.weight(1f)) { onManage("extend", 30) }
-                    SubActionButton("+90 дн.", Modifier.weight(1f)) { onManage("extend", 90) }
-                    SubActionButton("+1 год", Modifier.weight(1f)) { onManage("extend", 365) }
+                    SubActionButton("+30 дн.", Modifier.weight(1f), "admin_sub_extend_30") { onManage("extend", 30) }
+                    SubActionButton("+90 дн.", Modifier.weight(1f), "admin_sub_extend_90") { onManage("extend", 90) }
+                    SubActionButton("+1 год", Modifier.weight(1f), "admin_sub_extend_365") { onManage("extend", 365) }
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -785,7 +811,7 @@ private fun SubscriptionDialog(
                             Box(
                                 Modifier
                                     .clip(RoundedCornerShape(12.dp))
-                                    .background(Color.White.copy(alpha = 0.04f))
+                                    .background(Color.White.copy(alpha = 0.05f))
                                     .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
                                     .padding(12.dp),
                             ) {
@@ -795,13 +821,13 @@ private fun SubscriptionDialog(
                         },
                         modifier = Modifier.weight(1f),
                     )
-                    SubActionButton("Установить") {
+                    SubActionButton("Установить", testTag = "admin_sub_set_custom") {
                         customDays.toIntOrNull()?.let { onManage("set", it) }
                     }
                 }
                 Box(Modifier.fillMaxWidth().height(0.5.dp).background(gc.cardBorder))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SubActionButton("Бессрочно", Modifier.weight(1f)) { onManage("cancel", null) }
+                    SubActionButton("Бессрочно", Modifier.weight(1f), "admin_sub_cancel") { onManage("cancel", null) }
                     Text(
                         "Аннулировать",
                         fontSize = 11.sp,
@@ -809,6 +835,7 @@ private fun SubscriptionDialog(
                         color = Color.White,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
+                            .testTag("admin_sub_revoke")
                             .weight(1f)
                             .clip(RoundedCornerShape(12.dp))
                             .background(RedError)
@@ -823,7 +850,12 @@ private fun SubscriptionDialog(
 }
 
 @Composable
-private fun SubActionButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun SubActionButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    testTag: String? = null,
+    onClick: () -> Unit,
+) {
     val gc = LocalGhostColors.current
     Text(
         text = text,
@@ -832,6 +864,7 @@ private fun SubActionButton(text: String, modifier: Modifier = Modifier, onClick
         color = gc.textSecondary,
         textAlign = TextAlign.Center,
         modifier = modifier
+            .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
             .clip(RoundedCornerShape(12.dp))
             .border(0.5.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
@@ -872,7 +905,7 @@ private fun ConnStringDialog(connString: String, onDismiss: () -> Unit) {
                     color = LocalGhostColors.current.textTertiary,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .background(Color.White.copy(alpha = 0.04f))
+                        .background(Color.White.copy(alpha = 0.05f))
                         .padding(8.dp),
                 )
             }

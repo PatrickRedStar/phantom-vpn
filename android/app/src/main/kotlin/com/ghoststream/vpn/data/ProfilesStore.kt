@@ -1,9 +1,13 @@
 package com.ghoststream.vpn.data
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -24,6 +28,7 @@ class ProfilesStore private constructor(private val context: Context) {
     }
 
     private val file = File(context.filesDir, "profiles.json")
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _profiles = MutableStateFlow<List<VpnProfile>>(emptyList())
     val profiles: StateFlow<List<VpnProfile>> = _profiles.asStateFlow()
@@ -32,7 +37,7 @@ class ProfilesStore private constructor(private val context: Context) {
     val activeId: StateFlow<String?> = _activeId.asStateFlow()
 
     init {
-        load()
+        ioScope.launch { load() }
     }
 
     fun getActiveProfile(): VpnProfile? =
@@ -41,30 +46,32 @@ class ProfilesStore private constructor(private val context: Context) {
     fun addProfile(profile: VpnProfile) {
         _profiles.value = _profiles.value + profile
         if (_activeId.value == null) _activeId.value = profile.id
-        save()
+        saveAsync()
     }
 
     fun updateProfile(profile: VpnProfile) {
         _profiles.value = _profiles.value.map { if (it.id == profile.id) profile else it }
-        save()
+        saveAsync()
     }
 
     fun deleteProfile(id: String) {
         _profiles.value.find { it.id == id }?.also { p ->
-            runCatching { File(p.certPath).delete() }
-            runCatching { File(p.keyPath).delete() }
-            p.caCertPath?.let { runCatching { File(it).delete() } }
-            // Remove profile directory if empty
-            runCatching { File(context.filesDir, "profiles/$id").deleteRecursively() }
+            ioScope.launch {
+                runCatching { File(p.certPath).delete() }
+                runCatching { File(p.keyPath).delete() }
+                p.caCertPath?.let { runCatching { File(it).delete() } }
+                // Remove profile directory if empty
+                runCatching { File(context.filesDir, "profiles/$id").deleteRecursively() }
+            }
         }
         _profiles.value = _profiles.value.filter { it.id != id }
         if (_activeId.value == id) _activeId.value = _profiles.value.firstOrNull()?.id
-        save()
+        saveAsync()
     }
 
     fun setActiveId(id: String) {
         _activeId.value = id
-        save()
+        saveAsync()
     }
 
     /** Migrate from legacy flat config. Call once if profiles.json doesn't exist. */
@@ -113,7 +120,11 @@ class ProfilesStore private constructor(private val context: Context) {
         }
     }
 
-    private fun save() {
+    private fun saveAsync() {
+        ioScope.launch { saveSync() }
+    }
+
+    private fun saveSync() {
         runCatching {
             val arr = JSONArray()
             _profiles.value.forEach { p ->

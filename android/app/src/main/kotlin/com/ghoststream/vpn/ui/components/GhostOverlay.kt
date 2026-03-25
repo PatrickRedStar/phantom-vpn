@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -32,6 +33,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,6 +50,7 @@ fun GhostOverlay(
     gradientEnd: Color = LocalGhostColors.current.sheetGradEnd,
     actions: (@Composable () -> Unit)? = null,
     maxWidthDp: Int = 324,
+    closeTag: String = "overlay_close",
     content: @Composable () -> Unit,
 ) {
     val gc = LocalGhostColors.current
@@ -67,8 +70,7 @@ fun GhostOverlay(
 
     Box(
         modifier = Modifier
-            .fillMaxSize()
-            .graphicsLayer { alpha = animProgress },
+            .fillMaxSize(),
         contentAlignment = Alignment.Center,
     ) {
         // Backdrop
@@ -88,10 +90,11 @@ fun GhostOverlay(
             modifier = Modifier
                 .padding(horizontal = 18.dp)
                 .fillMaxWidth()
+                .widthIn(max = maxWidthDp.dp)
                 .heightIn(max = (screenH * 0.82f).dp)
                 .graphicsLayer {
                     val t = animProgress
-                    translationY = (1f - t) * 54f
+                    translationY = (1f - t) * 18f
                     scaleX = 0.94f + 0.06f * t
                     scaleY = 0.94f + 0.06f * t
                     alpha = t
@@ -134,6 +137,7 @@ fun GhostOverlay(
                     // Close button
                     Box(
                         modifier = Modifier
+                            .testTag(closeTag)
                             .size(30.dp)
                             .clip(CircleShape)
                             .background(Color.White.copy(alpha = 0.08f))
@@ -145,11 +149,10 @@ fun GhostOverlay(
                 }
             }
 
-            // Body — scrollable
-            Column(
+            // Body
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .verticalScroll(rememberScrollState())
                     .padding(start = 16.dp, end = 16.dp, bottom = 18.dp),
             ) {
                 content()

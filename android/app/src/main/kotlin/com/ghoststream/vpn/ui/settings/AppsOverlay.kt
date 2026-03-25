@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,13 +41,19 @@ fun AppsOverlay(viewModel: SettingsViewModel) {
 
     LaunchedEffect(Unit) { viewModel.loadInstalledApps() }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(
+        modifier = Modifier
+            .testTag("overlay_apps")
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         // Routing mode selection
         AppsSection("Режим маршрутизации") {
             AppModeCard(
                 title = "Все через VPN",
                 desc = "Полный туннель для всех приложений на устройстве.",
                 isActive = config.perAppMode == "none",
+                modifier = Modifier.testTag("apps_mode_none"),
             ) { viewModel.setPerAppMode("none") }
 
             Spacer(Modifier.height(8.dp))
@@ -53,6 +62,7 @@ fun AppsOverlay(viewModel: SettingsViewModel) {
                 title = "Все, кроме выбранных",
                 desc = "Добавь приложения-исключения, которые пойдут мимо туннеля.",
                 isActive = config.perAppMode == "disallowed",
+                modifier = Modifier.testTag("apps_mode_disallowed"),
             ) { viewModel.setPerAppMode("disallowed") }
 
             Spacer(Modifier.height(8.dp))
@@ -61,7 +71,18 @@ fun AppsOverlay(viewModel: SettingsViewModel) {
                 title = "Только выбранные",
                 desc = "Через VPN идут только приложения, которые ты явно выбрал.",
                 isActive = config.perAppMode == "allowed",
+                modifier = Modifier.testTag("apps_mode_allowed"),
             ) { viewModel.setPerAppMode("allowed") }
+
+            if (config.perAppMode == "allowed" && config.perAppList.isEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Выбери минимум одно приложение, иначе подключение не запустится.",
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = gc.textTertiary,
+                )
+            }
         }
 
         // App picker list
@@ -76,7 +97,7 @@ fun AppsOverlay(viewModel: SettingsViewModel) {
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .border(0.5.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.02f))
+                            .background(Color.White.copy(alpha = 0.05f))
                             .padding(14.dp),
                     )
                 } else {
@@ -103,7 +124,7 @@ private fun AppsSection(title: String, content: @Composable () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
             .padding(14.dp),
     ) {
@@ -120,13 +141,19 @@ private fun AppsSection(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun AppModeCard(title: String, desc: String, isActive: Boolean, onClick: () -> Unit) {
+private fun AppModeCard(
+    title: String,
+    desc: String,
+    isActive: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val gc = LocalGhostColors.current
-    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.03f)
+    val bg = if (isActive) AccentPurple.copy(alpha = 0.1f) else Color.White.copy(alpha = 0.05f)
     val border = if (isActive) AccentPurple.copy(alpha = 0.34f) else Color.White.copy(alpha = 0.08f)
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(bg)
@@ -153,7 +180,7 @@ private fun AppPickRow(
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Color.White.copy(alpha = 0.03f))
+            .background(Color.White.copy(alpha = 0.05f))
             .border(0.5.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
             .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
