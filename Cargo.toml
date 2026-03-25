@@ -6,6 +6,7 @@ members = [
     "crates/client-linux",
     "crates/client-macos",
     "crates/client-android",
+    "crates/client-ios",
 ]
 resolver = "2"
 
