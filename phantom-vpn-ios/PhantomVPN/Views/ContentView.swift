@@ -21,7 +21,7 @@ struct ContentView: View {
                     Label("Настройки", systemImage: "gearshape.fill")
                 }
         }
-        .onChange(of: profileStore.activeProfileId) { _, _ in
+        .onChange(of: profileStore.activeProfileId) { _ in
             if adminManager.isConfigured {
                 adminManager.refresh()
             }

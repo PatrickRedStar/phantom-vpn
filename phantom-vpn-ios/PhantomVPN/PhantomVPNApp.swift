@@ -19,7 +19,7 @@ struct PhantomVPNApp: App {
                     vpnManager.bootstrapManager()
                     syncAdmin()
                 }
-                .onChange(of: profileStore.activeProfileId) { _, _ in
+                .onChange(of: profileStore.activeProfileId) { _ in
                     syncAdmin()
                 }
         }
