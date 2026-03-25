@@ -28,6 +28,7 @@ class GhostStreamVpnService : VpnService() {
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var watchdogThread: Thread? = null
+    private var startupThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var savedParams: TunnelParams? = null
     @Volatile private var userStopped = false
@@ -73,6 +74,9 @@ class GhostStreamVpnService : VpnService() {
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
         private const val TAG = "GhostStreamVpn"
+        // Safety cap: too many addRoute() entries can overflow Binder transaction
+        // in VpnService.Builder.establish() and crash with TransactionTooLargeException.
+        private const val MAX_SPLIT_ROUTES = 8000
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -107,10 +111,17 @@ class GhostStreamVpnService : VpnService() {
             startForeground(NOTIFICATION_ID, buildNotification("Подключение..."))
         }
 
-        startTunnel(
-            serverAddr, serverName, insecure, certPath, keyPath, caCertPath,
-            tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
-        )
+        startupThread?.interrupt()
+        startupThread = Thread {
+            startTunnel(
+                serverAddr, serverName, insecure, certPath, keyPath, caCertPath,
+                tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
+            )
+        }.apply {
+            name = "vpn-startup"
+            isDaemon = true
+            start()
+        }
         return START_STICKY
     }
 
@@ -136,6 +147,15 @@ class GhostStreamVpnService : VpnService() {
             if (routesJson != null) {
                 try {
                     val arr = JSONArray(routesJson)
+                    if (arr.length() > MAX_SPLIT_ROUTES) {
+                        val msg = "Слишком большой список маршрутов (${arr.length()}). " +
+                            "Выберите меньше стран для раздельной маршрутизации."
+                        Log.e(TAG, msg)
+                        VpnStateManager.update(VpnState.Error(msg))
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return
+                    }
                     var count = 0
                     for (i in 0 until arr.length()) {
                         val obj = arr.getJSONObject(i)
@@ -282,6 +302,8 @@ class GhostStreamVpnService : VpnService() {
 
     private fun stopTunnel() {
         userStopped = true
+        startupThread?.interrupt()
+        startupThread = null
         watchdogThread?.interrupt()
         watchdogThread = null
         nativeStop()
@@ -294,6 +316,8 @@ class GhostStreamVpnService : VpnService() {
 
     private fun failTunnel(message: String) {
         userStopped = true
+        startupThread?.interrupt()
+        startupThread = null
         watchdogThread?.interrupt()
         watchdogThread = null
         nativeStop()

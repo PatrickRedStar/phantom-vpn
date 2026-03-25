@@ -5,6 +5,7 @@ import android.net.VpnService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,17 +20,23 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -39,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.ui.components.ConnectButton
 import com.ghoststream.vpn.ui.components.StatCard
@@ -46,6 +54,7 @@ import com.ghoststream.vpn.ui.theme.GreenConnected
 import com.ghoststream.vpn.ui.theme.RedError
 import com.ghoststream.vpn.ui.theme.TextSecondary
 import com.ghoststream.vpn.util.FormatUtils
+import kotlinx.coroutines.launch
 
 @Composable
 fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
@@ -55,6 +64,9 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val subscriptionText by viewModel.subscriptionText.collectAsStateWithLifecycle()
     val preflightWarning by viewModel.preflightWarning.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val preferencesStore = remember { PreferencesStore(context.applicationContext) }
+    val themeMode by preferencesStore.theme.collectAsStateWithLifecycle(initialValue = "system")
+    val scope = rememberCoroutineScope()
     val isAndroidTv = remember {
         context.packageManager.hasSystemFeature("android.software.leanback")
     }
@@ -72,15 +84,21 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val hPadding = if (isAndroidTv) 64.dp else 24.dp
     val btnSize = if (isAndroidTv) 160.dp else 122.dp
     val topSpacer = if (isAndroidTv) 64.dp else 48.dp
+    val nextThemeMode = when (themeMode) {
+        "system" -> "dark"
+        "dark" -> "light"
+        else -> "system"
+    }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = hPadding, vertical = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Spacer(Modifier.height(topSpacer))
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = hPadding, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.height(topSpacer))
 
         ConnectButton(
             state = vpnState,
@@ -209,6 +227,37 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(24.dp))
+        }
+
+        // Top-right single theme switcher: A / Moon / Sun
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 12.dp, end = 16.dp),
+        ) {
+            IconButton(
+                onClick = { scope.launch { preferencesStore.setTheme(nextThemeMode) } },
+            ) {
+                when (themeMode) {
+                    "dark" -> Icon(
+                        Icons.Filled.DarkMode,
+                        contentDescription = "Тёмная тема",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    "light" -> Icon(
+                        Icons.Filled.WbSunny,
+                        contentDescription = "Светлая тема",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    else -> Text(
+                        "A",
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
     }
 }
