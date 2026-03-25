@@ -9,7 +9,7 @@ struct StatCard: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: icon)
-                    .foregroundStyle(.accentPurpleLight)
+                    .foregroundStyle(Color.accentPurpleLight)
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
