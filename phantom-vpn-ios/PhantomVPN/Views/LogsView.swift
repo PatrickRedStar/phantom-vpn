@@ -24,7 +24,7 @@ struct LogsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .onChange(of: selectedLevel) { _, value in
+                    .onChange(of: selectedLevel) { value in
                         vpnManager.setLogLevel(value.lowercased())
                     }
 
@@ -66,7 +66,7 @@ struct LogsView: View {
                     }
                     .background(Color(.secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .onChange(of: filtered.last?.seq) { _, value in
+                    .onChange(of: filtered.last?.seq) { value in
                         guard autoScroll, let value else { return }
                         withAnimation(.easeInOut(duration: 0.2)) {
                             proxy.scrollTo(value, anchor: .bottom)
