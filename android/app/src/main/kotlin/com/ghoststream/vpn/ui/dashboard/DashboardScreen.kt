@@ -14,13 +14,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +53,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val timerText by viewModel.timerText.collectAsStateWithLifecycle()
     val subscriptionText by viewModel.subscriptionText.collectAsStateWithLifecycle()
+    val preflightWarning by viewModel.preflightWarning.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val isAndroidTv = remember {
         context.packageManager.hasSystemFeature("android.software.leanback")
@@ -110,6 +115,36 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 else                  -> MaterialTheme.colorScheme.onSurface
             },
         )
+
+        // Pre-flight warning banner
+        if (preflightWarning != null) {
+            Spacer(Modifier.height(8.dp))
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    preflightWarning!!,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
+        }
+
+        // Retry button in Error state
+        if (vpnState is VpnState.Error) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = {
+                viewModel.dismissPreflightWarning()
+                val perm = VpnService.prepare(context)
+                if (perm != null) vpnPermLauncher.launch(perm)
+                else viewModel.startVpn()
+            }) { Text("Повторить") }
+        }
 
         if (vpnState is VpnState.Connected) {
             Spacer(Modifier.height(8.dp))

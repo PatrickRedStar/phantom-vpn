@@ -8,6 +8,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
@@ -23,15 +24,25 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary   = AccentPurple,
-    secondary = AccentIndigo,
-    tertiary  = AccentPurpleLight,
+    primary        = AccentPurple,
+    secondary      = AccentIndigo,
+    tertiary       = AccentPurpleLight,
+    background     = LightBackground,
+    surface        = LightSurface,
+    surfaceVariant = LightSurfaceVariant,
+    onBackground   = Color(0xFF1C1B1F),
+    onSurface      = Color(0xFF1C1B1F),
+    onSurfaceVariant = Color(0xFF49454F),
+    error          = RedError,
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002),
+    outline        = Color(0xFF79747E),
 )
 
 @Composable
 fun GhostStreamTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {
