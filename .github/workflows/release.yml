@@ -6,7 +6,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: write   # needed to create GitHub Release
@@ -135,17 +135,19 @@ jobs:
         run: bash scripts/build-ios-rust.sh
 
       - name: Build iOS artifact (signed IPA or unsigned app)
+        env:
+          IOS_DEVELOPMENT_TEAM: ${{ secrets.IOS_DEVELOPMENT_TEAM }}
         run: |
           mkdir -p "$PWD/build/ios-export"
 
-          if [ -n "${{ secrets.IOS_DEVELOPMENT_TEAM }}" ]; then
+          if [ -n "$IOS_DEVELOPMENT_TEAM" ]; then
 xcodebuild \
   -project phantom-vpn-ios/PhantomVPN.xcodeproj \
   -scheme PhantomVPN \
   -configuration Release \
   -destination generic/platform=iOS \
   -archivePath "$PWD/build/PhantomVPN.xcarchive" \
-  DEVELOPMENT_TEAM="${{ secrets.IOS_DEVELOPMENT_TEAM }}" \
+  DEVELOPMENT_TEAM="$IOS_DEVELOPMENT_TEAM" \
   archive
 
 cat > "$PWD/build/ExportOptions.plist" <<'EOF'
