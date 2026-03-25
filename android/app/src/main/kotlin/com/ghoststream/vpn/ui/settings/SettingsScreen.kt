@@ -22,9 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Refresh
@@ -88,11 +86,12 @@ fun SettingsScreen(
     val pendingConnString by viewModel.pendingConnString.collectAsStateWithLifecycle()
     val pendingName by viewModel.pendingName.collectAsStateWithLifecycle()
     val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
-    val theme by viewModel.theme.collectAsStateWithLifecycle()
     val pingResults by viewModel.pingResults.collectAsStateWithLifecycle()
     val pinging by viewModel.pinging.collectAsStateWithLifecycle()
     val profileSubscriptions by viewModel.profileSubscriptions.collectAsStateWithLifecycle()
     val sendToTvStatus by viewModel.sendToTvStatus.collectAsStateWithLifecycle()
+    val rulePreviewCode by viewModel.rulePreviewCode.collectAsStateWithLifecycle()
+    val rulePreviewLines by viewModel.rulePreviewLines.collectAsStateWithLifecycle()
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
     val isAndroidTv = remember {
@@ -122,6 +121,7 @@ fun SettingsScreen(
         // ── Profiles ─────────────────────────────────────────────────────────
         item {
             var showAddDialog by remember { mutableStateOf(false) }
+            var selectedProfileId by remember { mutableStateOf<String?>(null) }
 
             SettingsSection("Подключения") {
                 if (profiles.isEmpty()) {
@@ -136,14 +136,8 @@ fun SettingsScreen(
                         ProfileRow(
                             profile = profile,
                             isActive = profile.id == activeProfileId,
-                            onSelect = { viewModel.setActiveProfile(profile.id) },
-                            onDelete = { viewModel.deleteProfile(profile.id) },
-                            onAdminClick = if (profile.adminUrl != null) {
-                                { onAdminNavigate(profile.id) }
-                            } else null,
-                            onShareToTv = if (!isAndroidTv) {
-                                { onShareToTv(profile.id) }
-                            } else null,
+                            onOpenDetails = { selectedProfileId = profile.id },
+                            onSetActive = { viewModel.setActiveProfile(profile.id) },
                             latencyMs = pingResults[profile.id],
                             isPinging = profile.id in pinging,
                             onPing = { viewModel.pingProfile(profile.id) },
@@ -197,6 +191,36 @@ fun SettingsScreen(
                         viewModel.setPendingName("")
                         showAddDialog = false
                     },
+                )
+            }
+
+            val selectedProfile = profiles.find { it.id == selectedProfileId }
+            if (selectedProfile != null) {
+                ProfileDetailsDialog(
+                    profile = selectedProfile,
+                    isActive = selectedProfile.id == activeProfileId,
+                    onDismiss = { selectedProfileId = null },
+                    onSetActive = {
+                        viewModel.setActiveProfile(selectedProfile.id)
+                        selectedProfileId = null
+                    },
+                    onRename = { viewModel.renameProfile(selectedProfile.id, it) },
+                    onDelete = {
+                        viewModel.deleteProfile(selectedProfile.id)
+                        selectedProfileId = null
+                    },
+                    onAdminClick = if (selectedProfile.adminUrl != null) {
+                        {
+                            selectedProfileId = null
+                            onAdminNavigate(selectedProfile.id)
+                        }
+                    } else null,
+                    onShareToTv = if (!isAndroidTv) {
+                        {
+                            selectedProfileId = null
+                            onShareToTv(selectedProfile.id)
+                        }
+                    } else null,
                 )
             }
         }
@@ -310,6 +334,7 @@ fun SettingsScreen(
             val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
             val downloadedRules by viewModel.downloadedRules.collectAsStateWithLifecycle()
             val downloading by viewModel.downloading.collectAsStateWithLifecycle()
+            var showRoutingDialog by remember { mutableStateOf(false) }
 
             SettingsSection("Маршрутизация") {
                 Row(
@@ -331,78 +356,150 @@ fun SettingsScreen(
                     )
                 }
 
-                if (config.splitRouting) {
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "Страны (напрямую):",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
-                    )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { showRoutingDialog = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Открыть настройки маршрутизации")
+                }
+                if (downloadStatus.isNotBlank()) {
                     Spacer(Modifier.height(4.dp))
-                    RoutingRulesManager.AVAILABLE_COUNTRIES.forEach { (code, label) ->
-                        val isSelected = code in config.directCountries
-                        val ruleInfo = downloadedRules[code]
-                        val isDownloading = code in downloading
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.toggleDirectCountry(code) }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = isSelected,
-                                onCheckedChange = { viewModel.toggleDirectCountry(code) },
+                    Text(downloadStatus, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            if (showRoutingDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRoutingDialog = false },
+                    title = { Text("Настройки маршрутизации") },
+                    text = {
+                        Column {
+                            Text(
+                                "Источник списков: v2fly/geoip (raw GitHub). Это CIDR-подсети для прямого маршрута, минуя VPN.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
                             )
-                            Spacer(Modifier.width(4.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(label)
-                                when {
-                                    isDownloading -> Text(
-                                        "загрузка...",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary,
-                                    )
-                                    ruleInfo != null -> {
-                                        val date = java.text.SimpleDateFormat(
-                                            "dd.MM.yy",
-                                            java.util.Locale.getDefault(),
-                                        ).format(java.util.Date(ruleInfo.lastUpdated))
-                                        Text(
-                                            "${ruleInfo.cidrCount} подсетей · $date",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = TextSecondary,
+                            Text(
+                                "Android-режим: IPv4 + авто-укрупнение до /18.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            LazyColumn(modifier = Modifier.height(300.dp)) {
+                                items(RoutingRulesManager.AVAILABLE_COUNTRIES) { (code, label) ->
+                                    val isSelected = code in config.directCountries
+                                    val ruleInfo = downloadedRules[code]
+                                    val isDownloading = code in downloading
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable { viewModel.toggleDirectCountry(code) }
+                                            .padding(vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = { viewModel.toggleDirectCountry(code) },
                                         )
+                                        Spacer(Modifier.width(4.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(label)
+                                            Text(
+                                                viewModel.ruleSourceUrl(code),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                                color = TextSecondary,
+                                                maxLines = 1,
+                                            )
+                                            when {
+                                                isDownloading -> Text(
+                                                    "загрузка...",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                                ruleInfo != null -> {
+                                                    val date = java.text.SimpleDateFormat(
+                                                        "dd.MM.yy",
+                                                        java.util.Locale.getDefault(),
+                                                    ).format(java.util.Date(ruleInfo.lastUpdated))
+                                                    Text(
+                                                        "${ruleInfo.cidrCount} подсетей · $date",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = TextSecondary,
+                                                    )
+                                                }
+                                                else -> Text(
+                                                    "не загружен",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = TextSecondary,
+                                                )
+                                            }
+                                        }
+                                        TextButton(onClick = { viewModel.openRulePreview(code) }) {
+                                            Text("Просмотр", fontSize = 12.sp)
+                                        }
+                                        if (isDownloading) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(24.dp),
+                                                strokeWidth = 2.dp,
+                                            )
+                                        } else {
+                                            IconButton(onClick = { viewModel.downloadCountryRules(code) }) {
+                                                Icon(Icons.Filled.Download, "Загрузить")
+                                            }
+                                        }
                                     }
-                                    else -> Text(
-                                        "не загружен",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextSecondary,
-                                    )
                                 }
                             }
-                            if (isDownloading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(24.dp),
-                                    strokeWidth = 2.dp,
-                                )
+                            Spacer(Modifier.height(8.dp))
+                            Button(
+                                onClick = { viewModel.downloadAllSelected() },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("Обновить списки") }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showRoutingDialog = false }) { Text("Закрыть") }
+                    },
+                )
+            }
+
+            if (rulePreviewCode != null) {
+                AlertDialog(
+                    onDismissRequest = { viewModel.closeRulePreview() },
+                    title = { Text("Список ${rulePreviewCode!!.uppercase()}") },
+                    text = {
+                        Column {
+                            Text(
+                                "Источник: ${viewModel.ruleSourceUrl(rulePreviewCode!!)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            if (rulePreviewLines.isEmpty()) {
+                                Text("Файл не загружен", style = MaterialTheme.typography.bodySmall)
                             } else {
-                                IconButton(onClick = { viewModel.downloadCountryRules(code) }) {
-                                    Icon(Icons.Filled.Download, "Загрузить")
+                                Text(
+                                    "Первые ${rulePreviewLines.size} CIDR:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary,
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                LazyColumn(modifier = Modifier.height(220.dp)) {
+                                    items(rulePreviewLines) { line ->
+                                        Text(
+                                            line,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        onClick = { viewModel.downloadAllSelected() },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Обновить списки") }
-                    if (downloadStatus.isNotBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(downloadStatus, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.closeRulePreview() }) { Text("Закрыть") }
+                    },
+                )
             }
         }
 
@@ -462,11 +559,18 @@ fun SettingsScreen(
                                         modifier = Modifier.fillMaxWidth(),
                                     )
                                     Spacer(Modifier.height(8.dp))
-                                    val filtered = apps.filter {
-                                        !it.isSystem && (search.isBlank() ||
-                                            it.label.contains(search, ignoreCase = true) ||
-                                            it.packageName.contains(search, ignoreCase = true))
-                                    }
+                                    val filtered = apps
+                                        .filter {
+                                            !it.isSystem && (search.isBlank() ||
+                                                it.label.contains(search, ignoreCase = true) ||
+                                                it.packageName.contains(search, ignoreCase = true))
+                                        }
+                                        .sortedWith(
+                                            compareBy<SettingsViewModel.AppInfo> {
+                                                // Selected apps first
+                                                it.packageName !in config.perAppList
+                                            }.thenBy { it.label.lowercase() },
+                                        )
                                     LazyColumn {
                                         items(filtered, key = { it.packageName }) { app ->
                                             Row(
@@ -499,32 +603,6 @@ fun SettingsScreen(
                                 TextButton(onClick = { showAppPicker = false }) { Text("Готово") }
                             },
                         )
-                    }
-                }
-            }
-        }
-
-        // ── Theme ────────────────────────────────────────────────────────────
-        item {
-            SettingsSection("Интерфейс") {
-                listOf(
-                    "system" to "Системная",
-                    "dark" to "Тёмная",
-                    "light" to "Светлая",
-                ).forEach { (value, label) ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.setTheme(value) }
-                            .padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(
-                            selected = theme == value,
-                            onClick = { viewModel.setTheme(value) },
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(label)
                     }
                 }
             }
@@ -577,28 +655,51 @@ fun SettingsScreen(
 private fun ProfileRow(
     profile: VpnProfile,
     isActive: Boolean,
-    onSelect: () -> Unit,
-    onDelete: () -> Unit,
-    onAdminClick: (() -> Unit)? = null,
-    onShareToTv: (() -> Unit)? = null,
+    onOpenDetails: () -> Unit,
+    onSetActive: () -> Unit,
     latencyMs: Long? = null,
     isPinging: Boolean = false,
     onPing: () -> Unit = {},
     subscriptionText: String? = null,
 ) {
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onSelect() }
+            .clickable { onOpenDetails() }
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(selected = isActive, onClick = onSelect)
-        Spacer(Modifier.width(4.dp))
+        RadioButton(
+            selected = isActive,
+            onClick = onSetActive,
+        )
+        Spacer(Modifier.width(6.dp))
         Column(Modifier.weight(1f)) {
-            Text(profile.name, style = MaterialTheme.typography.bodyMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(profile.name, style = MaterialTheme.typography.bodyMedium)
+                if (profile.adminUrl != null && profile.adminToken != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.18f),
+                    ) {
+                        Text(
+                            "ADMIN",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
+                }
+                if (isActive) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "активно",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
             if (profile.serverAddr.isNotBlank()) {
                 Text(
                     profile.serverAddr,
@@ -614,7 +715,7 @@ private fun ProfileRow(
                 )
             }
         }
-        // Latency badge
+        // Only ping badge at the right side
         if (isPinging) {
             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             Spacer(Modifier.width(4.dp))
@@ -651,20 +752,73 @@ private fun ProfileRow(
                 }
             }
         }
-        if (onShareToTv != null) {
-            IconButton(onClick = onShareToTv, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.Cast, "Отправить на TV", modifier = Modifier.size(18.dp))
-            }
-        }
-        if (onAdminClick != null) {
-            IconButton(onClick = onAdminClick, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.AdminPanelSettings, "Управление сервером", modifier = Modifier.size(18.dp))
-            }
-        }
-        IconButton(onClick = { showDeleteConfirm = true }) {
-            Icon(Icons.Filled.Delete, "Удалить", tint = MaterialTheme.colorScheme.error)
-        }
     }
+}
+
+@Composable
+private fun ProfileDetailsDialog(
+    profile: VpnProfile,
+    isActive: Boolean,
+    onDismiss: () -> Unit,
+    onSetActive: () -> Unit,
+    onRename: (String) -> Unit,
+    onDelete: () -> Unit,
+    onAdminClick: (() -> Unit)? = null,
+    onShareToTv: (() -> Unit)? = null,
+) {
+    var newName by remember(profile.id, profile.name) { mutableStateOf(profile.name) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Карточка подключения") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    profile.serverAddr,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = TextSecondary,
+                )
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("Название подключения") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { onRename(newName.trim()) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Сохранить имя") }
+                    OutlinedButton(
+                        onClick = onSetActive,
+                        enabled = !isActive,
+                        modifier = Modifier.weight(1f),
+                    ) { Text(if (isActive) "Активно" else "Сделать активным") }
+                }
+                if (onAdminClick != null) {
+                    OutlinedButton(onClick = onAdminClick, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.AdminPanelSettings, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Управление сервером")
+                    }
+                }
+                if (onShareToTv != null) {
+                    OutlinedButton(onClick = onShareToTv, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.Tv, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Отправить на TV")
+                    }
+                }
+                OutlinedButton(
+                    onClick = { showDeleteConfirm = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Удалить подключение", color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
 
     if (showDeleteConfirm) {
         AlertDialog(

@@ -3,7 +3,9 @@ package com.ghoststream.vpn.data
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.BufferedReader
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.URL
 
 /**
@@ -37,7 +39,13 @@ class RoutingRulesManager(private val context: Context) {
             "ir" to "Иран",
             "private" to "Приватные сети",
         )
+
+        // Android VpnService has Binder payload limits during Builder.establish().
+        // We coarsen dense country lists to keep route table manageable.
+        private const val ANDROID_MAX_IPV4_PREFIX = 18
     }
+
+    fun sourceUrl(code: String): String = "$BASE_URL/$code.txt"
 
     fun getDownloadedRules(): List<RuleInfo> {
         return AVAILABLE_COUNTRIES.mapNotNull { (code, label) ->
@@ -57,8 +65,18 @@ class RoutingRulesManager(private val context: Context) {
 
     suspend fun downloadRuleList(code: String): Result<Long> = withContext(Dispatchers.IO) {
         try {
-            val url = "$BASE_URL/$code.txt"
-            val text = URL(url).readText()
+            val conn = (URL(sourceUrl(code)).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 20_000
+                requestMethod = "GET"
+            }
+            if (conn.responseCode != 200) {
+                val body = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                conn.disconnect()
+                return@withContext Result.failure(IllegalStateException("HTTP ${conn.responseCode}: $body"))
+            }
+            val text = conn.inputStream.bufferedReader().use(BufferedReader::readText)
+            conn.disconnect()
             val file = File(rulesDir, "$code.txt")
             file.writeText(text)
             Result.success(file.length())
@@ -76,20 +94,79 @@ class RoutingRulesManager(private val context: Context) {
      * Returns path to merged file, or null if no lists selected/downloaded.
      */
     fun mergeSelectedLists(countryCodes: List<String>): String? {
-        val merged = StringBuilder()
         var count = 0
-        for (code in countryCodes) {
-            val file = File(rulesDir, "$code.txt")
-            if (file.exists()) {
-                merged.append(file.readText())
-                merged.append('\n')
-                count++
+        val outFile = File(rulesDir, "direct_merged.txt")
+        if (outFile.exists()) outFile.delete()
+        val mergedCidrs = LinkedHashSet<String>()
+        outFile.bufferedWriter().use { writer ->
+            for (code in countryCodes) {
+                val file = File(rulesDir, "$code.txt")
+                if (file.exists()) {
+                    file.forEachLine { line ->
+                        val normalized = normalizeForAndroidSplitRouting(line)
+                        if (normalized != null) {
+                            mergedCidrs.add(normalized)
+                        }
+                    }
+                    count++
+                }
             }
+            mergedCidrs.forEach { writer.appendLine(it) }
         }
         if (count == 0) return null
 
-        val outFile = File(rulesDir, "direct_merged.txt")
-        outFile.writeText(merged.toString())
         return outFile.absolutePath
+    }
+
+    fun missingSelectedLists(countryCodes: List<String>): List<String> =
+        countryCodes.filterNot { File(rulesDir, "$it.txt").exists() }
+
+    fun previewRuleList(code: String, maxLines: Int = 30): List<String> {
+        val file = File(rulesDir, "$code.txt")
+        if (!file.exists()) return emptyList()
+        val result = ArrayList<String>(maxLines)
+        file.bufferedReader().useLines { lines ->
+            lines.filter { it.isNotBlank() }.take(maxLines).forEach { result.add(it) }
+        }
+        return result
+    }
+
+    private fun normalizeForAndroidSplitRouting(line: String): String? {
+        val cidr = line.trim()
+        if (cidr.isBlank() || cidr.startsWith("#")) return null
+        // IPv6 rules dramatically increase route count and currently are not practical here.
+        if (cidr.contains(":")) return null
+
+        val parts = cidr.split("/", limit = 2)
+        if (parts.size != 2) return null
+        val addr = parts[0]
+        val prefix = parts[1].toIntOrNull() ?: return null
+        if (prefix !in 0..32) return null
+
+        val ipv4 = ipv4ToInt(addr) ?: return null
+        val effectivePrefix = minOf(prefix, ANDROID_MAX_IPV4_PREFIX)
+        val mask = if (effectivePrefix == 0) 0 else (-1 shl (32 - effectivePrefix))
+        val network = ipv4 and mask
+        return "${intToIpv4(network)}/$effectivePrefix"
+    }
+
+    private fun ipv4ToInt(ip: String): Int? {
+        val octets = ip.split(".")
+        if (octets.size != 4) return null
+        var result = 0
+        for (o in octets) {
+            val n = o.toIntOrNull() ?: return null
+            if (n !in 0..255) return null
+            result = (result shl 8) or n
+        }
+        return result
+    }
+
+    private fun intToIpv4(value: Int): String {
+        val a = (value ushr 24) and 0xFF
+        val b = (value ushr 16) and 0xFF
+        val c = (value ushr 8) and 0xFF
+        val d = value and 0xFF
+        return "$a.$b.$c.$d"
     }
 }

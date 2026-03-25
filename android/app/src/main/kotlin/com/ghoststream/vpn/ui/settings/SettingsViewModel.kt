@@ -28,10 +28,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import java.io.File
+import java.io.ByteArrayInputStream
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -108,8 +111,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 }
 
                 val name = _pendingName.value.trim().ifEmpty {
-                    parsed.sni.substringBefore(".").replaceFirstChar { it.uppercase() }
-                        .ifEmpty { "Подключение" }
+                    extractClientNameFromCert(parsed.cert)
+                        ?: parsed.sni.substringBefore(".").replaceFirstChar { it.uppercase() }
+                            .ifEmpty { "Подключение" }
                 }
 
                 profilesStore.addProfile(
@@ -175,6 +179,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private val _downloadStatus = MutableStateFlow("")
     val downloadStatus: StateFlow<String> = _downloadStatus
+    private val _rulePreviewCode = MutableStateFlow<String?>(null)
+    val rulePreviewCode: StateFlow<String?> = _rulePreviewCode
+    private val _rulePreviewLines = MutableStateFlow<List<String>>(emptyList())
+    val rulePreviewLines: StateFlow<List<String>> = _rulePreviewLines
 
     // ── Ping ─────────────────────────────────────────────────────────────────
 
@@ -291,6 +299,21 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun clearSendToTvStatus() { _sendToTvStatus.value = null }
+
+    private fun extractClientNameFromCert(certPem: String): String? = runCatching {
+        val certFactory = CertificateFactory.getInstance("X.509")
+        val cert = certFactory.generateCertificate(
+            ByteArrayInputStream(certPem.toByteArray(Charsets.UTF_8)),
+        ) as X509Certificate
+        val subjectDn = cert.subjectX500Principal.name
+        val cn = Regex("""(?:^|,)\s*CN=([^,]+)""")
+            .find(subjectDn)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        cn
+    }.getOrNull()
 
     // ── Debug report ──────────────────────────────────────────────────────────
 
@@ -417,16 +440,19 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             _downloading.value = _downloading.value + code
             _downloadStatus.value = "Загрузка $code..."
-            routingRulesManager.downloadRuleList(code).fold(
-                onSuccess = { size ->
-                    _downloadStatus.value = "$code загружен (${size / 1024} КБ)"
-                    refreshDownloadedRules()
-                },
-                onFailure = { e ->
-                    _downloadStatus.value = "Ошибка загрузки $code: ${e.message}"
-                },
-            )
-            _downloading.value = _downloading.value - code
+            try {
+                routingRulesManager.downloadRuleList(code).fold(
+                    onSuccess = { size ->
+                        _downloadStatus.value = "$code загружен (${size / 1024} КБ)"
+                        refreshDownloadedRules()
+                    },
+                    onFailure = { e ->
+                        _downloadStatus.value = "Ошибка загрузки $code: ${e.message}"
+                    },
+                )
+            } finally {
+                _downloading.value = _downloading.value - code
+            }
         }
     }
 
@@ -436,16 +462,32 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             _downloading.value = codes.toSet()
             _downloadStatus.value = "Загрузка ${codes.joinToString(", ")}..."
             var ok = 0
-            for (code in codes) {
-                routingRulesManager.downloadRuleList(code).fold(
-                    onSuccess = { ok++; refreshDownloadedRules() },
-                    onFailure = {},
-                )
-                _downloading.value = _downloading.value - code
+            try {
+                for (code in codes) {
+                    routingRulesManager.downloadRuleList(code).fold(
+                        onSuccess = { ok++; refreshDownloadedRules() },
+                        onFailure = {},
+                    )
+                    _downloading.value = _downloading.value - code
+                }
+            } finally {
+                _downloading.value = emptySet()
             }
             _downloadStatus.value = "Загружено $ok/${codes.size} списков"
         }
     }
+
+    fun openRulePreview(code: String) {
+        _rulePreviewCode.value = code
+        _rulePreviewLines.value = routingRulesManager.previewRuleList(code)
+    }
+
+    fun closeRulePreview() {
+        _rulePreviewCode.value = null
+        _rulePreviewLines.value = emptyList()
+    }
+
+    fun ruleSourceUrl(code: String): String = routingRulesManager.sourceUrl(code)
 
     // ── Per-app ──────────────────────────────────────────────────────────────
 

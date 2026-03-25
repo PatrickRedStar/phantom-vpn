@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -197,29 +198,46 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
-        _preflightWarning.value = null
-        VpnStateManager.update(VpnState.Connecting)
-        val ctx = getApplication<Application>()
-        val intent = Intent(ctx, GhostStreamVpnService::class.java).apply {
-            action = GhostStreamVpnService.ACTION_START
-            putExtra(GhostStreamVpnService.EXTRA_SERVER_ADDR, cfg.serverAddr)
-            putExtra(GhostStreamVpnService.EXTRA_SERVER_NAME,
-                cfg.serverName.ifBlank { cfg.serverAddr.substringBefore(":") })
-            putExtra(GhostStreamVpnService.EXTRA_INSECURE, cfg.insecure)
-            putExtra(GhostStreamVpnService.EXTRA_CERT_PATH, cfg.certPath)
-            putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
-            putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)
-            putExtra(GhostStreamVpnService.EXTRA_DNS_SERVERS, cfg.dnsServers.joinToString(","))
-            putExtra(GhostStreamVpnService.EXTRA_SPLIT_ROUTING, cfg.splitRouting)
-            if (cfg.splitRouting && cfg.directCountries.isNotEmpty()) {
-                val mergedPath = routingRulesManager.mergeSelectedLists(cfg.directCountries)
-                putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, mergedPath ?: "")
+        viewModelScope.launch {
+            _preflightWarning.value = null
+            VpnStateManager.update(VpnState.Connecting)
+            val directCidrsPath = if (cfg.splitRouting && cfg.directCountries.isNotEmpty()) {
+                val missing = withContext(Dispatchers.IO) {
+                    routingRulesManager.missingSelectedLists(cfg.directCountries)
+                }
+                if (missing.isNotEmpty()) {
+                    _preflightWarning.value =
+                        "Не загружены списки: ${missing.joinToString(", ")}. Загрузите их в Настройках."
+                    VpnStateManager.update(VpnState.Error("Списки маршрутов не загружены"))
+                    return@launch
+                } else {
+                    withContext(Dispatchers.IO) {
+                        routingRulesManager.mergeSelectedLists(cfg.directCountries) ?: ""
+                    }
+                }
+            } else {
+                ""
             }
-            putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
-            putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
-            putExtra(GhostStreamVpnService.EXTRA_CA_CERT_PATH, cfg.caCertPath ?: "")
+
+            val ctx = getApplication<Application>()
+            val intent = Intent(ctx, GhostStreamVpnService::class.java).apply {
+                action = GhostStreamVpnService.ACTION_START
+                putExtra(GhostStreamVpnService.EXTRA_SERVER_ADDR, cfg.serverAddr)
+                putExtra(GhostStreamVpnService.EXTRA_SERVER_NAME,
+                    cfg.serverName.ifBlank { cfg.serverAddr.substringBefore(":") })
+                putExtra(GhostStreamVpnService.EXTRA_INSECURE, cfg.insecure)
+                putExtra(GhostStreamVpnService.EXTRA_CERT_PATH, cfg.certPath)
+                putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
+                putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)
+                putExtra(GhostStreamVpnService.EXTRA_DNS_SERVERS, cfg.dnsServers.joinToString(","))
+                putExtra(GhostStreamVpnService.EXTRA_SPLIT_ROUTING, cfg.splitRouting)
+                putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, directCidrsPath)
+                putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
+                putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
+                putExtra(GhostStreamVpnService.EXTRA_CA_CERT_PATH, cfg.caCertPath ?: "")
+            }
+            ctx.startForegroundService(intent)
         }
-        ctx.startForegroundService(intent)
     }
 
     fun stopVpn() {
