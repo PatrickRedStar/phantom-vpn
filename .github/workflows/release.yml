@@ -134,45 +134,68 @@ jobs:
       - name: Build Rust staticlib for iOS
         run: bash scripts/build-ios-rust.sh
 
-      - name: Build iOS archive
+      - name: Build iOS artifact (signed IPA or unsigned app)
         run: |
-          xcodebuild \
-            -project phantom-vpn-ios/PhantomVPN.xcodeproj \
-            -scheme PhantomVPN \
-            -configuration Release \
-            -destination generic/platform=iOS \
-            -archivePath "$PWD/build/PhantomVPN.xcarchive" \
-            archive
+          mkdir -p "$PWD/build/ios-export"
 
-      - name: Export IPA
-        run: |
-          cat > "$PWD/build/ExportOptions.plist" <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>method</key>
-              <string>app-store</string>
-              <key>signingStyle</key>
-              <string>automatic</string>
-              <key>stripSwiftSymbols</key>
-              <true/>
-              <key>uploadSymbols</key>
-              <true/>
-          </dict>
-          </plist>
-          EOF
+          if [ -n "${{ secrets.IOS_DEVELOPMENT_TEAM }}" ]; then
+            xcodebuild \
+              -project phantom-vpn-ios/PhantomVPN.xcodeproj \
+              -scheme PhantomVPN \
+              -configuration Release \
+              -destination generic/platform=iOS \
+              -archivePath "$PWD/build/PhantomVPN.xcarchive" \
+              DEVELOPMENT_TEAM="${{ secrets.IOS_DEVELOPMENT_TEAM }}" \
+              archive
 
-          xcodebuild -exportArchive \
-            -archivePath "$PWD/build/PhantomVPN.xcarchive" \
-            -exportOptionsPlist "$PWD/build/ExportOptions.plist" \
-            -exportPath "$PWD/build/ios-export"
+            cat > "$PWD/build/ExportOptions.plist" <<'EOF'
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>method</key>
+                <string>app-store</string>
+                <key>signingStyle</key>
+                <string>automatic</string>
+                <key>stripSwiftSymbols</key>
+                <true/>
+                <key>uploadSymbols</key>
+                <true/>
+            </dict>
+            </plist>
+            EOF
+
+            xcodebuild -exportArchive \
+              -archivePath "$PWD/build/PhantomVPN.xcarchive" \
+              -exportOptionsPlist "$PWD/build/ExportOptions.plist" \
+              -exportPath "$PWD/build/ios-export"
+          else
+            xcodebuild \
+              -project phantom-vpn-ios/PhantomVPN.xcodeproj \
+              -scheme PhantomVPN \
+              -configuration Release \
+              -sdk iphonesimulator \
+              -destination "platform=iOS Simulator,name=iPhone 15" \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+
+            APP_PATH="$(find "$PWD" -type d -name 'PhantomVPN.app' | head -n 1)"
+            if [ -z "$APP_PATH" ]; then
+              echo "PhantomVPN.app not found after simulator build"
+              exit 1
+            fi
+            cp -R "$APP_PATH" "$PWD/build/ios-export/PhantomVPN.app"
+            cd "$PWD/build/ios-export"
+            zip -r PhantomVPN-unsigned-ios.zip PhantomVPN.app
+          fi
 
       - name: Upload iOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: PhantomVPN-iOS
-          path: build/ios-export/*.ipa
+          path: |
+            build/ios-export/*.ipa
+            build/ios-export/*unsigned-ios.zip
 
 # ─────────────────────────────────────────────────────────────────────────────
   build-android:
@@ -262,7 +285,7 @@ jobs:
             | macOS (Universal) | `PhantomVPN-macOS.dmg` | Menu bar app, macOS 13+ |
             | Linux x86_64 | `phantom-client-linux` | CLI |
             | Android (arm64) | `app-debug.apk` | |
-            | iOS | `PhantomVPN.ipa` | TestFlight/App Store Connect |
+            | iOS | `PhantomVPN.ipa` / `PhantomVPN-unsigned-ios.zip` | IPA при наличии signing, иначе unsigned sim build |
 
             ### macOS install
             1. Скачай `PhantomVPN-macOS.dmg`
@@ -286,5 +309,6 @@ jobs:
             artifacts/PhantomVPN-macOS/PhantomVPN-macOS.dmg
             artifacts/PhantomVPN-Android/app-debug.apk
             artifacts/PhantomVPN-iOS/*.ipa
+            artifacts/PhantomVPN-iOS/*unsigned-ios.zip
           draft: false
           prerelease: false
