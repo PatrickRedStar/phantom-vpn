@@ -284,12 +284,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // ─── TUN → QUIC loop (io_uring reader feeds directly) ─────────────────
+    // ─── TUN → per-session dispatch (lightweight routing) ──────────────────
     {
         let sess = sessions.clone();
         tokio::spawn(async move {
-            if let Err(e) = quic_server::tun_to_quic_loop(tun_read_rx, sess).await {
-                tracing::error!("tun_to_quic_loop exited: {}", e);
+            if let Err(e) = quic_server::tun_dispatch_loop(tun_read_rx, sess).await {
+                tracing::error!("tun_dispatch_loop exited: {}", e);
             }
         });
     }
