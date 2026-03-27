@@ -44,6 +44,9 @@ pub struct FrameTarget {
 
 // ─── Главный шейпер ─────────────────────────────────────────────────────────
 
+/// Number of consecutive oversize frames before turbo mode activates
+const TURBO_THRESHOLD: u32 = 8;
+
 pub struct H264Shaper {
     frame_counter: u32,
     lognormal:     LogNormal<f64>,
@@ -52,6 +55,9 @@ pub struct H264Shaper {
 
     // Адаптивный режим
     idle_fps:      u32, // FPS в фазе покоя (после strict phase)
+
+    // Turbo mode: skip padding when sustained high throughput
+    turbo_streak:  u32, // consecutive frames where data > target
 }
 
 impl H264Shaper {
@@ -68,7 +74,22 @@ impl H264Shaper {
             rtp_timestamp,
             started_at: Instant::now(),
             idle_fps: 5,
+            turbo_streak: 0,
         })
+    }
+
+    /// Report actual data size after batch build. Tracks turbo mode activation.
+    pub fn report_data_size(&mut self, data_size: usize, target: usize) {
+        if data_size > target {
+            self.turbo_streak = self.turbo_streak.saturating_add(1);
+        } else {
+            self.turbo_streak = 0;
+        }
+    }
+
+    /// Returns true when sustained high throughput detected — skip padding.
+    pub fn is_turbo(&self) -> bool {
+        self.turbo_streak >= TURBO_THRESHOLD
     }
 
     /// Генерирует целевые параметры следующего кадра.
@@ -77,7 +98,11 @@ impl H264Shaper {
         let is_strict = self.started_at.elapsed().as_secs() < STRICT_PHASE_SECS;
         let is_i_frame = self.frame_counter == 0;
 
-        let target_bytes = if is_i_frame {
+        let target_bytes = if self.is_turbo() {
+            // Turbo mode: no padding, let data_size dominate.
+            // build_batch_plaintext uses max(data_size, target), so target=0 means no pad.
+            0
+        } else if is_i_frame {
             // I-frame: равномерное в диапазоне [15KB, 50KB]
             let range = IFRAME_MAX - IFRAME_MIN;
             IFRAME_MIN + rand::thread_rng().gen::<usize>() % range

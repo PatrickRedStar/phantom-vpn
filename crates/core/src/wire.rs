@@ -29,7 +29,8 @@ pub const BATCH_MAX_PLAINTEXT: usize = 65_536;
 
 /// Number of parallel QUIC data streams per connection.
 /// More streams = less head-of-line blocking on packet loss.
-pub const N_DATA_STREAMS: usize = 4;
+/// 8 streams: a single packet loss blocks only 12.5% of traffic (vs 25% with 4).
+pub const N_DATA_STREAMS: usize = 8;
 
 /// Map an IPv4 packet to a stream index in [0, n) using 5-tuple hash.
 /// Symmetric: A→B hashes to the same index as B→A (XOR/addition are commutative).

@@ -108,6 +108,7 @@ pub fn make_server_config(
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.initial_mtu(1450);
+    transport.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
     transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
     transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
     transport.send_window(16 * 1024 * 1024);
@@ -159,6 +160,7 @@ pub fn make_client_config(
     ));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.initial_mtu(1450);
+    transport.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
     transport.receive_window(quinn::VarInt::from_u32(32 * 1024 * 1024));
     transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
     transport.send_window(16 * 1024 * 1024);

@@ -1,0 +1,2 @@
+"""GhostStream Telegram bot package."""
+

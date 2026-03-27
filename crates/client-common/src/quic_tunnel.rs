@@ -2,12 +2,12 @@
 //! Zero-copy optimized: batch built directly into frame buffer,
 //! written to QUIC stream without intermediate allocations.
 
+use bytes::Bytes;
 use phantom_core::{
     mtu::clamp_tcp_mss,
     shaper::H264Shaper,
     wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
-use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 const BUF: usize = 4 + BATCH_MAX_PLAINTEXT + 16;
@@ -76,7 +76,7 @@ pub async fn quic_stream_tx_loop(
 
     for send in sends {
         let (pkt_tx, pkt_rx) = mpsc::channel::<Vec<u8>>(512);
-        let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(64);
         stream_txs.push(pkt_tx);
 
         // Stage 1: collect + batch → frame channel (pipelined)
@@ -86,12 +86,12 @@ pub async fn quic_stream_tx_loop(
             }
         });
 
-        // Stage 2: write frames to QUIC stream
+        // Stage 2: write frames to QUIC stream (zero-copy via write_chunk)
         tokio::spawn(async move {
             let mut s = send;
             let mut fr = frame_rx;
             while let Some(frame) = fr.recv().await {
-                if let Err(e) = s.write_all(&frame).await {
+                if let Err(e) = s.write_chunk(frame).await {
                     tracing::warn!("TX write: {}", e);
                     break;
                 }
@@ -119,7 +119,7 @@ pub async fn quic_stream_tx_loop(
 
 async fn collect_and_batch(
     mut pkt_rx: mpsc::Receiver<Vec<u8>>,
-    frame_tx: mpsc::Sender<Vec<u8>>,
+    frame_tx: mpsc::Sender<Bytes>,
 ) -> anyhow::Result<()> {
     let mut buf = vec![0u8; BUF];
     let mut shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
@@ -153,6 +153,7 @@ async fn collect_and_batch(
         // H.264 shaping: pad batch to match video frame size pattern
         let frame = shaper.next_frame();
         let target_size = frame.target_bytes;
+        shaper.report_data_size(batch_data_bytes, target_size);
 
         let pt_len = match build_batch_plaintext(&refs, target_size, &mut buf[4..]) {
             Ok(n) => n,
@@ -162,9 +163,10 @@ async fn collect_and_batch(
             }
         };
 
-        // Prepend header, then single to_vec (1 copy instead of 2)
+        // Prepend header, then Bytes::copy_from_slice → zero-copy through channel + quinn
         buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-        if frame_tx.send(buf[..4 + pt_len].to_vec()).await.is_err() {
+        let frame = Bytes::copy_from_slice(&buf[..4 + pt_len]);
+        if frame_tx.send(frame).await.is_err() {
             break;
         }
     }

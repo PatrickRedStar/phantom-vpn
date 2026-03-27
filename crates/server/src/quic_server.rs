@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
+use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -43,15 +44,18 @@ pub struct StatsSample {
 
 pub struct QuicSession {
     pub connection:    quinn::Connection,
-    pub data_sends:    Vec<mpsc::Sender<Vec<u8>>>,
-    pub shaper:        Mutex<H264Shaper>,
+    pub data_sends:    Vec<mpsc::Sender<Bytes>>,
+    /// Per-session channel for TUN→QUIC packets (fed by tun_dispatch_loop)
+    pub tun_pkt_tx:    mpsc::Sender<Vec<u8>>,
     pub last_seen:     AtomicU64,
     pub bytes_rx:      AtomicU64,
     pub bytes_tx:      AtomicU64,
     pub dest_log:      std::sync::Mutex<std::collections::VecDeque<DestEntry>>,
     pub stats_samples: std::sync::Mutex<std::collections::VecDeque<StatsSample>>,
     /// Passive DNS cache: IPv4 → hostname, populated from DNS responses (src_port=53)
-    pub dns_cache:     std::sync::Mutex<std::collections::HashMap<Ipv4Addr, String>>,
+    pub dns_cache:     DashMap<Ipv4Addr, String>,
+    /// Counter for dest_log sampling (log every 64th packet to reduce mutex contention)
+    pub log_counter:   AtomicU64,
 }
 
 impl QuicSession {
@@ -206,8 +210,8 @@ async fn handle_connection(
     let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
 
     // Accept N_DATA_STREAMS bidirectional data streams; spawn per-stream write loops
-    let mut frame_txs:  Vec<mpsc::Sender<Vec<u8>>> = Vec::with_capacity(N_DATA_STREAMS);
-    let mut data_recvs: Vec<quinn::RecvStream>      = Vec::with_capacity(N_DATA_STREAMS);
+    let mut frame_txs:  Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
+    let mut data_recvs: Vec<quinn::RecvStream>   = Vec::with_capacity(N_DATA_STREAMS);
 
     for i in 0..N_DATA_STREAMS {
         let (ds, dr) = tokio::time::timeout(
@@ -218,7 +222,7 @@ async fn handle_connection(
         .with_context(|| format!("Data stream {} accept timeout", i))?
         .with_context(|| format!("Failed to accept data stream {}", i))?;
 
-        let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(128);
+        let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(512);
         tokio::spawn(session_write_loop(frame_rx, ds, remote));
         frame_txs.push(frame_tx);
         data_recvs.push(dr);
@@ -226,10 +230,13 @@ async fn handle_connection(
 
     tracing::debug!("{} data streams accepted from {}", N_DATA_STREAMS, remote);
 
+    // Per-session TUN packet channel + batching task
+    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(2048);
+
     let session = Arc::new(QuicSession {
         connection:    connection.clone(),
         data_sends:    frame_txs,
-        shaper:        Mutex::new(shaper),
+        tun_pkt_tx,
         last_seen:     AtomicU64::new(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -240,8 +247,12 @@ async fn handle_connection(
         bytes_tx:      AtomicU64::new(0),
         dest_log:      std::sync::Mutex::new(std::collections::VecDeque::new()),
         stats_samples: std::sync::Mutex::new(std::collections::VecDeque::new()),
-        dns_cache:     std::sync::Mutex::new(std::collections::HashMap::new()),
+        dns_cache:     DashMap::new(),
+        log_counter:   AtomicU64::new(0),
     });
+
+    // Spawn per-session batching task (TUN packets → QUIC streams)
+    tokio::spawn(session_batch_loop(tun_pkt_rx, session.clone(), shaper));
 
     // Run N stream RX loops
     let registered_ip: Arc<Mutex<Option<IpAddr>>> = Arc::new(Mutex::new(None));
@@ -343,8 +354,10 @@ async fn stream_rx_loop(
 
             let _ = clamp_tcp_mss(&mut frame_buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
 
-            // Log destination IP/port for this packet
-            if pkt_len >= 20 && (frame_buf[offset] >> 4) == 4 {
+            // Log destination IP/port — sampled every 64th packet to avoid mutex contention
+            if pkt_len >= 20 && (frame_buf[offset] >> 4) == 4
+                && session.log_counter.fetch_add(1, Ordering::Relaxed) % 64 == 0
+            {
                 let proto = frame_buf[offset + 9];
                 let dst_ip = std::net::Ipv4Addr::new(
                     frame_buf[offset + 16], frame_buf[offset + 17],
@@ -357,8 +370,7 @@ async fn stream_rx_loop(
                     0
                 };
                 let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-                let dst_host = session.dns_cache.lock().ok()
-                    .and_then(|c| c.get(&dst_ip).cloned());
+                let dst_host = session.dns_cache.get(&dst_ip).map(|v| v.clone());
                 if let Ok(mut log) = session.dest_log.lock() {
                     if log.len() >= 1000 { log.pop_front(); }
                     log.push_back(DestEntry { ts, dst_ip, dst_host, dst_port, proto, bytes: pkt_len as u32 });
@@ -395,17 +407,54 @@ pub async fn tun_reader_loop(
     }
 }
 
-// ─── TUN → QUIC stream: batch routing per client ────────────────────────────
+// ─── TUN → per-session dispatch (lightweight) ───────────────────────────────
 
-pub async fn tun_to_quic_loop(
+pub async fn tun_dispatch_loop(
     mut pkt_rx: mpsc::Receiver<Vec<u8>>,
     sessions:   QuicSessionMap,
 ) -> anyhow::Result<()> {
+    tracing::info!("TUN→QUIC dispatch loop started");
+
+    loop {
+        let pkt = match pkt_rx.recv().await {
+            Some(p) => p,
+            None => break,
+        };
+
+        if pkt.len() < 20 { continue; }
+
+        let dst = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
+
+        if let Some(session) = sessions.get(&dst) {
+            // Intercept DNS responses (src_port=53) for passive hostname cache
+            if pkt.len() >= 28 && pkt[9] == 17 {
+                let ihl = ((pkt[0] & 0x0F) as usize) * 4;
+                if ihl + 8 <= pkt.len() {
+                    let src_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+                    if src_port == 53 {
+                        dns_parse_response(&pkt[ihl + 8..], session.value());
+                    }
+                }
+            }
+
+            // Non-blocking send to per-session channel; drop packet if channel full
+            let _ = session.value().tun_pkt_tx.try_send(pkt);
+        }
+    }
+
+    Ok(())
+}
+
+// ─── Per-session batching: TUN packets → QUIC streams ───────────────────────
+
+async fn session_batch_loop(
+    mut pkt_rx: mpsc::Receiver<Vec<u8>>,
+    session:    Arc<QuicSession>,
+    mut shaper: H264Shaper,
+) {
     let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
     let mut frame_buf = vec![0u8; buf_size];
-    let mut shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
-
-    tracing::info!("TUN→QUIC loop started (H.264 shaping enabled)");
+    let n_streams = session.data_sends.len();
 
     loop {
         let first = match pkt_rx.recv().await {
@@ -413,96 +462,60 @@ pub async fn tun_to_quic_loop(
             None => break,
         };
 
-        // Collect packets for ALL sessions (not just one dst_ip).
-        // Key = dst tunnel IP, Value = Vec of packets for that client.
-        let mut per_session: std::collections::HashMap<IpAddr, Vec<Vec<u8>>> =
-            std::collections::HashMap::new();
+        // Collect packets into per-stream batches
+        let mut stream_batches: Vec<Vec<Vec<u8>>> = (0..n_streams).map(|_| Vec::new()).collect();
 
-        // Add first packet
-        if first.len() >= 20 {
-            let dst = IpAddr::V4(Ipv4Addr::new(first[16], first[17], first[18], first[19]));
-            per_session.entry(dst).or_default().push(first);
-        }
+        // Route first packet
+        let idx = flow_stream_idx(&first, n_streams);
+        stream_batches[idx].push(first);
 
-        // Drain more from channel (up to 64 total)
+        // Drain more (up to 256)
         let mut collected = 1usize;
-        while collected < 64 {
+        while collected < 256 {
             match pkt_rx.try_recv() {
-                Ok(pkt) if pkt.len() >= 20 => {
-                    let dst = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
-                    per_session.entry(dst).or_default().push(pkt);
+                Ok(pkt) => {
+                    let idx = flow_stream_idx(&pkt, n_streams);
+                    stream_batches[idx].push(pkt);
                     collected += 1;
                 }
-                _ => break,
+                Err(_) => break,
             }
         }
 
-        // Send batches per session, per stream
-        for (dst_ip, packets) in &per_session {
-            let session = match sessions.get(dst_ip) {
-                Some(entry) => entry.value().clone(),
-                None => {
-                    tracing::trace!("No session for dst IP {}", dst_ip);
-                    continue;
-                }
+        // Build and send batch per stream
+        for (idx, batch) in stream_batches.iter().enumerate() {
+            if batch.is_empty() { continue; }
+
+            let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
+            let data_size: usize = refs.iter().map(|p| 2 + p.len()).sum::<usize>() + 2;
+            let frame = shaper.next_frame();
+            shaper.report_data_size(data_size, frame.target_bytes);
+            let pt_len = match build_batch_plaintext(&refs, frame.target_bytes, &mut frame_buf[4..]) {
+                Ok(n) => n,
+                Err(_) => continue,
             };
 
-            let n_streams = session.data_sends.len();
+            frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
 
-            // Group by flow-hash → stream index
-            // Also intercept DNS responses (src_port=53) to populate per-session hostname cache
-            let mut stream_batches: Vec<Vec<&[u8]>> = vec![Vec::new(); n_streams];
-            for pkt in packets {
-                if pkt.len() >= 28 && pkt[9] == 17 {
-                    let ihl = ((pkt[0] & 0x0F) as usize) * 4;
-                    if ihl + 8 <= pkt.len() {
-                        let src_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
-                        if src_port == 53 {
-                            dns_parse_response(&pkt[ihl + 8..], &session);
-                        }
-                    }
-                }
-                let idx = flow_stream_idx(pkt, n_streams);
-                stream_batches[idx].push(pkt.as_slice());
+            let frame = Bytes::copy_from_slice(&frame_buf[..4 + pt_len]);
+            if session.data_sends[idx].send(frame).await.is_err() {
+                return; // session closed
             }
-
-            for (idx, refs) in stream_batches.iter().enumerate() {
-                if refs.is_empty() {
-                    continue;
-                }
-
-                let frame = shaper.next_frame();
-                let pt_len = match build_batch_plaintext(refs, frame.target_bytes, &mut frame_buf[4..]) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        tracing::trace!("build_batch error stream {}: {}", idx, e);
-                        continue;
-                    }
-                };
-
-                frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-
-                if session.data_sends[idx].send(frame_buf[..4 + pt_len].to_vec()).await.is_err() {
-                    tracing::warn!("session write channel closed for stream {}", idx);
-                } else {
-                    session.bytes_tx.fetch_add((4 + pt_len) as u64, Ordering::Relaxed);
-                }
-            }
+            session.bytes_tx.fetch_add((4 + pt_len) as u64, Ordering::Relaxed);
         }
     }
-
-    Ok(())
 }
 
 // ─── Per-session write loop ──────────────────────────────────────────────────
 
 async fn session_write_loop(
-    mut frame_rx: mpsc::Receiver<Vec<u8>>,
+    mut frame_rx: mpsc::Receiver<Bytes>,
     mut send:     quinn::SendStream,
     remote:       SocketAddr,
 ) {
     while let Some(frame) = frame_rx.recv().await {
-        if let Err(e) = send.write_all(&frame).await {
+        // write_chunk takes ownership of Bytes — zero-copy into quinn send buffer
+        if let Err(e) = send.write_chunk(frame).await {
             tracing::warn!("session write to {} failed: {}", remote, e);
             break;
         }
@@ -595,7 +608,7 @@ pub async fn cleanup_task(sessions: QuicSessionMap, idle_secs: u64) {
 // ─── Passive DNS cache helpers ────────────────────────────────────────────────
 
 /// Parse a DNS response packet and insert any A-record mappings into the session's dns_cache.
-/// Called for UDP packets with src_port == 53 in tun_to_quic_loop.
+/// Called for UDP packets with src_port == 53 in tun_dispatch_loop.
 fn dns_parse_response(data: &[u8], session: &QuicSession) {
     if data.len() < 12 { return; }
     // Flags: QR=1 (response), RCODE=0 (no error)
@@ -614,13 +627,9 @@ fn dns_parse_response(data: &[u8], session: &QuicSession) {
         pos += 4; // QTYPE + QCLASS
     }
 
-    // Parse answer section
-    let mut cache = match session.dns_cache.lock() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+    // Parse answer section — lock-free DashMap, no mutex needed
     // Limit cache size to avoid unbounded growth
-    if cache.len() > 4096 { cache.clear(); }
+    if session.dns_cache.len() > 4096 { session.dns_cache.clear(); }
 
     for _ in 0..ancount {
         let name_start = pos;
@@ -635,14 +644,11 @@ fn dns_parse_response(data: &[u8], session: &QuicSession) {
         if pos + rdlen > data.len() { return; }
 
         if rtype == 1 && rdlen == 4 {
-            // A record: parse the question name for this answer by re-parsing from the start
-            // Instead, parse the name at name_start position
             let ip = Ipv4Addr::new(data[pos], data[pos + 1], data[pos + 2], data[pos + 3]);
-            // Re-read the name at the beginning of this RR
             let mut name_pos = pos - rdlen - 10;
             if let Some(hostname) = dns_read_name(data, &mut name_pos) {
                 if !hostname.is_empty() {
-                    cache.insert(ip, hostname);
+                    session.dns_cache.insert(ip, hostname);
                 }
             }
         }
