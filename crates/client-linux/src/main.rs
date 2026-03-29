@@ -5,7 +5,7 @@
 mod linux {
     use std::net::SocketAddr;
     use std::fs::{File, OpenOptions};
-    use std::io::{self, Read, Write};
+    use std::io;
     use std::os::unix::io::AsRawFd;
     use std::pin::Pin;
     use std::process::Command;
@@ -14,11 +14,13 @@ mod linux {
     use anyhow::Context;
     use clap::Parser;
     use tokio::io::unix::AsyncFd;
-    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, AsyncReadExt};
-    use tokio::sync::mpsc;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::signal;
 
     use client_common::helpers::{self, Args};
+    use client_common::{h2_connect_and_handshake, h2_stream_rx_loop, h2_stream_tx_loop};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use phantom_core::config::ClientConfig;
 
     const TUNSETIFF:  libc::c_ulong = 0x400454CA;
     const IFF_TUN:    libc::c_short = 0x0001;
@@ -337,6 +339,127 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     };
     tracing::info!("Server address: {}", server_addr);
 
+    // Load mTLS client identity (cert + key) — inline PEM or file path
+    let client_identity = helpers::load_tls_identity(&cfg)?;
+
+    // Load server CA cert — inline PEM or file path
+    let server_ca = helpers::load_server_ca(&cfg)?;
+
+    let skip_verify = cfg.network.insecure || (server_ca.is_none() && client_identity.is_none());
+
+    // Branch on transport type
+    let transport = args.transport.as_str();
+    tracing::info!("Using transport: {}", transport);
+
+    if transport == "h2" {
+        // HTTP/2 transport
+        run_h2_tunnel(args, cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await
+    } else {
+        // QUIC transport
+        run_quic_tunnel(args, cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await
+    }
+}
+
+/// HTTP/2 tunnel implementation
+async fn run_h2_tunnel(
+    _args: Args,
+    cfg: ClientConfig,
+    server_addr: SocketAddr,
+    skip_verify: bool,
+    server_ca: Option<Vec<CertificateDer<'static>>>,
+    client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
+    use bytes::Bytes;
+
+    let client_config = phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
+        .context("Failed to build HTTP/2 client config")?;
+
+    let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom").to_string();
+    let (send_request, streams) = h2_connect_and_handshake(server_addr, server_name, client_config)
+        .await
+        .context("HTTP/2 connect failed")?;
+
+    tracing::info!("HTTP/2 connected ({} streams)!", streams.len());
+
+    // ─── TUN interface ───────────────────────────────────────────────────
+    let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
+    let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
+    let tun_mtu  = cfg.network.tun_mtu.unwrap_or(1350);
+
+    tracing::info!("Creating TUN interface {}...", tun_name);
+    let tun_file = create_tun(tun_name, tun_addr, tun_mtu)?;
+    let tun_fd = tun_file.as_raw_fd();
+    std::mem::forget(tun_file);
+
+    // Default route
+    let _cleanup_guard = if cfg.network.default_gw.is_some() {
+        match add_default_route(tun_name, &server_addr) {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                tracing::warn!("Route setup failed: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // ─── io_uring TUN I/O ────────────────────────────────────────────────
+    let (tun_pkt_rx, quic_pkt_tx) =
+        phantom_core::tun_uring::spawn(tun_fd, 4096)
+            .context("Failed to start io_uring TUN handler")?;
+    tracing::info!("io_uring TUN handler started");
+
+    // ─── Split streams into sends and recvs ───────────────────────────────
+    let (sends, recvs): (Vec<h2::SendStream<Bytes>>, Vec<h2::RecvStream>) = streams.into_iter().unzip();
+
+    // ─── HTTP/2 stream RX / TX tasks ────────────────────────────────────────
+    let mut tunnel_set = tokio::task::JoinSet::new();
+
+    for recv in recvs {
+        let pkt_tx = quic_pkt_tx.clone();
+        tunnel_set.spawn(async move {
+            h2_stream_rx_loop(recv, pkt_tx).await
+        });
+    }
+    // h2_stream_tx_loop spawns tasks and returns immediately — don't put in JoinSet
+    h2_stream_tx_loop(tun_pkt_rx, sends).await?;
+
+    tracing::info!("HTTP/2 tunnel active. Press Ctrl-C to exit.");
+
+    // Wait for shutdown or tunnel death
+    tokio::select! {
+        _ = shutdown_rx => {
+            tracing::info!("Shutdown signal received.");
+        }
+        Some(res) = tunnel_set.join_next() => {
+            if let Ok(Err(e)) = res {
+                tracing::error!("Tunnel task failed: {}", e);
+            }
+            tracing::info!("Tunnel died, exiting for restart.");
+        }
+    }
+
+    // Close HTTP/2 connection gracefully
+    drop(send_request);
+
+    drop(_cleanup_guard);
+    tracing::info!("Shutdown complete.");
+
+    Ok(())
+}
+
+/// QUIC tunnel implementation (original code)
+async fn run_quic_tunnel(
+    args: Args,
+    cfg: ClientConfig,
+    server_addr: SocketAddr,
+    skip_verify: bool,
+    server_ca: Option<Vec<CertificateDer<'static>>>,
+    client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
     // ─── QUIC endpoint with SO_MARK ─────────────────────────────────────
     let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")
         .context("Failed to bind UDP socket")?;
@@ -357,13 +480,6 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     }
     std_socket.set_nonblocking(true)?;
 
-    // Load mTLS client identity (cert + key) — inline PEM or file path
-    let client_identity = helpers::load_tls_identity(&cfg)?;
-
-    // Load server CA cert — inline PEM or file path
-    let server_ca = helpers::load_server_ca(&cfg)?;
-
-    let skip_verify = cfg.network.insecure || (server_ca.is_none() && client_identity.is_none());
     let client_config = phantom_core::quic::make_client_config(skip_verify, server_ca, client_identity)
         .context("Failed to build QUIC client config")?;
 
@@ -395,10 +511,9 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     tracing::info!("Creating TUN interface {}...", tun_name);
     let tun_file = create_tun(tun_name, tun_addr, tun_mtu)?;
     let tun_fd = tun_file.as_raw_fd();
-    // Keep tun_file alive (fd ownership) but don't wrap in AsyncTun
     std::mem::forget(tun_file);
 
-    // Default route (with split routing for server IP)
+    // Default route
     let _cleanup_guard = if cfg.network.default_gw.is_some() {
         match add_default_route(tun_name, &server_addr) {
             Ok(guard) => Some(guard),
@@ -412,14 +527,12 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     };
 
     // ─── io_uring TUN I/O ────────────────────────────────────────────────
-    // tun_pkt_rx: packets read from TUN (io_uring reader → this channel)
-    // quic_pkt_tx: packets to write to TUN (send here → io_uring writer)
     let (tun_pkt_rx, quic_pkt_tx) =
         phantom_core::tun_uring::spawn(tun_fd, 4096)
             .context("Failed to start io_uring TUN handler")?;
     tracing::info!("io_uring TUN handler started");
 
-    // ─── Разделяем N data streams на sends и recvs ───────────────────────
+    // ─── Split streams into sends and recvs ───────────────────────────────
     let (sends, recvs): (Vec<_>, Vec<_>) = streams.into_iter().unzip();
 
     // ─── QUIC stream RX / TX tasks ────────────────────────────────────────
@@ -437,8 +550,7 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
     tracing::info!("Tunnel active. Press Ctrl-C to exit.");
 
-    // Exit (triggering RouteCleanup Drop) when shutdown signal arrives
-    // OR when any tunnel task dies (connection dropped) — systemd will restart us.
+    // Wait for shutdown or tunnel death
     tokio::select! {
         _ = shutdown_rx => {
             tracing::info!("Shutdown signal received.");

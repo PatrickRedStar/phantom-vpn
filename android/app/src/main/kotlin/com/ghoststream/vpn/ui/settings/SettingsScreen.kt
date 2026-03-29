@@ -1,5 +1,6 @@
 package com.ghoststream.vpn.ui.settings
 
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -56,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -71,7 +73,7 @@ import com.ghoststream.vpn.ui.theme.RedError
 import com.ghoststream.vpn.ui.theme.TextSecondary
 import com.ghoststream.vpn.ui.theme.YellowWarning
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
@@ -662,6 +664,11 @@ private fun ProfileRow(
     onPing: () -> Unit = {},
     subscriptionText: String? = null,
 ) {
+    // Определяем транспорт из порта
+    val transport = profile.transport ?: if (profile.serverAddr.contains(":9443")) "h2" else "quic"
+    val transportLabel = if (transport == "quic") "QUIC" else "HTTP/2"
+    val transportColor = if (transport == "quic") Color(0xFF69F0AE) else Color(0xFFFFD740)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -677,6 +684,20 @@ private fun ProfileRow(
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(profile.name, style = MaterialTheme.typography.bodyMedium)
+                // Индикатор транспорта
+                Spacer(Modifier.width(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = transportColor.copy(alpha = 0.18f),
+                ) {
+                    Text(
+                        transportLabel,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = transportColor,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
                 if (profile.adminUrl != null && profile.adminToken != null) {
                     Spacer(Modifier.width(6.dp))
                     Surface(
@@ -769,6 +790,10 @@ private fun ProfileDetailsDialog(
     var newName by remember(profile.id, profile.name) { mutableStateOf(profile.name) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
+    // Транспорт определяется автоматически из порта
+    val transport = profile.transport ?: if (profile.serverAddr.contains(":9443")) "h2" else "quic"
+    val transportLabel = if (transport == "quic") "QUIC" else "HTTP/2"
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Карточка подключения") },
@@ -779,6 +804,18 @@ private fun ProfileDetailsDialog(
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = TextSecondary,
                 )
+                // Индикатор транспорта
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (transport == "quic") Color(0xFF69F0AE) else Color(0xFFFFD740),
+                    modifier = Modifier.padding(vertical = 4.dp),
+                ) {
+                    Text(
+                        "Транспорт: $transportLabel",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
                 OutlinedTextField(
                     value = newName,
                     onValueChange = { newName = it },
@@ -790,7 +827,7 @@ private fun ProfileDetailsDialog(
                     OutlinedButton(
                         onClick = { onRename(newName.trim()) },
                         modifier = Modifier.weight(1f),
-                    ) { Text("Сохранить имя") }
+                    ) { Text("Сохранить") }
                     OutlinedButton(
                         onClick = onSetActive,
                         enabled = !isActive,

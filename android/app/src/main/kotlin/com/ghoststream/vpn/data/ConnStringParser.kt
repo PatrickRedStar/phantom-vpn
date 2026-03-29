@@ -15,7 +15,22 @@ object ConnStringParser {
         val ca: String? = null,
         val adminUrl: String? = null,
         val adminToken: String? = null,
+        val transport: String = "h2",
     )
+
+    /**
+     * Определяет транспорт из порта в addr.
+     * Порт 8443 → quic, порт 9443 → h2.
+     * Игнорируем поле transport из JSON — всегда определяем из порта.
+     */
+    private fun inferTransportFromPort(addr: String): String {
+        val port = addr.substringAfterLast(':', "").substringBefore("/").toIntOrNull()
+        return when (port) {
+            8443 -> "quic"
+            9443 -> "h2"
+            else -> "h2" // default
+        }
+    }
 
     fun parse(input: String): Result<ParsedConfig> = runCatching {
         val trimmed = input.trim()
@@ -38,8 +53,12 @@ object ConnStringParser {
         val adminUrl   = adminObj?.optString("url")?.takeIf { it.isNotEmpty() }
         val adminToken = adminObj?.optString("token")?.takeIf { it.isNotEmpty() }
 
+        // Всегда определяем транспорт из порта — игнорируем поле transport из JSON
+        val addr = obj.getString("addr")
+        val transport = inferTransportFromPort(addr)
+
         ParsedConfig(
-            addr       = obj.getString("addr"),
+            addr       = addr,
             sni        = obj.getString("sni"),
             tun        = obj.getString("tun"),
             cert       = obj.getString("cert"),
@@ -47,6 +66,7 @@ object ConnStringParser {
             ca         = obj.optString("ca", null),
             adminUrl   = adminUrl,
             adminToken = adminToken,
+            transport  = transport,
         )
     }
 
@@ -66,6 +86,7 @@ object ConnStringParser {
             put("tun",  profile.tunAddr)
             put("cert", cert)
             put("key",  key)
+            put("transport", profile.transport)
             if (ca != null) put("ca", ca)
             if (profile.adminUrl != null && profile.adminToken != null) {
                 put("admin", JSONObject().apply {

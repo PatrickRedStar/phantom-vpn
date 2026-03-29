@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use io_uring::{IoUring, opcode, types};
 use tokio::sync::mpsc;
 
-const RING_SIZE: u32 = 64;
+const RING_SIZE: u32 = 256;
 const BUF_SIZE: usize = 2048;
-const N_READ_BUFS: usize = 16;
+const N_READ_BUFS: usize = 64;
 
 pub fn spawn(
     tun_fd: RawFd,

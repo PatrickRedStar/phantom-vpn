@@ -39,6 +39,12 @@ pub struct ServerNetworkConfig {
     /// IP адрес для исходящего трафика (SNAT). Если задан — используется SNAT
     /// вместо MASQUERADE, трафик выходит с этого IP (e.g. второй IP сервера).
     pub exit_ip:     Option<String>,
+    /// Публичный адрес сервера для conn strings (e.g. "tls.nl2.example.com:443").
+    /// Если не задан — используется listen_addr.
+    pub public_addr: Option<String>,
+    /// SNI/server_name для conn strings (e.g. "tls.nl2.example.com").
+    /// Если не задан — извлекается из cert_path.
+    pub server_name: Option<String>,
 }
 
 impl Default for ServerNetworkConfig {
@@ -50,11 +56,21 @@ impl Default for ServerNetworkConfig {
             tun_mtu:     None,
             wan_iface:   None,
             exit_ip:     None,
+            public_addr: None,
+            server_name: None,
         }
     }
 }
 
 // ─── QUIC секция ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct H2Config {
+    /// Listen address for HTTP/2 TCP listener (default: "0.0.0.0:443")
+    pub listen_addr: Option<String>,
+    /// Enable HTTP/2 transport (default: true if h2 section exists)
+    pub enabled: Option<bool>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QuicConfig {
@@ -170,6 +186,8 @@ pub struct ServerConfig {
     pub shaper:   Option<ShaperConfig>,
     #[serde(default)]
     pub quic:     Option<QuicConfig>,
+    #[serde(default)]
+    pub h2:       Option<H2Config>,
     #[serde(default)]
     pub admin:    Option<AdminConfig>,
 }

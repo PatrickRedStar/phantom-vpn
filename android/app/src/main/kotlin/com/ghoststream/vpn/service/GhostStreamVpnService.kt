@@ -24,6 +24,7 @@ class GhostStreamVpnService : VpnService() {
         val certPath: String,
         val keyPath: String,
         val caCertPath: String,
+        val transport: String,
     )
 
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -42,6 +43,7 @@ class GhostStreamVpnService : VpnService() {
         certPath: String,
         keyPath: String,
         caCertPath: String,
+        transport: String,
     ): Int
 
     companion object {
@@ -70,6 +72,7 @@ class GhostStreamVpnService : VpnService() {
         const val EXTRA_PER_APP_MODE  = "per_app_mode"
         const val EXTRA_PER_APP_LIST  = "per_app_list"
         const val EXTRA_CA_CERT_PATH  = "ca_cert_path"
+        const val EXTRA_TRANSPORT     = "transport"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
@@ -100,6 +103,7 @@ class GhostStreamVpnService : VpnService() {
         val perAppList     = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
             .split(",").filter { it.isNotBlank() }
         val caCertPath     = intent.getStringExtra(EXTRA_CA_CERT_PATH) ?: ""
+        val transport      = intent.getStringExtra(EXTRA_TRANSPORT) ?: "h2"
 
         createNotificationChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -114,7 +118,7 @@ class GhostStreamVpnService : VpnService() {
         startupThread?.interrupt()
         startupThread = Thread {
             startTunnel(
-                serverAddr, serverName, insecure, certPath, keyPath, caCertPath,
+                serverAddr, serverName, insecure, certPath, keyPath, caCertPath, transport,
                 tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
             )
         }.apply {
@@ -128,6 +132,7 @@ class GhostStreamVpnService : VpnService() {
     private fun startTunnel(
         serverAddr: String, serverName: String,
         insecure: Boolean, certPath: String, keyPath: String, caCertPath: String,
+        transport: String,
         tunAddr: String, dnsServers: List<String>,
         splitRouting: Boolean, directCidrsPath: String,
         perAppMode: String, perAppList: List<String>,
@@ -204,10 +209,10 @@ class GhostStreamVpnService : VpnService() {
         }
 
         userStopped = false
-        savedParams = TunnelParams(serverAddr, serverName, insecure, certPath, keyPath, caCertPath)
+        savedParams = TunnelParams(serverAddr, serverName, insecure, certPath, keyPath, caCertPath, transport)
 
         val fd = vpnInterface!!.fd
-        val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath)
+        val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath, transport)
         if (result != 0) {
             vpnInterface?.close()
             vpnInterface = null
@@ -217,7 +222,12 @@ class GhostStreamVpnService : VpnService() {
             return
         }
 
-        // Do NOT set Connected here — watchdog will do it once QUIC handshake completes
+        // Set Connected immediately so Android starts routing traffic through VPN
+        // Watchdog will monitor connection health
+        val notification = buildNotification("Подключение...")
+        startForeground(1, notification)
+        VpnStateManager.update(VpnState.Connecting)
+
         startWatchdog(serverName, serverAddr)
     }
 
@@ -269,6 +279,7 @@ class GhostStreamVpnService : VpnService() {
                             val r = nativeStart(
                                 iface.fd, params.serverAddr, params.serverName,
                                 params.insecure, params.certPath, params.keyPath, params.caCertPath,
+                                params.transport,
                             )
                             if (r == 0) {
                                 timeoutSecs = 60

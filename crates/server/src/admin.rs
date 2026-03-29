@@ -19,11 +19,11 @@ use axum::{
 use base64::Engine;
 use serde::Deserialize;
 
-use crate::quic_server::{ClientAllowList, QuicSessionMap};
+use crate::vpn_session::{ClientAllowList, VpnSessionMap};
 
 #[derive(Clone)]
 pub struct AdminState {
-    pub sessions: QuicSessionMap,
+    pub sessions: VpnSessionMap,
     pub clients_path: PathBuf,
     pub token: String,
     pub admin_url: String,
@@ -326,7 +326,7 @@ async fn manage_subscription(
         if let Some(ip) = tun_ip {
             if let Some((_, session)) = state.sessions.remove(&ip) {
                 tracing::info!("Subscription revoked for '{}', evicting session", name);
-                session.connection.close(quinn::VarInt::from_u32(1), b"Subscription revoked");
+                session.close();
             }
         }
     }
@@ -369,10 +369,7 @@ async fn set_client_enabled(
         if let Some(ip) = tun_ip {
             if let Some((_, session)) = state.sessions.remove(&ip) {
                 tracing::info!("Admin: evicting session and closing connection for disabled client '{}'", name);
-                session.connection.close(
-                    quinn::VarInt::from_u32(1),
-                    b"Disconnected by administrator",
-                );
+                session.close();
             }
         }
     }
@@ -466,6 +463,68 @@ async fn get_client_stats(
     Ok(Json(serde_json::json!(samples)))
 }
 
+// ─── GET /api/client-config/:tun_addr ────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct ClientConfigResponse {
+    tun_addr: String,
+    dns_servers: Vec<String>,
+    split_routing: bool,
+    direct_countries: Vec<String>,
+    per_app_mode: String,
+    subscription: SubscriptionStatus,
+}
+
+#[derive(serde::Serialize)]
+struct SubscriptionStatus {
+    expires_at: Option<u64>,
+    enabled: bool,
+}
+
+async fn get_client_config(
+    State(state): State<AdminState>,
+    AxPath(tun_addr): AxPath<String>,
+) -> Result<Json<ClientConfigResponse>, StatusCode> {
+    let keyring = read_keyring(&state.clients_path)?;
+    let clients = keyring
+        .get("clients")
+        .and_then(|c| c.as_object())
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Найти клиента по tun_addr (сравниваем без префикса /24)
+    let client_info = clients
+        .values()
+        .find(|info| {
+            info.get("tun_addr")
+                .and_then(|v| v.as_str())
+                .map(|t| t.split('/').next() == tun_addr.split('/').next())
+                .unwrap_or(false)
+        })
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let expires_at = client_info
+        .get("expires_at")
+        .and_then(|v| v.as_u64())
+        .filter(|&v| v > 0);
+    let enabled = client_info
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    Ok(Json(ClientConfigResponse {
+        tun_addr: client_info
+            .get("tun_addr")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        dns_servers: vec!["8.8.8.8".into(), "1.1.1.1".into()],
+        split_routing: false,
+        direct_countries: vec![],
+        per_app_mode: "none".into(),
+        subscription: SubscriptionStatus { expires_at, enabled },
+    }))
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 pub fn make_router(state: AdminState) -> Router {
@@ -480,6 +539,7 @@ pub fn make_router(state: AdminState) -> Router {
         .route("/api/clients/:name/logs",         get(get_client_logs))
         .route("/api/clients/:name/stats",        get(get_client_stats))
         .route("/api/clients/:name/subscription", post(manage_subscription))
+        .route("/api/client-config/:tun_addr", get(get_client_config))
         .layer(middleware::from_fn_with_state(state.clone(), require_token));
     Router::new().merge(protected).with_state(state)
 }
@@ -517,7 +577,7 @@ fn write_keyring(path: &Path, keyring: &serde_json::Value) -> Result<(), StatusC
 }
 
 async fn reload_allow_list(clients_path: &Path, allow_list: &ClientAllowList) {
-    match crate::quic_server::load_allow_list(clients_path) {
+    match crate::vpn_session::load_allow_list(clients_path) {
         Ok(fps) => {
             let mut list = allow_list.write().await;
             *list = fps;
@@ -583,7 +643,7 @@ fn generate_client_cert(
 
 pub async fn run_subscription_checker(
     clients_path: std::path::PathBuf,
-    sessions: QuicSessionMap,
+    sessions: VpnSessionMap,
     allow_list: ClientAllowList,
 ) {
     loop {
@@ -648,14 +708,14 @@ pub async fn run_subscription_checker(
             let _ = std::fs::write(&clients_path, content);
         }
 
-        match crate::quic_server::load_allow_list(&clients_path) {
+        match crate::vpn_session::load_allow_list(&clients_path) {
             Ok(fps) => { *allow_list.write().await = fps; }
             Err(e) => tracing::error!("Subscription checker: reload allow list failed: {}", e),
         }
 
         for ip in to_evict {
             if let Some((_, session)) = sessions.remove(&ip) {
-                session.connection.close(quinn::VarInt::from_u32(1), b"Subscription expired");
+                session.close();
             }
         }
     }

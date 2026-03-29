@@ -2,18 +2,15 @@
 //! Authentication is handled by mTLS at the TLS layer.
 //! Wire format per stream frame: [4B total_len][batch plaintext]
 
-use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use bytes::Bytes;
-use dashmap::DashMap;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::io::AsyncReadExt;
+use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
@@ -21,113 +18,14 @@ use phantom_core::{
     wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT, N_DATA_STREAMS, QUIC_TUNNEL_MSS},
 };
 
-// ─── Session types ──────────────────────────────────────────────────────────
-
-/// One logged destination visit (client → server direction).
-#[derive(Clone)]
-pub struct DestEntry {
-    pub ts:       u64,
-    pub dst_ip:   std::net::Ipv4Addr,
-    pub dst_host: Option<String>,  // resolved hostname from passive DNS cache
-    pub dst_port: u16,
-    pub proto:    u8,   // 6=TCP, 17=UDP, 1=ICMP, else raw
-    pub bytes:    u32,
-}
-
-/// One time-series sample (snapshot every 60 s).
-#[derive(Clone)]
-pub struct StatsSample {
-    pub ts:       u64,
-    pub bytes_rx: u64,
-    pub bytes_tx: u64,
-}
-
-pub struct QuicSession {
-    pub connection:    quinn::Connection,
-    pub data_sends:    Vec<mpsc::Sender<Bytes>>,
-    /// Per-session channel for TUN→QUIC packets (fed by tun_dispatch_loop)
-    pub tun_pkt_tx:    mpsc::Sender<Vec<u8>>,
-    pub last_seen:     AtomicU64,
-    pub bytes_rx:      AtomicU64,
-    pub bytes_tx:      AtomicU64,
-    pub dest_log:      std::sync::Mutex<std::collections::VecDeque<DestEntry>>,
-    pub stats_samples: std::sync::Mutex<std::collections::VecDeque<StatsSample>>,
-    /// Passive DNS cache: IPv4 → hostname, populated from DNS responses (src_port=53)
-    pub dns_cache:     DashMap<Ipv4Addr, String>,
-    /// Counter for dest_log sampling (log every 64th packet to reduce mutex contention)
-    pub log_counter:   AtomicU64,
-}
-
-impl QuicSession {
-    pub fn touch(&self) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.last_seen.store(now, Ordering::Relaxed);
-    }
-
-    pub fn is_idle(&self, idle_secs: u64) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        now.saturating_sub(self.last_seen.load(Ordering::Relaxed)) > idle_secs
-    }
-}
-
-pub type QuicSessionMap = Arc<DashMap<IpAddr, Arc<QuicSession>>>;
-
-pub fn new_quic_session_map() -> QuicSessionMap {
-    Arc::new(DashMap::new())
-}
-
-// ─── Client allowlist (fingerprint-based) ───────────────────────────────────
-
-/// Set of allowed client certificate SHA-256 fingerprints (hex, lowercase).
-/// Empty set = allow all authenticated clients (no filtering).
-/// Wrapped in RwLock for hot-reload via SIGHUP.
-pub type ClientAllowList = Arc<RwLock<HashSet<String>>>;
-
-pub fn new_allow_list() -> ClientAllowList {
-    Arc::new(RwLock::new(HashSet::new()))
-}
-
-/// Load allowed fingerprints from clients.json.
-/// Expected format: {"clients": {"name": {"fingerprint": "abcd1234..."}, ...}}
-pub fn load_allow_list(path: &Path) -> anyhow::Result<HashSet<String>> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
-    let val: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse {}", path.display()))?;
-
-    let mut fps = HashSet::new();
-    if let Some(clients) = val.get("clients").and_then(|c| c.as_object()) {
-        for (name, info) in clients {
-            if info.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true) {
-                if let Some(fp) = info.get("fingerprint").and_then(|f| f.as_str()) {
-                    fps.insert(fp.to_lowercase());
-                    tracing::debug!("Allowed client: {} (fp={}…)", name, &fp[..8.min(fp.len())]);
-                }
-            }
-        }
-    }
-    Ok(fps)
-}
-
-/// Extract SHA-256 fingerprint from a DER-encoded X.509 certificate.
-fn cert_fingerprint(cert_der: &[u8]) -> String {
-    use sha2::{Sha256, Digest};
-    let hash = Sha256::digest(cert_der);
-    hash.iter().map(|b| format!("{:02x}", b)).collect()
-}
+use crate::vpn_session::{self, VpnSession, VpnSessionMap, ClientAllowList, DestEntry};
 
 // ─── Accept loop ────────────────────────────────────────────────────────────
 
 pub async fn run_accept_loop(
     endpoint: quinn::Endpoint,
     tun_tx:   mpsc::Sender<Vec<u8>>,
-    sessions: QuicSessionMap,
+    sessions: VpnSessionMap,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
     allow_list:  ClientAllowList,
@@ -173,7 +71,7 @@ pub async fn run_accept_loop(
 async fn handle_connection(
     connection:  quinn::Connection,
     tun_tx:      mpsc::Sender<Vec<u8>>,
-    sessions:    QuicSessionMap,
+    sessions:    VpnSessionMap,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
     allow_list:  ClientAllowList,
@@ -192,7 +90,7 @@ async fn handle_connection(
     }
 
     // ─── Fingerprint allowlist check ─────────────────────────────────────
-    let client_fp = cert_fingerprint(peer_certs[0].as_ref());
+    let client_fp = vpn_session::cert_fingerprint(peer_certs[0].as_ref());
     {
         let allowed = allow_list.read().await;
         if !allowed.is_empty() && !allowed.contains(&client_fp) {
@@ -233,10 +131,13 @@ async fn handle_connection(
     // Per-session TUN packet channel + batching task
     let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(2048);
 
-    let session = Arc::new(QuicSession {
-        connection:    connection.clone(),
+    // Transport-agnostic shutdown: close_tx signals the transport to close
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let session = Arc::new(VpnSession {
         data_sends:    frame_txs,
         tun_pkt_tx,
+        close_tx:      std::sync::Mutex::new(Some(close_tx)),
         last_seen:     AtomicU64::new(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -247,12 +148,21 @@ async fn handle_connection(
         bytes_tx:      AtomicU64::new(0),
         dest_log:      std::sync::Mutex::new(std::collections::VecDeque::new()),
         stats_samples: std::sync::Mutex::new(std::collections::VecDeque::new()),
-        dns_cache:     DashMap::new(),
+        dns_cache:     dashmap::DashMap::new(),
         log_counter:   AtomicU64::new(0),
     });
 
+    // Background task: wait for close signal → close QUIC connection
+    {
+        let conn = connection.clone();
+        tokio::spawn(async move {
+            let _ = close_rx.await;
+            conn.close(0u32.into(), b"session closed");
+        });
+    }
+
     // Spawn per-session batching task (TUN packets → QUIC streams)
-    tokio::spawn(session_batch_loop(tun_pkt_rx, session.clone(), shaper));
+    tokio::spawn(vpn_session::session_batch_loop(tun_pkt_rx, session.clone(), shaper, true));
 
     // Run N stream RX loops
     let registered_ip: Arc<Mutex<Option<IpAddr>>> = Arc::new(Mutex::new(None));
@@ -292,9 +202,9 @@ async fn handle_connection(
 
 async fn stream_rx_loop(
     mut recv:      quinn::RecvStream,
-    session:       Arc<QuicSession>,
+    session:       Arc<VpnSession>,
     tun_tx:        mpsc::Sender<Vec<u8>>,
-    sessions:      QuicSessionMap,
+    sessions:      VpnSessionMap,
     registered_ip: Arc<Mutex<Option<IpAddr>>>,
     tun_network:   Ipv4Addr,
     tun_prefix:    u8,
@@ -359,7 +269,7 @@ async fn stream_rx_loop(
                 && session.log_counter.fetch_add(1, Ordering::Relaxed) % 64 == 0
             {
                 let proto = frame_buf[offset + 9];
-                let dst_ip = std::net::Ipv4Addr::new(
+                let dst_ip = Ipv4Addr::new(
                     frame_buf[offset + 16], frame_buf[offset + 17],
                     frame_buf[offset + 18], frame_buf[offset + 19],
                 );
@@ -407,49 +317,11 @@ pub async fn tun_reader_loop(
     }
 }
 
-// ─── TUN → per-session dispatch (lightweight) ───────────────────────────────
-
-pub async fn tun_dispatch_loop(
-    mut pkt_rx: mpsc::Receiver<Vec<u8>>,
-    sessions:   QuicSessionMap,
-) -> anyhow::Result<()> {
-    tracing::info!("TUN→QUIC dispatch loop started");
-
-    loop {
-        let pkt = match pkt_rx.recv().await {
-            Some(p) => p,
-            None => break,
-        };
-
-        if pkt.len() < 20 { continue; }
-
-        let dst = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
-
-        if let Some(session) = sessions.get(&dst) {
-            // Intercept DNS responses (src_port=53) for passive hostname cache
-            if pkt.len() >= 28 && pkt[9] == 17 {
-                let ihl = ((pkt[0] & 0x0F) as usize) * 4;
-                if ihl + 8 <= pkt.len() {
-                    let src_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
-                    if src_port == 53 {
-                        dns_parse_response(&pkt[ihl + 8..], session.value());
-                    }
-                }
-            }
-
-            // Non-blocking send to per-session channel; drop packet if channel full
-            let _ = session.value().tun_pkt_tx.try_send(pkt);
-        }
-    }
-
-    Ok(())
-}
-
 // ─── Per-session batching: TUN packets → QUIC streams ───────────────────────
 
 async fn session_batch_loop(
     mut pkt_rx: mpsc::Receiver<Vec<u8>>,
-    session:    Arc<QuicSession>,
+    session:    Arc<VpnSession>,
     mut shaper: H264Shaper,
 ) {
     let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
@@ -546,10 +418,6 @@ async fn handle_fallback(connection: quinn::Connection, remote: SocketAddr) {
                     ).await;
 
                     // Send a minimal HTTP/3-like response.
-                    // Real H3 uses QPACK headers + DATA frames, but for DPI evasion
-                    // we just need to send SOMETHING on the stream and close it.
-                    // Most DPI only checks that the QUIC connection + TLS succeeds,
-                    // not that the H3 framing is perfect.
                     let response = b"<html><body><h1>nl2.bikini-bottom.com</h1><p>Service is running.</p></body></html>";
                     let _ = send.write_all(response).await;
                     let _ = send.finish();
@@ -564,145 +432,4 @@ async fn handle_fallback(connection: quinn::Connection, remote: SocketAddr) {
         }
     }
     tracing::debug!("Fallback connection from {} ended", remote);
-}
-
-// ─── Cleanup task ───────────────────────────────────────────────────────────
-
-pub async fn cleanup_task(sessions: QuicSessionMap, idle_secs: u64) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
-    loop {
-        interval.tick().await;
-
-        let mut to_remove = Vec::new();
-        let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        for entry in sessions.iter() {
-            if entry.value().is_idle(idle_secs) {
-                to_remove.push(*entry.key());
-            } else {
-                // Snapshot traffic counters for time-series
-                let bytes_rx = entry.value().bytes_rx.load(Ordering::Relaxed);
-                let bytes_tx = entry.value().bytes_tx.load(Ordering::Relaxed);
-                if let Ok(mut samples) = entry.value().stats_samples.lock() {
-                    if samples.len() >= 60 { samples.pop_front(); }
-                    samples.push_back(StatsSample { ts: now_ts, bytes_rx, bytes_tx });
-                }
-            }
-        }
-        for ip in &to_remove {
-            // Re-check is_idle at removal time — a new session may have registered
-            if let Some((_, session)) = sessions.remove_if(ip, |_, v| v.is_idle(idle_secs)) {
-                session.connection.close(0u32.into(), b"idle timeout");
-                tracing::info!("Session expired (idle): tunnel IP {}", ip);
-            }
-        }
-        if !to_remove.is_empty() {
-            tracing::info!(
-                "Cleanup: removed {} sessions, {} active",
-                to_remove.len(),
-                sessions.len()
-            );
-        }
-    }
-}
-
-// ─── Passive DNS cache helpers ────────────────────────────────────────────────
-
-/// Parse a DNS response packet and insert any A-record mappings into the session's dns_cache.
-/// Called for UDP packets with src_port == 53 in tun_dispatch_loop.
-fn dns_parse_response(data: &[u8], session: &QuicSession) {
-    if data.len() < 12 { return; }
-    // Flags: QR=1 (response), RCODE=0 (no error)
-    let flags = u16::from_be_bytes([data[2], data[3]]);
-    if flags & 0x8000 == 0 || flags & 0x000F != 0 { return; }
-
-    let qdcount = u16::from_be_bytes([data[4], data[5]]) as usize;
-    let ancount = u16::from_be_bytes([data[6], data[7]]) as usize;
-    if ancount == 0 { return; }
-
-    let mut pos = 12;
-
-    // Skip question section
-    for _ in 0..qdcount {
-        if !dns_skip_name(data, &mut pos) { return; }
-        pos += 4; // QTYPE + QCLASS
-    }
-
-    // Parse answer section — lock-free DashMap, no mutex needed
-    // Limit cache size to avoid unbounded growth
-    if session.dns_cache.len() > 4096 { session.dns_cache.clear(); }
-
-    for _ in 0..ancount {
-        let name_start = pos;
-        if !dns_skip_name(data, &mut pos) { return; }
-        let _ = name_start;
-
-        if pos + 10 > data.len() { return; }
-        let rtype  = u16::from_be_bytes([data[pos],     data[pos + 1]]);
-        let rdlen  = u16::from_be_bytes([data[pos + 8], data[pos + 9]]) as usize;
-        pos += 10;
-
-        if pos + rdlen > data.len() { return; }
-
-        if rtype == 1 && rdlen == 4 {
-            let ip = Ipv4Addr::new(data[pos], data[pos + 1], data[pos + 2], data[pos + 3]);
-            let mut name_pos = pos - rdlen - 10;
-            if let Some(hostname) = dns_read_name(data, &mut name_pos) {
-                if !hostname.is_empty() {
-                    session.dns_cache.insert(ip, hostname);
-                }
-            }
-        }
-        pos += rdlen;
-    }
-}
-
-/// Skip over a DNS name (handles pointer compression). Returns false on error.
-fn dns_skip_name(data: &[u8], pos: &mut usize) -> bool {
-    let mut jumps = 0;
-    loop {
-        if *pos >= data.len() { return false; }
-        let b = data[*pos];
-        if b == 0 { *pos += 1; return true; }
-        if b & 0xC0 == 0xC0 {
-            if *pos + 1 >= data.len() { return false; }
-            *pos += 2;
-            return true;
-        }
-        *pos += 1 + b as usize;
-        jumps += 1;
-        if jumps > 128 { return false; }
-    }
-}
-
-/// Read a DNS name (handles pointer compression). Returns None on error.
-fn dns_read_name(data: &[u8], pos: &mut usize) -> Option<String> {
-    let mut name = String::with_capacity(64);
-    let mut p = *pos;
-    let mut jumped = false;
-    let mut jumps = 0;
-
-    loop {
-        if p >= data.len() { return None; }
-        let b = data[p];
-        if b == 0 {
-            if !jumped { *pos = p + 1; }
-            break;
-        }
-        if b & 0xC0 == 0xC0 {
-            if p + 1 >= data.len() { return None; }
-            if !jumped { *pos = p + 2; }
-            p = ((b as usize & 0x3F) << 8) | data[p + 1] as usize;
-            jumped = true;
-            jumps += 1;
-            if jumps > 16 { return None; }
-            continue;
-        }
-        let len = b as usize;
-        p += 1;
-        if p + len > data.len() { return None; }
-        if !name.is_empty() { name.push('.'); }
-        name.push_str(std::str::from_utf8(&data[p..p + len]).unwrap_or("?"));
-        p += len;
-    }
-    Some(name)
 }

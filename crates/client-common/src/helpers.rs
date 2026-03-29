@@ -38,6 +38,10 @@ pub struct Args {
     /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+
+    /// Transport: "quic" (default) or "h2"
+    #[arg(long, default_value = "quic")]
+    pub transport: String,
 }
 
 // ─── Init logging ────────────────────────────────────────────────────────────
