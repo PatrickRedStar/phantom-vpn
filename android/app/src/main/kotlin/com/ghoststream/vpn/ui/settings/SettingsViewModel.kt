@@ -129,6 +129,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         tunAddr    = parsed.tun,
                         adminUrl   = parsed.adminUrl,
                         adminToken = parsed.adminToken,
+                        transport  = parsed.transport,
                     ),
                 )
 
@@ -149,6 +150,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun renameProfile(id: String, name: String) {
         val profile = profilesStore.profiles.value.find { it.id == id } ?: return
         profilesStore.updateProfile(profile.copy(name = name.trim().ifEmpty { profile.name }))
+    }
+
+    fun updateProfileTransport(id: String, transport: String) {
+        val profile = profilesStore.profiles.value.find { it.id == id } ?: return
+        profilesStore.updateProfile(profile.copy(transport = transport))
     }
 
     fun setInsecure(insecure: Boolean) {

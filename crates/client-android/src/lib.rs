@@ -9,7 +9,7 @@
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -130,6 +130,10 @@ struct TunnelHandle {
 
 static TUNNEL: Mutex<Option<TunnelHandle>> = Mutex::new(None);
 
+// Protected socket fds for Android VPN Service
+static PROTECTED_TCP_FD: AtomicU64 = AtomicU64::new(0);
+static PROTECTED_UDP_FD: AtomicU64 = AtomicU64::new(0);
+
 // ─── JNI entry points ────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -158,6 +162,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     cert_path: JString,
     key_path: JString,
     ca_cert_path: JString,
+    transport: JString,
 ) -> jint {
     // Set max level permissive; GhostStreamLogger::enabled() gates by LOG_LEVEL
     let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Trace));
@@ -176,6 +181,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let cert_path_str = jstr!(cert_path, "certPath");
     let key_path_str = jstr!(key_path, "keyPath");
     let ca_cert_path_str = jstr!(ca_cert_path, "caCertPath");
+    let transport_str = jstr!(transport, "transport");
     let insecure = insecure != 0;
 
     reset_stats();
@@ -190,66 +196,112 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
 
-    let std_socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
-        Ok(s) => s,
-        Err(e) => {
-            log::error!("nativeStart: bind UDP failed: {}", e);
+    // Branch on transport type for socket creation
+    let is_h2 = transport_str == "h2";
+
+    if is_h2 {
+        // HTTP/2: Create TCP socket for later connection
+        let tcp_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        if tcp_fd < 0 {
+            log::error!("nativeStart: failed to create TCP socket");
             unsafe { libc::close(fd); }
             return -1;
         }
-    };
-    let socket_fd = std_socket.as_raw_fd();
 
-    // Increase UDP socket buffers — critical for download throughput.
-    // Default Android SO_RCVBUF is ~200KB; at high pps QUIC packets get dropped.
-    unsafe {
-        let buf_size: libc::c_int = 4 * 1024 * 1024;
-        libc::setsockopt(
-            socket_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
-            &buf_size as *const _ as *const libc::c_void,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        );
-        libc::setsockopt(
-            socket_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
-            &buf_size as *const _ as *const libc::c_void,
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        );
-        let mut actual_rcv: libc::c_int = 0;
-        let mut actual_snd: libc::c_int = 0;
-        let mut len: libc::socklen_t = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-        libc::getsockopt(
-            socket_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
-            &mut actual_rcv as *mut _ as *mut libc::c_void, &mut len,
-        );
-        libc::getsockopt(
-            socket_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
-            &mut actual_snd as *mut _ as *mut libc::c_void, &mut len,
-        );
-        log::info!("UDP buffers: SO_RCVBUF={}KB SO_SNDBUF={}KB", actual_rcv / 1024, actual_snd / 1024);
+        // Protect TCP socket from VPN tunnel
+        let protected = env
+            .call_method(&this, "protect", "(I)Z", &[JValue::Int(tcp_fd)])
+            .ok()
+            .and_then(|v| v.z().ok())
+            .unwrap_or(false);
+
+        if !protected {
+            log::error!("nativeStart: VpnService.protect() returned false for TCP socket");
+            unsafe { libc::close(fd); }
+            unsafe { libc::close(tcp_fd); }
+            return -1;
+        }
+        // TCP socket tuning: TCP_NODELAY + large buffers (matching QUIC's 4MB UDP buffers)
+        unsafe {
+            let one: libc::c_int = 1;
+            libc::setsockopt(tcp_fd, libc::IPPROTO_TCP, libc::TCP_NODELAY,
+                &one as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            let buf_size: libc::c_int = 4 * 1024 * 1024;
+            libc::setsockopt(tcp_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            libc::setsockopt(tcp_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+        }
+        log::info!("HTTP/2 TCP socket fd={} protected + tuned (NODELAY, 4MB bufs)", tcp_fd);
+
+        // Store TCP fd in a way that run_tunnel can access it
+        PROTECTED_TCP_FD.store(tcp_fd as u64, Ordering::Relaxed);
+    } else {
+        // QUIC: Create UDP socket using raw fd directly (don't drop!)
+        let socket_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+        if socket_fd < 0 {
+            log::error!("nativeStart: failed to create UDP socket: {}", io::Error::last_os_error());
+            unsafe { libc::close(fd); }
+            return -1;
+        }
+
+        // Increase UDP socket buffers — critical for download throughput.
+        unsafe {
+            let buf_size: libc::c_int = 4 * 1024 * 1024;
+            libc::setsockopt(
+                socket_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+            libc::setsockopt(
+                socket_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
+                &buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+        }
+
+        let protected = env
+            .call_method(&this, "protect", "(I)Z", &[JValue::Int(socket_fd)])
+            .ok()
+            .and_then(|v| v.z().ok())
+            .unwrap_or(false);
+
+        if !protected {
+            log::error!("nativeStart: VpnService.protect() returned false for UDP socket");
+            unsafe { libc::close(fd); }
+            unsafe { libc::close(socket_fd); }
+            return -1;
+        }
+        log::info!("QUIC socket fd={} protected from VPN tunnel", socket_fd);
+
+        // Set non-blocking
+        unsafe {
+            let flags = libc::fcntl(socket_fd, libc::F_GETFL, 0);
+            libc::fcntl(socket_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+
+        // Store UDP socket fd
+        PROTECTED_UDP_FD.store(socket_fd as u64, Ordering::Relaxed);
     }
-
-    let protected = env
-        .call_method(&this, "protect", "(I)Z", &[JValue::Int(socket_fd)])
-        .ok()
-        .and_then(|v| v.z().ok())
-        .unwrap_or(false);
-
-    if !protected {
-        log::error!("nativeStart: VpnService.protect() returned false");
-        unsafe { libc::close(fd); }
-        return -1;
-    }
-    log::info!("QUIC socket fd={} protected from VPN tunnel", socket_fd);
-    std_socket.set_nonblocking(true).unwrap_or(());
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let transport_str_clone = transport_str.clone();
+    let server_addr_str_clone = server_addr_str.clone();
+    let server_name_str_clone = server_name_str.clone();
+    let cert_path_str_clone = cert_path_str.clone();
+    let key_path_str_clone = key_path_str.clone();
+    let ca_cert_path_str_clone = ca_cert_path_str.clone();
 
     std::thread::Builder::new()
         .name("ghoststream-tunnel".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .worker_threads(4)
+                .worker_threads(6)
                 .build()
             {
                 Ok(rt) => rt,
@@ -262,14 +314,15 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
 
             rt.block_on(async move {
                 log::info!(
-                    "Tunnel starting: server={} sni={} insecure={} cert={}",
-                    server_addr_str, server_name_str, insecure,
-                    if cert_path_str.is_empty() { "none" } else { &cert_path_str }
+                    "Tunnel starting: server={} sni={} insecure={} transport={} cert={}",
+                    server_addr_str_clone, server_name_str_clone, insecure, transport_str_clone,
+                    if cert_path_str_clone.is_empty() { "none" } else { &cert_path_str_clone }
                 );
                 if let Err(e) = run_tunnel(
-                    fd, std_socket,
-                    &server_addr_str, &server_name_str,
-                    insecure, &cert_path_str, &key_path_str, &ca_cert_path_str,
+                    fd,
+                    &server_addr_str_clone, &server_name_str_clone,
+                    insecure, &cert_path_str_clone, &key_path_str_clone, &ca_cert_path_str_clone,
+                    &transport_str_clone,
                     shutdown_rx,
                 ).await {
                     log::error!("Tunnel error: {:#}", e);
@@ -389,13 +442,13 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
 
 async fn run_tunnel(
     fd: RawFd,
-    udp_socket: std::net::UdpSocket,
     server_addr: &str,
     server_name: &str,
     insecure: bool,
     cert_path: &str,
     key_path: &str,
     ca_cert_path: &str,
+    transport: &str,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     use anyhow::Context;
@@ -426,6 +479,209 @@ async fn run_tunnel(
         None
     };
 
+    let server_addr: std::net::SocketAddr = if let Ok(addr) = server_addr.parse() {
+        addr
+    } else {
+        log::info!("Resolving DNS for {}", server_addr);
+        tokio::net::lookup_host(server_addr).await
+            .context("DNS lookup failed")?
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", server_addr))?
+    };
+
+    // Branch on transport type
+    if transport == "h2" {
+        run_h2_tunnel(fd, server_addr, server_name, insecure, server_ca, client_identity, shutdown_rx).await
+    } else {
+        // Read UDP socket fd from global
+        let udp_fd = PROTECTED_UDP_FD.load(Ordering::Relaxed) as RawFd;
+        if udp_fd <= 0 {
+            return Err(anyhow::anyhow!("UDP socket not initialized"));
+        }
+        // Convert raw fd to std::net::UdpSocket
+        unsafe {
+            let udp_socket = std::net::UdpSocket::from_raw_fd(udp_fd);
+            run_quic_tunnel(fd, udp_socket, server_addr, server_name, insecure, server_ca, client_identity, shutdown_rx).await
+        }
+    }
+}
+
+/// HTTP/2 tunnel implementation for Android
+async fn run_h2_tunnel(
+    fd: RawFd,
+    server_addr: std::net::SocketAddr,
+    server_name: &str,
+    insecure: bool,
+    server_ca: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+    client_identity: Option<(Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use tokio::sync::mpsc;
+    use bytes::Bytes;
+    use client_common::{h2_connect_with_tcp_stream, h2_stream_rx_loop, h2_stream_tx_loop};
+
+    let client_config = phantom_core::h2_transport::make_h2_client_tls(insecure, server_ca, client_identity)
+        .context("Failed to build HTTP/2 client config")?;
+
+    // Read protected TCP socket fd from global
+    let tcp_fd = PROTECTED_TCP_FD.load(Ordering::Relaxed) as RawFd;
+    if tcp_fd <= 0 {
+        return Err(anyhow::anyhow!("TCP socket not initialized"));
+    }
+
+    // Set socket non-blocking
+    unsafe {
+        let flags = libc::fcntl(tcp_fd, libc::F_GETFL, 0);
+        libc::fcntl(tcp_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+
+    // Connect to server
+    let socket_addr = socket2::SockAddr::from(server_addr);
+    let _ = unsafe { libc::connect(tcp_fd, socket_addr.as_ptr(), socket_addr.len()) };
+    // Non-blocking connect returns EINPROGRESS, which is expected
+
+    // Convert raw fd to std::net::TcpStream first, then to tokio
+    let std_tcp = unsafe { std::net::TcpStream::from_raw_fd(tcp_fd) };
+    let tcp = tokio::net::TcpStream::from_std(std_tcp).context("Failed to convert TCP socket to tokio")?;
+
+    log::info!("HTTP/2 TCP socket fd={} connected to {}", tcp_fd, server_addr);
+
+    let server_name = server_name.to_string();
+    let (send_request, streams) = h2_connect_with_tcp_stream(tcp, server_name, client_config)
+        .await
+        .context("HTTP/2 connect failed")?;
+
+    log::info!("HTTP/2 connected ({} streams)", streams.len());
+    IS_CONNECTED.store(true, Ordering::Relaxed);
+    IS_CONNECTED.store(true, Ordering::Relaxed);
+
+    // Dup fd for dedicated TUN I/O threads
+    let fd_read = fd;
+    let fd_write = unsafe { libc::dup(fd) };
+    if fd_write < 0 {
+        return Err(anyhow::anyhow!("dup fd for writer failed: {}", io::Error::last_os_error()));
+    }
+
+    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(8192);
+    let (h2_pkt_tx, mut h2_pkt_rx) = mpsc::channel::<Vec<u8>>(8192);
+
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+
+    // TUN reader thread
+    log::info!("TUN reader thread starting (fd={})", fd_read);
+    let sf = shutdown_flag.clone();
+    std::thread::Builder::new()
+        .name("tun-reader".into())
+        .spawn(move || {
+            let mut buf = [0u8; 2048];
+            let mut pfd = libc::pollfd { fd: fd_read, events: libc::POLLIN, revents: 0 };
+            log::info!("TUN reader: entering poll loop");
+            while !sf.load(Ordering::Relaxed) {
+                let poll_ret = unsafe { libc::poll(&mut pfd, 1, 10) };
+                if poll_ret <= 0 {
+                    if poll_ret < 0 {
+                        log::debug!("TUN reader: poll error: {}", io::Error::last_os_error());
+                    }
+                    continue;
+                }
+                log::debug!("TUN reader: poll returned {}, revents={:x}", poll_ret, pfd.revents);
+                loop {
+                    let n = unsafe {
+                        libc::read(fd_read, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+                    };
+                    if n <= 0 {
+                        if n < 0 {
+                            log::debug!("TUN reader: read error: {}", io::Error::last_os_error());
+                        }
+                        break;
+                    }
+                    log::debug!("TUN reader: read {} bytes", n);
+                    BYTES_TX.fetch_add(n as u64, Ordering::Relaxed);
+                    PKTS_TX.fetch_add(1, Ordering::Relaxed);
+                    if tun_pkt_tx.blocking_send(buf[..n as usize].to_vec()).is_err() {
+                        log::warn!("TUN reader: tun_pkt_tx send error, exiting");
+                        return;
+                    }
+                }
+            }
+            log::info!("TUN reader thread exiting");
+        })
+        .context("spawn tun-reader")?;
+
+    // TUN writer thread
+    log::info!("TUN writer thread starting (fd={})", fd_write);
+    std::thread::Builder::new()
+        .name("tun-writer".into())
+        .spawn(move || {
+            log::info!("TUN writer: entering receive loop");
+            while let Some(pkt) = h2_pkt_rx.blocking_recv() {
+                log::debug!("TUN writer: writing {} bytes", pkt.len());
+                BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
+                PKTS_RX.fetch_add(1, Ordering::Relaxed);
+                unsafe { libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len()); }
+                for _ in 0..255 {
+                    match h2_pkt_rx.try_recv() {
+                        Ok(pkt) => {
+                            BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
+                            PKTS_RX.fetch_add(1, Ordering::Relaxed);
+                            unsafe {
+                                libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len());
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            log::info!("TUN writer thread exiting");
+            unsafe { libc::close(fd_write); }
+        })
+        .context("spawn tun-writer")?;
+
+    // HTTP/2 stream loops
+    let (sends, recvs): (Vec<h2::SendStream<Bytes>>, Vec<h2::RecvStream>) = streams.into_iter().unzip();
+    let mut set = tokio::task::JoinSet::new();
+
+    for recv in recvs {
+        let tx = h2_pkt_tx.clone();
+        set.spawn(async move { h2_stream_rx_loop(recv, tx).await });
+    }
+    set.spawn(async move { h2_stream_tx_loop(tun_pkt_rx, sends).await });
+
+    // Wait for shutdown or ALL tasks to complete (not just one!)
+    tokio::select! {
+        _ = shutdown_rx => { log::info!("Shutdown received"); }
+        _ = async {
+            while let Some(res) = set.join_next().await {
+                if let Err(e) = res {
+                    log::error!("Tunnel task panicked: {}", e);
+                }
+            }
+        } => {
+            log::info!("All HTTP/2 stream tasks completed");
+        }
+    }
+
+    shutdown_flag.store(true, Ordering::Relaxed);
+    IS_CONNECTED.store(false, Ordering::Relaxed);
+    drop(send_request);
+    Ok(())
+}
+
+/// QUIC tunnel implementation for Android (original code)
+async fn run_quic_tunnel(
+    fd: RawFd,
+    udp_socket: std::net::UdpSocket,
+    server_addr: std::net::SocketAddr,
+    server_name: &str,
+    insecure: bool,
+    server_ca: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
+    client_identity: Option<(Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>)>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use tokio::sync::mpsc;
+
     let client_config = phantom_core::quic::make_client_config(insecure, server_ca, client_identity)
         .context("Failed to build QUIC client config")?;
 
@@ -436,15 +692,6 @@ async fn run_tunnel(
     ).context("Failed to create QUIC endpoint")?;
     endpoint.set_default_client_config(client_config);
 
-    let server_addr: std::net::SocketAddr = if let Ok(addr) = server_addr.parse() {
-        addr
-    } else {
-        log::info!("Resolving DNS for {}", server_addr);
-        tokio::net::lookup_host(server_addr).await
-            .context("DNS lookup failed")?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", server_addr))?
-    };
     let (connection, streams) =
         client_common::connect_and_handshake(&endpoint, server_addr, server_name)
             .await
@@ -453,8 +700,8 @@ async fn run_tunnel(
     log::info!("QUIC connected ({} streams)", streams.len());
     IS_CONNECTED.store(true, Ordering::Relaxed);
 
-    // Dup fd for dedicated TUN I/O threads so each can close independently
-    let fd_read = fd; // original fd — reader owns it conceptually
+    // Dup fd for dedicated TUN I/O threads
+    let fd_read = fd;
     let fd_write = unsafe { libc::dup(fd) };
     if fd_write < 0 {
         return Err(anyhow::anyhow!("dup fd for writer failed: {}", io::Error::last_os_error()));
@@ -465,37 +712,48 @@ async fn run_tunnel(
 
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    // ── Dedicated TUN reader thread ──────────────────────────────────────
-    // Runs outside tokio so TUN I/O doesn't steal cycles from QUIC crypto.
-    // Uses poll() + drain loop, similar to Linux client's io_uring reader.
+    // TUN reader thread
+    log::info!("TUN reader thread starting (fd={})", fd_read);
     let sf = shutdown_flag.clone();
     std::thread::Builder::new()
         .name("tun-reader".into())
         .spawn(move || {
             let mut buf = [0u8; 2048];
             let mut pfd = libc::pollfd { fd: fd_read, events: libc::POLLIN, revents: 0 };
+            log::info!("TUN reader: entering poll loop");
             while !sf.load(Ordering::Relaxed) {
-                if unsafe { libc::poll(&mut pfd, 1, 100) } <= 0 {
+                let poll_ret = unsafe { libc::poll(&mut pfd, 1, 10) };
+                if poll_ret <= 0 {
+                    if poll_ret < 0 {
+                        log::debug!("TUN reader: poll error: {}", io::Error::last_os_error());
+                    }
                     continue;
                 }
-                // Drain all available packets after poll wakes
+                log::debug!("TUN reader: poll returned {}, revents={:x}", poll_ret, pfd.revents);
                 loop {
                     let n = unsafe {
                         libc::read(fd_read, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
                     };
-                    if n <= 0 { break; }
+                    if n <= 0 {
+                        if n < 0 {
+                            log::debug!("TUN reader: read error: {}", io::Error::last_os_error());
+                        }
+                        break;
+                    }
+                    log::debug!("TUN reader: read {} bytes", n);
                     BYTES_TX.fetch_add(n as u64, Ordering::Relaxed);
                     PKTS_TX.fetch_add(1, Ordering::Relaxed);
                     if tun_pkt_tx.blocking_send(buf[..n as usize].to_vec()).is_err() {
+                        log::warn!("TUN reader: tun_pkt_tx send error, exiting");
                         return;
                     }
                 }
             }
+            log::info!("TUN reader thread exiting");
         })
         .context("spawn tun-reader")?;
 
-    // ── Dedicated TUN writer thread ──────────────────────────────────────
-    // Drains channel in batches to reduce syscall overhead.
+    // TUN writer thread
     std::thread::Builder::new()
         .name("tun-writer".into())
         .spawn(move || {
@@ -503,7 +761,6 @@ async fn run_tunnel(
                 BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
                 PKTS_RX.fetch_add(1, Ordering::Relaxed);
                 unsafe { libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len()); }
-                // Batch: drain up to 255 more packets without blocking
                 for _ in 0..255 {
                     match quic_pkt_rx.try_recv() {
                         Ok(pkt) => {
@@ -521,7 +778,7 @@ async fn run_tunnel(
         })
         .context("spawn tun-writer")?;
 
-    // ── QUIC stream loops (tokio tasks, same as before) ──────────────────
+    // QUIC stream loops
     let (sends, recvs): (Vec<_>, Vec<_>) = streams.into_iter().unzip();
     let mut set = tokio::task::JoinSet::new();
 

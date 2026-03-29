@@ -3,10 +3,13 @@
 
 pub mod sessions;
 pub mod tun_iface;
+pub mod vpn_session;
 pub mod quic_server;
+pub mod h2_server;
 pub mod admin;
 
 use std::net::SocketAddr;
+use tokio::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -115,8 +118,13 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let server_config = phantom_core::quic::make_server_config(certs, key, idle_timeout, client_ca)
+    let server_config = phantom_core::quic::make_server_config(certs.clone(), key.clone_key(), idle_timeout, client_ca.clone())
         .context("Failed to create QUIC server config")?;
+
+    // ─── HTTP/2 TLS config ─────────────────────────────────────────────────
+    let h2_tls_config = phantom_core::h2_transport::make_h2_server_tls(
+        certs, key, client_ca
+    ).context("Failed to create HTTP/2 TLS config")?;
 
     // ─── TUN interface ──────────────────────────────────────────────────────
 
@@ -177,19 +185,19 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("QUIC endpoint bound on {}", listen_addr);
 
     // ─── Sessions ───────────────────────────────────────────────────────────
-    let sessions = quic_server::new_quic_session_map();
+    let sessions = vpn_session::new_session_map();
     let idle_secs = cfg.timeouts.as_ref()
         .and_then(|t| t.idle_timeout_secs)
         .unwrap_or(300);
-    tokio::spawn(quic_server::cleanup_task(sessions.clone(), idle_secs));
+    tokio::spawn(vpn_session::cleanup_task(sessions.clone(), idle_secs));
 
     // ─── Client allowlist (fingerprint-based) ────────────────────────────
-    let allow_list = quic_server::new_allow_list();
+    let allow_list = vpn_session::new_allow_list();
     let allow_list_path = cfg.quic.as_ref()
         .and_then(|q| q.allowed_clients_path.clone());
 
     if let Some(ref path) = allow_list_path {
-        match quic_server::load_allow_list(Path::new(path)) {
+        match vpn_session::load_allow_list(Path::new(path)) {
             Ok(fps) => {
                 tracing::info!("Loaded {} allowed client fingerprints from {}", fps.len(), path);
                 *allow_list.write().await = fps;
@@ -219,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
             let mut sighup = signal(SignalKind::hangup()).unwrap();
             while sighup.recv().await.is_some() {
                 if let Some(ref p) = path {
-                    match quic_server::load_allow_list(Path::new(p)) {
+                    match vpn_session::load_allow_list(Path::new(p)) {
                         Ok(fps) => {
                             tracing::info!("SIGHUP: reloaded {} allowed fingerprints from {}", fps.len(), p);
                             *allow_list.write().await = fps;
@@ -239,13 +247,14 @@ async fn main() -> anyhow::Result<()> {
             let listen_str = admin_cfg.listen_addr.as_deref().unwrap_or("10.7.0.1:8080");
             match listen_str.parse::<SocketAddr>() {
                 Ok(admin_addr) => {
-                    // Resolve server SNI from cert path
-                    let server_name = cfg.quic.as_ref()
-                        .and_then(|q| q.cert_path.as_deref())
-                        .and_then(|p| {
-                            // Extract domain from /etc/letsencrypt/live/<domain>/fullchain.pem
-                            p.split('/').find(|s| s.contains('.') && !s.contains("letsencrypt")).map(String::from)
-                        })
+                    // Resolve server SNI: explicit config > cert path > listen_addr
+                    let server_name = cfg.network.server_name.clone()
+                        .or_else(|| cfg.quic.as_ref()
+                            .and_then(|q| q.cert_path.as_deref())
+                            .and_then(|p| {
+                                // Extract domain from /etc/letsencrypt/live/<domain>/fullchain.pem
+                                p.split('/').find(|s| s.contains('.') && !s.contains("letsencrypt")).map(String::from)
+                            }))
                         .unwrap_or_else(|| cfg.network.listen_addr.clone());
 
                     let ca_cert_path = admin_cfg.ca_cert_path.as_ref()
@@ -269,7 +278,8 @@ async fn main() -> anyhow::Result<()> {
                         allow_list: allow_list.clone(),
                         ca_cert_path,
                         ca_key_path,
-                        server_addr: cfg.network.listen_addr.clone(),
+                        server_addr: cfg.network.public_addr.clone()
+                            .unwrap_or_else(|| cfg.network.listen_addr.clone()),
                         server_name,
                         exit_ip: cfg.network.exit_ip.clone(),
                     };
@@ -288,10 +298,42 @@ async fn main() -> anyhow::Result<()> {
     {
         let sess = sessions.clone();
         tokio::spawn(async move {
-            if let Err(e) = quic_server::tun_dispatch_loop(tun_read_rx, sess).await {
+            if let Err(e) = vpn_session::tun_dispatch_loop(tun_read_rx, sess).await {
                 tracing::error!("tun_dispatch_loop exited: {}", e);
             }
         });
+    }
+
+    // ─── HTTP/2 TCP listener ───────────────────────────────────────────────
+    // Parse tun_network/tun_prefix early so both QUIC and H2 can use it
+    let (tun_network, tun_prefix) = parse_cidr(tun_addr).unwrap_or_else(|| {
+        tracing::warn!("Could not parse tun_addr CIDR '{}', defaulting to 10.7.0.0/24", tun_addr);
+        ("10.7.0.0".parse().unwrap(), 24)
+    });
+
+    if cfg.h2.as_ref().and_then(|h| h.enabled).unwrap_or(true) {
+        let h2_addr = cfg.h2.as_ref()
+            .and_then(|h| h.listen_addr.as_deref())
+            .unwrap_or("0.0.0.0:9443");  // Default to 9443 TCP (QUIC is 8443 UDP)
+        match h2_addr.parse::<SocketAddr>() {
+            Ok(h2_listen_addr) => {
+                let h2_listener = TcpListener::bind(h2_listen_addr).await
+                    .context(format!("Failed to bind HTTP/2 on {}", h2_listen_addr))?;
+                let h2_tls = h2_tls_config.clone();
+                let tun_tx = tun_tx.clone();
+                let sessions = sessions.clone();
+                let allow_list = allow_list.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = h2_server::run_h2_accept_loop(
+                        h2_listener, h2_tls, tun_tx, sessions, tun_network, tun_prefix, allow_list
+                    ).await {
+                        tracing::error!("HTTP/2 accept loop error: {}", e);
+                    }
+                });
+                tracing::info!("HTTP/2 listener bound on {}", h2_listen_addr);
+            }
+            Err(e) => tracing::warn!("Invalid h2 listen_addr '{}': {}", h2_addr, e),
+        }
     }
 
     // ─── Signal handling for graceful shutdown ───────────────────────────────
@@ -311,10 +353,7 @@ async fn main() -> anyhow::Result<()> {
     // ─── QUIC accept loop (main) ────────────────────────────────────────────
     tracing::info!("Server ready. Listening on {} (QUIC/UDP)", listen_addr);
 
-    let (tun_network, tun_prefix) = parse_cidr(tun_addr).unwrap_or_else(|| {
-        tracing::warn!("Could not parse tun_addr CIDR '{}', defaulting to 10.7.0.0/24", tun_addr);
-        ("10.7.0.0".parse().unwrap(), 24)
-    });
+    // tun_network, tun_prefix already parsed above for H2
 
     tokio::select! {
         result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, tun_network, tun_prefix, allow_list) => {

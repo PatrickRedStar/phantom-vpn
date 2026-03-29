@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 try:
     import tomllib
@@ -417,8 +418,28 @@ def _pick_client(clients, prompt="Выберите клиента для экс�
     return name, clients[name]
 
 
+def _generate_conn_string(server_name: str, server_port: str, tun_addr: str,
+                          cert_pem: str, key_pem: str, transport: str,
+                          admin_url: Optional[str] = None, admin_token: Optional[str] = None) -> str:
+    """Генерирует строку подключения (base64url JSON)."""
+    payload = {
+        "v": 1,
+        "addr": f"{server_name}:{server_port}",
+        "sni": server_name,
+        "tun": tun_addr,
+        "cert": cert_pem,
+        "key": key_pem,
+        "transport": transport,
+    }
+    if admin_url and admin_token:
+        payload["admin"] = {"url": admin_url, "token": admin_token}
+
+    json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
+
+
 def export_conn_str(keyring, server_ip, server_port, server_name):
-    """Генерирует строку подключения (base64url JSON) для вставки в приложение."""
+    """Генерирует ДВЕ строки подключения: QUIC (8443) + HTTP/2 (9443)."""
     name, item = _pick_client(keyring["clients"])
     if name is None:
         return
@@ -430,31 +451,47 @@ def export_conn_str(keyring, server_ip, server_port, server_name):
         print(f"[ОШИБКА] Не удалось прочитать файлы сертификата: {e}")
         return
 
-    payload = {
-        "v":    1,
-        "addr": f"{server_name}:{server_port}",
-        "sni":  server_name,
-        "tun":  item["tun_addr"],
-        "cert": cert_pem,
-        "key":  key_pem,
-    }
+    # Строка для QUIC (порт 8443)
+    conn_str_quic = _generate_conn_string(
+        server_name=server_name,
+        server_port="8443",
+        tun_addr=item["tun_addr"],
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        transport="quic",
+    )
 
-    json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    conn_str   = base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
+    # Строка для HTTP/2 (порт 9443)
+    conn_str_h2 = _generate_conn_string(
+        server_name=server_name,
+        server_port="9443",
+        tun_addr=item["tun_addr"],
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        transport="h2",
+    )
 
-    print(f"\nСтрока подключения для {name!r}:")
+    print(f"\n=== Строка подключения для {name!r} — QUIC (порт 8443) ===")
     print("─" * 60)
-    print(conn_str)
+    print(conn_str_quic)
     print("─" * 60)
+
+    print(f"\n=== Строка подключения для {name!r} — HTTP/2 (порт 9443) ===")
+    print("─" * 60)
+    print(conn_str_h2)
+    print("─" * 60)
+
     print(f"\nИспользование:")
     print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
-    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str}'")
-    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str}'")
+    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str_quic}'  # QUIC")
+    print(f"           sudo phantom-client-linux --conn-string '{conn_str_h2}'  # HTTP/2")
+    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str_quic}'  # QUIC")
+    print(f"           sudo phantom-client-macos --conn-string '{conn_str_h2}'  # HTTP/2")
 
 
 def export_admin_conn_str(keyring, server_ip, server_port, server_name,
                           admin_addr, admin_token):
-    """Генерирует строку подключения с правами администратора (base64url JSON)."""
+    """Генерирует ДВЕ строки подключения с admin правами: QUIC (8443) + HTTP/2 (9443)."""
     name, item = _pick_client(keyring["clients"],
                                prompt="Выберите клиента для экспорта (admin):")
     if name is None:
@@ -469,7 +506,7 @@ def export_admin_conn_str(keyring, server_ip, server_port, server_name,
 
     # Resolve admin_addr / admin_token interactively if not provided
     if not admin_addr:
-        admin_addr = input("Admin listen_addr (e.g. http://10.7.0.1:8080): ").strip()
+        admin_addr = input("Admin URL (e.g. http://10.7.0.1:8080): ").strip()
         if not admin_addr:
             print("admin_addr не задан, отменено.")
             return
@@ -483,30 +520,46 @@ def export_admin_conn_str(keyring, server_ip, server_port, server_name,
     if not admin_addr.startswith("http://") and not admin_addr.startswith("https://"):
         admin_addr = "http://" + admin_addr
 
-    payload = {
-        "v":    1,
-        "addr": f"{server_name}:{server_port}",
-        "sni":  server_name,
-        "tun":  item["tun_addr"],
-        "cert": cert_pem,
-        "key":  key_pem,
-        "admin": {
-            "url":   admin_addr,
-            "token": admin_token,
-        },
-    }
+    # Строка для QUIC (порт 8443)
+    conn_str_quic = _generate_conn_string(
+        server_name=server_name,
+        server_port="8443",
+        tun_addr=item["tun_addr"],
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        transport="quic",
+        admin_url=admin_addr,
+        admin_token=admin_token,
+    )
 
-    json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    conn_str   = base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
+    # Строка для HTTP/2 (порт 9443)
+    conn_str_h2 = _generate_conn_string(
+        server_name=server_name,
+        server_port="9443",
+        tun_addr=item["tun_addr"],
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        transport="h2",
+        admin_url=admin_addr,
+        admin_token=admin_token,
+    )
 
-    print(f"\nAdmin-строка подключения для {name!r}:")
+    print(f"\n=== Admin-строка для {name!r} — QUIC (порт 8443) ===")
     print("─" * 60)
-    print(conn_str)
+    print(conn_str_quic)
     print("─" * 60)
+
+    print(f"\n=== Admin-строка для {name!r} — HTTP/2 (порт 9443) ===")
+    print("─" * 60)
+    print(conn_str_h2)
+    print("─" * 60)
+
     print(f"\nИспользование:")
     print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
-    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str}'")
-    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str}'")
+    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str_quic}'  # QUIC")
+    print(f"           sudo phantom-client-linux --conn-string '{conn_str_h2}'  # HTTP/2")
+    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str_quic}'  # QUIC")
+    print(f"           sudo phantom-client-macos --conn-string '{conn_str_h2}'  # HTTP/2")
     print(f"\n[admin] url={admin_addr}  token={admin_token[:8]}…")
 
 

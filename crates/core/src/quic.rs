@@ -174,7 +174,7 @@ pub fn make_client_config(
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
-fn build_root_store(
+pub(crate) fn build_root_store(
     ca_certs: Option<Vec<CertificateDer<'static>>>,
 ) -> anyhow::Result<Arc<rustls::RootCertStore>> {
     let mut roots = rustls::RootCertStore::empty();
@@ -191,7 +191,7 @@ fn build_root_store(
 // ─── Certificate verification skip (legacy self-signed mode) ─────────────────
 
 #[derive(Debug)]
-struct SkipVerification;
+pub(crate) struct SkipVerification;
 
 impl rustls::client::danger::ServerCertVerifier for SkipVerification {
     fn verify_server_cert(

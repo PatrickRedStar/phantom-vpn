@@ -12,6 +12,8 @@ data class VpnProfile(
     val tunAddr: String = "10.7.0.2/24",
     val adminUrl: String? = null,
     val adminToken: String? = null,
+    // Transport: "quic" (default) or "h2"
+    val transport: String = "h2",
     // Per-profile overrides (null = use global defaults)
     val dnsServers: List<String>? = null,
     val splitRouting: Boolean? = null,
