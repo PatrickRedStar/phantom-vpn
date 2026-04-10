@@ -3,28 +3,31 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::net::SocketAddr;
     use std::fs::{File, OpenOptions};
     use std::io;
+    use std::net::SocketAddr;
     use std::os::unix::io::AsRawFd;
     use std::pin::Pin;
     use std::process::Command;
     use std::task::Poll;
+    use std::time::{Duration, Instant};
 
     use anyhow::Context;
     use clap::Parser;
     use tokio::io::unix::AsyncFd;
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::signal;
+    use tokio::sync::watch;
 
     use client_common::helpers::{self, Args};
     use client_common::{h2_connect_and_handshake, h2_stream_rx_loop, h2_stream_tx_loop};
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
     use phantom_core::config::ClientConfig;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
     const TUNSETIFF:  libc::c_ulong = 0x400454CA;
     const IFF_TUN:    libc::c_short = 0x0001;
     const IFF_NO_PI:  libc::c_short = 0x1000;
+    const AUTO_QUIC_MIN_LIFETIME: Duration = Duration::from_secs(10);
 
     #[repr(C)]
     struct Ifreq {
@@ -289,6 +292,91 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TunnelExit {
+    Shutdown,
+    TunnelDied,
+}
+
+fn clone_client_identity(
+    identity: &Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+) -> Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    identity
+        .as_ref()
+        .map(|(certs, key)| (certs.clone(), key.clone_key()))
+}
+
+fn resolve_transport(args: &Args, cfg: &ClientConfig) -> anyhow::Result<String> {
+    if let Some(transport) = args.transport.as_deref() {
+        return helpers::normalize_transport(transport);
+    }
+    if let Some(transport) = cfg.transport.as_deref() {
+        return helpers::normalize_transport(transport);
+    }
+    Ok("quic".to_string())
+}
+
+async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
+    if *shutdown_rx.borrow() {
+        return;
+    }
+    let _ = shutdown_rx.changed().await;
+}
+
+async fn run_auto_tunnel(
+    cfg: ClientConfig,
+    server_addr: SocketAddr,
+    skip_verify: bool,
+    server_ca: Option<Vec<CertificateDer<'static>>>,
+    client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> anyhow::Result<TunnelExit> {
+    tracing::info!("Auto transport: probing QUIC first");
+    let quic_started_at = Instant::now();
+    let quic_result = run_quic_tunnel(
+        cfg.clone(),
+        server_addr,
+        skip_verify,
+        server_ca.clone(),
+        clone_client_identity(&client_identity),
+        shutdown_rx.clone(),
+    ).await;
+
+    match quic_result {
+        Ok(TunnelExit::Shutdown) => return Ok(TunnelExit::Shutdown),
+        Ok(TunnelExit::TunnelDied) if quic_started_at.elapsed() >= AUTO_QUIC_MIN_LIFETIME => {
+            tracing::warn!(
+                "Auto transport: QUIC tunnel died after {:?}, not falling back to H2 automatically",
+                quic_started_at.elapsed(),
+            );
+            return Ok(TunnelExit::TunnelDied);
+        }
+        Ok(TunnelExit::TunnelDied) => {
+            tracing::warn!(
+                "Auto transport: QUIC tunnel died after {:?}, falling back to H2",
+                quic_started_at.elapsed(),
+            );
+        }
+        Err(e) => {
+            tracing::warn!("Auto transport: QUIC failed, falling back to H2: {:#}", e);
+        }
+    }
+
+    if *shutdown_rx.borrow() {
+        return Ok(TunnelExit::Shutdown);
+    }
+
+    tracing::info!("Auto transport: starting HTTP/2 fallback");
+    run_h2_tunnel(
+        cfg,
+        server_addr,
+        skip_verify,
+        server_ca,
+        client_identity,
+        shutdown_rx,
+    ).await
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
     #[tokio::main]
@@ -300,9 +388,9 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
         let args = Args::parse();
         helpers::init_logging(args.verbose);
-        tracing::info!("PhantomVPN Linux Client starting (QUIC transport)...");
+        tracing::info!("PhantomVPN Linux Client starting...");
 
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         // Register signals early
         tokio::spawn(async move {
@@ -312,7 +400,7 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
                 _ = sigint.recv() => { tracing::info!("Received SIGINT. Initiating shutdown..."); }
                 _ = sigterm.recv() => { tracing::info!("Received SIGTERM. Initiating shutdown..."); }
             }
-            let _ = shutdown_tx.send(());
+            let _ = shutdown_tx.send(true);
         });
 
     // Load config: --conn-string overrides TOML config file
@@ -347,30 +435,44 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
 
     let skip_verify = cfg.network.insecure || (server_ca.is_none() && client_identity.is_none());
 
-    // Branch on transport type
-    let transport = args.transport.as_str();
+    // Resolve transport: CLI override > config/conn string > default quic
+    let transport = resolve_transport(&args, &cfg)?;
     tracing::info!("Using transport: {}", transport);
 
-    if transport == "h2" {
-        // HTTP/2 transport
-        run_h2_tunnel(args, cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await
-    } else {
-        // QUIC transport
-        run_quic_tunnel(args, cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await
+    let exit = match transport.as_str() {
+        "h2" => {
+            run_h2_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?
+        }
+        "auto" => {
+            run_auto_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?
+        }
+        _ => {
+            run_quic_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?
+        }
+    };
+
+    match exit {
+        TunnelExit::Shutdown => tracing::info!("Client shutdown complete."),
+        TunnelExit::TunnelDied => tracing::warn!("Tunnel exited without shutdown signal."),
     }
+
+    Ok(())
 }
 
 /// HTTP/2 tunnel implementation
 async fn run_h2_tunnel(
-    _args: Args,
     cfg: ClientConfig,
     server_addr: SocketAddr,
     skip_verify: bool,
     server_ca: Option<Vec<CertificateDer<'static>>>,
     client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
-) -> anyhow::Result<()> {
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> anyhow::Result<TunnelExit> {
     use bytes::Bytes;
+
+    if *shutdown_rx.borrow() {
+        return Ok(TunnelExit::Shutdown);
+    }
 
     let client_config = phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
         .context("Failed to build HTTP/2 client config")?;
@@ -423,23 +525,37 @@ async fn run_h2_tunnel(
             h2_stream_rx_loop(recv, pkt_tx).await
         });
     }
-    // h2_stream_tx_loop spawns tasks and returns immediately — don't put in JoinSet
-    h2_stream_tx_loop(tun_pkt_rx, sends).await?;
 
     tracing::info!("HTTP/2 tunnel active. Press Ctrl-C to exit.");
 
-    // Wait for shutdown or tunnel death
+    // TX loop stays outside JoinSet; either TX completion or first RX death tears the tunnel down.
     tokio::select! {
-        _ = shutdown_rx => {
+        _ = wait_for_shutdown(&mut shutdown_rx) => {
             tracing::info!("Shutdown signal received.");
+            tunnel_set.abort_all();
+            drop(send_request);
+            drop(_cleanup_guard);
+            tracing::info!("Shutdown complete.");
+            return Ok(TunnelExit::Shutdown);
         }
-        Some(res) = tunnel_set.join_next() => {
-            if let Ok(Err(e)) = res {
-                tracing::error!("Tunnel task failed: {}", e);
+        result = h2_stream_tx_loop(tun_pkt_rx, sends) => {
+            match result {
+                Ok(()) => tracing::warn!("H2 TX loop completed, shutting tunnel down."),
+                Err(e) => tracing::error!("H2 TX loop failed: {}", e),
+            }
+        }
+        res = async { tunnel_set.join_next().await } => {
+            match res {
+                Some(Ok(Err(e))) => tracing::error!("H2 RX task failed: {}", e),
+                Some(Ok(Ok(()))) => tracing::warn!("H2 RX task completed, shutting tunnel down."),
+                Some(Err(e)) => tracing::error!("H2 RX task panicked: {}", e),
+                None => tracing::warn!("H2 RX task set ended, shutting tunnel down."),
             }
             tracing::info!("Tunnel died, exiting for restart.");
         }
     }
+
+    tunnel_set.abort_all();
 
     // Close HTTP/2 connection gracefully
     drop(send_request);
@@ -447,19 +563,22 @@ async fn run_h2_tunnel(
     drop(_cleanup_guard);
     tracing::info!("Shutdown complete.");
 
-    Ok(())
+    Ok(TunnelExit::TunnelDied)
 }
 
 /// QUIC tunnel implementation (original code)
 async fn run_quic_tunnel(
-    args: Args,
     cfg: ClientConfig,
     server_addr: SocketAddr,
     skip_verify: bool,
     server_ca: Option<Vec<CertificateDer<'static>>>,
     client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
-) -> anyhow::Result<()> {
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> anyhow::Result<TunnelExit> {
+    if *shutdown_rx.borrow() {
+        return Ok(TunnelExit::Shutdown);
+    }
+
     // ─── QUIC endpoint with SO_MARK ─────────────────────────────────────
     let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")
         .context("Failed to bind UDP socket")?;
@@ -552,8 +671,12 @@ async fn run_quic_tunnel(
 
     // Wait for shutdown or tunnel death
     tokio::select! {
-        _ = shutdown_rx => {
+        _ = wait_for_shutdown(&mut shutdown_rx) => {
             tracing::info!("Shutdown signal received.");
+            connection.close(0u32.into(), b"client shutdown");
+            drop(_cleanup_guard);
+            tracing::info!("Shutdown complete.");
+            return Ok(TunnelExit::Shutdown);
         }
         Some(res) = tunnel_set.join_next() => {
             if let Ok(Err(e)) = res {
@@ -570,7 +693,7 @@ async fn run_quic_tunnel(
     drop(_cleanup_guard);
     tracing::info!("Shutdown complete.");
 
-    Ok(())
+    Ok(TunnelExit::TunnelDied)
 }
 }
 

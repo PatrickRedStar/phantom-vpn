@@ -14,7 +14,6 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -83,17 +82,48 @@ def load_admin_values(server_toml_path):
     return addr, token
 
 
+def _split_host_port(addr: str, default_port: str):
+    """Split host:port safely for IPv4/IPv6, returning (host, port)."""
+    value = (addr or "").strip()
+    if not value:
+        return "", default_port
+
+    # Bracketed IPv6: [::1]:443
+    if value.startswith("["):
+        end = value.find("]")
+        if end != -1:
+            host = value[1:end]
+            rest = value[end + 1 :]
+            if rest.startswith(":") and rest[1:].isdigit():
+                return host, rest[1:]
+            return host, default_port
+
+    # Single ':' => host:port (IPv4/hostname)
+    if value.count(":") == 1:
+        host, port = value.rsplit(":", 1)
+        if port.isdigit():
+            return host, port
+        return host, default_port
+
+    # Raw IPv6 without brackets or host without port
+    return value, default_port
+
+
 def load_server_values(server_toml_path, server_ip_override=None, server_name_override=None):
-    """Возвращает (server_ip, server_port, server_name, ca_cert_path, ca_key_path)."""
+    """Возвращает:
+    (server_ip, quic_port, h2_port, connect_host, server_name, ca_cert_path, ca_key_path).
+    """
     data = load_toml(server_toml_path)
 
     network = data.get("network", {}) if isinstance(data.get("network"), dict) else {}
     quic    = data.get("quic",    {}) if isinstance(data.get("quic"),    dict) else {}
+    h2      = data.get("h2",      {}) if isinstance(data.get("h2"),      dict) else {}
 
-    listen_addr = network.get("listen_addr", "0.0.0.0:8443")
-    parts       = listen_addr.rsplit(":", 1)
-    raw_ip      = parts[0] if len(parts) == 2 else listen_addr
-    server_port = parts[1] if len(parts) == 2 else "8443"
+    listen_addr = network.get("listen_addr", "0.0.0.0:443")
+    raw_ip, quic_port = _split_host_port(listen_addr, "443")
+
+    h2_listen_addr = h2.get("listen_addr", "0.0.0.0:9443")
+    _h2_host, h2_port = _split_host_port(h2_listen_addr, "9443")
 
     # Resolve server IP
     if server_ip_override:
@@ -121,6 +151,16 @@ def load_server_values(server_toml_path, server_ip_override=None, server_name_ov
             if not server_name:
                 server_name = server_ip
 
+    # Host used in generated client config / connection string:
+    # prefer explicit public_addr host, fallback to resolved public IP.
+    public_addr = network.get("public_addr")
+    if isinstance(public_addr, str) and public_addr.strip():
+        connect_host, _public_port = _split_host_port(public_addr, quic_port)
+        if not connect_host:
+            connect_host = server_ip
+    else:
+        connect_host = server_ip
+
     # CA cert/key paths
     ca_cert_path = quic.get("ca_cert_path", "")
     if not ca_cert_path:
@@ -142,7 +182,15 @@ def load_server_values(server_toml_path, server_ip_override=None, server_name_ov
             f"Ожидается рядом с сертификатом CA: {ca_cert_path.parent}/"
         )
 
-    return server_ip, server_port, server_name, str(ca_cert_path), str(ca_key_path)
+    return (
+        server_ip,
+        quic_port,
+        h2_port,
+        connect_host,
+        server_name,
+        str(ca_cert_path),
+        str(ca_key_path),
+    )
 
 
 # ─── Keyring ──────────────────────────────────────────────────────────────────
@@ -259,15 +307,17 @@ def generate_client_cert(name, ca_cert_path, ca_key_path, out_dir):
 
 # ─── Client config renderer ───────────────────────────────────────────────────
 
-def render_client_toml(server_ip, server_port, server_name, tun_addr,
-                       cert_path, key_path):
+def render_client_toml(server_host, server_port, server_name, tun_addr,
+                       cert_path, key_path, transport="quic"):
     return f"""[network]
-server_addr = "{server_ip}:{server_port}"
+server_addr = "{server_host}:{server_port}"
 server_name = "{server_name}"
 insecure    = false
 tun_addr    = "{tun_addr}"
 tun_mtu     = 1350
 default_gw  = "10.7.0.1"
+
+transport = "{transport}"
 
 [quic]
 cert_path = "{cert_path}"
@@ -276,11 +326,11 @@ key_path  = "{key_path}"
 
 
 def print_android_instructions(name, local_cert, local_key):
-    android_dir = "/sdcard/Android/data/com.phantom.vpn/files"
+    android_dir = "/sdcard/Android/data/com.ghoststream.vpn/files"
     print("\nДля Android (через adb):")
     print(f"  adb push {local_cert} {android_dir}/client.crt")
     print(f"  adb push {local_key}  {android_dir}/client.key")
-    print(f"\nВ приложении PhantomVPN укажите пути:")
+    print(f"\nВ приложении GhostStream укажите пути:")
     print(f"  Cert: {android_dir}/client.crt")
     print(f"  Key:  {android_dir}/client.key")
 
@@ -303,7 +353,7 @@ def list_clients(clients):
         )
 
 
-def add_client(keyring, server_ip, server_port, server_name,
+def add_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name,
                ca_cert_path, ca_key_path, keyring_path):
     clients = keyring["clients"]
     name = input("Имя клиента (латиница, без пробелов): ").strip()
@@ -336,14 +386,25 @@ def add_client(keyring, server_ip, server_port, server_name,
     save_keyring(keyring_path, keyring)
 
     # Config for Linux/macOS
-    linux_toml = render_client_toml(
-        server_ip, server_port, server_name, tun_addr,
+    linux_toml_quic = render_client_toml(
+        connect_host, quic_port, server_name, tun_addr,
         "/etc/phantom-vpn/client.crt",
         "/etc/phantom-vpn/client.key",
+        transport="quic",
     )
-    print(f"\nКонфиг Linux/macOS (/etc/phantom-vpn/client.toml):\n")
+    linux_toml_h2 = render_client_toml(
+        connect_host, h2_port, server_name, tun_addr,
+        "/etc/phantom-vpn/client.crt",
+        "/etc/phantom-vpn/client.key",
+        transport="h2",
+    )
+    print(f"\nКонфиг Linux/macOS (/etc/phantom-vpn/client.toml) — QUIC:\n")
     print("─" * 60)
-    print(linux_toml)
+    print(linux_toml_quic)
+    print("─" * 60)
+    print(f"\nКонфиг Linux/macOS (/etc/phantom-vpn/client.toml) — HTTP/2:\n")
+    print("─" * 60)
+    print(linux_toml_h2)
     print("─" * 60)
     print(f"\nСкопировать сертификаты:")
     print(f"  scp root@{server_ip}:{cert_path} /etc/phantom-vpn/client.crt")
@@ -352,7 +413,7 @@ def add_client(keyring, server_ip, server_port, server_name,
     print_android_instructions(name, cert_path, key_path)
 
 
-def show_client(keyring, server_ip, server_port, server_name):
+def show_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name):
     clients = keyring["clients"]
     names   = sorted(clients.keys())
     if not names:
@@ -376,15 +437,27 @@ def show_client(keyring, server_ip, server_port, server_name):
     name = names[idx]
     item = clients[name]
 
-    linux_toml = render_client_toml(
-        server_ip, server_port, server_name,
+    linux_toml_quic = render_client_toml(
+        connect_host, quic_port, server_name,
         item["tun_addr"],
         "/etc/phantom-vpn/client.crt",
         "/etc/phantom-vpn/client.key",
+        transport="quic",
     )
-    print(f"\nКонфиг {name!r} (Linux/macOS):\n")
+    linux_toml_h2 = render_client_toml(
+        connect_host, h2_port, server_name,
+        item["tun_addr"],
+        "/etc/phantom-vpn/client.crt",
+        "/etc/phantom-vpn/client.key",
+        transport="h2",
+    )
+    print(f"\nКонфиг {name!r} (Linux/macOS) — QUIC:\n")
     print("─" * 60)
-    print(linux_toml)
+    print(linux_toml_quic)
+    print("─" * 60)
+    print(f"\nКонфиг {name!r} (Linux/macOS) — HTTP/2:\n")
+    print("─" * 60)
+    print(linux_toml_h2)
     print("─" * 60)
     print(f"\nСкопировать сертификаты с сервера:")
     print(f"  scp root@{server_ip}:{item['cert_path']} /etc/phantom-vpn/client.crt")
@@ -418,13 +491,13 @@ def _pick_client(clients, prompt="Выберите клиента для экс�
     return name, clients[name]
 
 
-def _generate_conn_string(server_name: str, server_port: str, tun_addr: str,
+def _generate_conn_string(connect_host: str, server_name: str, server_port: str, tun_addr: str,
                           cert_pem: str, key_pem: str, transport: str,
                           admin_url: Optional[str] = None, admin_token: Optional[str] = None) -> str:
     """Генерирует строку подключения (base64url JSON)."""
     payload = {
         "v": 1,
-        "addr": f"{server_name}:{server_port}",
+        "addr": f"{connect_host}:{server_port}",
         "sni": server_name,
         "tun": tun_addr,
         "cert": cert_pem,
@@ -438,8 +511,8 @@ def _generate_conn_string(server_name: str, server_port: str, tun_addr: str,
     return base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
 
 
-def export_conn_str(keyring, server_ip, server_port, server_name):
-    """Генерирует ДВЕ строки подключения: QUIC (8443) + HTTP/2 (9443)."""
+def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name):
+    """Генерирует ДВЕ строки подключения: QUIC + HTTP/2 (порты из server.toml)."""
     name, item = _pick_client(keyring["clients"])
     if name is None:
         return
@@ -451,32 +524,34 @@ def export_conn_str(keyring, server_ip, server_port, server_name):
         print(f"[ОШИБКА] Не удалось прочитать файлы сертификата: {e}")
         return
 
-    # Строка для QUIC (порт 8443)
+    # Строка для QUIC
     conn_str_quic = _generate_conn_string(
+        connect_host=connect_host,
         server_name=server_name,
-        server_port="8443",
+        server_port=quic_port,
         tun_addr=item["tun_addr"],
         cert_pem=cert_pem,
         key_pem=key_pem,
         transport="quic",
     )
 
-    # Строка для HTTP/2 (порт 9443)
+    # Строка для HTTP/2
     conn_str_h2 = _generate_conn_string(
+        connect_host=connect_host,
         server_name=server_name,
-        server_port="9443",
+        server_port=h2_port,
         tun_addr=item["tun_addr"],
         cert_pem=cert_pem,
         key_pem=key_pem,
         transport="h2",
     )
 
-    print(f"\n=== Строка подключения для {name!r} — QUIC (порт 8443) ===")
+    print(f"\n=== Строка подключения для {name!r} — QUIC (порт {quic_port}) ===")
     print("─" * 60)
     print(conn_str_quic)
     print("─" * 60)
 
-    print(f"\n=== Строка подключения для {name!r} — HTTP/2 (порт 9443) ===")
+    print(f"\n=== Строка подключения для {name!r} — HTTP/2 (порт {h2_port}) ===")
     print("─" * 60)
     print(conn_str_h2)
     print("─" * 60)
@@ -489,9 +564,9 @@ def export_conn_str(keyring, server_ip, server_port, server_name):
     print(f"           sudo phantom-client-macos --conn-string '{conn_str_h2}'  # HTTP/2")
 
 
-def export_admin_conn_str(keyring, server_ip, server_port, server_name,
+def export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name,
                           admin_addr, admin_token):
-    """Генерирует ДВЕ строки подключения с admin правами: QUIC (8443) + HTTP/2 (9443)."""
+    """Генерирует ДВЕ строки подключения с admin правами: QUIC + HTTP/2."""
     name, item = _pick_client(keyring["clients"],
                                prompt="Выберите клиента для экспорта (admin):")
     if name is None:
@@ -520,10 +595,11 @@ def export_admin_conn_str(keyring, server_ip, server_port, server_name,
     if not admin_addr.startswith("http://") and not admin_addr.startswith("https://"):
         admin_addr = "http://" + admin_addr
 
-    # Строка для QUIC (порт 8443)
+    # Строка для QUIC
     conn_str_quic = _generate_conn_string(
+        connect_host=connect_host,
         server_name=server_name,
-        server_port="8443",
+        server_port=quic_port,
         tun_addr=item["tun_addr"],
         cert_pem=cert_pem,
         key_pem=key_pem,
@@ -532,10 +608,11 @@ def export_admin_conn_str(keyring, server_ip, server_port, server_name,
         admin_token=admin_token,
     )
 
-    # Строка для HTTP/2 (порт 9443)
+    # Строка для HTTP/2
     conn_str_h2 = _generate_conn_string(
+        connect_host=connect_host,
         server_name=server_name,
-        server_port="9443",
+        server_port=h2_port,
         tun_addr=item["tun_addr"],
         cert_pem=cert_pem,
         key_pem=key_pem,
@@ -544,12 +621,12 @@ def export_admin_conn_str(keyring, server_ip, server_port, server_name,
         admin_token=admin_token,
     )
 
-    print(f"\n=== Admin-строка для {name!r} — QUIC (порт 8443) ===")
+    print(f"\n=== Admin-строка для {name!r} — QUIC (порт {quic_port}) ===")
     print("─" * 60)
     print(conn_str_quic)
     print("─" * 60)
 
-    print(f"\n=== Admin-строка для {name!r} — HTTP/2 (порт 9443) ===")
+    print(f"\n=== Admin-строка для {name!r} — HTTP/2 (порт {h2_port}) ===")
     print("─" * 60)
     print(conn_str_h2)
     print("─" * 60)
@@ -646,7 +723,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        server_ip, server_port, server_name, ca_cert_path, ca_key_path = \
+        server_ip, quic_port, h2_port, connect_host, server_name, ca_cert_path, ca_key_path = \
             load_server_values(
                 args.server_config,
                 server_ip_override=args.server_ip,
@@ -675,7 +752,8 @@ def main():
     admin_configured = bool(admin_addr and admin_token)
 
     print(f"\n=== PhantomVPN Client Manager ===")
-    print(f"Сервер:    {server_ip}:{server_port}  SNI: {server_name}")
+    print(f"Сервер:    connect_host={connect_host}  QUIC={quic_port}  H2={h2_port}  SNI={server_name}")
+    print(f"SCP host:  {server_ip}")
     print(f"CA cert:   {ca_cert_path}")
     print(f"Keyring:   {args.keyring}  ({len(keyring['clients'])} клиентов)")
     if admin_configured:
@@ -690,18 +768,18 @@ def main():
     choice = input("> ").strip()
 
     if choice == "1":
-        add_client(keyring, server_ip, server_port, server_name,
+        add_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name,
                    ca_cert_path, ca_key_path, args.keyring)
     elif choice == "2":
         remove_client(keyring, args.keyring)
     elif choice == "3":
         list_clients(keyring["clients"])
     elif choice == "4":
-        show_client(keyring, server_ip, server_port, server_name)
+        show_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name)
     elif choice == "5":
-        export_conn_str(keyring, server_ip, server_port, server_name)
+        export_conn_str(keyring, connect_host, quic_port, h2_port, server_name)
     elif choice == "6":
-        export_admin_conn_str(keyring, server_ip, server_port, server_name,
+        export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name,
                               admin_addr, admin_token)
     else:
         print("Неизвестная опция.")

@@ -1,2 +1,1 @@
-"""GhostStream Telegram bot package."""
-
+"""VLESS Telegram bot package."""

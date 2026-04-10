@@ -189,7 +189,14 @@ async fn main() -> anyhow::Result<()> {
     let idle_secs = cfg.timeouts.as_ref()
         .and_then(|t| t.idle_timeout_secs)
         .unwrap_or(300);
-    tokio::spawn(vpn_session::cleanup_task(sessions.clone(), idle_secs));
+    let hard_timeout_secs = cfg.timeouts.as_ref()
+        .and_then(|t| t.hard_timeout_secs)
+        .unwrap_or(86_400);
+    tokio::spawn(vpn_session::cleanup_task(
+        sessions.clone(),
+        idle_secs,
+        hard_timeout_secs,
+    ));
 
     // ─── Client allowlist (fingerprint-based) ────────────────────────────
     let allow_list = vpn_session::new_allow_list();
@@ -396,4 +403,3 @@ fn cidr_to_network(cidr: &str) -> String {
     if ip_parts.len() != 4 { return cidr.to_string(); }
     format!("{}.{}.{}.0/{}", ip_parts[0], ip_parts[1], ip_parts[2], parts[1])
 }
-

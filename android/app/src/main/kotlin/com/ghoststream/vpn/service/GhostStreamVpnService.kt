@@ -14,6 +14,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.ghoststream.vpn.R
 import org.json.JSONArray
+import org.json.JSONObject
 
 class GhostStreamVpnService : VpnService() {
 
@@ -24,7 +25,14 @@ class GhostStreamVpnService : VpnService() {
         val certPath: String,
         val keyPath: String,
         val caCertPath: String,
-        val transport: String,
+        val requestedTransport: String,
+    )
+
+    private data class NativeStatsSnapshot(
+        val bytesRx: Long,
+        val bytesTx: Long,
+        val connected: Boolean,
+        val capturedAtMs: Long,
     )
 
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -33,6 +41,10 @@ class GhostStreamVpnService : VpnService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var savedParams: TunnelParams? = null
     @Volatile private var userStopped = false
+    @Volatile private var runtimeTransport = "h2"
+    @Volatile private var autoFallbackCount = 0
+    @Volatile private var lastAutoFallbackAtMs = 0L
+    @Volatile private var nextAutoQuicRetryAtMs = 0L
 
     // Instance method so JNI receives the service object for VpnService.protect()
     external fun nativeStart(
@@ -77,6 +89,14 @@ class GhostStreamVpnService : VpnService() {
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
         private const val TAG = "GhostStreamVpn"
+        private const val AUTO_PROBE_WINDOW_MS = 5_000L
+        private const val AUTO_RECHECK_INTERVAL_MS = 15 * 60_000L
+        private const val AUTO_FALLBACK_WINDOW_MS = 30 * 60_000L
+        private const val AUTO_MAX_FALLBACKS = 2
+        private const val AUTO_MIN_GOOD_Mbps = 100.0
+        private const val AUTO_STRONG_DIRECTION_Mbps = 150.0
+        private const val AUTO_MIN_TOTAL_BYTES = 16L * 1024 * 1024
+        private const val AUTO_MIN_DIRECTION_BYTES = 4L * 1024 * 1024
         // Safety cap: too many addRoute() entries can overflow Binder transaction
         // in VpnService.Builder.establish() and crash with TransactionTooLargeException.
         private const val MAX_SPLIT_ROUTES = 8000
@@ -103,7 +123,7 @@ class GhostStreamVpnService : VpnService() {
         val perAppList     = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
             .split(",").filter { it.isNotBlank() }
         val caCertPath     = intent.getStringExtra(EXTRA_CA_CERT_PATH) ?: ""
-        val transport      = intent.getStringExtra(EXTRA_TRANSPORT) ?: "h2"
+        val transport      = normalizeTransport(intent.getStringExtra(EXTRA_TRANSPORT))
 
         createNotificationChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -209,10 +229,22 @@ class GhostStreamVpnService : VpnService() {
         }
 
         userStopped = false
-        savedParams = TunnelParams(serverAddr, serverName, insecure, certPath, keyPath, caCertPath, transport)
+        savedParams = TunnelParams(
+            serverAddr = serverAddr,
+            serverName = serverName,
+            insecure = insecure,
+            certPath = certPath,
+            keyPath = keyPath,
+            caCertPath = caCertPath,
+            requestedTransport = transport,
+        )
+        runtimeTransport = resolveInitialTransport(transport)
+        resetAutoRuntimeState()
 
         val fd = vpnInterface!!.fd
-        val result = nativeStart(fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath, transport)
+        val result = nativeStart(
+            fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath, runtimeTransport,
+        )
         if (result != 0) {
             vpnInterface?.close()
             vpnInterface = null
@@ -242,6 +274,8 @@ class GhostStreamVpnService : VpnService() {
         watchdogThread = Thread {
             var wasConnected = false
             var timeoutSecs = 60
+            var connectedAtMs = 0L
+            var quicProbeStart: NativeStatsSnapshot? = null
             outer@ while (!Thread.currentThread().isInterrupted) {
                 try {
                     Thread.sleep(1000)
@@ -249,19 +283,76 @@ class GhostStreamVpnService : VpnService() {
                     break
                 }
                 try {
-                    val stats = nativeGetStats() ?: continue
-                    val connected = stats.contains("\"connected\":true")
+                    val params = savedParams ?: continue
+                    val stats = readNativeStats() ?: continue
+                    val connected = stats.connected
+                    val nowMs = stats.capturedAtMs
                     if (connected && !wasConnected) {
                         wasConnected = true
                         timeoutSecs = Int.MAX_VALUE
+                        connectedAtMs = nowMs
+                        quicProbeStart = if (params.requestedTransport == "auto" && runtimeTransport == "quic") {
+                            stats
+                        } else {
+                            null
+                        }
                         mainHandler.post {
                             VpnStateManager.update(VpnState.Connected(serverName = serverName))
                             val nm = getSystemService(NotificationManager::class.java)
-                            nm?.notify(NOTIFICATION_ID, buildNotification("Подключено: $serverAddr"))
+                            nm?.notify(
+                                NOTIFICATION_ID,
+                                buildNotification("Подключено: $serverAddr (${transportLabel(runtimeTransport)})"),
+                            )
+                        }
+                    }
+                    if (connected && wasConnected && params.requestedTransport == "auto") {
+                        if (runtimeTransport == "quic") {
+                            val probeStart = quicProbeStart
+                            if (probeStart != null && nowMs - probeStart.capturedAtMs >= AUTO_PROBE_WINDOW_MS) {
+                                quicProbeStart = null
+                                if (shouldFallbackToH2(probeStart, stats)) {
+                                    recordAutoFallback(nowMs)
+                                    if (switchRuntimeTransport(
+                                            params = params,
+                                            targetTransport = "h2",
+                                            restoreTransport = "quic",
+                                            notification = "Переключение на HTTP/2...",
+                                        )
+                                    ) {
+                                        wasConnected = false
+                                        timeoutSecs = 60
+                                        connectedAtMs = 0L
+                                        continue@outer
+                                    }
+                                }
+                            }
+                        } else if (
+                            runtimeTransport == "h2" &&
+                            connectedAtMs > 0L &&
+                            nowMs >= nextAutoQuicRetryAtMs &&
+                            autoFallbackCount < AUTO_MAX_FALLBACKS &&
+                            nowMs - connectedAtMs >= AUTO_RECHECK_INTERVAL_MS
+                        ) {
+                            nextAutoQuicRetryAtMs = nowMs + AUTO_RECHECK_INTERVAL_MS
+                            if (switchRuntimeTransport(
+                                    params = params,
+                                    targetTransport = "quic",
+                                    restoreTransport = "h2",
+                                    notification = "Пробуем вернуть QUIC...",
+                                )
+                            ) {
+                                wasConnected = false
+                                timeoutSecs = 60
+                                connectedAtMs = 0L
+                                quicProbeStart = null
+                                continue@outer
+                            }
                         }
                     }
                     if (!connected && wasConnected) {
                         wasConnected = false
+                        connectedAtMs = 0L
+                        quicProbeStart = null
                         mainHandler.post {
                             VpnStateManager.update(VpnState.Connecting)
                             getSystemService(NotificationManager::class.java)
@@ -273,20 +364,20 @@ class GhostStreamVpnService : VpnService() {
                         for (attempt in 1..8) {
                             try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { break@outer }
                             if (userStopped) break@outer
-                            val params = savedParams ?: break@outer
-                            val iface = vpnInterface ?: break@outer
-                            nativeStop()
-                            val r = nativeStart(
-                                iface.fd, params.serverAddr, params.serverName,
-                                params.insecure, params.certPath, params.keyPath, params.caCertPath,
-                                params.transport,
-                            )
-                            if (r == 0) {
+                            if (restartNativeTunnel(params, runtimeTransport)) {
                                 timeoutSecs = 60
                                 reconnected = true
                                 break
                             }
                             backoffMs = minOf(backoffMs * 2, 60_000L)
+                        }
+                        if (!reconnected && params.requestedTransport == "auto" && runtimeTransport == "quic") {
+                            recordAutoFallback(System.currentTimeMillis())
+                            reconnected = restartNativeTunnel(params, "h2")
+                            if (reconnected) {
+                                timeoutSecs = 60
+                                nextAutoQuicRetryAtMs = System.currentTimeMillis() + AUTO_RECHECK_INTERVAL_MS
+                            }
                         }
                         if (!reconnected) {
                             mainHandler.post { failTunnel("Не удалось переподключиться к серверу") }
@@ -296,6 +387,14 @@ class GhostStreamVpnService : VpnService() {
                     }
                     timeoutSecs--
                     if (!connected && timeoutSecs <= 0) {
+                        if (params.requestedTransport == "auto" && runtimeTransport == "quic") {
+                            recordAutoFallback(nowMs)
+                            if (restartNativeTunnel(params, "h2")) {
+                                timeoutSecs = 60
+                                nextAutoQuicRetryAtMs = System.currentTimeMillis() + AUTO_RECHECK_INTERVAL_MS
+                                continue@outer
+                            }
+                        }
                         mainHandler.post {
                             VpnStateManager.update(VpnState.Error("Тайм-аут подключения к серверу"))
                             stopTunnel()
@@ -311,6 +410,130 @@ class GhostStreamVpnService : VpnService() {
         }
     }
 
+    private fun restartNativeTunnel(params: TunnelParams, transport: String): Boolean {
+        val iface = vpnInterface ?: return false
+        val targetTransport = normalizeManualTransport(transport)
+        nativeStop()
+        val result = nativeStart(
+            iface.fd, params.serverAddr, params.serverName,
+            params.insecure, params.certPath, params.keyPath, params.caCertPath,
+            targetTransport,
+        )
+        if (result == 0) {
+            runtimeTransport = targetTransport
+            Log.i(TAG, "Tunnel restarted with transport=$targetTransport")
+            return true
+        }
+        Log.w(TAG, "Tunnel restart failed for transport=$targetTransport")
+        return false
+    }
+
+    private fun switchRuntimeTransport(
+        params: TunnelParams,
+        targetTransport: String,
+        restoreTransport: String,
+        notification: String,
+    ): Boolean {
+        mainHandler.post {
+            VpnStateManager.update(VpnState.Connecting)
+            getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIFICATION_ID, buildNotification(notification))
+        }
+
+        if (restartNativeTunnel(params, targetTransport)) {
+            return true
+        }
+
+        if (restoreTransport != targetTransport) {
+            restartNativeTunnel(params, restoreTransport)
+        }
+        return false
+    }
+
+    private fun shouldFallbackToH2(
+        start: NativeStatsSnapshot,
+        end: NativeStatsSnapshot,
+    ): Boolean {
+        val durationMs = (end.capturedAtMs - start.capturedAtMs).coerceAtLeast(1_000L)
+        val rxBytes = (end.bytesRx - start.bytesRx).coerceAtLeast(0L)
+        val txBytes = (end.bytesTx - start.bytesTx).coerceAtLeast(0L)
+        val seconds = durationMs / 1_000.0
+        val downMbps = rxBytes * 8.0 / seconds / 1_000_000.0
+        val upMbps = txBytes * 8.0 / seconds / 1_000_000.0
+        val minMbps = minOf(downMbps, upMbps)
+        val maxMbps = maxOf(downMbps, upMbps)
+        val totalBytes = rxBytes + txBytes
+        val bothDirectionsActive =
+            rxBytes >= AUTO_MIN_DIRECTION_BYTES && txBytes >= AUTO_MIN_DIRECTION_BYTES
+        val enoughTraffic =
+            totalBytes >= AUTO_MIN_TOTAL_BYTES &&
+                (bothDirectionsActive || maxMbps >= AUTO_STRONG_DIRECTION_Mbps)
+        val shouldFallback =
+            enoughTraffic && minMbps < AUTO_MIN_GOOD_Mbps &&
+                (bothDirectionsActive || maxMbps >= AUTO_STRONG_DIRECTION_Mbps)
+
+        Log.i(
+            TAG,
+            "Auto probe QUIC: down=${"%.1f".format(downMbps)}Mbps up=${"%.1f".format(upMbps)}Mbps " +
+                "rx=$rxBytes tx=$txBytes enoughTraffic=$enoughTraffic fallback=$shouldFallback",
+        )
+        return shouldFallback
+    }
+
+    private fun recordAutoFallback(nowMs: Long) {
+        if (nowMs - lastAutoFallbackAtMs > AUTO_FALLBACK_WINDOW_MS) {
+            autoFallbackCount = 0
+        }
+        autoFallbackCount += 1
+        lastAutoFallbackAtMs = nowMs
+        nextAutoQuicRetryAtMs = nowMs + AUTO_RECHECK_INTERVAL_MS
+    }
+
+    private fun resetAutoRuntimeState() {
+        autoFallbackCount = 0
+        lastAutoFallbackAtMs = 0L
+        nextAutoQuicRetryAtMs = if (savedParams?.requestedTransport == "auto") {
+            System.currentTimeMillis() + AUTO_RECHECK_INTERVAL_MS
+        } else {
+            0L
+        }
+    }
+
+    private fun readNativeStats(): NativeStatsSnapshot? {
+        return try {
+            val raw = nativeGetStats() ?: return null
+            val obj = JSONObject(raw)
+            NativeStatsSnapshot(
+                bytesRx = obj.optLong("bytes_rx"),
+                bytesTx = obj.optLong("bytes_tx"),
+                connected = obj.optBoolean("connected"),
+                capturedAtMs = System.currentTimeMillis(),
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun transportLabel(transport: String): String = when (transport) {
+        "quic" -> "QUIC"
+        "auto" -> "Auto"
+        else -> "HTTP/2"
+    }
+
+    private fun normalizeTransport(raw: String?): String = when (raw?.trim()?.lowercase()) {
+        "quic" -> "quic"
+        "auto" -> "auto"
+        else -> "h2"
+    }
+
+    private fun resolveInitialTransport(requestedTransport: String): String =
+        if (requestedTransport == "auto") "quic" else requestedTransport
+
+    private fun normalizeManualTransport(transport: String): String = when (transport.lowercase()) {
+        "quic" -> "quic"
+        else -> "h2"
+    }
+
     private fun stopTunnel() {
         userStopped = true
         startupThread?.interrupt()
@@ -320,6 +543,9 @@ class GhostStreamVpnService : VpnService() {
         nativeStop()
         vpnInterface?.close()
         vpnInterface = null
+        savedParams = null
+        runtimeTransport = "h2"
+        resetAutoRuntimeState()
         VpnStateManager.update(VpnState.Disconnected)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -334,6 +560,9 @@ class GhostStreamVpnService : VpnService() {
         nativeStop()
         vpnInterface?.close()
         vpnInterface = null
+        savedParams = null
+        runtimeTransport = "h2"
+        resetAutoRuntimeState()
         VpnStateManager.update(VpnState.Error(message))
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

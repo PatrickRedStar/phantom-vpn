@@ -14,14 +14,14 @@ class InvoicePayload:
     subscription_id: str | None = None
     server_id: str | None = None
     client_name: str | None = None
-    product: str = "ghoststream"
+    product: str = "vless"
     nonce: str = ""
 
     def encode(self) -> str:
         # Compact format: single-char keys, skip None fields, short nonce.
         # Telegram invoice_payload limit is 128 bytes.
         body: dict[str, Any] = {"a": self.action, "u": self.tg_user_id, "d": self.days}
-        if self.product != "ghoststream":
+        if self.product != "vless":
             body["p"] = self.product
         if self.server_id:
             body["s"] = self.server_id
@@ -37,7 +37,7 @@ class InvoicePayload:
         action = str(raw.get("a") or raw.get("action", ""))
         tg_user_id = int(raw.get("u") or raw.get("tg_user_id", 0))
         days = int(raw.get("d") or raw.get("days", 0))
-        product = str(raw.get("p") or raw.get("product") or "ghoststream")
+        product = str(raw.get("p") or raw.get("product") or "vless")
         server_id = raw.get("s") or raw.get("server_id")
         client_name = raw.get("c") or raw.get("client_name")
         nonce = str(raw.get("n") or raw.get("nonce") or "")

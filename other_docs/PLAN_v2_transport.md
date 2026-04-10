@@ -6,6 +6,16 @@
 
 Просто обернуть данные в TCP/TLS = клон VLESS. Наша задача — сделать **следующую эволюцию**, устойчивую к будущей блокировке.
 
+## Статус выполнения (на 2026-03-29)
+
+- Фаза 0: выполнена.
+- Фаза 1: выполнена для production-трафика (общие сессии + H2 listener/server path).
+- Фаза 2: выполнена (Linux H2, client-common H2, transport plumbing через CLI/config/conn-string).
+- Фаза 3: выполнена (Android H2 path + transport source-of-truth в профиле/настройках).
+- Фаза 4: реализована в клиентской оркестрации:
+  - Android: `auto` (QUIC first, 5s throughput probe, fallback на H2, периодический retry в QUIC с anti-flap ограничениями).
+  - Linux: `auto` (QUIC first, fallback на H2 при QUIC startup failure или ранней смерти туннеля).
+
 ### Чем GhostStream HTTP/2 отличается от VLESS
 
 | | VLESS | GhostStream v2 |
@@ -254,6 +264,8 @@ speedtest-cli --simple
 
 ## Фаза 3: Android клиент HTTP/2
 
+**Статус:** ✅ Выполнено.
+
 ### Зависимости
 
 ```toml
@@ -289,13 +301,34 @@ let tcp = tokio::net::TcpStream::from_std(socket.into())?;
 - `ConnStringParser.kt`: парсить `"transport"` из JSON
 - `SettingsScreen.kt`: UI-селектор транспорта (опционально)
 
+### Что реализовано фактически
+
+- JNI контракт оставлен стабильным: `nativeStart(..., transport: String)`.
+- `ConnStringParser.kt` читает `"transport"` (`quic|h2|auto`), fallback по порту сохранён для legacy строк без поля.
+- `SettingsScreen.kt` использует `profile.transport` как source-of-truth и даёт явный selector `QUIC / HTTP/2 / Auto`.
+- `GhostStreamVpnService.kt` разделяет requested/runtime transport и стартует native только в `quic|h2`.
+
 ---
 
-## Фаза 4: Auto-negotiation (будущее)
+## Фаза 4: Auto-negotiation
 
 Клиент пробует QUIC → измеряет throughput за 5 сек → если < 100 Mbps → переключается на HTTP/2. Периодически перепроверяет.
 
-Не входит в текущую реализацию — сначала стабилизируем ручной выбор.
+**Статус:** ✅ Реализовано.
+
+### Android (реализовано)
+
+- `transport=auto` стартует в QUIC.
+- После `connected` выполняется 5s probe по `nativeGetStats()` (`bytes_rx/bytes_tx`).
+- При осмысленном объёме трафика и низком `min(down, up)` выполняется controlled switch на H2.
+- Reconnect всегда идёт с текущим runtime transport (не со строкой `"auto"` напрямую).
+- Из H2 выполняется периодический retry в QUIC с anti-flap ограничениями.
+
+### Linux (реализовано)
+
+- Добавлен `auto` mode в launcher.
+- При `auto`: QUIC first, затем fallback в H2 при ошибке старта QUIC или ранней смерти туннеля.
+- Ручные `quic` и `h2` оставлены без изменения поведения.
 
 ---
 
@@ -334,6 +367,11 @@ Overhead: +5 байт на фрейм (ничтожно). Зато трафик 
 | `crates/client-android/src/lib.rs` | ИЗМЕНИТЬ — transport param, TCP socket | 3 |
 | `crates/client-android/Cargo.toml` | ИЗМЕНИТЬ — h2, tokio-rustls, socket2 | 3 |
 | Android Kotlin (4 файла) | ИЗМЕНИТЬ — transport в профиле/JNI | 3 |
+| `crates/core/src/config.rs` | ИЗМЕНИТЬ — `ClientConfig.transport` | 2/4 |
+| `crates/client-common/src/helpers.rs` | ИЗМЕНИТЬ — parsing/normalization transport | 2/4 |
+| `android/.../GhostStreamVpnService.kt` | ИЗМЕНИТЬ — auto orchestration QUIC↔H2 | 4 |
+| `android/.../ConnStringParser.kt` | ИЗМЕНИТЬ — parse `transport` + legacy fallback | 3/4 |
+| `android/.../SettingsScreen.kt` | ИЗМЕНИТЬ — selector `quic/h2/auto` | 3/4 |
 
 ---
 
@@ -361,4 +399,17 @@ speedtest-cli --simple               # target: >400 Mbps download
 # На телефоне: подключиться через GhostStream (transport=h2)
 adb shell curl -o /dev/null -w '%{speed_download}' https://speed.cloudflare.com/__down?bytes=50000000
 # target: >40 MB/s = 320+ Mbps (vs текущие 6.8 MB/s через QUIC)
+```
+
+### Фаза 4 (Auto):
+```bash
+# Android:
+# 1) В профиле выбрать transport=auto
+# 2) Под нагрузкой проверить в логах fallback QUIC -> H2 при low throughput
+# 3) Проверить отсутствие бесконечного флаппинга
+
+# Linux:
+# /etc/phantom-vpn/client.toml
+# transport = "auto"
+# Ожидаемо: QUIC first; при раннем падении QUIC автоматический fallback на H2
 ```
