@@ -39,9 +39,9 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Transport: "quic" (default) or "h2"
-    #[arg(long, default_value = "quic")]
-    pub transport: String,
+    /// Transport override: "quic", "h2", or "auto"
+    #[arg(long)]
+    pub transport: Option<String>,
 }
 
 // ─── Init logging ────────────────────────────────────────────────────────────
@@ -82,11 +82,33 @@ pub fn load_config(path: &str) -> anyhow::Result<ClientConfig> {
 ///   "addr": "1.2.3.4:8443",
 ///   "sni": "example.com",
 ///   "tun": "10.7.0.4/24",
+///   "transport": "h2",
 ///   "cert": "-----BEGIN CERTIFICATE-----\n...",
 ///   "key": "-----BEGIN EC PRIVATE KEY-----\n...",
 ///   "ca": "-----BEGIN CERTIFICATE-----\n..."  // optional
 /// }
 /// ```
+pub fn normalize_transport(value: &str) -> anyhow::Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "quic" | "h2" | "auto" => Ok(normalized),
+        _ => anyhow::bail!("Unsupported transport: {}", value),
+    }
+}
+
+pub fn infer_transport_from_addr(addr: &str) -> String {
+    let port = addr
+        .rsplit(':')
+        .next()
+        .and_then(|part| part.split('/').next())
+        .and_then(|part| part.parse::<u16>().ok());
+    match port {
+        Some(9443) => "h2".to_string(),
+        Some(8443) => "quic".to_string(),
+        _ => "quic".to_string(),
+    }
+}
+
 pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
     let trimmed = input.trim();
 
@@ -114,6 +136,10 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
     let key = obj["key"].as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing 'key' in connection string"))?;
     let ca = obj["ca"].as_str(); // optional
+    let transport = match obj["transport"].as_str() {
+        Some(value) => normalize_transport(value)?,
+        None => infer_transport_from_addr(addr),
+    };
 
     let mut quic = QuicConfig {
         cert_pem: Some(cert.to_string()),
@@ -145,6 +171,7 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
             tun_mtu: Some(1350),
             default_gw,
         },
+        transport: Some(transport),
         keys: None,
         shaper: None,
         quic: Some(quic),

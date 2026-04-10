@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -68,6 +68,19 @@ class ClientBinding(Base):
     tg_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     server_id: Mapped[str] = mapped_column(String(64), index=True)
     client_name: Mapped[str] = mapped_column(String(128), index=True)
-    product_type: Mapped[str] = mapped_column(String(32), default="ghoststream")
+    product_type: Mapped[str] = mapped_column(String(32), default="vless")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+
+class NotificationSend(Base):
+    __tablename__ = "notification_sends"
+    __table_args__ = (
+        UniqueConstraint("tg_user_id", "notification_type", "scope_key", name="uq_notification_send_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    notification_type: Mapped[str] = mapped_column(String(64), index=True)
+    scope_key: Mapped[str] = mapped_column(String(255))
+    client_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

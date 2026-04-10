@@ -205,6 +205,9 @@ impl ServerConfig {
 pub struct ClientConfig {
     #[serde(default)]
     pub network: ClientNetworkConfig,
+    /// Transport override: "quic" | "h2" | "auto"
+    #[serde(default)]
+    pub transport: Option<String>,
     #[serde(default)]
     pub keys:    Option<KeysConfig>,
     #[serde(default)]

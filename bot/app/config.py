@@ -22,6 +22,8 @@ class XuiConfig:
     password: str
     inbound_ids: tuple[int, ...]
     sub_url: str
+    tls_verify: bool
+    ca_bundle: str | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,9 @@ class Settings:
     price_30_xtr: int
     price_90_xtr: int
     price_180_xtr: int
+    admin_price_xtr: int
+    notify_scan_interval_sec: int
+    notify_no_active_cooldown_sec: int
     vpn_servers: tuple[VpnServer, ...]
     default_server_id: str
     xui: XuiConfig | None = None
@@ -65,6 +70,13 @@ def load_settings() -> Settings:
         price_30_xtr=_required_int("PRICE_30_XTR"),
         price_90_xtr=_required_int("PRICE_90_XTR"),
         price_180_xtr=_required_int("PRICE_180_XTR"),
+        admin_price_xtr=_optional_int("ADMIN_PRICE_XTR", 1, min_value=1),
+        notify_scan_interval_sec=_optional_int("NOTIFY_SCAN_INTERVAL_SEC", 21600, min_value=60),
+        notify_no_active_cooldown_sec=_optional_int(
+            "NOTIFY_NO_ACTIVE_COOLDOWN_SEC",
+            1209600,
+            min_value=3600,
+        ),
         vpn_servers=tuple(vpn_servers),
         default_server_id=default_server_id,
         xui=xui_config,
@@ -89,6 +101,20 @@ def _required_int(name: str) -> int:
     return number
 
 
+def _optional_int(name: str, default: int, min_value: int | None = None) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        value = default
+    else:
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid int env var {name}: {raw}") from exc
+    if min_value is not None and value < min_value:
+        raise RuntimeError(f"Env var {name} must be >= {min_value}")
+    return value
+
+
 def _parse_admin_ids(raw: str) -> FrozenSet[int]:
     values: set[int] = set()
     for part in raw.split(","):
@@ -108,6 +134,8 @@ def _parse_xui_config() -> XuiConfig | None:
     password = os.getenv("XUI_PASSWORD", "").strip()
     sub_url = os.getenv("XUI_SUB_URL", "").strip()
     raw_ids = os.getenv("XUI_INBOUND_IDS", "").strip()
+    tls_verify = _parse_bool_env("XUI_TLS_VERIFY", default=True)
+    ca_bundle = os.getenv("XUI_CA_BUNDLE", "").strip() or None
     if not all([base_url, username, password, sub_url, raw_ids]):
         return None
     try:
@@ -120,7 +148,21 @@ def _parse_xui_config() -> XuiConfig | None:
         password=password,
         inbound_ids=inbound_ids,
         sub_url=sub_url,
+        tls_verify=tls_verify,
+        ca_bundle=ca_bundle,
     )
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"Invalid boolean env var {name}: {raw}")
 
 
 def _parse_vpn_servers() -> list[VpnServer]:
@@ -167,4 +209,3 @@ def _parse_vpn_servers() -> list[VpnServer]:
             ),
         ]
     return []
-

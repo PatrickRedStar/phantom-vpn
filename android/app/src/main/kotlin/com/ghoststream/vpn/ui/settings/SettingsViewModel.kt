@@ -154,7 +154,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun updateProfileTransport(id: String, transport: String) {
         val profile = profilesStore.profiles.value.find { it.id == id } ?: return
-        profilesStore.updateProfile(profile.copy(transport = transport))
+        val normalized = when (transport.lowercase()) {
+            "quic", "h2", "auto" -> transport.lowercase()
+            else -> profile.transport
+        }
+        profilesStore.updateProfile(profile.copy(transport = normalized))
     }
 
     fun setInsecure(insecure: Boolean) {

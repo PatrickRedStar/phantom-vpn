@@ -2,6 +2,7 @@
 
 use bytes::{Bytes, Buf, BytesMut};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use phantom_core::{
     wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
     mtu::clamp_tcp_mss,
@@ -26,13 +27,6 @@ pub async fn h2_stream_rx_loop(
             }
             None => break, // EOS
         };
-
-        // Release flow control
-        let len = chunk.len();
-        if let Err(e) = recv.flow_control().release_capacity(len) {
-            tracing::debug!("Flow control error: {}", e);
-            break;
-        }
 
         // Append to chunk buffer
         chunk_buf.extend_from_slice(&chunk);
@@ -65,14 +59,22 @@ pub async fn h2_stream_rx_loop(
 
             // Consume frame from buffer
             chunk_buf.advance(batch_end);
+
+            // Return H2 RX credit only after the frame was fully accounted for locally:
+            // either forwarded into tun_tx or dropped as consumed in this pass.
+            if let Err(e) = recv.flow_control().release_capacity(batch_end) {
+                tracing::debug!("Flow control error: {}", e);
+                break;
+            }
         }
     }
 
     Ok(())
 }
 
-/// HTTP/2 stream TX loop: TUN → HTTP/2 DATA frames
-/// Collects TUN packets, batches them with H.264 shaping, sends as DATA frames.
+/// HTTP/2 stream TX loop: TUN → HTTP/2 DATA frames.
+/// Blocks until the TX pipeline dies (any stream failure triggers full shutdown).
+/// Returns Ok(()) on clean shutdown, Err if task join failed.
 pub async fn h2_stream_tx_loop(
     tun_rx: mpsc::Receiver<Vec<u8>>,
     sends: Vec<h2::SendStream<Bytes>>,
@@ -88,8 +90,10 @@ pub async fn h2_stream_tx_loop(
         stream_rxs.push(rx);
     }
 
-    // Spawn dispatcher: TUN packets → per-stream channels (no mutex, like QUIC)
-    tokio::spawn(async move {
+    let mut task_set: JoinSet<()> = JoinSet::new();
+
+    // Spawn dispatcher: TUN packets → per-stream channels
+    task_set.spawn(async move {
         let mut tun_rx = tun_rx;
         loop {
             let pkt = match tun_rx.recv().await {
@@ -101,13 +105,14 @@ pub async fn h2_stream_tx_loop(
                 break;
             }
         }
+        tracing::debug!("H2 TX dispatcher exiting");
     });
 
     // Spawn per-stream batch+send tasks
     tracing::info!("H2 stream TX loop: spawning {} per-stream tasks", n_streams);
     for (idx, mut send) in sends.into_iter().enumerate() {
         let mut stream_rx = stream_rxs.remove(0);
-        tokio::spawn(async move {
+        task_set.spawn(async move {
             // H2 over TCP/TLS — no H.264 shaping needed (DPI sees encrypted TCP, not packets)
             let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
             let mut frame_buf = vec![0u8; buf_size];
@@ -154,9 +159,23 @@ pub async fn h2_stream_tx_loop(
                     break;
                 }
             }
+            tracing::debug!("H2 TX stream {} task exiting", idx);
         });
     }
 
-    tracing::info!("H2 stream TX loop spawned {} tasks", n_streams);
+    tracing::info!("H2 TX: {} streams + dispatcher running", n_streams);
+
+    // Block until first task exits (any stream death triggers full TX shutdown)
+    if let Some(res) = task_set.join_next().await {
+        if let Err(e) = res {
+            tracing::error!("H2 TX task panicked: {}", e);
+        } else {
+            tracing::warn!("H2 TX task completed (stream died or channel closed)");
+        }
+    }
+
+    // Abort remaining tasks immediately
+    task_set.abort_all();
+    tracing::info!("H2 TX pipeline shut down");
     Ok(())
 }

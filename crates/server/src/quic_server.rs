@@ -134,16 +134,17 @@ async fn handle_connection(
     // Transport-agnostic shutdown: close_tx signals the transport to close
     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
 
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
     let session = Arc::new(VpnSession {
+        created_at:    now,
         data_sends:    frame_txs,
         tun_pkt_tx,
         close_tx:      std::sync::Mutex::new(Some(close_tx)),
-        last_seen:     AtomicU64::new(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        ),
+        last_seen:     AtomicU64::new(now),
         bytes_rx:      AtomicU64::new(0),
         bytes_tx:      AtomicU64::new(0),
         dest_log:      std::sync::Mutex::new(std::collections::VecDeque::new()),
@@ -255,10 +256,18 @@ async fn stream_rx_loop(
                 let mask: u32 = if tun_prefix == 0 { 0 } else { !0u32 << (32 - tun_prefix) };
                 if u32::from(src_v4) & mask == u32::from(tun_network) & mask {
                     let src_ip = IpAddr::V4(src_v4);
-                    sessions.insert(src_ip, session.clone());
+                    let replaced = vpn_session::register_session_ip(&sessions, src_ip, session.clone());
                     *registered_ip.lock().await = Some(src_ip);
                     registered = true;
-                    tracing::info!("Session registered for tunnel IP {} ({})", src_ip, remote);
+                    if replaced {
+                        tracing::warn!(
+                            "Session replaced for tunnel IP {} ({})",
+                            src_ip,
+                            remote
+                        );
+                    } else {
+                        tracing::info!("Session registered for tunnel IP {} ({})", src_ip, remote);
+                    }
                 }
             }
 

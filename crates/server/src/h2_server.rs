@@ -11,7 +11,7 @@ use bytes::{Bytes, Buf};
 use futures_util::future::poll_fn;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use phantom_core::{
     shaper::H264Shaper,
@@ -102,7 +102,8 @@ pub async fn run_h2_accept_loop(
 
             // Accept 8 data streams: POST /v1/tunnel/{0..7}
             let mut frame_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
-            let mut data_recvs: Vec<h2::RecvStream> = Vec::with_capacity(N_DATA_STREAMS);
+            let mut data_recvs: Vec<(h2::RecvStream, oneshot::Sender<h2::Reason>)> =
+                Vec::with_capacity(N_DATA_STREAMS);
 
             for i in 0..N_DATA_STREAMS {
                 // Use poll_fn to wrap h2_conn.accept() which requires Pin+Context
@@ -150,9 +151,10 @@ pub async fn run_h2_accept_loop(
                 };
                 let recv = req.into_body();
                 let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(512);
-                tokio::spawn(h2_stream_write_loop(frame_rx, send_resp, remote));
+                let (reset_tx, reset_rx) = oneshot::channel::<h2::Reason>();
+                tokio::spawn(h2_stream_write_loop(frame_rx, reset_rx, send_resp, remote));
                 frame_txs.push(frame_tx);
-                data_recvs.push(recv);
+                data_recvs.push((recv, reset_tx));
             }
 
             tracing::debug!("{} HTTP/2 streams accepted from {}", N_DATA_STREAMS, remote);
@@ -161,15 +163,19 @@ pub async fn run_h2_accept_loop(
             let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(2048);
 
             // Transport-agnostic shutdown
-            let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+            let (close_tx, mut close_rx) = tokio::sync::oneshot::channel::<()>();
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
 
             let session = Arc::new(VpnSession {
+                created_at: now,
                 data_sends: frame_txs,
                 tun_pkt_tx,
                 close_tx: std::sync::Mutex::new(Some(close_tx)),
-                last_seen: AtomicU64::new(
-                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
-                ),
+                last_seen: AtomicU64::new(now),
                 bytes_rx: AtomicU64::new(0),
                 bytes_tx: AtomicU64::new(0),
                 dest_log: std::sync::Mutex::new(std::collections::VecDeque::new()),
@@ -177,14 +183,6 @@ pub async fn run_h2_accept_loop(
                 dns_cache: dashmap::DashMap::new(),
                 log_counter: AtomicU64::new(0),
             });
-
-            // Background: wait for close signal → close TCP connection (drop TLS)
-            {
-                tokio::spawn(async move {
-                    let _ = close_rx.await;
-                    // TLS stream is dropped when this task exits
-                });
-            }
 
             // Spawn per-session batching task
             let shaper = match H264Shaper::new() {
@@ -214,9 +212,10 @@ pub async fn run_h2_accept_loop(
                 Ok(())
             });
 
-            for data_recv in data_recvs {
+            for (data_recv, reset_tx) in data_recvs {
                 set.spawn(h2_stream_rx_loop(
                     data_recv,
+                    reset_tx,
                     session.clone(),
                     tun_tx.clone(),
                     sessions.clone(),
@@ -227,7 +226,33 @@ pub async fn run_h2_accept_loop(
                 ));
             }
 
-            while set.join_next().await.is_some() {}
+            let mut close_requested = false;
+            loop {
+                tokio::select! {
+                    _ = &mut close_rx, if !close_requested => {
+                        close_requested = true;
+                        tracing::info!("H2 session close requested for {}", remote);
+                        set.abort_all();
+                    }
+                    res = set.join_next() => {
+                        match res {
+                            Some(Ok(Ok(()))) => {}
+                            Some(Ok(Err(e))) => {
+                                tracing::debug!("H2 session task ended with error ({}): {}", remote, e);
+                            }
+                            Some(Err(e)) => {
+                                tracing::warn!("H2 session task panicked ({}): {}", remote, e);
+                            }
+                            None => break,
+                        }
+                    }
+                }
+                if close_requested {
+                    break;
+                }
+            }
+            // Ensure all connection tasks are torn down so TLS/TCP is dropped.
+            set.abort_all();
 
             // Cleanup — drop MutexGuard before block end
             {
@@ -247,6 +272,7 @@ pub async fn run_h2_accept_loop(
 /// HTTP/2 stream RX loop: DATA frames → TUN
 async fn h2_stream_rx_loop(
     mut recv: h2::RecvStream,
+    reset_tx: oneshot::Sender<h2::Reason>,
     session: Arc<VpnSession>,
     tun_tx: mpsc::Sender<Vec<u8>>,
     sessions: VpnSessionMap,
@@ -256,7 +282,6 @@ async fn h2_stream_rx_loop(
     remote: SocketAddr,
 ) -> anyhow::Result<()> {
     let buf_size = BATCH_MAX_PLAINTEXT + 16;
-    let mut frame_buf = vec![0u8; buf_size];
     let mut chunk_buf = bytes::BytesMut::with_capacity(buf_size);
     let mut registered = registered_ip.lock().await.is_some();
 
@@ -287,6 +312,22 @@ async fn h2_stream_rx_loop(
         // Parse complete frames [4B len][batch] — zero-copy walk of chunk_buf
         while chunk_buf.len() >= 4 {
             let frame_len = u32::from_be_bytes([chunk_buf[0], chunk_buf[1], chunk_buf[2], chunk_buf[3]]) as usize;
+            if frame_len > BATCH_MAX_PLAINTEXT {
+                let stream_id = recv.stream_id();
+                tracing::warn!(
+                    "H2 stream {} from {} sent oversized batch frame_len={} > {}",
+                    u32::from(stream_id),
+                    remote,
+                    frame_len,
+                    BATCH_MAX_PLAINTEXT,
+                );
+                let _ = reset_tx.send(h2::Reason::FRAME_SIZE_ERROR);
+                return Err(anyhow::anyhow!(
+                    "oversized H2 batch frame_len={} from {}",
+                    frame_len,
+                    remote,
+                ));
+            }
             if chunk_buf.len() < 4 + frame_len {
                 break; // incomplete frame
             }
@@ -312,10 +353,18 @@ async fn h2_stream_rx_loop(
                     let mask: u32 = if tun_prefix == 0 { 0 } else { !0u32 << (32 - tun_prefix) };
                     if u32::from(src_v4) & mask == u32::from(tun_network) & mask {
                         let src_ip = IpAddr::V4(src_v4);
-                        sessions.insert(src_ip, session.clone());
+                        let replaced = vpn_session::register_session_ip(&sessions, src_ip, session.clone());
                         *registered_ip.lock().await = Some(src_ip);
                         registered = true;
-                        tracing::info!("H2 session registered for tunnel IP {} ({})", src_ip, remote);
+                        if replaced {
+                            tracing::warn!(
+                                "H2 session replaced for tunnel IP {} ({})",
+                                src_ip,
+                                remote
+                            );
+                        } else {
+                            tracing::info!("H2 session registered for tunnel IP {} ({})", src_ip, remote);
+                        }
                     }
                 }
 
@@ -360,25 +409,49 @@ async fn h2_stream_rx_loop(
 /// HTTP/2 stream write loop: Bytes → DATA frames
 async fn h2_stream_write_loop(
     mut frame_rx: mpsc::Receiver<Bytes>,
+    mut reset_rx: oneshot::Receiver<h2::Reason>,
     mut send: h2::SendStream<Bytes>,
     remote: SocketAddr,
 ) {
-    while let Some(frame) = frame_rx.recv().await {
-        if let Err(e) = send.send_data(frame, false) {
-            tracing::warn!("H2 stream write to {} failed: {}", remote, e);
-            break;
-        }
-        // Drain additional queued frames before yielding to tokio scheduler
-        // Reduces context-switch overhead under sustained load
-        for _ in 0..15 {
-            match frame_rx.try_recv() {
-                Ok(frame) => {
-                    if let Err(e) = send.send_data(frame, false) {
-                        tracing::warn!("H2 stream write to {} failed: {}", remote, e);
+    let mut reset_watch_active = true;
+    loop {
+        tokio::select! {
+            biased;
+            reason = &mut reset_rx, if reset_watch_active => {
+                match reason {
+                    Ok(reason) => {
+                        send.send_reset(reason);
+                        tracing::debug!("H2 stream reset sent to {}: {:?}", remote, reason);
                         return;
                     }
+                    Err(_) => {
+                        // RX side ended without explicit reset request.
+                        // Keep TX path alive until frame channel closes or send_data fails.
+                        reset_watch_active = false;
+                    }
                 }
-                Err(_) => break,
+            }
+            frame = frame_rx.recv() => {
+                let Some(frame) = frame else {
+                    break;
+                };
+                if let Err(e) = send.send_data(frame, false) {
+                    tracing::warn!("H2 stream write to {} failed: {}", remote, e);
+                    break;
+                }
+                // Drain additional queued frames before yielding to tokio scheduler
+                // Reduces context-switch overhead under sustained load
+                for _ in 0..15 {
+                    match frame_rx.try_recv() {
+                        Ok(frame) => {
+                            if let Err(e) = send.send_data(frame, false) {
+                                tracing::warn!("H2 stream write to {} failed: {}", remote, e);
+                                return;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
             }
         }
     }

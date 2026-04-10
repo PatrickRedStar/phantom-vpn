@@ -14,12 +14,20 @@ DEFAULT_VPN_SERVER_ID="${DEFAULT_VPN_SERVER_ID:-}"
 PRICE_30_XTR="${PRICE_30_XTR:-1}"
 PRICE_90_XTR="${PRICE_90_XTR:-2}"
 PRICE_180_XTR="${PRICE_180_XTR:-3}"
+ADMIN_PRICE_XTR="${ADMIN_PRICE_XTR:-1}"
 
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_WEBHOOK_URL="${TELEGRAM_WEBHOOK_URL:-}"
 TELEGRAM_WEBHOOK_SECRET="${TELEGRAM_WEBHOOK_SECRET:-}"
 ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-}"
 BOT_ADMIN_IDS="${BOT_ADMIN_IDS:-}"
+XUI_BASE_URL="${XUI_BASE_URL:-}"
+XUI_USERNAME="${XUI_USERNAME:-}"
+XUI_PASSWORD="${XUI_PASSWORD:-}"
+XUI_INBOUND_IDS="${XUI_INBOUND_IDS:-}"
+XUI_SUB_URL="${XUI_SUB_URL:-}"
+XUI_TLS_VERIFY="${XUI_TLS_VERIFY:-1}"
+XUI_CA_BUNDLE="${XUI_CA_BUNDLE:-}"
 
 usage() {
   cat <<'EOF'
@@ -42,6 +50,7 @@ Options:
   --price-30-xtr <int>         Price for 30 days in Stars (default: 1)
   --price-90-xtr <int>         Price for 90 days in Stars (default: 2)
   --price-180-xtr <int>        Price for 180 days in Stars (default: 3)
+  --admin-price-xtr <int>      Price for admins in Stars (default: 1)
   --webhook-url <url>          Public webhook URL (optional, can be set later)
   --webhook-secret <secret>    Webhook secret token
   --domain <domain>            Domain for nginx config (e.g. bot.example.com)
@@ -64,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --price-30-xtr) PRICE_30_XTR="$2"; shift 2 ;;
     --price-90-xtr) PRICE_90_XTR="$2"; shift 2 ;;
     --price-180-xtr) PRICE_180_XTR="$2"; shift 2 ;;
+    --admin-price-xtr) ADMIN_PRICE_XTR="$2"; shift 2 ;;
     --webhook-url) TELEGRAM_WEBHOOK_URL="$2"; shift 2 ;;
     --webhook-secret) TELEGRAM_WEBHOOK_SECRET="$2"; shift 2 ;;
     --domain) DOMAIN="$2"; shift 2 ;;
@@ -159,6 +169,14 @@ BOT_ADMIN_IDS=${BOT_ADMIN_IDS}
 PRICE_30_XTR=${PRICE_30_XTR}
 PRICE_90_XTR=${PRICE_90_XTR}
 PRICE_180_XTR=${PRICE_180_XTR}
+ADMIN_PRICE_XTR=${ADMIN_PRICE_XTR}
+XUI_BASE_URL=${XUI_BASE_URL}
+XUI_USERNAME=${XUI_USERNAME}
+XUI_PASSWORD=${XUI_PASSWORD}
+XUI_INBOUND_IDS=${XUI_INBOUND_IDS}
+XUI_SUB_URL=${XUI_SUB_URL}
+XUI_TLS_VERIFY=${XUI_TLS_VERIFY}
+XUI_CA_BUNDLE=${XUI_CA_BUNDLE}
 EOF
   chmod 600 "${PROJECT_DIR}/.env"
 }
@@ -166,7 +184,7 @@ EOF
 write_systemd_service() {
   cat > /etc/systemd/system/ghoststream-bot.service <<EOF
 [Unit]
-Description=GhostStream Telegram Bot (Webhook)
+Description=VLESS Telegram Bot (Webhook)
 After=network.target
 
 [Service]
@@ -243,4 +261,3 @@ main() {
 }
 
 main "$@"
-

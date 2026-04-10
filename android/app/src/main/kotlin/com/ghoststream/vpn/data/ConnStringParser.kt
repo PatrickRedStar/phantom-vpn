@@ -6,6 +6,8 @@ import java.io.File
 
 object ConnStringParser {
 
+    private val VALID_TRANSPORTS = setOf("quic", "h2", "auto")
+
     data class ParsedConfig(
         val addr: String,
         val sni: String,
@@ -21,7 +23,6 @@ object ConnStringParser {
     /**
      * Определяет транспорт из порта в addr.
      * Порт 8443 → quic, порт 9443 → h2.
-     * Игнорируем поле transport из JSON — всегда определяем из порта.
      */
     private fun inferTransportFromPort(addr: String): String {
         val port = addr.substringAfterLast(':', "").substringBefore("/").toIntOrNull()
@@ -30,6 +31,11 @@ object ConnStringParser {
             9443 -> "h2"
             else -> "h2" // default
         }
+    }
+
+    private fun normalizeTransport(raw: String?): String? {
+        val transport = raw?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        return transport.takeIf { it in VALID_TRANSPORTS }
     }
 
     fun parse(input: String): Result<ParsedConfig> = runCatching {
@@ -53,9 +59,11 @@ object ConnStringParser {
         val adminUrl   = adminObj?.optString("url")?.takeIf { it.isNotEmpty() }
         val adminToken = adminObj?.optString("token")?.takeIf { it.isNotEmpty() }
 
-        // Всегда определяем транспорт из порта — игнорируем поле transport из JSON
         val addr = obj.getString("addr")
-        val transport = inferTransportFromPort(addr)
+        val transport = normalizeTransport(
+            if (obj.has("transport") && !obj.isNull("transport")) obj.getString("transport") else null,
+        )
+            ?: inferTransportFromPort(addr)
 
         ParsedConfig(
             addr       = addr,
@@ -63,7 +71,7 @@ object ConnStringParser {
             tun        = obj.getString("tun"),
             cert       = obj.getString("cert"),
             key        = obj.getString("key"),
-            ca         = obj.optString("ca", null),
+            ca         = if (obj.has("ca") && !obj.isNull("ca")) obj.getString("ca") else null,
             adminUrl   = adminUrl,
             adminToken = adminToken,
             transport  = transport,

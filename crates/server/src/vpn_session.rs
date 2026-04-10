@@ -36,6 +36,8 @@ pub struct StatsSample {
 /// Transport-agnostic VPN session.
 /// Works with both QUIC and HTTP/2 transports.
 pub struct VpnSession {
+    /// Session creation timestamp (unix seconds) for hard lifetime expiry.
+    pub created_at:    u64,
     /// Per-stream frame senders (batched frames → transport write loop)
     pub data_sends:    Vec<mpsc::Sender<Bytes>>,
     /// Per-session channel for TUN→transport packets (fed by tun_dispatch_loop)
@@ -55,19 +57,17 @@ pub struct VpnSession {
 
 impl VpnSession {
     pub fn touch(&self) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.last_seen.store(now, Ordering::Relaxed);
+        self.last_seen.store(now_unix_secs(), Ordering::Relaxed);
     }
 
     pub fn is_idle(&self, idle_secs: u64) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = now_unix_secs();
         now.saturating_sub(self.last_seen.load(Ordering::Relaxed)) > idle_secs
+    }
+
+    pub fn is_hard_expired(&self, hard_timeout_secs: u64) -> bool {
+        let now = now_unix_secs();
+        now.saturating_sub(self.created_at) > hard_timeout_secs
     }
 
     /// Signal the transport layer to close the underlying connection.
@@ -80,10 +80,35 @@ impl VpnSession {
     }
 }
 
+#[inline]
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 pub type VpnSessionMap = Arc<DashMap<IpAddr, Arc<VpnSession>>>;
 
 pub fn new_session_map() -> VpnSessionMap {
     Arc::new(DashMap::new())
+}
+
+/// Register tunnel IP to session, atomically replacing previous mapping.
+/// If a different previous session existed for this IP, it is closed immediately.
+/// Returns `true` when a different session was replaced.
+pub fn register_session_ip(
+    sessions: &VpnSessionMap,
+    tunnel_ip: IpAddr,
+    new_session: Arc<VpnSession>,
+) -> bool {
+    if let Some(old_session) = sessions.insert(tunnel_ip, new_session.clone()) {
+        if !Arc::ptr_eq(&old_session, &new_session) {
+            old_session.close();
+            return true;
+        }
+    }
+    false
 }
 
 // ─── Client allowlist (fingerprint-based) ───────────────────────────────────
@@ -132,6 +157,8 @@ pub async fn tun_dispatch_loop(
     sessions:   VpnSessionMap,
 ) -> anyhow::Result<()> {
     tracing::info!("TUN→transport dispatch loop started");
+    let mut drop_full = 0u64;
+    let mut drop_closed = 0u64;
 
     loop {
         let pkt = match pkt_rx.recv().await {
@@ -143,20 +170,46 @@ pub async fn tun_dispatch_loop(
 
         let dst = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
 
-        if let Some(session) = sessions.get(&dst) {
+        if let Some(session_ref) = sessions.get(&dst) {
+            let session = session_ref.value().clone();
             // Intercept DNS responses (src_port=53) for passive hostname cache
             if pkt.len() >= 28 && pkt[9] == 17 {
                 let ihl = ((pkt[0] & 0x0F) as usize) * 4;
                 if ihl + 8 <= pkt.len() {
                     let src_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
                     if src_port == 53 {
-                        dns_parse_response(&pkt[ihl + 8..], session.value());
+                        dns_parse_response(&pkt[ihl + 8..], &session);
                     }
                 }
             }
 
-            // Non-blocking send to per-session channel; drop packet if channel full
-            let _ = session.value().tun_pkt_tx.try_send(pkt);
+            match session.tun_pkt_tx.try_send(pkt) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_pkt)) => {
+                    drop_full += 1;
+                    if drop_full == 1 || drop_full % 1024 == 0 {
+                        tracing::warn!(
+                            "TUN dispatch queue full for {} (dropped_full={})",
+                            dst,
+                            drop_full
+                        );
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_pkt)) => {
+                    drop_closed += 1;
+                    if drop_closed == 1 || drop_closed % 128 == 0 {
+                        tracing::warn!(
+                            "TUN dispatch channel closed for {} (dropped_closed={})",
+                            dst,
+                            drop_closed
+                        );
+                    }
+                    if sessions.remove_if(&dst, |_, current| Arc::ptr_eq(current, &session)).is_some() {
+                        session.close();
+                        tracing::info!("Removed closed session mapping for tunnel IP {}", dst);
+                    }
+                }
+            }
         }
     }
 
@@ -165,16 +218,24 @@ pub async fn tun_dispatch_loop(
 
 // ─── Cleanup task ───────────────────────────────────────────────────────────
 
-pub async fn cleanup_task(sessions: VpnSessionMap, idle_secs: u64) {
+pub async fn cleanup_task(sessions: VpnSessionMap, idle_secs: u64, hard_timeout_secs: u64) {
+    #[derive(Copy, Clone)]
+    enum ExpireReason {
+        Idle,
+        HardTimeout,
+    }
+
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
     loop {
         interval.tick().await;
 
-        let mut to_remove = Vec::new();
-        let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let mut to_remove: Vec<(IpAddr, ExpireReason)> = Vec::new();
+        let now_ts = now_unix_secs();
         for entry in sessions.iter() {
             if entry.value().is_idle(idle_secs) {
-                to_remove.push(*entry.key());
+                to_remove.push((*entry.key(), ExpireReason::Idle));
+            } else if entry.value().is_hard_expired(hard_timeout_secs) {
+                to_remove.push((*entry.key(), ExpireReason::HardTimeout));
             } else {
                 let bytes_rx = entry.value().bytes_rx.load(Ordering::Relaxed);
                 let bytes_tx = entry.value().bytes_tx.load(Ordering::Relaxed);
@@ -184,16 +245,36 @@ pub async fn cleanup_task(sessions: VpnSessionMap, idle_secs: u64) {
                 }
             }
         }
-        for ip in &to_remove {
-            if let Some((_, session)) = sessions.remove_if(ip, |_, v| v.is_idle(idle_secs)) {
+
+        let mut removed_idle = 0usize;
+        let mut removed_hard = 0usize;
+        for (ip, reason) in to_remove {
+            let removed = sessions.remove_if(&ip, |_, v| match reason {
+                ExpireReason::Idle => v.is_idle(idle_secs),
+                ExpireReason::HardTimeout => v.is_hard_expired(hard_timeout_secs),
+            });
+            if let Some((_, session)) = removed {
                 session.close();
-                tracing::info!("Session expired (idle): tunnel IP {}", ip);
+                match reason {
+                    ExpireReason::Idle => {
+                        removed_idle += 1;
+                        tracing::info!("Session expired (idle): tunnel IP {}", ip);
+                    }
+                    ExpireReason::HardTimeout => {
+                        removed_hard += 1;
+                        tracing::info!("Session expired (hard-timeout): tunnel IP {}", ip);
+                    }
+                }
             }
         }
-        if !to_remove.is_empty() {
+
+        let removed_total = removed_idle + removed_hard;
+        if removed_total > 0 {
             tracing::info!(
-                "Cleanup: removed {} sessions, {} active",
-                to_remove.len(),
+                "Cleanup: removed {} sessions (idle={}, hard={}), {} active",
+                removed_total,
+                removed_idle,
+                removed_hard,
                 sessions.len()
             );
         }

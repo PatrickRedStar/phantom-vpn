@@ -122,6 +122,63 @@ fn reset_stats() {
     IS_CONNECTED.store(false, Ordering::Relaxed);
 }
 
+fn write_tun_packet(fd: RawFd, pkt: &[u8], writer_name: &str) -> io::Result<()> {
+    let mut written = 0usize;
+
+    while written < pkt.len() {
+        let rc = unsafe {
+            libc::write(
+                fd,
+                pkt[written..].as_ptr() as *const libc::c_void,
+                pkt.len() - written,
+            )
+        };
+
+        if rc > 0 {
+            let n = rc as usize;
+            written += n;
+            BYTES_RX.fetch_add(n as u64, Ordering::Relaxed);
+            continue;
+        }
+
+        if rc == 0 {
+            let err = io::Error::new(
+                io::ErrorKind::WriteZero,
+                format!(
+                    "{}: write returned 0 after {}/{} bytes",
+                    writer_name,
+                    written,
+                    pkt.len()
+                ),
+            );
+            log::error!("{}", err);
+            return Err(err);
+        }
+
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(code) if code == libc::EAGAIN || code == libc::EWOULDBLOCK => {
+                std::thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            _ => {
+                log::error!(
+                    "{}: write failed after {}/{} bytes: {}",
+                    writer_name,
+                    written,
+                    pkt.len(),
+                    err
+                );
+                return Err(err);
+            }
+        }
+    }
+
+    PKTS_RX.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
 // ─── Global tunnel state ─────────────────────────────────────────────────────
 
 struct TunnelHandle {
@@ -221,21 +278,17 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
             unsafe { libc::close(tcp_fd); }
             return -1;
         }
-        // TCP socket tuning: TCP_NODELAY + large buffers (matching QUIC's 4MB UDP buffers)
+        // TCP_NODELAY: eliminate Nagle algorithm delay on upload.
+        // Do NOT set SO_RCVBUF/SO_SNDBUF — explicit setsockopt disables Android TCP
+        // auto-tuning and caps buffers at rmem_max (128KB-1MB depending on device).
+        // Auto-tuning grows to tcp_rmem max as needed.
         unsafe {
             let one: libc::c_int = 1;
             libc::setsockopt(tcp_fd, libc::IPPROTO_TCP, libc::TCP_NODELAY,
                 &one as *const _ as *const libc::c_void,
                 std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-            let buf_size: libc::c_int = 4 * 1024 * 1024;
-            libc::setsockopt(tcp_fd, libc::SOL_SOCKET, libc::SO_RCVBUF,
-                &buf_size as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
-            libc::setsockopt(tcp_fd, libc::SOL_SOCKET, libc::SO_SNDBUF,
-                &buf_size as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t);
         }
-        log::info!("HTTP/2 TCP socket fd={} protected + tuned (NODELAY, 4MB bufs)", tcp_fd);
+        log::info!("HTTP/2 TCP socket fd={} protected + TCP_NODELAY set", tcp_fd);
 
         // Store TCP fd in a way that run_tunnel can access it
         PROTECTED_TCP_FD.store(tcp_fd as u64, Ordering::Relaxed);
@@ -564,7 +617,7 @@ async fn run_h2_tunnel(
     }
 
     let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(8192);
-    let (h2_pkt_tx, mut h2_pkt_rx) = mpsc::channel::<Vec<u8>>(8192);
+    let (h2_pkt_tx, mut h2_pkt_rx) = mpsc::channel::<Vec<u8>>(256);
 
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
@@ -615,18 +668,16 @@ async fn run_h2_tunnel(
         .name("tun-writer".into())
         .spawn(move || {
             log::info!("TUN writer: entering receive loop");
-            while let Some(pkt) = h2_pkt_rx.blocking_recv() {
+            'writer: while let Some(pkt) = h2_pkt_rx.blocking_recv() {
                 log::debug!("TUN writer: writing {} bytes", pkt.len());
-                BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
-                PKTS_RX.fetch_add(1, Ordering::Relaxed);
-                unsafe { libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len()); }
+                if write_tun_packet(fd_write, &pkt, "H2 TUN writer").is_err() {
+                    break 'writer;
+                }
                 for _ in 0..255 {
                     match h2_pkt_rx.try_recv() {
                         Ok(pkt) => {
-                            BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
-                            PKTS_RX.fetch_add(1, Ordering::Relaxed);
-                            unsafe {
-                                libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len());
+                            if write_tun_packet(fd_write, &pkt, "H2 TUN writer").is_err() {
+                                break 'writer;
                             }
                         }
                         Err(_) => break,
@@ -646,21 +697,33 @@ async fn run_h2_tunnel(
         let tx = h2_pkt_tx.clone();
         set.spawn(async move { h2_stream_rx_loop(recv, tx).await });
     }
-    set.spawn(async move { h2_stream_tx_loop(tun_pkt_rx, sends).await });
 
-    // Wait for shutdown or ALL tasks to complete (not just one!)
+    // TX loop runs as a blocking future (not inside JoinSet).
+    // Either TX or any RX stream death triggers full shutdown.
     tokio::select! {
-        _ = shutdown_rx => { log::info!("Shutdown received"); }
+        _ = shutdown_rx => {
+            log::info!("H2 tunnel: shutdown signal received");
+        }
+        result = h2_stream_tx_loop(tun_pkt_rx, sends) => {
+            log::warn!("H2 TX loop ended: {:?}", result);
+        }
         _ = async {
-            while let Some(res) = set.join_next().await {
-                if let Err(e) = res {
-                    log::error!("Tunnel task panicked: {}", e);
+            // Wait for first RX stream to die (EOS or error)
+            if let Some(res) = set.join_next().await {
+                if let Ok(Err(e)) = res {
+                    log::error!("H2 RX stream error: {}", e);
+                } else if let Err(e) = res {
+                    log::error!("H2 RX stream task panicked: {}", e);
+                } else {
+                    log::warn!("H2 RX stream completed");
                 }
             }
         } => {
-            log::info!("All HTTP/2 stream tasks completed");
+            log::info!("H2 RX stream died, initiating full shutdown");
         }
     }
+    // Abort all remaining RX tasks
+    set.abort_all();
 
     shutdown_flag.store(true, Ordering::Relaxed);
     IS_CONNECTED.store(false, Ordering::Relaxed);
@@ -757,23 +820,23 @@ async fn run_quic_tunnel(
     std::thread::Builder::new()
         .name("tun-writer".into())
         .spawn(move || {
-            while let Some(pkt) = quic_pkt_rx.blocking_recv() {
-                BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
-                PKTS_RX.fetch_add(1, Ordering::Relaxed);
-                unsafe { libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len()); }
+            log::info!("TUN writer: entering receive loop");
+            'writer: while let Some(pkt) = quic_pkt_rx.blocking_recv() {
+                if write_tun_packet(fd_write, &pkt, "QUIC TUN writer").is_err() {
+                    break 'writer;
+                }
                 for _ in 0..255 {
                     match quic_pkt_rx.try_recv() {
                         Ok(pkt) => {
-                            BYTES_RX.fetch_add(pkt.len() as u64, Ordering::Relaxed);
-                            PKTS_RX.fetch_add(1, Ordering::Relaxed);
-                            unsafe {
-                                libc::write(fd_write, pkt.as_ptr() as *const libc::c_void, pkt.len());
+                            if write_tun_packet(fd_write, &pkt, "QUIC TUN writer").is_err() {
+                                break 'writer;
                             }
                         }
                         Err(_) => break,
                     }
                 }
             }
+            log::info!("TUN writer thread exiting");
             unsafe { libc::close(fd_write); }
         })
         .context("spawn tun-writer")?;

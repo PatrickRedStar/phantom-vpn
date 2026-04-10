@@ -35,6 +35,7 @@ class XuiApiClient:
         password: str,
         inbound_ids: list[int],
         sub_url: str,
+        verify: bool | str = True,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.username = username
@@ -49,7 +50,7 @@ class XuiApiClient:
         parsed = urlparse(self.base_url)
         path = parsed.path.rstrip("/")
         self._api_prefix = self.base_url.rstrip("/") + path + "/api"
-        self._http = httpx.AsyncClient(verify=False, timeout=15.0)
+        self._http = httpx.AsyncClient(verify=verify, timeout=15.0)
         self._logged_in = False
 
     async def close(self) -> None:

@@ -5,10 +5,17 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import ClientBinding, Payment, Subscription, SubscriptionEvent, TgUser
+from app.models import (
+    ClientBinding,
+    NotificationSend,
+    Payment,
+    Subscription,
+    SubscriptionEvent,
+    TgUser,
+)
 
 
 class BotRepository:
@@ -115,7 +122,7 @@ class BotRepository:
         tg_user_id: int,
         server_id: str,
         client_name: str,
-        product_type: str = "ghoststream",
+        product_type: str = "vless",
     ) -> ClientBinding:
         result = await self.session.execute(
             select(ClientBinding).where(
@@ -146,6 +153,69 @@ class BotRepository:
         )
         return list(result.scalars().all())
 
+    async def list_all_client_bindings(self, product_type: Optional[str] = None) -> list[ClientBinding]:
+        stmt = select(ClientBinding)
+        if product_type is not None:
+            stmt = stmt.where(ClientBinding.product_type == product_type)
+        stmt = stmt.order_by(ClientBinding.created_at.desc())
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_payment_user_ids(self) -> set[int]:
+        result = await self.session.execute(select(Payment.tg_user_id).distinct())
+        return {int(tg_user_id) for tg_user_id in result.scalars().all() if tg_user_id is not None}
+
+    async def was_notification_scope_sent(
+        self,
+        tg_user_id: int,
+        notification_type: str,
+        scope_key: str,
+    ) -> bool:
+        result = await self.session.execute(
+            select(NotificationSend.id).where(
+                NotificationSend.tg_user_id == tg_user_id,
+                NotificationSend.notification_type == notification_type,
+                NotificationSend.scope_key == scope_key,
+            ),
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def was_notification_type_sent_since(
+        self,
+        tg_user_id: int,
+        notification_type: str,
+        since: datetime,
+    ) -> bool:
+        result = await self.session.execute(
+            select(NotificationSend.id).where(
+                NotificationSend.tg_user_id == tg_user_id,
+                NotificationSend.notification_type == notification_type,
+                NotificationSend.sent_at >= since,
+            ),
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def record_notification_send(
+        self,
+        tg_user_id: int,
+        notification_type: str,
+        scope_key: str,
+        client_name: Optional[str] = None,
+    ) -> None:
+        self.session.add(
+            NotificationSend(
+                tg_user_id=tg_user_id,
+                notification_type=notification_type,
+                scope_key=scope_key,
+                client_name=client_name,
+            ),
+        )
+        await self.session.commit()
+
+    async def delete_client_binding_by_id(self, binding_id: int) -> None:
+        await self.session.execute(delete(ClientBinding).where(ClientBinding.id == binding_id))
+        await self.session.commit()
+
     async def backfill_bindings_from_legacy(self, default_server_id: str) -> int:
         result = await self.session.execute(select(Subscription))
         legacy_subs = list(result.scalars().all())
@@ -173,4 +243,3 @@ class BotRepository:
         if created > 0:
             await self.session.commit()
         return created
-

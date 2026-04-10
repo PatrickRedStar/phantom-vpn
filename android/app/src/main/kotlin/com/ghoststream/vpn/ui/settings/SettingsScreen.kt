@@ -73,6 +73,25 @@ import com.ghoststream.vpn.ui.theme.RedError
 import com.ghoststream.vpn.ui.theme.TextSecondary
 import com.ghoststream.vpn.ui.theme.YellowWarning
 
+private val transportOptions = listOf(
+    "quic" to "QUIC",
+    "h2" to "HTTP/2",
+    "auto" to "Auto",
+)
+
+private fun transportLabel(transport: String): String = when (transport.lowercase()) {
+    "quic" -> "QUIC"
+    "h2" -> "HTTP/2"
+    "auto" -> "Auto"
+    else -> "HTTP/2"
+}
+
+private fun transportColor(transport: String): Color = when (transport.lowercase()) {
+    "quic" -> Color(0xFF69F0AE)
+    "auto" -> Color(0xFF80DEEA)
+    else -> Color(0xFFFFD740)
+}
+
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -207,6 +226,7 @@ fun SettingsScreen(
                         selectedProfileId = null
                     },
                     onRename = { viewModel.renameProfile(selectedProfile.id, it) },
+                    onTransportChange = { viewModel.updateProfileTransport(selectedProfile.id, it) },
                     onDelete = {
                         viewModel.deleteProfile(selectedProfile.id)
                         selectedProfileId = null
@@ -664,10 +684,9 @@ private fun ProfileRow(
     onPing: () -> Unit = {},
     subscriptionText: String? = null,
 ) {
-    // Определяем транспорт из порта
-    val transport = profile.transport ?: if (profile.serverAddr.contains(":9443")) "h2" else "quic"
-    val transportLabel = if (transport == "quic") "QUIC" else "HTTP/2"
-    val transportColor = if (transport == "quic") Color(0xFF69F0AE) else Color(0xFFFFD740)
+    val transport = profile.transport
+    val transportLabel = transportLabel(transport)
+    val transportColor = transportColor(transport)
 
     Row(
         modifier = Modifier
@@ -783,6 +802,7 @@ private fun ProfileDetailsDialog(
     onDismiss: () -> Unit,
     onSetActive: () -> Unit,
     onRename: (String) -> Unit,
+    onTransportChange: (String) -> Unit,
     onDelete: () -> Unit,
     onAdminClick: (() -> Unit)? = null,
     onShareToTv: (() -> Unit)? = null,
@@ -790,9 +810,9 @@ private fun ProfileDetailsDialog(
     var newName by remember(profile.id, profile.name) { mutableStateOf(profile.name) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    // Транспорт определяется автоматически из порта
-    val transport = profile.transport ?: if (profile.serverAddr.contains(":9443")) "h2" else "quic"
-    val transportLabel = if (transport == "quic") "QUIC" else "HTTP/2"
+    val transport = profile.transport
+    val transportLabel = transportLabel(transport)
+    val transportColor = transportColor(transport)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -807,7 +827,7 @@ private fun ProfileDetailsDialog(
                 // Индикатор транспорта
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = if (transport == "quic") Color(0xFF69F0AE) else Color(0xFFFFD740),
+                    color = transportColor,
                     modifier = Modifier.padding(vertical = 4.dp),
                 ) {
                     Text(
@@ -815,6 +835,31 @@ private fun ProfileDetailsDialog(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         fontWeight = FontWeight.Bold,
                     )
+                }
+                Text(
+                    "Режим транспорта",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = TextSecondary,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    transportOptions.forEach { (value, label) ->
+                        val selected = transport == value
+                        if (selected) {
+                            Button(
+                                onClick = { onTransportChange(value) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(label)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { onTransportChange(value) },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(label)
+                            }
+                        }
+                    }
                 }
                 OutlinedTextField(
                     value = newName,
