@@ -23,7 +23,10 @@ use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
-    wire::{BATCH_MAX_PLAINTEXT, MAX_N_STREAMS, MIN_N_STREAMS, QUIC_TUNNEL_MSS},
+    wire::{
+        build_heartbeat_frame, first_heartbeat_delay, next_heartbeat_delay,
+        BATCH_MAX_PLAINTEXT, MAX_N_STREAMS, MIN_N_STREAMS, QUIC_TUNNEL_MSS,
+    },
 };
 
 use crate::fakeapp;
@@ -379,7 +382,7 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
 
             let mut pkt = frame.split_to(pkt_len);
 
-            if pkt_len < 20 { continue; }
+            if pkt_len < 20 || (pkt[0] >> 4) != 4 { continue; }
 
             // Register session on first IPv4 packet
             if !registered && (pkt[0] >> 4) == 4 {
@@ -456,30 +459,60 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
 }
 
 /// TLS write loop: drain Bytes from channel → write to TLS stream.
+/// Emits a dummy heartbeat frame if no real traffic has flowed for
+/// `next_heartbeat_delay()` (randomized ~20s) — keeps the TCP/TLS channel
+/// alive and traffic-shaped even during idle periods.
 async fn tls_write_loop<W: AsyncWriteExt + Unpin>(
     mut frame_rx: mpsc::Receiver<Bytes>,
     writer: &mut W,
     remote: SocketAddr,
 ) {
-    while let Some(frame) = frame_rx.recv().await {
-        if writer.write_all(&frame).await.is_err() {
-            tracing::debug!("TLS write to {} failed", remote);
-            break;
-        }
-        // Drain queued frames before flushing
-        for _ in 0..31 {
-            match frame_rx.try_recv() {
-                Ok(frame) => {
-                    if writer.write_all(&frame).await.is_err() {
-                        return;
+    let mut next_heartbeat = tokio::time::Instant::now() + first_heartbeat_delay();
+    loop {
+        tokio::select! {
+            biased;
+            maybe_frame = frame_rx.recv() => {
+                let Some(frame) = maybe_frame else { break; };
+                if writer.write_all(&frame).await.is_err() {
+                    tracing::debug!("TLS write to {} failed", remote);
+                    break;
+                }
+                // Drain queued frames before flushing
+                let mut write_err = false;
+                for _ in 0..31 {
+                    match frame_rx.try_recv() {
+                        Ok(frame) => {
+                            if writer.write_all(&frame).await.is_err() {
+                                write_err = true;
+                                break;
+                            }
+                        }
+                        Err(_) => break,
                     }
                 }
-                Err(_) => break,
+                if write_err {
+                    return;
+                }
+                if writer.flush().await.is_err() {
+                    tracing::debug!("TLS flush to {} failed", remote);
+                    break;
+                }
+                // Real traffic just flowed → push heartbeat deadline forward.
+                next_heartbeat = tokio::time::Instant::now() + next_heartbeat_delay();
             }
-        }
-        if writer.flush().await.is_err() {
-            tracing::debug!("TLS flush to {} failed", remote);
-            break;
+            _ = tokio::time::sleep_until(next_heartbeat) => {
+                let hb = build_heartbeat_frame();
+                tracing::trace!("heartbeat fire → {}", remote);
+                if writer.write_all(&hb).await.is_err() {
+                    tracing::debug!("TLS heartbeat write to {} failed", remote);
+                    break;
+                }
+                if writer.flush().await.is_err() {
+                    tracing::debug!("TLS heartbeat flush to {} failed", remote);
+                    break;
+                }
+                next_heartbeat = tokio::time::Instant::now() + next_heartbeat_delay();
+            }
         }
     }
     tracing::debug!("TLS write loop ended for {}", remote);

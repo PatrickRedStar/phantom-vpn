@@ -8,8 +8,12 @@
 use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use phantom_core::{
-    wire::{build_batch_plaintext, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
+    wire::{
+        build_batch_plaintext, build_heartbeat_frame, first_heartbeat_delay,
+        next_heartbeat_delay, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS,
+    },
     mtu::clamp_tcp_mss,
 };
 
@@ -115,6 +119,10 @@ pub async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
 
 /// TX loop: drain a per-stream mpsc of `Bytes`, coalesce into a batch,
 /// emit `[4B len][batch]` over this stream's TLS writer.
+///
+/// When no real TUN packet has been sent for ~20–30 s the loop fires a dummy
+/// heartbeat frame to keep the TLS stream looking alive to passive DPI. Real
+/// traffic resets the heartbeat timer, so active streams never emit them.
 pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
     mut writer: W,
     mut tun_rx: mpsc::Receiver<Bytes>,
@@ -124,40 +132,59 @@ pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
     let batch_limit = BATCH_MAX_PLAINTEXT - 16;
     let mut batch: Vec<Bytes> = Vec::with_capacity(64);
 
+    // First heartbeat is jittered per-stream so all N streams don't fire at t=20.
+    let mut next_heartbeat: Instant = Instant::now() + first_heartbeat_delay();
+
     loop {
         batch.clear();
         let mut batch_bytes = 2usize; // end marker
 
-        let pkt = match tun_rx.recv().await {
-            Some(p) => p,
-            None => break,
-        };
-        batch_bytes += 2 + pkt.len();
-        batch.push(pkt);
+        tokio::select! {
+            maybe_pkt = tun_rx.recv() => {
+                let pkt = match maybe_pkt {
+                    Some(p) => p,
+                    None => break,
+                };
+                batch_bytes += 2 + pkt.len();
+                batch.push(pkt);
 
-        while batch_bytes + 2 + 1500 <= batch_limit {
-            match tun_rx.try_recv() {
-                Ok(pkt) => {
-                    batch_bytes += 2 + pkt.len();
-                    batch.push(pkt);
+                while batch_bytes + 2 + 1500 <= batch_limit {
+                    match tun_rx.try_recv() {
+                        Ok(pkt) => {
+                            batch_bytes += 2 + pkt.len();
+                            batch.push(pkt);
+                        }
+                        Err(_) => break,
+                    }
                 }
-                Err(_) => break,
+
+                let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_ref()).collect();
+                let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+
+                frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+                let total = 4 + pt_len;
+
+                writer
+                    .write_all(&frame_buf[..total])
+                    .await
+                    .map_err(|e| anyhow::anyhow!("TLS write: {}", e))?;
+
+                // Real traffic just went out — push the next heartbeat out.
+                next_heartbeat = Instant::now() + next_heartbeat_delay();
+            }
+            _ = tokio::time::sleep_until(next_heartbeat) => {
+                let hb = build_heartbeat_frame();
+                writer
+                    .write_all(&hb)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("TLS heartbeat write: {}", e))?;
+                tracing::trace!(bytes = hb.len(), "tls_tx heartbeat fired");
+                next_heartbeat = Instant::now() + next_heartbeat_delay();
             }
         }
-
-        let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_ref()).collect();
-        let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-
-        frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-        let total = 4 + pt_len;
-
-        writer
-            .write_all(&frame_buf[..total])
-            .await
-            .map_err(|e| anyhow::anyhow!("TLS write: {}", e))?;
     }
 
     Ok(())

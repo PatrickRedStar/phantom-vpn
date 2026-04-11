@@ -2,6 +2,9 @@
 //! Формат: [4B frame_len][batch plaintext] внутри TLS stream.
 
 use crate::error::PacketError;
+use bytes::{BufMut, Bytes, BytesMut};
+use rand::Rng;
+use std::time::Duration;
 
 // ─── Константы ──────────────────────────────────────────────────────────────
 /// TUN MTU (conservative for TLS stream framing)
@@ -134,6 +137,90 @@ pub fn extract_batch_packets(plaintext: &[u8]) -> Result<Vec<Vec<u8>>, PacketErr
     Ok(packets)
 }
 
+// ─── Heartbeat / dummy frames (detection vector 12) ────────────────────────
+//
+// Idle TLS streams that go silent for 30+ seconds are a DPI tell: real mobile
+// apps emit keepalive records every few seconds. Both client and server send
+// dummy "heartbeat" batches at randomized intervals when a stream is idle.
+//
+// Dummy packets carry random bytes with `buf[0] = 0x00`, so version nibble != 4
+// — all receivers' existing IPv4 filters silently drop them before tun_tx.
+
+/// Minimum interval between consecutive heartbeats on an idle stream.
+pub const HEARTBEAT_INTERVAL_MIN_SECS: u64 = 20;
+/// Maximum interval between consecutive heartbeats on an idle stream.
+pub const HEARTBEAT_INTERVAL_MAX_SECS: u64 = 30;
+/// Min start jitter for first heartbeat after stream creation (desync streams).
+pub const HEARTBEAT_START_JITTER_MIN_SECS: u64 = 5;
+/// Max start jitter for first heartbeat after stream creation.
+pub const HEARTBEAT_START_JITTER_MAX_SECS: u64 = 30;
+/// Minimum random heartbeat packet size in bytes.
+pub const HEARTBEAT_PKT_MIN: usize = 40;
+/// Maximum random heartbeat packet size in bytes.
+pub const HEARTBEAT_PKT_MAX: usize = 200;
+/// Sentinel version nibble for dummy heartbeat packets (fails IPv4 parse on all receivers).
+pub const HEARTBEAT_SENTINEL_VERSION: u8 = 0x00;
+
+/// Builds a fully-framed dummy heartbeat ready to `write_all` into a TLS stream.
+///
+/// Layout: `[4B frame_len BE][2B pkt_len BE][pkt_bytes][2B 0x0000]`
+///
+/// The inner packet is `uniform(HEARTBEAT_PKT_MIN, HEARTBEAT_PKT_MAX)` random bytes
+/// with `buf[0] = HEARTBEAT_SENTINEL_VERSION` so receivers' IPv4 filters drop it.
+pub fn build_heartbeat_frame() -> Bytes {
+    let mut rng = rand::thread_rng();
+    let pkt_len: usize = rng.gen_range(HEARTBEAT_PKT_MIN..=HEARTBEAT_PKT_MAX);
+
+    // frame body = [2B pkt_len][pkt_bytes][2B 0x0000]
+    let body_len = 2 + pkt_len + 2;
+    let mut buf = BytesMut::with_capacity(4 + body_len);
+
+    // 4B frame_len (big-endian, body length only — excludes the 4B prefix itself)
+    buf.put_u32(body_len as u32);
+
+    // 2B pkt_len
+    buf.put_u16(pkt_len as u16);
+
+    // pkt_len random bytes, first byte forced to sentinel
+    let start = buf.len();
+    buf.resize(start + pkt_len, 0);
+    rng.fill(&mut buf[start..start + pkt_len]);
+    buf[start] = HEARTBEAT_SENTINEL_VERSION;
+
+    // 2B end-of-batch marker
+    buf.put_u16(0x0000);
+
+    buf.freeze()
+}
+
+/// Single-source-of-truth filter: returns true if `pkt` should be dropped as
+/// a dummy/heartbeat (or otherwise malformed non-IPv4) packet.
+///
+/// Both client rx (`tls_rx_loop`) and server rx (`h2_server`, `quic_server`)
+/// call this before forwarding to tun_tx.
+#[inline]
+pub fn is_heartbeat_packet(pkt: &[u8]) -> bool {
+    pkt.is_empty() || (pkt[0] >> 4) != 4
+}
+
+/// Uniform `[HEARTBEAT_INTERVAL_MIN_SECS, HEARTBEAT_INTERVAL_MAX_SECS]` seconds.
+/// Used for scheduling the next heartbeat after the first one fires or after
+/// real traffic suppressed a scheduled heartbeat.
+pub fn next_heartbeat_delay() -> Duration {
+    let secs = rand::thread_rng()
+        .gen_range(HEARTBEAT_INTERVAL_MIN_SECS..=HEARTBEAT_INTERVAL_MAX_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Uniform `[HEARTBEAT_START_JITTER_MIN_SECS, HEARTBEAT_START_JITTER_MAX_SECS]`
+/// seconds. Used once per stream at creation time so streams desynchronize
+/// instead of all firing their first heartbeat at t=20s.
+pub fn first_heartbeat_delay() -> Duration {
+    let secs = rand::thread_rng()
+        .gen_range(HEARTBEAT_START_JITTER_MIN_SECS..=HEARTBEAT_START_JITTER_MAX_SECS);
+    Duration::from_secs(secs)
+}
+
 // ─── Тесты ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -167,5 +254,86 @@ mod tests {
         assert_eq!(out[0], b"packet_one");
         assert_eq!(out[1], b"packet_two_longer");
         assert_eq!(out[2], b"pkt3");
+    }
+
+    // ─── Heartbeat tests (detection vector 12) ─────────────────────────────
+
+    #[test]
+    fn test_build_heartbeat_frame_parseable() {
+        // Build a heartbeat, strip the 4B frame_len prefix, feed the body to
+        // extract_batch_packets. Expect exactly one packet in [40, 200] bytes
+        // with first byte == HEARTBEAT_SENTINEL_VERSION (0x00).
+        for _ in 0..100 {
+            let frame = build_heartbeat_frame();
+            assert!(frame.len() >= 4 + 2 + HEARTBEAT_PKT_MIN + 2);
+            assert!(frame.len() <= 4 + 2 + HEARTBEAT_PKT_MAX + 2);
+
+            let body_len =
+                u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+            assert_eq!(body_len, frame.len() - 4);
+
+            let body = &frame[4..];
+            let packets = extract_batch_packets(body).expect("parseable heartbeat body");
+            assert_eq!(packets.len(), 1, "heartbeat must contain exactly one pkt");
+
+            let pkt = &packets[0];
+            assert!(
+                pkt.len() >= HEARTBEAT_PKT_MIN && pkt.len() <= HEARTBEAT_PKT_MAX,
+                "pkt.len()={} out of range",
+                pkt.len()
+            );
+            assert_eq!(
+                pkt[0], HEARTBEAT_SENTINEL_VERSION,
+                "first byte must be sentinel 0x00"
+            );
+            assert_eq!(pkt[0] >> 4, 0, "version nibble must not be 4");
+        }
+    }
+
+    #[test]
+    fn test_is_heartbeat_packet_matches_built_heartbeat() {
+        for _ in 0..100 {
+            let frame = build_heartbeat_frame();
+            let body = &frame[4..];
+            let packets = extract_batch_packets(body).unwrap();
+            assert!(is_heartbeat_packet(&packets[0]));
+        }
+    }
+
+    #[test]
+    fn test_is_heartbeat_packet_rejects_real_ipv4() {
+        // Minimal IPv4 header: version=4, IHL=5 → first byte 0x45.
+        let mut ipv4 = vec![0u8; 20];
+        ipv4[0] = 0x45;
+        assert!(!is_heartbeat_packet(&ipv4));
+
+        // Any 0x4X first byte counts as IPv4 for our filter.
+        ipv4[0] = 0x4F;
+        assert!(!is_heartbeat_packet(&ipv4));
+    }
+
+    #[test]
+    fn test_is_heartbeat_packet_rejects_empty() {
+        assert!(is_heartbeat_packet(&[]));
+    }
+
+    #[test]
+    fn test_next_heartbeat_delay_within_bounds() {
+        let lo = Duration::from_secs(HEARTBEAT_INTERVAL_MIN_SECS);
+        let hi = Duration::from_secs(HEARTBEAT_INTERVAL_MAX_SECS);
+        for _ in 0..100 {
+            let d = next_heartbeat_delay();
+            assert!(d >= lo && d <= hi, "next_heartbeat_delay out of bounds: {d:?}");
+        }
+    }
+
+    #[test]
+    fn test_first_heartbeat_delay_within_bounds() {
+        let lo = Duration::from_secs(HEARTBEAT_START_JITTER_MIN_SECS);
+        let hi = Duration::from_secs(HEARTBEAT_START_JITTER_MAX_SECS);
+        for _ in 0..100 {
+            let d = first_heartbeat_delay();
+            assert!(d >= lo && d <= hi, "first_heartbeat_delay out of bounds: {d:?}");
+        }
     }
 }
