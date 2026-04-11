@@ -283,9 +283,10 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     // Create + protect() N parallel TCP sockets now, on the JNI thread that
     // owns the JNIEnv. They are later consumed by the tunnel thread.
     {
-        use phantom_core::wire::N_DATA_STREAMS;
-        let mut fds: Vec<RawFd> = Vec::with_capacity(N_DATA_STREAMS);
-        for i in 0..N_DATA_STREAMS {
+        use phantom_core::wire::n_data_streams;
+        let n_streams = n_data_streams();
+        let mut fds: Vec<RawFd> = Vec::with_capacity(n_streams);
+        for i in 0..n_streams {
             let tcp_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
             if tcp_fd < 0 {
                 log::error!("nativeStart: socket() failed for stream {}", i);
@@ -513,14 +514,18 @@ async fn run_tunnel(
         None
     };
 
-    let server_addr: std::net::SocketAddr = if let Ok(addr) = server_addr.parse() {
+    // Defensive: UI lets user edit serverAddr by hand; strip/append `:443`
+    // so a bare hostname doesn't blow up `lookup_host` with "invalid socket
+    // address". See client_common::with_default_port.
+    let normalized_addr = client_common::with_default_port(server_addr, 443);
+    let server_addr: std::net::SocketAddr = if let Ok(addr) = normalized_addr.parse() {
         addr
     } else {
-        log::info!("Resolving DNS for {}", server_addr);
-        tokio::net::lookup_host(server_addr).await
+        log::info!("Resolving DNS for {}", normalized_addr);
+        tokio::net::lookup_host(&normalized_addr).await
             .context("DNS lookup failed")?
             .next()
-            .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", server_addr))?
+            .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", normalized_addr))?
     };
 
     run_tls_tunnel(fd, server_addr, server_name, insecure, server_ca, client_identity, shutdown_rx).await
@@ -528,8 +533,9 @@ async fn run_tunnel(
 
 /// Raw TLS tunnel implementation for Android (multi-stream).
 ///
-/// Opens `N_DATA_STREAMS` TLS connections in parallel, writes a 1-byte
-/// `stream_idx` header on each, then runs independent tx/rx loops per stream.
+/// Opens `n_data_streams()` TLS connections in parallel, writes a 2-byte
+/// `[stream_idx, max_streams]` handshake on each, then runs independent
+/// tx/rx loops per stream.
 /// A TUN reader task distributes outgoing packets to per-stream tx channels
 /// using a 5-tuple flow hash (`flow_stream_idx`) to keep each TCP flow pinned
 /// to one stream (avoids reordering).
@@ -544,9 +550,11 @@ async fn run_tls_tunnel(
 ) -> anyhow::Result<()> {
     use anyhow::Context;
     use bytes::Bytes;
-    use phantom_core::wire::{flow_stream_idx, N_DATA_STREAMS};
+    use phantom_core::wire::{flow_stream_idx, n_data_streams};
     use tokio::sync::mpsc;
-    use client_common::{tls_connect_with_tcp, tls_rx_loop, tls_tx_loop, write_stream_idx};
+    use client_common::{tls_connect_with_tcp, tls_rx_loop, tls_tx_loop, write_handshake};
+
+    let n_streams = n_data_streams();
 
     let client_config = phantom_core::h2_transport::make_h2_client_tls(insecure, server_ca, client_identity)
         .context("Failed to build TLS client config")?;
@@ -556,18 +564,18 @@ async fn run_tls_tunnel(
         let mut g = PROTECTED_TCP_FDS.lock().unwrap();
         std::mem::take(&mut *g)
     };
-    if tcp_fds.len() != N_DATA_STREAMS {
+    if tcp_fds.len() != n_streams {
         return Err(anyhow::anyhow!(
             "expected {} protected TCP fds, got {}",
-            N_DATA_STREAMS,
+            n_streams,
             tcp_fds.len()
         ));
     }
 
     // Connect each socket + TLS handshake, sequentially. Parallel connect()
     // would save ~1 RTT × N, but linear is simpler and N=8 is small enough.
-    let mut tls_writers = Vec::with_capacity(N_DATA_STREAMS);
-    let mut tls_readers = Vec::with_capacity(N_DATA_STREAMS);
+    let mut tls_writers = Vec::with_capacity(n_streams);
+    let mut tls_readers = Vec::with_capacity(n_streams);
 
     for (idx, tcp_fd) in tcp_fds.iter().copied().enumerate() {
         unsafe {
@@ -588,9 +596,9 @@ async fn run_tls_tunnel(
             .await
             .with_context(|| format!("stream {}: TLS handshake failed", idx))?;
 
-        write_stream_idx(&mut w, idx as u8)
+        write_handshake(&mut w, idx as u8, n_streams as u8)
             .await
-            .with_context(|| format!("stream {}: write_stream_idx failed", idx))?;
+            .with_context(|| format!("stream {}: write_handshake failed", idx))?;
 
         log::info!("Stream {}: TLS + stream_idx handshake OK", idx);
 
@@ -598,7 +606,7 @@ async fn run_tls_tunnel(
         tls_writers.push(w);
     }
 
-    log::info!("All {} TLS streams up", N_DATA_STREAMS);
+    log::info!("All {} TLS streams up", n_streams);
     IS_CONNECTED.store(true, Ordering::Relaxed);
 
     // Dup fd for dedicated TUN I/O threads
@@ -609,9 +617,9 @@ async fn run_tls_tunnel(
     }
 
     // Per-stream TX channels: TUN reader → dispatcher → stream N
-    let mut tx_senders: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
-    let mut tx_receivers: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
-    for _ in 0..N_DATA_STREAMS {
+    let mut tx_senders: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(n_streams);
+    let mut tx_receivers: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(n_streams);
+    for _ in 0..n_streams {
         let (tx, rx) = mpsc::channel::<Bytes>(2048);
         tx_senders.push(tx);
         tx_receivers.push(rx);
@@ -653,14 +661,40 @@ async fn run_tls_tunnel(
         .context("spawn tun-reader")?;
 
     // Dispatcher task: TUN-reader → per-stream channel, using flow hash.
+    //
+    // IMPORTANT: uses `try_send` — NOT `send().await`. With per-stream channels
+    // pinned by 5-tuple, a single slow TLS stream would otherwise back-pressure
+    // the dispatcher and stall ALL other streams (cross-stream head-of-line
+    // blocking). That reproduced as wild upload asymmetry on v0.18: one
+    // bottlenecked stream would freeze every flow regardless of hash. Dropping
+    // on full lets TCP retransmit handle the slow stream while fast streams
+    // stay fluid. Matches server's `tun_dispatch_loop` behavior exactly.
     let tx_senders_for_disp = tx_senders.clone();
     tokio::spawn(async move {
+        let mut drop_full: u64 = 0;
+        let mut drop_closed: u64 = 0;
         while let Some(pkt) = tun_pkt_rx.recv().await {
-            let idx = flow_stream_idx(&pkt, N_DATA_STREAMS);
+            let idx = flow_stream_idx(&pkt, n_streams);
             let target = &tx_senders_for_disp[idx];
-            if target.send(pkt).await.is_err() {
-                log::warn!("dispatcher: stream {} closed, exiting", idx);
-                return;
+            match target.try_send(pkt) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    drop_full += 1;
+                    if drop_full == 1 || drop_full % 1024 == 0 {
+                        log::warn!(
+                            "dispatcher: stream {} full (dropped_full={})",
+                            idx, drop_full
+                        );
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    drop_closed += 1;
+                    log::warn!(
+                        "dispatcher: stream {} closed (dropped_closed={}), exiting",
+                        idx, drop_closed
+                    );
+                    return;
+                }
             }
         }
     });
@@ -690,8 +724,8 @@ async fn run_tls_tunnel(
         .context("spawn tun-writer")?;
 
     // Spawn N tx loops and N rx loops.
-    let mut tx_handles = Vec::with_capacity(N_DATA_STREAMS);
-    let mut rx_handles = Vec::with_capacity(N_DATA_STREAMS);
+    let mut tx_handles = Vec::with_capacity(n_streams);
+    let mut rx_handles = Vec::with_capacity(n_streams);
     for (idx, (writer, rx_chan)) in tls_writers.into_iter().zip(tx_receivers.into_iter()).enumerate() {
         tx_handles.push(tokio::spawn(async move {
             let res = tls_tx_loop(writer, rx_chan).await;

@@ -216,17 +216,20 @@ pub fn spawn_multiqueue(
             })?;
     }
 
-    // Fan-out: write_rx → round-robin to writer threads
+    // Fan-out: write_rx → flow-hashed to writer threads.
+    // Round-robin reorders packets within a single TCP flow, which hurts
+    // TCP throughput (spurious fast-retransmits) — pin each 5-tuple to one
+    // queue instead. Hash comes from `phantom_core::wire::flow_stream_idx`
+    // for symmetry with the server-side dispatcher.
     std::thread::Builder::new()
         .name("tun-mq-dispatch".into())
         .spawn(move || {
-            let mut idx = 0usize;
             let mut rx = write_rx;
             while let Some(pkt) = rx.blocking_recv() {
+                let idx = crate::wire::flow_stream_idx(&pkt, n_queues);
                 if writer_txs[idx].blocking_send(pkt).is_err() {
                     break;
                 }
-                idx = (idx + 1) % n_queues;
             }
         })?;
 
