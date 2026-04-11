@@ -114,12 +114,22 @@ pub async fn run_h2_accept_loop(
                 if let Some(existing) = sessions_by_fp.get(&client_fp) {
                     (existing.value().clone(), false)
                 } else {
-                    // Create a fresh coordinator
-                    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Bytes>(2048);
+                    // Create a fresh coordinator with N per-stream packet channels.
+                    // Each stream_batch_loop drains one channel independently, so
+                    // a slow stream cannot stall dispatch across the others.
+                    let mut pkt_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_STREAMS);
+                    let mut pkt_rxs: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(N_STREAMS);
+                    for _ in 0..N_STREAMS {
+                        // Per-stream depth 1024 → N_STREAMS × 1024 total (4096 for N=4),
+                        // matching the previous 2048 single-channel depth × 2.
+                        let (tx, rx) = mpsc::channel::<Bytes>(1024);
+                        pkt_txs.push(tx);
+                        pkt_rxs.push(rx);
+                    }
                     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
                     let sess = Arc::new(VpnSession::new_coordinator(
                         client_fp.clone(),
-                        tun_pkt_tx,
+                        pkt_txs,
                         close_tx,
                     ));
 
@@ -128,10 +138,12 @@ pub async fn run_h2_accept_loop(
                         dashmap::mapref::entry::Entry::Occupied(o) => o.get().clone(),
                         dashmap::mapref::entry::Entry::Vacant(v) => {
                             v.insert(sess.clone());
-                            // Start batcher + close watcher for this newly created session.
-                            tokio::spawn(vpn_session::session_batch_loop(
-                                tun_pkt_rx, sess.clone(),
-                            ));
+                            // Start one batcher per stream_idx for this newly created session.
+                            for (idx, rx) in pkt_rxs.into_iter().enumerate() {
+                                tokio::spawn(vpn_session::stream_batch_loop(
+                                    rx, sess.clone(), idx,
+                                ));
+                            }
                             {
                                 // Nothing QUIC-like to close; drain close_rx so channel drops.
                                 tokio::spawn(async move {

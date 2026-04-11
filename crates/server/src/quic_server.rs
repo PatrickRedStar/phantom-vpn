@@ -108,15 +108,22 @@ async fn handle_connection(
     // Each QUIC sub-stream occupies one slot in the coordinator's `data_sends`.
     let mut data_recvs: Vec<quinn::RecvStream> = Vec::with_capacity(N_STREAMS);
 
-    // Per-session TUN packet channel + batching task
-    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Bytes>(2048);
+    // Per-stream TUN packet channels: one dedicated stream_batch_loop per idx,
+    // no more serial round-robin dispatch.
+    let mut pkt_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_STREAMS);
+    let mut pkt_rxs: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(N_STREAMS);
+    for _ in 0..N_STREAMS {
+        let (tx, rx) = mpsc::channel::<Bytes>(1024);
+        pkt_txs.push(tx);
+        pkt_rxs.push(rx);
+    }
 
     // Transport-agnostic shutdown: close_tx signals the transport to close
     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
 
     let session = Arc::new(VpnSession::new_coordinator(
         client_fp.clone(),
-        tun_pkt_tx,
+        pkt_txs,
         close_tx,
     ));
 
@@ -152,8 +159,10 @@ async fn handle_connection(
         });
     }
 
-    // Spawn per-session batching task (TUN packets → QUIC streams)
-    tokio::spawn(vpn_session::session_batch_loop(tun_pkt_rx, session.clone()));
+    // Spawn one batching task per stream_idx (TUN packets → QUIC streams).
+    for (idx, rx) in pkt_rxs.into_iter().enumerate() {
+        tokio::spawn(vpn_session::stream_batch_loop(rx, session.clone(), idx));
+    }
 
     // Run N stream RX loops
     let registered_ip: Arc<Mutex<Option<IpAddr>>> = Arc::new(Mutex::new(None));

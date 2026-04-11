@@ -12,7 +12,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, RwLock};
 
-use phantom_core::wire::N_STREAMS;
+use phantom_core::wire::{flow_stream_idx, N_STREAMS};
 
 // ─── Session types ──────────────────────────────────────────────────────────
 
@@ -51,8 +51,12 @@ pub struct VpnSession {
     /// Per-stream frame senders (batched frames → transport write loop).
     /// Fixed-length `N_STREAMS` slots; `None` = stream currently disconnected.
     pub data_sends:    Vec<std::sync::Mutex<Option<mpsc::Sender<Bytes>>>>,
-    /// Per-session channel for TUN→transport packets (fed by tun_dispatch_loop)
-    pub tun_pkt_tx:    mpsc::Sender<Bytes>,
+    /// Per-stream packet channels for TUN→transport packets. One sender per
+    /// stream_idx; `tun_dispatch_loop` picks the slot via `flow_stream_idx`.
+    /// Each receiver is drained by a dedicated `stream_batch_loop` task.
+    /// Wrapped in `Mutex<Vec<Option<...>>>` so `close()` can drop all senders
+    /// to unblock the per-stream batch loops.
+    pub tun_pkt_txs:   std::sync::Mutex<Vec<Option<mpsc::Sender<Bytes>>>>,
     /// Transport-agnostic shutdown: send () to close the underlying connection
     pub close_tx:      std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pub last_seen:     AtomicU64,
@@ -67,8 +71,6 @@ pub struct VpnSession {
     /// Client cert fingerprint (hex). Set for h2_server path — used to locate the
     /// coordinator across reconnects of individual streams.
     pub fingerprint:   String,
-    /// Round-robin counter for TUN → stream dispatch.
-    pub rr_counter:    AtomicU64,
 }
 
 impl VpnSession {
@@ -76,17 +78,19 @@ impl VpnSession {
     /// Used by h2_server path; caller will attach streams as clients connect.
     pub fn new_coordinator(
         fingerprint: String,
-        tun_pkt_tx: mpsc::Sender<Bytes>,
+        tun_pkt_txs: Vec<mpsc::Sender<Bytes>>,
         close_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Self {
         let now = now_unix_secs();
         let data_sends = (0..N_STREAMS)
             .map(|_| std::sync::Mutex::new(None))
             .collect();
+        let tun_pkt_txs_wrapped: Vec<Option<mpsc::Sender<Bytes>>> =
+            tun_pkt_txs.into_iter().map(Some).collect();
         Self {
             created_at: now,
             data_sends,
-            tun_pkt_tx,
+            tun_pkt_txs: std::sync::Mutex::new(tun_pkt_txs_wrapped),
             close_tx: std::sync::Mutex::new(Some(close_tx)),
             last_seen: AtomicU64::new(now),
             bytes_rx: AtomicU64::new(0),
@@ -96,7 +100,6 @@ impl VpnSession {
             dns_cache: DashMap::new(),
             log_counter: AtomicU64::new(0),
             fingerprint,
-            rr_counter: AtomicU64::new(0),
         }
     }
 
@@ -132,28 +135,6 @@ impl VpnSession {
     pub fn all_streams_down(&self) -> bool {
         self.data_sends.iter().all(|m| m.lock().unwrap().is_none())
     }
-
-    /// Send a frame via the next available stream using round-robin dispatch.
-    /// Skips empty slots. Returns `false` if no stream is up.
-    pub async fn send_frame_rr(&self, frame: Bytes) -> bool {
-        let n = self.data_sends.len();
-        if n == 0 { return false; }
-        let start = self.rr_counter.fetch_add(1, Ordering::Relaxed) as usize;
-        for i in 0..n {
-            let idx = (start + i) % n;
-            // Snapshot the sender under the mutex, then release it before awaiting.
-            let sender_opt = {
-                let slot = self.data_sends[idx].lock().unwrap();
-                slot.clone()
-            };
-            if let Some(sender) = sender_opt {
-                if sender.send(frame.clone()).await.is_ok() {
-                    return true;
-                }
-            }
-        }
-        false
-    }
 }
 
 impl VpnSession {
@@ -186,6 +167,13 @@ impl VpnSession {
         for slot in self.data_sends.iter() {
             if let Ok(mut s) = slot.lock() {
                 *s = None;
+            }
+        }
+        // Drop every per-stream TUN sender — this wakes each stream_batch_loop
+        // with `pkt_rx.recv() == None` once all other references are gone.
+        if let Ok(mut txs) = self.tun_pkt_txs.lock() {
+            for slot in txs.iter_mut() {
+                *slot = None;
             }
         }
     }
@@ -302,15 +290,31 @@ pub async fn tun_dispatch_loop(
                 }
             }
 
-            match session.tun_pkt_tx.try_send(pkt) {
+            let idx = flow_stream_idx(&pkt, N_STREAMS);
+            // Snapshot the sender at slot `idx` under the mutex, then release
+            // the lock before try_send.
+            let sender_opt: Option<mpsc::Sender<Bytes>> = {
+                let guard = session.tun_pkt_txs.lock().unwrap();
+                guard.get(idx).and_then(|s| s.clone())
+            };
+            let Some(sender) = sender_opt else {
+                drop_closed += 1;
+                if drop_closed == 1 || drop_closed % 128 == 0 {
+                    tracing::warn!(
+                        "TUN dispatch idx={} closed for {} (dropped_closed={})",
+                        idx, dst, drop_closed
+                    );
+                }
+                continue;
+            };
+            match sender.try_send(pkt) {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_pkt)) => {
                     drop_full += 1;
                     if drop_full == 1 || drop_full % 1024 == 0 {
                         tracing::warn!(
-                            "TUN dispatch queue full for {} (dropped_full={})",
-                            dst,
-                            drop_full
+                            "TUN dispatch idx={} full for {} (dropped_full={})",
+                            idx, dst, drop_full
                         );
                     }
                 }
@@ -318,9 +322,8 @@ pub async fn tun_dispatch_loop(
                     drop_closed += 1;
                     if drop_closed == 1 || drop_closed % 128 == 0 {
                         tracing::warn!(
-                            "TUN dispatch channel closed for {} (dropped_closed={})",
-                            dst,
-                            drop_closed
+                            "TUN dispatch idx={} closed for {} (dropped_closed={})",
+                            idx, dst, drop_closed
                         );
                     }
                     if sessions.remove_if(&dst, |_, current| Arc::ptr_eq(current, &session)).is_some() {
@@ -469,72 +472,127 @@ fn dns_skip_name(data: &[u8], pos: &mut usize) -> bool {
     }
 }
 
-// ─── Per-session batch loop (transport-agnostic) ────────────────────────────
+// ─── Per-stream batch loop (transport-agnostic) ─────────────────────────────
 
-/// Reads TUN packets from per-session channel, builds wire-format batch frames,
-/// and dispatches each frame via round-robin over any currently-attached stream
-/// slot on the `VpnSession`.
-pub async fn session_batch_loop(
+/// One task per `stream_idx`. Reads pre-dispatched packets (all with the same
+/// `flow_stream_idx`) from a dedicated channel, builds wire-format batch frames,
+/// and writes them directly to `session.data_sends[stream_idx]`.
+///
+/// Replaces the old `session_batch_loop` + round-robin design. Removes
+/// serialization at the round-robin send point — each stream now has its own
+/// batch pipeline, so a slow/dead stream cannot backpressure the others.
+pub async fn stream_batch_loop(
     mut pkt_rx: mpsc::Receiver<Bytes>,
     session:    Arc<VpnSession>,
+    stream_idx: usize,
 ) {
     use bytes::BytesMut;
     use phantom_core::wire::{build_batch_plaintext, BATCH_MAX_PLAINTEXT};
 
+    // Cap at 40 packets × 1350 MTU = 54000 bytes, comfortably under
+    // BATCH_MAX_PLAINTEXT = 65536. Prevents the `BufferTooSmall` silent-drop
+    // class that triggered at 256 packets per batch.
+    const MAX_PKTS_PER_BATCH: usize = 40;
+
     let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
-    // BytesMut pool: we split_to(frame_len) to mint a zero-copy Bytes per frame,
-    // then reserve capacity back up when the underlying buffer is too small.
     let mut frame_buf = BytesMut::with_capacity(buf_size);
     frame_buf.resize(buf_size, 0);
 
-    let mut pending: Vec<Bytes> = Vec::with_capacity(256);
+    let mut pending: Vec<Bytes> = Vec::with_capacity(MAX_PKTS_PER_BATCH);
+
+    let mut drop_detached: u64 = 0;
 
     loop {
         let first = match pkt_rx.recv().await {
             Some(p) => p,
-            None => break,
+            None => {
+                tracing::debug!(
+                    "stream_batch_loop[{}]: pkt_rx closed, exiting (fp={}…)",
+                    stream_idx,
+                    &session.fingerprint[..16.min(session.fingerprint.len())]
+                );
+                return;
+            }
         };
 
         pending.clear();
         pending.push(first);
 
-        // Drain more (up to 256)
-        while pending.len() < 256 {
+        while pending.len() < MAX_PKTS_PER_BATCH {
             match pkt_rx.try_recv() {
                 Ok(pkt) => pending.push(pkt),
                 Err(_) => break,
             }
         }
 
-        // Build one batch containing ALL drained packets (no per-flow splitting:
-        // per-stream distribution happens via round-robin on the output side).
         let refs: Vec<&[u8]> = pending.iter().map(|p| p.as_ref()).collect();
 
-        // Ensure buffer capacity
         if frame_buf.len() < buf_size {
             frame_buf.resize(buf_size, 0);
         }
 
         let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
             Ok(n) => n,
-            Err(_) => continue,
+            Err(e) => {
+                // Shouldn't happen under MAX_PKTS_PER_BATCH=40 cap; treat as a bug.
+                tracing::warn!(
+                    "stream_batch_loop[{}]: build_batch_plaintext failed: {:?} ({} pkts)",
+                    stream_idx, e, pending.len()
+                );
+                continue;
+            }
         };
 
         frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
         let total = 4 + pt_len;
 
-        // Zero-copy split: take the frame slice out of the buffer as a Bytes,
-        // then replenish the BytesMut for next iteration.
         let frame = frame_buf.split_to(total).freeze();
         if frame_buf.capacity() < buf_size {
             frame_buf.reserve(buf_size - frame_buf.capacity());
         }
         frame_buf.resize(buf_size, 0);
 
-        if !session.send_frame_rr(frame).await {
-            // All streams down — session dead.
-            return;
+        // Re-snapshot the sender every iteration — the slot can flip to a
+        // fresh sender after reconnect. Do NOT cache.
+        let sender_opt: Option<mpsc::Sender<Bytes>> = {
+            let slot = session.data_sends[stream_idx].lock().unwrap();
+            slot.clone()
+        };
+
+        let Some(sender) = sender_opt else {
+            // Stream currently detached. DROP the frame — never block the
+            // whole batch pipeline waiting for a dead physical connection.
+            drop_detached += 1;
+            if drop_detached == 1 || drop_detached % 1024 == 0 {
+                tracing::warn!(
+                    "stream_batch_loop[{}]: slot detached, dropped {} frames (fp={}…)",
+                    stream_idx, drop_detached,
+                    &session.fingerprint[..16.min(session.fingerprint.len())]
+                );
+            }
+            // If the whole session is gone AND our pkt channel is disconnected,
+            // exit. Otherwise keep looping — reconnect may attach a new slot.
+            if session.all_streams_down()
+                && matches!(
+                    pkt_rx.try_recv(),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+                )
+            {
+                return;
+            }
+            continue;
+        };
+
+        if let Err(_e) = sender.send(frame).await {
+            // Send-half dropped — writer loop has exited. Next iteration will
+            // re-snapshot and either find a reconnected slot or drop again.
+            tracing::debug!(
+                "stream_batch_loop[{}]: send_to_writer closed, will re-snapshot",
+                stream_idx
+            );
+            continue;
         }
+
         session.bytes_tx.fetch_add(total as u64, Ordering::Relaxed);
     }
 }
