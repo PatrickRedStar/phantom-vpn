@@ -14,7 +14,10 @@ use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
-    wire::{n_data_streams, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
+    wire::{
+        build_heartbeat_frame, first_heartbeat_delay, n_data_streams, next_heartbeat_delay,
+        BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS,
+    },
 };
 
 use crate::vpn_session::{self, VpnSession, VpnSessionMap, ClientAllowList, DestEntry};
@@ -247,7 +250,10 @@ async fn stream_rx_loop(
             offset += 2;
             if pkt_len == 0 { break; }
             if offset + pkt_len > frame_len { break; }
-            if pkt_len < 20 { offset += pkt_len; continue; }
+            if pkt_len < 20 || (frame_buf[offset] >> 4) != 4 {
+                offset += pkt_len;
+                continue;
+            }
 
             // Register session on first IPv4 packet (single lock, not per-packet)
             if !registered && (frame_buf[offset] >> 4) == 4 {
@@ -336,11 +342,29 @@ async fn session_write_loop(
     mut send:     quinn::SendStream,
     remote:       SocketAddr,
 ) {
-    while let Some(frame) = frame_rx.recv().await {
-        // write_chunk takes ownership of Bytes — zero-copy into quinn send buffer
-        if let Err(e) = send.write_chunk(frame).await {
-            tracing::warn!("session write to {} failed: {}", remote, e);
-            break;
+    let mut next_heartbeat = tokio::time::Instant::now() + first_heartbeat_delay();
+    loop {
+        tokio::select! {
+            biased;
+            maybe_frame = frame_rx.recv() => {
+                let Some(frame) = maybe_frame else { break; };
+                // write_chunk takes ownership of Bytes — zero-copy into quinn send buffer
+                if let Err(e) = send.write_chunk(frame).await {
+                    tracing::warn!("session write to {} failed: {}", remote, e);
+                    break;
+                }
+                // Real traffic just flowed → push heartbeat deadline forward.
+                next_heartbeat = tokio::time::Instant::now() + next_heartbeat_delay();
+            }
+            _ = tokio::time::sleep_until(next_heartbeat) => {
+                let hb = build_heartbeat_frame();
+                tracing::trace!("heartbeat fire → {}", remote);
+                if let Err(e) = send.write_chunk(hb).await {
+                    tracing::debug!("quic heartbeat write to {} failed: {}", remote, e);
+                    break;
+                }
+                next_heartbeat = tokio::time::Instant::now() + next_heartbeat_delay();
+            }
         }
     }
     tracing::debug!("session write loop ended for {}", remote);

@@ -1,9 +1,69 @@
 # PhantomVPN Performance Roadmap
 
+> **Актуально на v0.18.2 (2026-04-12).**
+> Документ состоит из двух частей: **Часть I** — текущий состав (v0.15–v0.18, HTTP/2 эра);
+> **Часть II** — исторические замеры и оптимизации QUIC-эры (opt-v3..opt-v12), сохранены как есть.
+
 Базовые замеры (канал без туннеля): Upload 1.15 Gbps, Download 2.30 Gbps.
 vdsina raw internet: 562/902 Mbps. VLESS через тот же хост: 241/221 Mbps.
 
-## Текущее состояние
+---
+
+## Часть I — HTTP/2 era (v0.15+)
+
+### Релизы и замеры
+
+| Версия | Что внутри | Download | Upload | Примечание |
+|---|---|---|---|---|
+| v0.15.4 | Первый рабочий H2+TLS1.3 транспорт (single stream) | ~130 Mbit/s | ~80 Mbit/s | Переключение с QUIC на H2 как основной |
+| v0.17.0 | Multi-stream (4 TLS-сокета per client) + SNI passthrough в RU relay | ~200 Mbit/s | ~100 Mbit/s | `flow_stream_idx`, flow-affine hash; relay стал I/O-bound |
+| v0.17.1 | Checkpoint: H2 multi-stream закреплён, TX ceiling diagnosed | — | — | Выяснили: `session_batch_loop` serial → bottleneck |
+| **v0.17.2** | **Parallel per-stream batch loops** | **625 Mbit/s** (wired) | — | Download 138 → 625 Mbit/s (**4.5×**); RU-relay wired потолок |
+| v0.18.0 | Mimicry warmup (50KB HTML+image+bundle pattern первые ~2с) | 205 / 222 (direct/relay) | 75 / 105 | Закрыт detection vector 6 (burst pattern) |
+| v0.18.1 | Multi-stream handshake negotiation + zombie session eviction | ≈ | ≈ | `effective_N = min(server_N, client_N)` + generation counter |
+| **v0.18.2** | **Heartbeat frames (detection vector 12)** | ≈ | ≈ | 40–200B случайный dummy каждые 20–30с на idle стримах |
+
+**Phone-side (Samsung Galaxy, v0.17.2+):** 205/75 Mbit/s direct to NL, 222/105 Mbit/s через RU relay.
+Потолок телефона ограничен ISP edge (~400 Mbit/s на канал клиента) и single-flow hash (см. `reference_single_flow_ceiling.md`).
+
+### Текущие узкие места (v0.18.2)
+
+Из `reference_bottleneck_v0172.md`:
+
+1. **`tun_uring` writer — 1 syscall/packet.** Пишет пакеты по одному, не батчит TUN writes. Самый жирный источник per-packet overhead.
+2. **RX path в 3.2× хуже TX per-CPU.** Наследие serial dispatcher в `client_to_tun_loop`. TX уже распараллелен по стримам, RX — нет.
+3. **Crypto — не при чём.** AES-GCM на сервере 3.3 GB/s, упираемся не сюда.
+
+### v0.19+ roadmap
+
+| # | Задача | Ожидаемый эффект | Приоритет |
+|---|---|---|---|
+| 1 | **Batch TUN writes** в `tun_uring` (collect N pkt → single writev/submit) | +20–40% throughput RX | 🔥 High |
+| 2 | **Parallel RX path** по аналогии с TX (per-stream client_to_tun) | TX/RX паритет | 🔥 High |
+| 3 | **Detection vector 11** (timing jitter на frame interval) | Стелс | Medium |
+| 4 | **Detection vector 13** (connection migration — переоткрытие сокета через N мин) | Стелс | Medium |
+| 5 | **Multi-origin sharding** (разные AS, не просто +IP) | Обход rate-limit на единую пятёрку | Low — сначала инфра |
+| 6 | **Buffer pool** (BytesMut slab) | -30K alloc/s | Low |
+| 7 | **Rotated SNI pool** (detection vector 2 полностью) | Стелс | Low |
+
+### Detection vectors status (v0.18.2)
+
+Полная таблица — `ARCHITECTURE.md` часть I. Кратко:
+
+| Vector | Статус |
+|---|---|
+| 1–10 | ✅ закрыты |
+| 11 (timing jitter) | ⏳ v0.20 |
+| 12 (idle heartbeat) | ✅ v0.18.2 |
+| 13 (connection migration) | ⏳ v0.20 |
+
+---
+
+## Часть II — QUIC era (v0.3–v0.14, исторические замеры)
+
+> Сохранено как снимок времени, когда основным транспортом был QUIC/H3 и все оптимизации шли по userspace QUIC datapath. После ТСПУ-дросселирования QUIC/UDP в 2025 проект мигрировал на HTTP/2 (Часть I). Этот раздел не переписан — он объясняет, откуда растут сегодняшние решения.
+
+### QUIC/H3 замеры (2025)
 
 | Версия | Описание | iperf3 Up/Down | Speedtest | Git tag |
 |--------|----------|----------------|-----------|---------|
@@ -18,7 +78,7 @@ vdsina raw internet: 562/902 Mbps. VLESS через тот же хост: 241/22
 | opt-v11 | Multiqueue TUN (IFF_MULTI_QUEUE) | 146/152 | 117/91 | `opt-v11-multiqueue-tun` |
 | opt-v12 | ~~Pipeline collapse (3→2 hops)~~ | 140/141 | **102/85 РЕГРЕССИЯ** | reverted |
 
-## Выполненные оптимизации
+### Выполненные оптимизации (QUIC эра)
 
 | # | Что | Результат | Git tag |
 |---|-----|-----------|---------|
@@ -31,46 +91,36 @@ vdsina raw internet: 562/902 Mbps. VLESS через тот же хост: 241/22
 | — | ~~AF_XDP для UDP~~ | Скипнули: quinn батчит sendmmsg | — |
 | — | ~~QUIC datagrams~~ | Пробовали, медленнее streams | — |
 
-## Следующие оптимизации (из внешнего анализа ANALYZE.md)
+### Баг: потеря пакетов в tun_to_quic_loop (исторический, фикс в opt-v10)
 
-| # | Что | Ожидаемый эффект | Сложность | Статус |
-|---|-----|------------------|-----------|--------|
-| 7 | **FIX: потеря пакетов в серверном batching** | Корректность + меньше retransmit | Низкая | 🔨 In progress |
-| 8 | **Multiqueue TUN** (`IFF_MULTI_QUEUE`) | ~2x TUN throughput на 2+ CPU | Средняя | ⏳ Pending |
-| 9 | ~~Схлопнуть async pipeline~~ | **Регрессия** (102/85 vs 117/91). Mutex serializes writes. | ❌ Reverted | — |
-| 10 | **Buffer pool** (BytesMut slab) | -30K alloc/s | Средняя | ⏳ Pending |
-
-### Баг #7: потеря пакетов в tun_to_quic_loop
-
-В серверном `tun_to_quic_loop` при батчинге пакеты для ДРУГИХ клиентов молча выбрасываются:
+В серверном `tun_to_quic_loop` при батчинге пакеты для ДРУГИХ клиентов молча выбрасывались:
 ```rust
 if d == dst_ip { ... }  // пакет для текущего клиента — берём
 // else — пакет для другого клиента ПОТЕРЯН
 ```
-Вызывает лишние TCP retransmit. Фиксить: складывать чужие пакеты обратно или использовать per-session queue.
+Вызывало лишние TCP retransmit. Зафиксили в `opt-v10-fix-pkt-loss` — per-session queue.
 
-### Multiqueue TUN (#8)
+### Долгосрочные варианты (из ARCHITECTURE.md 2025)
 
-Текущий код: `IFF_TUN | IFF_NO_PI` — один FD.
-Нужно: `IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE` — N FD, по одному на CPU.
-Каждый FD обрабатывается своим io_uring worker.
-
-### Async pipeline reduction (#9)
-
-Текущий TX: `TUN → uring → mpsc → dispatcher → mpsc → batch → mpsc → write → QUIC` (4 hops)
-Цель: `TUN → uring → dispatcher+batch+write → QUIC` (1 hop)
-
-## Долгосрочные варианты (из ARCHITECTURE.md)
-
-| Вариант | Скорость | Стелс | Усилия |
+| Вариант | Скорость | Стелс | Статус |
 |---------|----------|-------|--------|
-| AmneziaWG (kernel module) | 500+ Mbps | Средний | 1 день |
-| Kernel module + eBPF | 1+ Gbps | Высокий | 2-3 мес |
-| Текущий PhantomVPN (userspace) | ~125 Mbps | Высокий | Есть |
+| AmneziaWG (kernel module) | 500+ Mbps | Средний | ❌ Отвергнут (v1 блокируется) |
+| WG-in-QUIC wrapper | ~150–200 Mbps | Высокий | ❌ Не пробовали |
+| Kernel module + eBPF | 1+ Gbps | Высокий | ❌ Риск kernel panic |
+| **HTTP/2 userspace** | **625+ Mbit/s** | **Высокий** | ✅ **Реализовано в v0.15+** |
 
-## Инфраструктура
+### Инфраструктура QUIC-эры
 
-- **Сервер (vdsina)**: 89.110.109.128, 2 vCPU AMD, 3.8GB RAM, AES-GCM 3.3 GB/s
-- **Клиент (vps_balancer)**: 158.160.135.140, 2 vCPU Icelake, 1.9GB RAM, AES-GCM 8.9 GB/s
-- **Канал**: 1.15 Gbps up / 2.30 Gbps down (raw)
-- **vdsina → internet**: 562/902 Mbps
+- **Сервер (vdsina):** 89.110.109.128, 2 vCPU AMD, 3.8GB RAM, AES-GCM 3.3 GB/s
+- **Клиент (vps_balancer):** 158.160.135.140, 2 vCPU Icelake, 1.9GB RAM, AES-GCM 8.9 GB/s
+- **Канал:** 1.15 Gbps up / 2.30 Gbps down (raw)
+- **vdsina → internet:** 562/902 Mbps
+
+---
+
+## Связанные документы
+
+* [ARCHITECTURE.md](ARCHITECTURE.md) — текущая архитектура + исторический контекст
+* [CHANGELOG.md](CHANGELOG.md) — линейная история релизов
+* [ANALYZE.md](ANALYZE.md) / [ANALYZE_RESPONSE.md](ANALYZE_RESPONSE.md) — внешний аудит 2025 + ответ
+* [other_docs/PLAN_v2_transport.md](other_docs/PLAN_v2_transport.md) — план миграции с QUIC на HTTP/2
