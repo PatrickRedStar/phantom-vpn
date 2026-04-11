@@ -14,7 +14,6 @@
 |-----------|--------|----------|
 | Android | ✅ Production | Compose UI, JNI, Foreground VPN Service |
 | Linux | ✅ Production | CLI-клиент (`phantom-client-linux`) |
-| macOS | ✅ Beta | SwiftUI menu bar app (`PhantomVPN.app`) |
 | Server | ✅ Production | `phantom-server` на VDS `89.110.109.128` |
 
 ---
@@ -28,7 +27,6 @@ ghoststream/
 │   ├── server/             # phantom-server + phantom-keygen
 │   ├── client-common/      # QUIC handshake + TX/RX циклы (переиспользуется всеми клиентами)
 │   ├── client-linux/       # Linux TUN клиент
-│   ├── client-macos/       # macOS utun клиент
 │   └── client-android/     # Android JNI библиотека → libphantom_android.so
 ├── android/                # Android приложение (Kotlin + Compose)
 │   └── app/src/main/
@@ -48,107 +46,83 @@ ghoststream/
 │       └── res/xml/
 │           ├── file_paths.xml      # FileProvider пути (logs/, debug/)
 │           └── network_security_config.xml
-├── phantom-vpn-macos/      # macOS SwiftUI приложение
-│   ├── Sources/PhantomVPN/
-│   │   ├── Models/         # VpnManager.swift, AdminManager.swift
-│   │   └── Views/          # ContentView, ConnectionTab, ProfilesTab, LogsTab, AdminPanelView
-│   ├── Package.swift
-│   └── build.sh            # swift build → PhantomVPN.app bundle
 ├── config/
 │   ├── server.example.toml
 │   └── client.example.toml
 ├── scripts/
 │   └── deploy.sh
 └── .github/workflows/
-    └── release.yml         # CI: Linux + macOS DMG + Android APK → GitHub Release
+    └── release.yml         # CI: Linux + Android APK → GitHub Release
 ```
 
 ---
 
 ## Сборка
 
-### Важные ограничения
+### Среда разработки
 
-> **На локальной машине (CachyOS) `cargo` НЕ установлен.**
-> Rust сборка для server/linux/macos происходит ТОЛЬКО через SSH на сервер vdsina.
-> Android `.so` собирается там же через `cargo ndk`.
-> APK собирается локально через `gradlew` (JDK 17 установлен: `/usr/lib/jvm/java-17-openjdk`).
+> **Claude Code запущен прямо на сервере vdsina (89.110.109.128).**
+> `cargo` установлен локально — сборка server/linux/android выполняется напрямую.
+> APK собирается тоже на сервере через `gradlew` (JDK 17: `/usr/lib/jvm/java-17-openjdk`).
+> SSH ключ для всех удалённых хостов: `~/.ssh/bot` (алиасы в `~/.ssh/config`).
 
-### Rust — Server / Linux клиент (через SSH)
+### Хосты
+
+| Алиас | IP | Роль | DNS |
+|-------|-----|------|-----|
+| `vdsina` | 89.110.109.128 | NL exit-нода (phantom-server) | `tls.nl2.bikini-bottom.com` |
+| — | 193.187.95.128 | RU relay-нода (phantom-relay) | `hostkey.bikini-bottom.com` |
+
+### Rust — Server / Linux клиент (локально)
 
 ```bash
-# Синхронизировать исходники на сервер
-rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
+cd /opt/github_projects/phantom-vpn
+cargo build --release -p phantom-server
+cargo build --release -p phantom-client-linux
 
-# Собрать на сервере
-ssh -i ~/.ssh/personal root@89.110.109.128 \
-  "source ~/.cargo/env && cd /opt/phantom-vpn/src && cargo build --release -p phantom-server"
-
-# Скачать клиент (опционально)
-scp -i ~/.ssh/personal root@89.110.109.128:/opt/phantom-vpn/src/target/release/phantom-client-linux \
-  /tmp/phantom-client-linux
-sudo install -m 0755 /tmp/phantom-client-linux /usr/local/bin/phantom-client-linux
+# Деплой сервера
+install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
+systemctl restart phantom-server.service
 ```
 
-### Android .so (через SSH на vdsina)
+### Android .so (локально через cargo ndk)
 
 ```bash
-rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
-ssh -i ~/.ssh/personal root@89.110.109.128 \
-  "source ~/.cargo/env && cd /opt/phantom-vpn/src && \
-   export ANDROID_NDK_HOME=\$ANDROID_NDK_ROOT && \
-   cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android"
-scp -i ~/.ssh/personal \
-  root@89.110.109.128:/opt/phantom-vpn/src/target/aarch64-linux-android/release/libphantom_android.so \
+export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
+cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android
+cp target/aarch64-linux-android/release/libphantom_android.so \
   android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
 ```
 
 ### Android APK (локально)
 
 ```bash
-# Сборка debug APK
 cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
-
-# APK находится в:
-android/app/build/outputs/apk/debug/app-debug.apk
-
-# Установить на телефон
-adb uninstall com.ghoststream.vpn 2>/dev/null; adb install android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-### macOS App (на машине с macOS)
-
-```bash
-cd phantom-vpn-macos
-swift build -c release
-bash build.sh   # → PhantomVPN.app
+# APK: android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
 
 ## Развёртывание сервера
 
-**Сервер:** `root@89.110.109.128`
-**Директория:** `/opt/phantom-vpn/`
+**Сервер (NL exit):** localhost (vdsina, 89.110.109.128)
+**Relay (RU):** `ssh -i ~/.ssh/bot root@193.187.95.128`
+**Исходники:** `/opt/github_projects/phantom-vpn/`
+**Runtime:** `/opt/phantom-vpn/`
 **Сервис:** `phantom-server.service`
 **Конфиг:** `/opt/phantom-vpn/config/server.toml`
 **Keyring:** `/opt/phantom-vpn/config/clients.json`
 
 ```bash
-# Полный деплой
-bash ./scripts/deploy.sh root@89.110.109.128 ~/.ssh/personal
-
-# Быстрое обновление (только crates)
-rsync -avz -e "ssh -i ~/.ssh/personal" crates/ root@89.110.109.128:/opt/phantom-vpn/src/crates/
-ssh -i ~/.ssh/personal root@89.110.109.128 \
-  "source ~/.cargo/env && cd /opt/phantom-vpn/src && \
-   cargo build --release -p phantom-server && \
-   install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server && \
-   systemctl restart phantom-server.service"
+# Сборка + деплой (всё локально на vdsina)
+cd /opt/github_projects/phantom-vpn
+cargo build --release -p phantom-server
+install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
+systemctl restart phantom-server.service
 
 # Статус и логи
-ssh -i ~/.ssh/personal root@89.110.109.128 "systemctl status phantom-server.service"
-ssh -i ~/.ssh/personal root@89.110.109.128 "journalctl -u phantom-server.service -n 50 -f"
+systemctl status phantom-server.service
+journalctl -u phantom-server.service -n 50 -f
 ```
 
 ---
@@ -248,7 +222,7 @@ GitHub Actions автоматически создаст Release при пуше
 
 ## Строка подключения (Connection String)
 
-Base64url-кодированный JSON. Используется во всех клиентах (Android, macOS).
+Base64url-кодированный JSON. Используется во всех клиентах (Android, Linux).
 
 ```json
 {
@@ -311,44 +285,63 @@ server_public_key  = "..."
 
 ### Транспорт
 
-Единственный активный режим — **QUIC streams**:
-- ALPN=`h3` (имитирует HTTP/3), порт `8443`
-- TLS 1.3 поверх QUIC (self-signed cert)
-- Noise IK handshake поверх QUIC control stream (аутентификация клиента)
-- Данные — bidirectional QUIC stream (надёжная доставка)
+Активный режим — **H2 / TLS поверх TCP с мульти-стрим шардингом** (v0.17.0+):
+- Порт `8443` на NL exit (через nginx stream SNI-routing с `443`)
+- TLS 1.3 + mTLS (клиентский cert используется как аутентификация вместо Noise)
+- **N_DATA_STREAMS = 4** параллельных TLS-соединений на одного клиента
+  — каждый TLS занимает свой CPU core (шифрование single-threaded per stream)
+- **flow_stream_idx** (5-tuple hash src_ip/dst_ip/src_port/dst_port/proto) —
+  раскладывает поток по стримам, сохраняя порядок внутри одного TCP-flow
+  (нет HoL blocking для несвязанных соединений, нет reordering внутри одного TCP)
+- Zero-copy путь через `Bytes`/`BytesMut` (нет `.to_vec()` в горячем пути)
+- Первый байт каждого TLS-стрима после handshake — `stream_idx: u8` (0..N_DATA_STREAMS)
 
-Legacy UDP+SRTP (порт 3478) — код в `wire.rs`, не используется.
+Legacy режимы: QUIC + Noise (не используется), UDP+SRTP (не используется).
 
-### Handshake (`client-common/quic_handshake.rs`)
-
-```
-Client → Server: QUIC connect (TLS 1.3 + ALPN h3)
-Client → Server: open_bi() → control stream
-Client → Server: [4B len][Noise IK msg1]   (→ e, es, s, ss)
-Server → Client: [4B len][Noise IK msg2]   (← e, ee, se)
-Client → Server: open_bi() → data stream
-# Handshake complete — обе стороны имеют NoiseSession
-```
-
-### Wire Format
+### Handshake (H2 / mTLS)
 
 ```
-[4B total_len][8B nonce u64 BE][Noise ciphertext + AEAD tag]
+Client: N параллельных TCP connect к tls.nl2.bikini-bottom.com:443
+        (каждый сокет защищён VpnService.protect() на Android)
+nginx (NL:443) с ssl_preread: SNI=tls.nl2 → passthrough к 127.0.0.1:8443
+phantom-server: TLS 1.3 + mTLS (client cert → fingerprint → keyring lookup)
+Client → Server: [1B stream_idx]   (0, 1, 2, 3)
+Server: attach_stream(stream_idx, mpsc::Sender) в SessionCoordinator
+        (один SessionCoordinator на fingerprint, Vec<Mutex<Option<Sender>>>)
+# Handshake complete
+```
 
-Plaintext (batch):
+### Wire Format (внутри каждого TLS-стрима)
+
+```
+[4B frame_len][batch]
+
+Batch:
   [2B pkt1_len][pkt1_bytes]
   [2B pkt2_len][pkt2_bytes]
   ...
   [2B 0x0000]           ← маркер конца батча
-  [random padding]      ← до target_size от H264Shaper
+  [random padding]      ← до target_size от H264Shaper (по желанию)
 ```
 
-Константы:
+Константы (`crates/core/src/wire.rs`):
 ```
-BATCH_MAX_PLAINTEXT = 65536   # макс. размер одного фрейма
-QUIC_TUNNEL_MTU     = 1350    # MTU TUN интерфейса
-QUIC_TUNNEL_MSS     = 1310    # TCP MSS clamping
+BATCH_MAX_PLAINTEXT = 65536        # макс. размер одного фрейма
+N_DATA_STREAMS      = 4            # кол-во параллельных TLS-стримов
+QUIC_TUNNEL_MTU     = 1350         # MTU TUN интерфейса
+QUIC_TUNNEL_MSS     = 1310         # TCP MSS clamping
 ```
+
+### SNI Passthrough Relay (RU hop, v0.17.0+)
+
+`phantom-relay` на RU-ноде (`hostkey.bikini-bottom.com:443`) больше **не терминирует TLS**.
+Вместо этого:
+1. Peek первых ~1.5KB TCP — парсит ClientHello, извлекает SNI
+2. Если SNI == `expected_sni` (`tls.nl2.bikini-bottom.com`) → raw TCP `copy_bidirectional`
+   к upstream (NL:443). TLS handshake идёт end-to-end между phone и phantom-server.
+3. Иначе → fallback acceptor с LE cert → HTML-заглушка (выглядит как обычный HTTPS-сайт).
+
+Это убирает двойное шифрование в RU-хоп — relay теперь I/O-bound, не CPU-bound.
 
 ### Шифрование (`core/src/crypto.rs`)
 
@@ -365,12 +358,14 @@ H.264 симуляция, 30 fps, GOP=60:
 - I-кадр (каждые 60 фреймов): burst 15–50 KB
 - P-кадры: LogNormal (μ=7.0, σ=0.8), ~1–4 KB
 
-### Сессии (`core/src/session.rs`)
+### Сессии (`server/src/vpn_session.rs`)
 
-- `DashMap<IpAddr, Arc<QuicSession>>` — индекс по tunnel IP клиента
-- `ReplayWindow` — 64-бит скользящее окно, защита от replay
-- QUIC keep-alive: 10 сек; idle timeout: 30 сек
-- Cleanup: каждые 60 сек удаляет сессии старше `idle_secs`
+- `SessionCoordinator` на клиент (индекс по fingerprint в `DashMap<String, Arc<VpnSession>>`)
+- `data_sends: Vec<Mutex<Option<mpsc::Sender<Bytes>>>>` (слот на каждый stream_idx)
+- `send_frame_rr` — round-robin раскладка батчей по доступным стримам
+- `attach_stream` / `detach_stream_if` — при accept нового TLS открываем слот, при EOF закрываем
+- Когда все стримы отвалились (`all_streams_down()`) — сессия удаляется из DashMap
+- TUN→client: единый `mpsc::Sender<Bytes>` у координатора, распределитель читает batch и шлёт в любой живой стрим
 
 ### Пассивный DNS-кэш (`server/quic_server.rs`)
 
@@ -456,25 +451,6 @@ FileProvider: `cache/debug/ghoststream-debug.txt` → `ACTION_SEND`.
 
 ---
 
-## macOS — архитектура
-
-Путь: `phantom-vpn-macos/`
-
-- **SwiftUI MenuBarExtra** (macOS 13+, `.menuBarExtraStyle(.window)`)
-- Запускает `phantom-client-macos --conn-string-file /tmp/phantom-vpn-cs.tmp` через `NSAppleScript` (для root)
-- Мониторинг: `pgrep phantom-client-macos`
-- Логи: tail `/tmp/phantom-vpn.log`
-- `AdminManager.swift` — полный аналог Android AdminViewModel (URLSession async/await)
-
-```
-PhantomVPN.app/
-└── Contents/MacOS/
-    ├── PhantomVPN              ← Swift binary (MenuBarExtra)
-    └── phantom-client-macos   ← Rust binary (копируется при сборке)
-```
-
----
-
 ## CI/CD (GitHub Actions)
 
 Файл: `.github/workflows/release.yml`
@@ -483,11 +459,8 @@ PhantomVPN.app/
 | Job | Runner | Артефакт |
 |-----|--------|---------|
 | `build-linux` | ubuntu-latest | `phantom-client-linux` (x86_64) |
-| `build-macos` | macos-14 (arm64) | `PhantomVPN-macOS.dmg` (universal binary) |
 | `build-android` | ubuntu-latest | `app-debug.apk` |
 | `release` | ubuntu-latest | GitHub Release со всеми артефактами |
-
-macOS: `lipo -create` для universal binary (arm64 + x86_64), `hdiutil` для DMG.
 
 ---
 
@@ -507,26 +480,19 @@ TextSecondary  = Color(0xFF9E9E9E)
 ## Типичные задачи — команды
 
 ```bash
-# Клиент на телефоне
-adb devices
-adb uninstall com.ghoststream.vpn
-adb install android/app/build/outputs/apk/debug/app-debug.apk
+# Статус сервиса (локально на vdsina)
+systemctl status phantom-server
+journalctl -u phantom-server -n 50 -f
 
-# Логи Android в реальном времени
-adb logcat -s GhostStreamVpn
+# Конфиг клиентов
+cat /opt/phantom-vpn/config/clients.json
 
-# SSH на сервер
-ssh -i ~/.ssh/personal root@89.110.109.128
-
-# Статус сервиса
-ssh -i ~/.ssh/personal root@89.110.109.128 "systemctl status phantom-server"
-
-# Проверить конфиг клиентов
-ssh -i ~/.ssh/personal root@89.110.109.128 "cat /opt/phantom-vpn/config/clients.json"
-
-# Admin API напрямую (из VPN-туннеля)
+# Admin API (из VPN-туннеля)
 curl -H "Authorization: Bearer <token>" http://10.7.0.1:8080/api/status
 curl -H "Authorization: Bearer <token>" http://10.7.0.1:8080/api/clients
+
+# SSH на RU relay
+ssh -i ~/.ssh/bot root@193.187.95.128
 ```
 
 ---
@@ -535,7 +501,6 @@ curl -H "Authorization: Bearer <token>" http://10.7.0.1:8080/api/clients
 
 | Проблема | Решение |
 |----------|---------|
-| `cargo not found` | Сборка только через SSH на vdsina |
 | `JAVA_HOME not set` | `JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew ...` |
 | `git push github` | Remote называется `origin`, не `github` |
 | `adminUrl/adminToken` не сохраняются | Баг исправлен в v0.8.7: `ProfilesStore` теперь сериализует оба поля |

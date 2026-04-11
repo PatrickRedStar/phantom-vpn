@@ -1,4 +1,4 @@
-//! phantom-client-linux: Linux VPN client with QUIC transport.
+//! phantom-client-linux: Linux VPN client with raw TLS transport.
 //! TUN interface via /dev/net/tun + ioctl TUNSETIFF.
 
 #[cfg(target_os = "linux")]
@@ -7,27 +7,23 @@ mod linux {
     use std::io;
     use std::net::SocketAddr;
     use std::os::unix::io::AsRawFd;
-    use std::pin::Pin;
     use std::process::Command;
-    use std::task::Poll;
-    use std::time::{Duration, Instant};
 
     use anyhow::Context;
     use clap::Parser;
-    use tokio::io::unix::AsyncFd;
-    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::signal;
     use tokio::sync::watch;
 
+    use bytes::Bytes;
     use client_common::helpers::{self, Args};
-    use client_common::{h2_connect_and_handshake, h2_stream_rx_loop, h2_stream_tx_loop};
+    use client_common::{tls_connect, tls_rx_loop, tls_tx_loop, write_stream_idx};
     use phantom_core::config::ClientConfig;
+    use phantom_core::wire::{flow_stream_idx, N_DATA_STREAMS};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
     const TUNSETIFF:  libc::c_ulong = 0x400454CA;
     const IFF_TUN:    libc::c_short = 0x0001;
     const IFF_NO_PI:  libc::c_short = 0x1000;
-    const AUTO_QUIC_MIN_LIFETIME: Duration = Duration::from_secs(10);
 
     #[repr(C)]
     struct Ifreq {
@@ -35,78 +31,6 @@ mod linux {
         ifr_flags: libc::c_short,
         _pad:      [u8; 22],
     }
-
-// ─── AsyncTun ────────────────────────────────────────────────────────────────
-
-struct AsyncTun { inner: AsyncFd<File> }
-
-impl AsyncTun {
-    fn new(file: File) -> io::Result<Self> {
-        Ok(Self { inner: AsyncFd::new(file)? })
-    }
-}
-
-impl AsyncRead for AsyncTun {
-    fn poll_read(
-        self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        loop {
-            let mut guard = match self.inner.poll_read_ready(cx) {
-                Poll::Ready(Ok(g))  => g,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending       => return Poll::Pending,
-            };
-            let unfilled = buf.initialize_unfilled();
-            match guard.try_io(|inner| {
-                let n = unsafe {
-                    libc::read(
-                        inner.as_raw_fd(),
-                        unfilled.as_mut_ptr() as *mut libc::c_void,
-                        unfilled.len(),
-                    )
-                };
-                if n < 0 { Err(io::Error::last_os_error()) } else { Ok(n as usize) }
-            }) {
-                Ok(Ok(n))     => { buf.advance(n); return Poll::Ready(Ok(())); }
-                Ok(Err(e))    => return Poll::Ready(Err(e)),
-                Err(_blocked) => continue,
-            }
-        }
-    }
-}
-
-impl AsyncWrite for AsyncTun {
-    fn poll_write(
-        self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, data: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        loop {
-            let mut guard = match self.inner.poll_write_ready(cx) {
-                Poll::Ready(Ok(g))  => g,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending       => return Poll::Pending,
-            };
-            match guard.try_io(|inner| {
-                let n = unsafe {
-                    libc::write(
-                        inner.as_raw_fd(),
-                        data.as_ptr() as *const libc::c_void,
-                        data.len(),
-                    )
-                };
-                if n < 0 { Err(io::Error::last_os_error()) } else { Ok(n as usize) }
-            }) {
-                Ok(result)    => return Poll::Ready(result),
-                Err(_blocked) => continue,
-            }
-        }
-    }
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
 
 // ─── TUN creation ────────────────────────────────────────────────────────────
 
@@ -298,14 +222,6 @@ enum TunnelExit {
     TunnelDied,
 }
 
-fn clone_client_identity(
-    identity: &Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-) -> Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
-    identity
-        .as_ref()
-        .map(|(certs, key)| (certs.clone(), key.clone_key()))
-}
-
 fn resolve_transport(args: &Args, cfg: &ClientConfig) -> anyhow::Result<String> {
     if let Some(transport) = args.transport.as_deref() {
         return helpers::normalize_transport(transport);
@@ -313,7 +229,7 @@ fn resolve_transport(args: &Args, cfg: &ClientConfig) -> anyhow::Result<String> 
     if let Some(transport) = cfg.transport.as_deref() {
         return helpers::normalize_transport(transport);
     }
-    Ok("quic".to_string())
+    Ok("h2".to_string())
 }
 
 async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
@@ -321,60 +237,6 @@ async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
         return;
     }
     let _ = shutdown_rx.changed().await;
-}
-
-async fn run_auto_tunnel(
-    cfg: ClientConfig,
-    server_addr: SocketAddr,
-    skip_verify: bool,
-    server_ca: Option<Vec<CertificateDer<'static>>>,
-    client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    shutdown_rx: watch::Receiver<bool>,
-) -> anyhow::Result<TunnelExit> {
-    tracing::info!("Auto transport: probing QUIC first");
-    let quic_started_at = Instant::now();
-    let quic_result = run_quic_tunnel(
-        cfg.clone(),
-        server_addr,
-        skip_verify,
-        server_ca.clone(),
-        clone_client_identity(&client_identity),
-        shutdown_rx.clone(),
-    ).await;
-
-    match quic_result {
-        Ok(TunnelExit::Shutdown) => return Ok(TunnelExit::Shutdown),
-        Ok(TunnelExit::TunnelDied) if quic_started_at.elapsed() >= AUTO_QUIC_MIN_LIFETIME => {
-            tracing::warn!(
-                "Auto transport: QUIC tunnel died after {:?}, not falling back to H2 automatically",
-                quic_started_at.elapsed(),
-            );
-            return Ok(TunnelExit::TunnelDied);
-        }
-        Ok(TunnelExit::TunnelDied) => {
-            tracing::warn!(
-                "Auto transport: QUIC tunnel died after {:?}, falling back to H2",
-                quic_started_at.elapsed(),
-            );
-        }
-        Err(e) => {
-            tracing::warn!("Auto transport: QUIC failed, falling back to H2: {:#}", e);
-        }
-    }
-
-    if *shutdown_rx.borrow() {
-        return Ok(TunnelExit::Shutdown);
-    }
-
-    tracing::info!("Auto transport: starting HTTP/2 fallback");
-    run_h2_tunnel(
-        cfg,
-        server_addr,
-        skip_verify,
-        server_ca,
-        client_identity,
-        shutdown_rx,
-    ).await
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
@@ -435,21 +297,11 @@ async fn run_auto_tunnel(
 
     let skip_verify = cfg.network.insecure || (server_ca.is_none() && client_identity.is_none());
 
-    // Resolve transport: CLI override > config/conn string > default quic
+    // Resolve transport: CLI override > config/conn string > default h2
     let transport = resolve_transport(&args, &cfg)?;
     tracing::info!("Using transport: {}", transport);
 
-    let exit = match transport.as_str() {
-        "h2" => {
-            run_h2_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?
-        }
-        "auto" => {
-            run_auto_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?
-        }
-        _ => {
-            run_quic_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?
-        }
-    };
+    let exit = run_tls_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?;
 
     match exit {
         TunnelExit::Shutdown => tracing::info!("Client shutdown complete."),
@@ -459,8 +311,8 @@ async fn run_auto_tunnel(
     Ok(())
 }
 
-/// HTTP/2 tunnel implementation
-async fn run_h2_tunnel(
+/// Raw TLS tunnel implementation
+async fn run_tls_tunnel(
     cfg: ClientConfig,
     server_addr: SocketAddr,
     skip_verify: bool,
@@ -468,21 +320,31 @@ async fn run_h2_tunnel(
     client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> anyhow::Result<TunnelExit> {
-    use bytes::Bytes;
-
     if *shutdown_rx.borrow() {
         return Ok(TunnelExit::Shutdown);
     }
 
     let client_config = phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
-        .context("Failed to build HTTP/2 client config")?;
+        .context("Failed to build TLS client config")?;
 
     let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom").to_string();
-    let (send_request, streams) = h2_connect_and_handshake(server_addr, server_name, client_config)
-        .await
-        .context("HTTP/2 connect failed")?;
 
-    tracing::info!("HTTP/2 connected ({} streams)!", streams.len());
+    // Open N parallel TLS streams; each sends a 1-byte stream_idx header.
+    let mut tls_writers = Vec::with_capacity(N_DATA_STREAMS);
+    let mut tls_readers = Vec::with_capacity(N_DATA_STREAMS);
+    for idx in 0..N_DATA_STREAMS {
+        let (r, mut w) = tls_connect(server_addr, server_name.clone(), client_config.clone())
+            .await
+            .with_context(|| format!("stream {}: TLS connect failed", idx))?;
+        write_stream_idx(&mut w, idx as u8)
+            .await
+            .with_context(|| format!("stream {}: write_stream_idx failed", idx))?;
+        tracing::info!("Stream {}: connected", idx);
+        tls_readers.push(r);
+        tls_writers.push(w);
+    }
+
+    tracing::info!("All {} TLS streams up", N_DATA_STREAMS);
 
     // ─── TUN interface ───────────────────────────────────────────────────
     let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
@@ -508,193 +370,97 @@ async fn run_h2_tunnel(
     };
 
     // ─── io_uring TUN I/O ────────────────────────────────────────────────
-    let (tun_pkt_rx, quic_pkt_tx) =
+    // tun_uring speaks `Bytes`, so we pipe straight through with no copies.
+    let (mut tun_pkt_rx, tun_pkt_tx) =
         phantom_core::tun_uring::spawn(tun_fd, 4096)
             .context("Failed to start io_uring TUN handler")?;
     tracing::info!("io_uring TUN handler started");
 
-    // ─── Split streams into sends and recvs ───────────────────────────────
-    let (sends, recvs): (Vec<h2::SendStream<Bytes>>, Vec<h2::RecvStream>) = streams.into_iter().unzip();
-
-    // ─── HTTP/2 stream RX / TX tasks ────────────────────────────────────────
-    let mut tunnel_set = tokio::task::JoinSet::new();
-
-    for recv in recvs {
-        let pkt_tx = quic_pkt_tx.clone();
-        tunnel_set.spawn(async move {
-            h2_stream_rx_loop(recv, pkt_tx).await
-        });
+    // Per-stream TX channels.
+    let mut tx_senders: Vec<tokio::sync::mpsc::Sender<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
+    let mut tx_receivers: Vec<tokio::sync::mpsc::Receiver<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
+    for _ in 0..N_DATA_STREAMS {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(2048);
+        tx_senders.push(tx);
+        tx_receivers.push(rx);
     }
 
-    tracing::info!("HTTP/2 tunnel active. Press Ctrl-C to exit.");
+    // Single sink for RX: all N rx loops push Bytes here; a forwarder task
+    // converts them back to Vec<u8> for the io_uring TUN writer.
+    let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
 
-    // TX loop stays outside JoinSet; either TX completion or first RX death tears the tunnel down.
-    tokio::select! {
-        _ = wait_for_shutdown(&mut shutdown_rx) => {
-            tracing::info!("Shutdown signal received.");
-            tunnel_set.abort_all();
-            drop(send_request);
-            drop(_cleanup_guard);
-            tracing::info!("Shutdown complete.");
-            return Ok(TunnelExit::Shutdown);
-        }
-        result = h2_stream_tx_loop(tun_pkt_rx, sends) => {
-            match result {
-                Ok(()) => tracing::warn!("H2 TX loop completed, shutting tunnel down."),
-                Err(e) => tracing::error!("H2 TX loop failed: {}", e),
+    // Dispatcher: tun_uring reader → per-stream channel via flow hash.
+    let tx_senders_clone = tx_senders.clone();
+    tokio::spawn(async move {
+        while let Some(pkt) = tun_pkt_rx.recv().await {
+            let idx = flow_stream_idx(&pkt, N_DATA_STREAMS);
+            if tx_senders_clone[idx].send(pkt).await.is_err() {
+                tracing::warn!("dispatcher: stream {} closed", idx);
+                return;
             }
         }
-        res = async { tunnel_set.join_next().await } => {
-            match res {
-                Some(Ok(Err(e))) => tracing::error!("H2 RX task failed: {}", e),
-                Some(Ok(Ok(()))) => tracing::warn!("H2 RX task completed, shutting tunnel down."),
-                Some(Err(e)) => tracing::error!("H2 RX task panicked: {}", e),
-                None => tracing::warn!("H2 RX task set ended, shutting tunnel down."),
-            }
-            tracing::info!("Tunnel died, exiting for restart.");
-        }
-    }
-
-    tunnel_set.abort_all();
-
-    // Close HTTP/2 connection gracefully
-    drop(send_request);
-
-    drop(_cleanup_guard);
-    tracing::info!("Shutdown complete.");
-
-    Ok(TunnelExit::TunnelDied)
-}
-
-/// QUIC tunnel implementation (original code)
-async fn run_quic_tunnel(
-    cfg: ClientConfig,
-    server_addr: SocketAddr,
-    skip_verify: bool,
-    server_ca: Option<Vec<CertificateDer<'static>>>,
-    client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    mut shutdown_rx: watch::Receiver<bool>,
-) -> anyhow::Result<TunnelExit> {
-    if *shutdown_rx.borrow() {
-        return Ok(TunnelExit::Shutdown);
-    }
-
-    // ─── QUIC endpoint with SO_MARK ─────────────────────────────────────
-    let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")
-        .context("Failed to bind UDP socket")?;
-
-    // Set SO_MARK so QUIC traffic bypasses the VPN tunnel
-    let mark: u32 = 0x50;
-    let ret = unsafe {
-        libc::setsockopt(
-            std_socket.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_MARK,
-            &mark as *const _ as *const libc::c_void,
-            std::mem::size_of::<u32>() as libc::socklen_t,
-        )
-    };
-    if ret != 0 {
-        anyhow::bail!("Failed to set SO_MARK: {}", io::Error::last_os_error());
-    }
-    std_socket.set_nonblocking(true)?;
-
-    let client_config = phantom_core::quic::make_client_config(skip_verify, server_ca, client_identity)
-        .context("Failed to build QUIC client config")?;
-
-    let runtime = quinn::default_runtime()
-        .ok_or_else(|| anyhow::anyhow!("No async runtime available"))?;
-    let mut endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
-        None,
-        std_socket,
-        runtime,
-    ).context("Failed to create QUIC endpoint")?;
-    endpoint.set_default_client_config(client_config);
-
-    tracing::info!("QUIC endpoint created with SO_MARK={:#x}", mark);
-
-    // ─── QUIC connect + open data streams ───────────────────────────────
-    let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom");
-
-    let (connection, streams) = client_common::connect_and_handshake(
-        &endpoint, server_addr, server_name,
-    ).await.context("QUIC connect failed")?;
-    tracing::info!("QUIC connected ({} data streams)!", streams.len());
-
-    // ─── TUN interface ───────────────────────────────────────────────────
-    let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
-    let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
-    let tun_mtu  = cfg.network.tun_mtu.unwrap_or(1350);
-
-    tracing::info!("Creating TUN interface {}...", tun_name);
-    let tun_file = create_tun(tun_name, tun_addr, tun_mtu)?;
-    let tun_fd = tun_file.as_raw_fd();
-    std::mem::forget(tun_file);
-
-    // Default route
-    let _cleanup_guard = if cfg.network.default_gw.is_some() {
-        match add_default_route(tun_name, &server_addr) {
-            Ok(guard) => Some(guard),
-            Err(e) => {
-                tracing::warn!("Route setup failed: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // ─── io_uring TUN I/O ────────────────────────────────────────────────
-    let (tun_pkt_rx, quic_pkt_tx) =
-        phantom_core::tun_uring::spawn(tun_fd, 4096)
-            .context("Failed to start io_uring TUN handler")?;
-    tracing::info!("io_uring TUN handler started");
-
-    // ─── Split streams into sends and recvs ───────────────────────────────
-    let (sends, recvs): (Vec<_>, Vec<_>) = streams.into_iter().unzip();
-
-    // ─── QUIC stream RX / TX tasks ────────────────────────────────────────
-    let mut tunnel_set = tokio::task::JoinSet::new();
-
-    for recv in recvs {
-        let pkt_tx = quic_pkt_tx.clone();
-        tunnel_set.spawn(async move {
-            client_common::quic_stream_rx_loop(recv, pkt_tx).await
-        });
-    }
-    tunnel_set.spawn(async move {
-        client_common::quic_stream_tx_loop(tun_pkt_rx, sends).await
     });
+    drop(tx_senders);
+
+    // RX forwarder: Bytes sink → tun_uring writer.
+    let tun_write_tx = tun_pkt_tx.clone();
+    tokio::spawn(async move {
+        while let Some(pkt) = rx_sink_rx.recv().await {
+            if tun_write_tx.send(pkt).await.is_err() {
+                return;
+            }
+        }
+    });
+    drop(tun_pkt_tx);
+
+    // N TX + N RX tasks.
+    let mut tx_handles = Vec::with_capacity(N_DATA_STREAMS);
+    let mut rx_handles = Vec::with_capacity(N_DATA_STREAMS);
+    for (idx, (w, rxc)) in tls_writers.into_iter().zip(tx_receivers.into_iter()).enumerate() {
+        tx_handles.push(tokio::spawn(async move {
+            let res = tls_tx_loop(w, rxc).await;
+            tracing::warn!("stream {}: tx loop ended: {:?}", idx, res);
+            res
+        }));
+    }
+    for (idx, r) in tls_readers.into_iter().enumerate() {
+        let sink = rx_sink_tx.clone();
+        rx_handles.push(tokio::spawn(async move {
+            let res = tls_rx_loop(r, sink).await;
+            tracing::warn!("stream {}: rx loop ended: {:?}", idx, res);
+            res
+        }));
+    }
+    drop(rx_sink_tx);
 
     tracing::info!("Tunnel active. Press Ctrl-C to exit.");
 
-    // Wait for shutdown or tunnel death
     tokio::select! {
         _ = wait_for_shutdown(&mut shutdown_rx) => {
             tracing::info!("Shutdown signal received.");
-            connection.close(0u32.into(), b"client shutdown");
+            for h in tx_handles { h.abort(); }
+            for h in rx_handles { h.abort(); }
             drop(_cleanup_guard);
-            tracing::info!("Shutdown complete.");
             return Ok(TunnelExit::Shutdown);
         }
-        Some(res) = tunnel_set.join_next() => {
-            if let Ok(Err(e)) = res {
-                tracing::error!("Tunnel task failed: {}", e);
-            }
-            tracing::info!("Tunnel died, exiting for restart.");
+        _ = async {
+            for h in &mut tx_handles { let _ = h.await; }
+        } => {
+            tracing::warn!("All TX loops exited.");
+        }
+        _ = async {
+            for h in &mut rx_handles { let _ = h.await; }
+        } => {
+            tracing::warn!("All RX loops exited.");
         }
     }
 
-    // Close QUIC connection gracefully
-    connection.close(0u32.into(), b"client shutdown");
-
-    // Manually drop the guard to restore routes before tokio runtime shuts down
     drop(_cleanup_guard);
-    tracing::info!("Shutdown complete.");
+    tracing::info!("Tunnel died, exiting for restart.");
 
     Ok(TunnelExit::TunnelDied)
 }
+
 }
 
 #[cfg(target_os = "linux")]

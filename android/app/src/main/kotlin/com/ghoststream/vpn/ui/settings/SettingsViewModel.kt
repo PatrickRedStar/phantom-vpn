@@ -152,13 +152,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         profilesStore.updateProfile(profile.copy(name = name.trim().ifEmpty { profile.name }))
     }
 
-    fun updateProfileTransport(id: String, transport: String) {
+    fun updateProfileEndpoint(id: String, serverAddr: String, serverName: String) {
         val profile = profilesStore.profiles.value.find { it.id == id } ?: return
-        val normalized = when (transport.lowercase()) {
-            "quic", "h2", "auto" -> transport.lowercase()
-            else -> profile.transport
-        }
-        profilesStore.updateProfile(profile.copy(transport = normalized))
+        val addr = serverAddr.trim()
+        val sni = serverName.trim()
+        if (addr.isEmpty() || sni.isEmpty()) return
+        profilesStore.updateProfile(profile.copy(serverAddr = addr, serverName = sni))
     }
 
     fun setInsecure(insecure: Boolean) {

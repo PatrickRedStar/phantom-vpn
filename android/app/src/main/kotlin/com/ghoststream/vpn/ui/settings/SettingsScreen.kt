@@ -73,25 +73,6 @@ import com.ghoststream.vpn.ui.theme.RedError
 import com.ghoststream.vpn.ui.theme.TextSecondary
 import com.ghoststream.vpn.ui.theme.YellowWarning
 
-private val transportOptions = listOf(
-    "quic" to "QUIC",
-    "h2" to "HTTP/2",
-    "auto" to "Auto",
-)
-
-private fun transportLabel(transport: String): String = when (transport.lowercase()) {
-    "quic" -> "QUIC"
-    "h2" -> "HTTP/2"
-    "auto" -> "Auto"
-    else -> "HTTP/2"
-}
-
-private fun transportColor(transport: String): Color = when (transport.lowercase()) {
-    "quic" -> Color(0xFF69F0AE)
-    "auto" -> Color(0xFF80DEEA)
-    else -> Color(0xFFFFD740)
-}
-
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -226,7 +207,9 @@ fun SettingsScreen(
                         selectedProfileId = null
                     },
                     onRename = { viewModel.renameProfile(selectedProfile.id, it) },
-                    onTransportChange = { viewModel.updateProfileTransport(selectedProfile.id, it) },
+                    onEndpointChange = { addr, sni ->
+                        viewModel.updateProfileEndpoint(selectedProfile.id, addr, sni)
+                    },
                     onDelete = {
                         viewModel.deleteProfile(selectedProfile.id)
                         selectedProfileId = null
@@ -684,10 +667,6 @@ private fun ProfileRow(
     onPing: () -> Unit = {},
     subscriptionText: String? = null,
 ) {
-    val transport = profile.transport
-    val transportLabel = transportLabel(transport)
-    val transportColor = transportColor(transport)
-
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -703,20 +682,6 @@ private fun ProfileRow(
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(profile.name, style = MaterialTheme.typography.bodyMedium)
-                // Индикатор транспорта
-                Spacer(Modifier.width(6.dp))
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = transportColor.copy(alpha = 0.18f),
-                ) {
-                    Text(
-                        transportLabel,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = transportColor,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
                 if (profile.adminUrl != null && profile.adminToken != null) {
                     Spacer(Modifier.width(6.dp))
                     Surface(
@@ -802,75 +767,62 @@ private fun ProfileDetailsDialog(
     onDismiss: () -> Unit,
     onSetActive: () -> Unit,
     onRename: (String) -> Unit,
-    onTransportChange: (String) -> Unit,
+    onEndpointChange: (addr: String, sni: String) -> Unit,
     onDelete: () -> Unit,
     onAdminClick: (() -> Unit)? = null,
     onShareToTv: (() -> Unit)? = null,
 ) {
     var newName by remember(profile.id, profile.name) { mutableStateOf(profile.name) }
+    var newAddr by remember(profile.id, profile.serverAddr) { mutableStateOf(profile.serverAddr) }
+    var newSni by remember(profile.id, profile.serverName) { mutableStateOf(profile.serverName) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    val transport = profile.transport
-    val transportLabel = transportLabel(transport)
-    val transportColor = transportColor(transport)
+    val dirty = newName.trim() != profile.name ||
+        newAddr.trim() != profile.serverAddr ||
+        newSni.trim() != profile.serverName
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Карточка подключения") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    profile.serverAddr,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    color = TextSecondary,
-                )
-                // Индикатор транспорта
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = transportColor,
-                    modifier = Modifier.padding(vertical = 4.dp),
-                ) {
-                    Text(
-                        "Транспорт: $transportLabel",
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                Text(
-                    "Режим транспорта",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextSecondary,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    transportOptions.forEach { (value, label) ->
-                        val selected = transport == value
-                        if (selected) {
-                            Button(
-                                onClick = { onTransportChange(value) },
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text(label)
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = { onTransportChange(value) },
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text(label)
-                            }
-                        }
-                    }
-                }
                 OutlinedTextField(
                     value = newName,
                     onValueChange = { newName = it },
-                    label = { Text("Название подключения") },
+                    label = { Text("Название") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedTextField(
+                    value = newAddr,
+                    onValueChange = { newAddr = it },
+                    label = { Text("Адрес сервера (host:port)") },
+                    singleLine = true,
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = newSni,
+                    onValueChange = { newSni = it },
+                    label = { Text("SNI / server name") },
+                    singleLine = true,
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { onRename(newName.trim()) },
+                    Button(
+                        onClick = {
+                            val trimmedName = newName.trim()
+                            if (trimmedName.isNotEmpty() && trimmedName != profile.name) {
+                                onRename(trimmedName)
+                            }
+                            val trimmedAddr = newAddr.trim()
+                            val trimmedSni = newSni.trim()
+                            if (trimmedAddr != profile.serverAddr || trimmedSni != profile.serverName) {
+                                onEndpointChange(trimmedAddr, trimmedSni)
+                            }
+                        },
+                        enabled = dirty && newName.trim().isNotEmpty() && newAddr.trim().isNotEmpty() && newSni.trim().isNotEmpty(),
                         modifier = Modifier.weight(1f),
                     ) { Text("Сохранить") }
                     OutlinedButton(

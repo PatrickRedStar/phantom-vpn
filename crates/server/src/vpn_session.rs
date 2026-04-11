@@ -12,6 +12,8 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, RwLock};
 
+use phantom_core::wire::N_STREAMS;
+
 // ─── Session types ──────────────────────────────────────────────────────────
 
 /// One logged destination visit (client → server direction).
@@ -33,15 +35,24 @@ pub struct StatsSample {
     pub bytes_tx: u64,
 }
 
-/// Transport-agnostic VPN session.
-/// Works with both QUIC and HTTP/2 transports.
+/// Transport-agnostic VPN session / SessionCoordinator.
+///
+/// For the TLS-over-TCP h2_server path this aggregates up to `N_STREAMS` parallel
+/// TCP connections from the same client (identified by cert fingerprint). Each
+/// physical connection claims one slot in `data_sends[stream_idx]`. Slots can be
+/// `None` (disconnected) and are dynamically replaced on reconnect.
+///
+/// The QUIC path historically registered a `Vec` of stream senders at construction
+/// time; we now write them into the same slotted structure, with each QUIC sub-stream
+/// occupying a dedicated slot.
 pub struct VpnSession {
     /// Session creation timestamp (unix seconds) for hard lifetime expiry.
     pub created_at:    u64,
-    /// Per-stream frame senders (batched frames → transport write loop)
-    pub data_sends:    Vec<mpsc::Sender<Bytes>>,
+    /// Per-stream frame senders (batched frames → transport write loop).
+    /// Fixed-length `N_STREAMS` slots; `None` = stream currently disconnected.
+    pub data_sends:    Vec<std::sync::Mutex<Option<mpsc::Sender<Bytes>>>>,
     /// Per-session channel for TUN→transport packets (fed by tun_dispatch_loop)
-    pub tun_pkt_tx:    mpsc::Sender<Vec<u8>>,
+    pub tun_pkt_tx:    mpsc::Sender<Bytes>,
     /// Transport-agnostic shutdown: send () to close the underlying connection
     pub close_tx:      std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     pub last_seen:     AtomicU64,
@@ -53,6 +64,96 @@ pub struct VpnSession {
     pub dns_cache:     DashMap<Ipv4Addr, String>,
     /// Counter for dest_log sampling (log every 64th packet to reduce mutex contention)
     pub log_counter:   AtomicU64,
+    /// Client cert fingerprint (hex). Set for h2_server path — used to locate the
+    /// coordinator across reconnects of individual streams.
+    pub fingerprint:   String,
+    /// Round-robin counter for TUN → stream dispatch.
+    pub rr_counter:    AtomicU64,
+}
+
+impl VpnSession {
+    /// Build a new coordinator with all stream slots empty.
+    /// Used by h2_server path; caller will attach streams as clients connect.
+    pub fn new_coordinator(
+        fingerprint: String,
+        tun_pkt_tx: mpsc::Sender<Bytes>,
+        close_tx: tokio::sync::oneshot::Sender<()>,
+    ) -> Self {
+        let now = now_unix_secs();
+        let data_sends = (0..N_STREAMS)
+            .map(|_| std::sync::Mutex::new(None))
+            .collect();
+        Self {
+            created_at: now,
+            data_sends,
+            tun_pkt_tx,
+            close_tx: std::sync::Mutex::new(Some(close_tx)),
+            last_seen: AtomicU64::new(now),
+            bytes_rx: AtomicU64::new(0),
+            bytes_tx: AtomicU64::new(0),
+            dest_log: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            stats_samples: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            dns_cache: DashMap::new(),
+            log_counter: AtomicU64::new(0),
+            fingerprint,
+            rr_counter: AtomicU64::new(0),
+        }
+    }
+
+    /// Attach a stream sender at `stream_idx`. Returns the previously attached
+    /// sender (if any), which the caller should drop to signal the old writer
+    /// loop to terminate.
+    pub fn attach_stream(
+        &self,
+        stream_idx: usize,
+        sender: mpsc::Sender<Bytes>,
+    ) -> Option<mpsc::Sender<Bytes>> {
+        if stream_idx >= self.data_sends.len() {
+            return Some(sender);
+        }
+        let mut slot = self.data_sends[stream_idx].lock().unwrap();
+        slot.replace(sender)
+    }
+
+    /// Detach a stream sender at `stream_idx` (called when the transport write
+    /// loop exits). Only clears the slot if the currently-held sender matches
+    /// `expected`, to avoid clobbering a fresh reconnect.
+    pub fn detach_stream_if(&self, stream_idx: usize, expected: &mpsc::Sender<Bytes>) {
+        if stream_idx >= self.data_sends.len() { return; }
+        let mut slot = self.data_sends[stream_idx].lock().unwrap();
+        if let Some(cur) = slot.as_ref() {
+            if cur.same_channel(expected) {
+                *slot = None;
+            }
+        }
+    }
+
+    /// Returns true if every stream slot is empty (all connections dead).
+    pub fn all_streams_down(&self) -> bool {
+        self.data_sends.iter().all(|m| m.lock().unwrap().is_none())
+    }
+
+    /// Send a frame via the next available stream using round-robin dispatch.
+    /// Skips empty slots. Returns `false` if no stream is up.
+    pub async fn send_frame_rr(&self, frame: Bytes) -> bool {
+        let n = self.data_sends.len();
+        if n == 0 { return false; }
+        let start = self.rr_counter.fetch_add(1, Ordering::Relaxed) as usize;
+        for i in 0..n {
+            let idx = (start + i) % n;
+            // Snapshot the sender under the mutex, then release it before awaiting.
+            let sender_opt = {
+                let slot = self.data_sends[idx].lock().unwrap();
+                slot.clone()
+            };
+            if let Some(sender) = sender_opt {
+                if sender.send(frame.clone()).await.is_ok() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 impl VpnSession {
@@ -71,10 +172,20 @@ impl VpnSession {
     }
 
     /// Signal the transport layer to close the underlying connection.
+    ///
+    /// For the QUIC path a background task awaits `close_rx` and calls
+    /// `connection.close()`. For the h2 path there is no single connection,
+    /// so we drop every stream sender — the corresponding writer tasks will
+    /// exit, which drops the TLS write halves and closes each TCP socket.
     pub fn close(&self) {
         if let Ok(mut guard) = self.close_tx.lock() {
             if let Some(tx) = guard.take() {
                 let _ = tx.send(());
+            }
+        }
+        for slot in self.data_sends.iter() {
+            if let Ok(mut s) = slot.lock() {
+                *s = None;
             }
         }
     }
@@ -91,6 +202,14 @@ fn now_unix_secs() -> u64 {
 pub type VpnSessionMap = Arc<DashMap<IpAddr, Arc<VpnSession>>>;
 
 pub fn new_session_map() -> VpnSessionMap {
+    Arc::new(DashMap::new())
+}
+
+/// Fingerprint-keyed map used by the h2_server path to find the
+/// `VpnSession` across reconnects of individual sub-streams.
+pub type SessionByFp = Arc<DashMap<String, Arc<VpnSession>>>;
+
+pub fn new_session_by_fp() -> SessionByFp {
     Arc::new(DashMap::new())
 }
 
@@ -153,7 +272,7 @@ pub fn cert_fingerprint(cert_der: &[u8]) -> String {
 // ─── TUN → per-session dispatch (transport-agnostic) ────────────────────────
 
 pub async fn tun_dispatch_loop(
-    mut pkt_rx: mpsc::Receiver<Vec<u8>>,
+    mut pkt_rx: mpsc::Receiver<Bytes>,
     sessions:   VpnSessionMap,
 ) -> anyhow::Result<()> {
     tracing::info!("TUN→transport dispatch loop started");
@@ -217,6 +336,13 @@ pub async fn tun_dispatch_loop(
 }
 
 // ─── Cleanup task ───────────────────────────────────────────────────────────
+
+/// Remove the coordinator from the fingerprint map (if still matching).
+pub fn reap_session_fp(by_fp: &SessionByFp, session: &Arc<VpnSession>) {
+    let fp = session.fingerprint.clone();
+    if fp.is_empty() { return; }
+    by_fp.remove_if(&fp, |_, v| Arc::ptr_eq(v, session));
+}
 
 pub async fn cleanup_task(sessions: VpnSessionMap, idle_secs: u64, hard_timeout_secs: u64) {
     #[derive(Copy, Clone)]
@@ -345,23 +471,23 @@ fn dns_skip_name(data: &[u8], pos: &mut usize) -> bool {
 
 // ─── Per-session batch loop (transport-agnostic) ────────────────────────────
 
-/// Reads TUN packets from per-session channel, groups by flow hash,
-/// builds wire-format batches with H.264 shaping, and sends Bytes
-/// through per-stream frame channels to the transport write loops.
+/// Reads TUN packets from per-session channel, builds wire-format batch frames,
+/// and dispatches each frame via round-robin over any currently-attached stream
+/// slot on the `VpnSession`.
 pub async fn session_batch_loop(
-    mut pkt_rx: mpsc::Receiver<Vec<u8>>,
+    mut pkt_rx: mpsc::Receiver<Bytes>,
     session:    Arc<VpnSession>,
-    mut shaper: phantom_core::shaper::H264Shaper,
-    use_shaper: bool,
 ) {
-    use phantom_core::wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT};
+    use bytes::BytesMut;
+    use phantom_core::wire::{build_batch_plaintext, BATCH_MAX_PLAINTEXT};
 
     let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
-    let mut frame_buf = vec![0u8; buf_size];
-    let n_streams = session.data_sends.len();
+    // BytesMut pool: we split_to(frame_len) to mint a zero-copy Bytes per frame,
+    // then reserve capacity back up when the underlying buffer is too small.
+    let mut frame_buf = BytesMut::with_capacity(buf_size);
+    frame_buf.resize(buf_size, 0);
 
-    // Pre-allocate to avoid per-iteration heap allocation
-    let mut stream_batches: Vec<Vec<Vec<u8>>> = (0..n_streams).map(|_| Vec::with_capacity(64)).collect();
+    let mut pending: Vec<Bytes> = Vec::with_capacity(256);
 
     loop {
         let first = match pkt_rx.recv().await {
@@ -369,51 +495,47 @@ pub async fn session_batch_loop(
             None => break,
         };
 
-        // Clear per-stream batches without reallocating
-        for b in stream_batches.iter_mut() { b.clear(); }
-
-        let idx = flow_stream_idx(&first, n_streams);
-        stream_batches[idx].push(first);
+        pending.clear();
+        pending.push(first);
 
         // Drain more (up to 256)
-        let mut collected = 1usize;
-        while collected < 256 {
+        while pending.len() < 256 {
             match pkt_rx.try_recv() {
-                Ok(pkt) => {
-                    let idx = flow_stream_idx(&pkt, n_streams);
-                    stream_batches[idx].push(pkt);
-                    collected += 1;
-                }
+                Ok(pkt) => pending.push(pkt),
                 Err(_) => break,
             }
         }
 
-        // Build and send batch per stream
-        for (idx, batch) in stream_batches.iter().enumerate() {
-            if batch.is_empty() { continue; }
+        // Build one batch containing ALL drained packets (no per-flow splitting:
+        // per-stream distribution happens via round-robin on the output side).
+        let refs: Vec<&[u8]> = pending.iter().map(|p| p.as_ref()).collect();
 
-            let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
-            let target_bytes = if use_shaper {
-                let data_size: usize = refs.iter().map(|p| 2 + p.len()).sum::<usize>() + 2;
-                let frame = shaper.next_frame();
-                shaper.report_data_size(data_size, frame.target_bytes);
-                frame.target_bytes
-            } else {
-                0 // H2: no padding (TCP/TLS hides packet structure from DPI)
-            };
-            let pt_len = match build_batch_plaintext(&refs, target_bytes, &mut frame_buf[4..]) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-
-            frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-
-            let frame = Bytes::copy_from_slice(&frame_buf[..4 + pt_len]);
-            if session.data_sends[idx].send(frame).await.is_err() {
-                return; // session closed
-            }
-            session.bytes_tx.fetch_add((4 + pt_len) as u64, Ordering::Relaxed);
+        // Ensure buffer capacity
+        if frame_buf.len() < buf_size {
+            frame_buf.resize(buf_size, 0);
         }
+
+        let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+        let total = 4 + pt_len;
+
+        // Zero-copy split: take the frame slice out of the buffer as a Bytes,
+        // then replenish the BytesMut for next iteration.
+        let frame = frame_buf.split_to(total).freeze();
+        if frame_buf.capacity() < buf_size {
+            frame_buf.reserve(buf_size - frame_buf.capacity());
+        }
+        frame_buf.resize(buf_size, 0);
+
+        if !session.send_frame_rr(frame).await {
+            // All streams down — session dead.
+            return;
+        }
+        session.bytes_tx.fetch_add(total as u64, Ordering::Relaxed);
     }
 }
 

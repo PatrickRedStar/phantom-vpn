@@ -1,0 +1,23 @@
+[package]
+name    = "phantom-relay"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "phantom-relay"
+path = "src/main.rs"
+
+[dependencies]
+tokio        = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
+rustls       = { version = "0.23", features = ["ring", "std"] }
+rustls-pemfile = "2"
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+toml         = "0.8"
+serde        = { version = "1", features = ["derive"] }
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc         = "0.2"

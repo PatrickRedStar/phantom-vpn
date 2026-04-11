@@ -1,20 +1,13 @@
 //! client_common: общая логика клиента PhantomVPN.
-//! Содержит tunnel loops, handshake, key loading — всё, что не зависит от платформы.
+//! Raw TLS tunnel (no HTTP/2 framing), handshake, key loading — всё, что не зависит от платформы.
 
-pub mod tunnel;
 pub mod helpers;
-pub mod quic_tunnel;
-pub mod quic_handshake;
-pub mod h2_handshake;
-pub mod h2_tunnel;
+pub mod tls_handshake;
+pub mod tls_tunnel;
 
-pub use tunnel::{udp_rx_loop, tun_to_udp_loop};
 pub use helpers::Args;
-pub use quic_tunnel::{quic_stream_rx_loop, quic_stream_tx_loop};
-pub use quic_handshake::connect_and_handshake;
-pub use h2_handshake::{connect_and_handshake as h2_connect_and_handshake, connect_with_tcp_stream as h2_connect_with_tcp_stream};
-pub use h2_tunnel::{h2_stream_rx_loop, h2_stream_tx_loop};
+pub use tls_handshake::{connect as tls_connect, connect_with_tcp as tls_connect_with_tcp};
+pub use tls_tunnel::{tls_rx_loop, tls_tx_loop, write_stream_idx};
 
-// Re-export CLI args для единообразия
 pub use clap;
 pub use phantom_core;

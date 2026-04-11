@@ -1,7 +1,6 @@
 //! phantom-server: точка входа.
 //! Инициализирует TUN интерфейс, настраивает NAT, запускает QUIC сервер.
 
-pub mod sessions;
 pub mod tun_iface;
 pub mod vpn_session;
 pub mod quic_server;
@@ -11,12 +10,9 @@ pub mod admin;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
-use tokio::sync::mpsc;
-use tokio::io::AsyncWriteExt;
 
 use phantom_core::config::ServerConfig;
 
@@ -174,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let (mut tun_read_rx, tun_tx) = phantom_core::tun_uring::spawn_multiqueue(tun_fds, 4096)
+    let (tun_read_rx, tun_tx) = phantom_core::tun_uring::spawn_multiqueue(tun_fds, 4096)
         .context("Failed to start io_uring TUN handler")?;
 
     // ─── QUIC endpoint ──────────────────────────────────────────────────────
@@ -186,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ─── Sessions ───────────────────────────────────────────────────────────
     let sessions = vpn_session::new_session_map();
+    let sessions_by_fp = vpn_session::new_session_by_fp();
     let idle_secs = cfg.timeouts.as_ref()
         .and_then(|t| t.idle_timeout_secs)
         .unwrap_or(300);
@@ -329,10 +326,11 @@ async fn main() -> anyhow::Result<()> {
                 let h2_tls = h2_tls_config.clone();
                 let tun_tx = tun_tx.clone();
                 let sessions = sessions.clone();
+                let sessions_by_fp = sessions_by_fp.clone();
                 let allow_list = allow_list.clone();
                 tokio::spawn(async move {
                     if let Err(e) = h2_server::run_h2_accept_loop(
-                        h2_listener, h2_tls, tun_tx, sessions, tun_network, tun_prefix, allow_list
+                        h2_listener, h2_tls, tun_tx, sessions, sessions_by_fp, tun_network, tun_prefix, allow_list
                     ).await {
                         tracing::error!("HTTP/2 accept loop error: {}", e);
                     }
