@@ -12,18 +12,39 @@ pub const QUIC_TUNNEL_MSS: u16 = 1310;
 /// Maximum batch plaintext (H.264 I-frame up to 50 KB + overhead)
 pub const BATCH_MAX_PLAINTEXT: usize = 65_536;
 
-/// Number of parallel TLS-over-TCP streams per VPN session (h2_server path).
-/// Each stream is a separate TCP connection aggregated via SessionCoordinator,
-/// selected by the client with a single `stream_idx` byte after TLS handshake.
-/// 4 parallel TCP connections → каждая получает свой CPU core для rustls.
-/// Client и server должны использовать одну и ту же константу, иначе сервер
-/// отвергает stream_idx >= N_DATA_STREAMS.
-pub const N_DATA_STREAMS: usize = 4;
+/// Hard cap on parallel TLS streams per VPN session, regardless of host core count.
+/// Keeps wire-format stream_idx and `data_sends` vectors bounded.
+pub const MAX_N_STREAMS: usize = 16;
 
-/// Alias used by server-side code paths (h2_server, vpn_session, quic_server).
-/// Same value as N_DATA_STREAMS — держим два имени только из-за наследованных
-/// use-импортов, это единая контрольная точка.
-pub const N_STREAMS: usize = N_DATA_STREAMS;
+/// Minimum parallel streams. On 1-core hosts we still want at least 2 to keep
+/// TLS handshake and data write loops concurrent.
+pub const MIN_N_STREAMS: usize = 2;
+
+/// Runtime-cached number of parallel TLS-over-TCP streams per VPN session.
+/// Derived from `std::thread::available_parallelism()`, clamped to
+/// `[MIN_N_STREAMS, MAX_N_STREAMS]`. Computed once on first call, then cached.
+///
+/// Both client and server call this independently. During handshake the client
+/// sends its own value as `max_streams` byte, server reads its own, and both
+/// sides agree on `effective = min(client_n, server_n)`. This lets a 2-core
+/// server talk to an 8-core client without either wasting slots or rejecting
+/// out-of-range stream_idx.
+pub fn n_data_streams() -> usize {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(MIN_N_STREAMS)
+            .clamp(MIN_N_STREAMS, MAX_N_STREAMS)
+    })
+}
+
+/// Server-side alias retained for call-site ergonomics.
+#[inline]
+pub fn n_streams() -> usize {
+    n_data_streams()
+}
 
 /// Map an IPv4 packet to a stream index in [0, n) using 5-tuple hash.
 /// Symmetric: A→B hashes to the same index as B→A (XOR/addition are commutative).

@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
-    wire::{BATCH_MAX_PLAINTEXT, N_STREAMS, QUIC_TUNNEL_MSS},
+    wire::{n_data_streams, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
 };
 
 use crate::vpn_session::{self, VpnSession, VpnSessionMap, ClientAllowList, DestEntry};
@@ -104,15 +104,17 @@ async fn handle_connection(
 
     tracing::info!("Authenticated VPN client from {} (fp={}…)", remote, &client_fp[..16]);
 
-    // Accept N_STREAMS bidirectional data streams; spawn per-stream write loops.
+    // Accept `effective_n` bidirectional data streams; spawn per-stream write loops.
     // Each QUIC sub-stream occupies one slot in the coordinator's `data_sends`.
-    let mut data_recvs: Vec<quinn::RecvStream> = Vec::with_capacity(N_STREAMS);
+    // QUIC path does not yet do handshake negotiation, so we use server-side count.
+    let effective_n = n_data_streams();
+    let mut data_recvs: Vec<quinn::RecvStream> = Vec::with_capacity(effective_n);
 
     // Per-stream TUN packet channels: one dedicated stream_batch_loop per idx,
     // no more serial round-robin dispatch.
-    let mut pkt_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_STREAMS);
-    let mut pkt_rxs: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(N_STREAMS);
-    for _ in 0..N_STREAMS {
+    let mut pkt_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(effective_n);
+    let mut pkt_rxs: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(effective_n);
+    for _ in 0..effective_n {
         let (tx, rx) = mpsc::channel::<Bytes>(1024);
         pkt_txs.push(tx);
         pkt_rxs.push(rx);
@@ -123,11 +125,12 @@ async fn handle_connection(
 
     let session = Arc::new(VpnSession::new_coordinator(
         client_fp.clone(),
+        effective_n,
         pkt_txs,
         close_tx,
     ));
 
-    for i in 0..N_STREAMS {
+    for i in 0..effective_n {
         let (ds, dr) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             connection.accept_bi(),
@@ -137,12 +140,12 @@ async fn handle_connection(
         .with_context(|| format!("Failed to accept data stream {}", i))?;
 
         let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(512);
-        session.attach_stream(i, frame_tx);
+        let _gen = session.attach_stream(i, frame_tx);
         tokio::spawn(session_write_loop(frame_rx, ds, remote));
         data_recvs.push(dr);
     }
 
-    tracing::debug!("{} QUIC data streams accepted from {}", N_STREAMS, remote);
+    tracing::debug!("{} QUIC data streams accepted from {}", effective_n, remote);
     // created_at timestamp for logs (already set inside new_coordinator)
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

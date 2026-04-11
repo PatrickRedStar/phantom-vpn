@@ -16,9 +16,9 @@ mod linux {
 
     use bytes::Bytes;
     use client_common::helpers::{self, Args};
-    use client_common::{tls_connect, tls_rx_loop, tls_tx_loop, write_stream_idx};
+    use client_common::{tls_connect, tls_rx_loop, tls_tx_loop, write_handshake};
     use phantom_core::config::ClientConfig;
-    use phantom_core::wire::{flow_stream_idx, N_DATA_STREAMS};
+    use phantom_core::wire::{flow_stream_idx, n_data_streams};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
     const TUNSETIFF:  libc::c_ulong = 0x400454CA;
@@ -278,6 +278,10 @@ async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
     } else {
         cfg.network.server_addr.clone()
     };
+    // Defensive: tolerate bare hostnames in server_addr (user-editable in
+    // UI / conn string). `lookup_host` rejects them as "invalid socket
+    // address". See client_common::with_default_port.
+    let raw_addr = client_common::with_default_port(&raw_addr, 443);
     let server_addr: SocketAddr = if let Ok(addr) = raw_addr.parse() {
         addr
     } else {
@@ -326,25 +330,26 @@ async fn run_tls_tunnel(
 
     let client_config = phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
         .context("Failed to build TLS client config")?;
+    let n_streams = n_data_streams();
 
     let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom").to_string();
 
-    // Open N parallel TLS streams; each sends a 1-byte stream_idx header.
-    let mut tls_writers = Vec::with_capacity(N_DATA_STREAMS);
-    let mut tls_readers = Vec::with_capacity(N_DATA_STREAMS);
-    for idx in 0..N_DATA_STREAMS {
+    // Open N parallel TLS streams; each sends a 2-byte handshake [stream_idx, max_streams].
+    let mut tls_writers = Vec::with_capacity(n_streams);
+    let mut tls_readers = Vec::with_capacity(n_streams);
+    for idx in 0..n_streams {
         let (r, mut w) = tls_connect(server_addr, server_name.clone(), client_config.clone())
             .await
             .with_context(|| format!("stream {}: TLS connect failed", idx))?;
-        write_stream_idx(&mut w, idx as u8)
+        write_handshake(&mut w, idx as u8, n_streams as u8)
             .await
-            .with_context(|| format!("stream {}: write_stream_idx failed", idx))?;
+            .with_context(|| format!("stream {}: write_handshake failed", idx))?;
         tracing::info!("Stream {}: connected", idx);
         tls_readers.push(r);
         tls_writers.push(w);
     }
 
-    tracing::info!("All {} TLS streams up", N_DATA_STREAMS);
+    tracing::info!("All {} TLS streams up", n_streams);
 
     // ─── TUN interface ───────────────────────────────────────────────────
     let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
@@ -377,9 +382,9 @@ async fn run_tls_tunnel(
     tracing::info!("io_uring TUN handler started");
 
     // Per-stream TX channels.
-    let mut tx_senders: Vec<tokio::sync::mpsc::Sender<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
-    let mut tx_receivers: Vec<tokio::sync::mpsc::Receiver<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
-    for _ in 0..N_DATA_STREAMS {
+    let mut tx_senders: Vec<tokio::sync::mpsc::Sender<Bytes>> = Vec::with_capacity(n_streams);
+    let mut tx_receivers: Vec<tokio::sync::mpsc::Receiver<Bytes>> = Vec::with_capacity(n_streams);
+    for _ in 0..n_streams {
         let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(2048);
         tx_senders.push(tx);
         tx_receivers.push(rx);
@@ -390,13 +395,37 @@ async fn run_tls_tunnel(
     let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
 
     // Dispatcher: tun_uring reader → per-stream channel via flow hash.
+    //
+    // IMPORTANT: `try_send` — not `send().await`. Per-stream pinning means a
+    // single slow TLS stream would cross-stall every flow (HoL blocking across
+    // independent streams). Matches server's `tun_dispatch_loop` — drop-on-full
+    // and let TCP retransmit sort the slow stream out.
     let tx_senders_clone = tx_senders.clone();
+    let n_streams_dispatch = n_streams;
     tokio::spawn(async move {
+        let mut drop_full: u64 = 0;
+        let mut drop_closed: u64 = 0;
         while let Some(pkt) = tun_pkt_rx.recv().await {
-            let idx = flow_stream_idx(&pkt, N_DATA_STREAMS);
-            if tx_senders_clone[idx].send(pkt).await.is_err() {
-                tracing::warn!("dispatcher: stream {} closed", idx);
-                return;
+            let idx = flow_stream_idx(&pkt, n_streams_dispatch);
+            match tx_senders_clone[idx].try_send(pkt) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    drop_full += 1;
+                    if drop_full == 1 || drop_full % 1024 == 0 {
+                        tracing::warn!(
+                            "dispatcher: stream {} full (dropped_full={})",
+                            idx, drop_full
+                        );
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    drop_closed += 1;
+                    tracing::warn!(
+                        "dispatcher: stream {} closed (dropped_closed={}), exiting",
+                        idx, drop_closed
+                    );
+                    return;
+                }
             }
         }
     });
@@ -414,8 +443,8 @@ async fn run_tls_tunnel(
     drop(tun_pkt_tx);
 
     // N TX + N RX tasks.
-    let mut tx_handles = Vec::with_capacity(N_DATA_STREAMS);
-    let mut rx_handles = Vec::with_capacity(N_DATA_STREAMS);
+    let mut tx_handles = Vec::with_capacity(n_streams);
+    let mut rx_handles = Vec::with_capacity(n_streams);
     for (idx, (w, rxc)) in tls_writers.into_iter().zip(tx_receivers.into_iter()).enumerate() {
         tx_handles.push(tokio::spawn(async move {
             let res = tls_tx_loop(w, rxc).await;

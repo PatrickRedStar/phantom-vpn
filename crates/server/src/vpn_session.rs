@@ -12,7 +12,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::sync::{mpsc, RwLock};
 
-use phantom_core::wire::{flow_stream_idx, N_STREAMS};
+use phantom_core::wire::flow_stream_idx;
 
 // ─── Session types ──────────────────────────────────────────────────────────
 
@@ -37,20 +37,29 @@ pub struct StatsSample {
 
 /// Transport-agnostic VPN session / SessionCoordinator.
 ///
-/// For the TLS-over-TCP h2_server path this aggregates up to `N_STREAMS` parallel
-/// TCP connections from the same client (identified by cert fingerprint). Each
-/// physical connection claims one slot in `data_sends[stream_idx]`. Slots can be
-/// `None` (disconnected) and are dynamically replaced on reconnect.
-///
-/// The QUIC path historically registered a `Vec` of stream senders at construction
-/// time; we now write them into the same slotted structure, with each QUIC sub-stream
-/// occupying a dedicated slot.
+/// For the TLS-over-TCP h2_server path this aggregates up to `effective_n` parallel
+/// TCP connections from the same client (identified by cert fingerprint), where
+/// `effective_n = min(server_n_data_streams, client_max_streams)` is negotiated
+/// on the first handshake. Each physical connection claims one slot in
+/// `data_sends[stream_idx]`. Slots can be `None` (disconnected) and are
+/// dynamically replaced on reconnect.
 pub struct VpnSession {
     /// Session creation timestamp (unix seconds) for hard lifetime expiry.
     pub created_at:    u64,
+    /// Negotiated stream count for THIS session. `data_sends.len() == effective_n`
+    /// and `flow_stream_idx` must be called with this value (not MAX_N_STREAMS).
+    pub effective_n:   usize,
     /// Per-stream frame senders (batched frames → transport write loop).
-    /// Fixed-length `N_STREAMS` slots; `None` = stream currently disconnected.
+    /// Length == `effective_n`; `None` = stream currently disconnected.
     pub data_sends:    Vec<std::sync::Mutex<Option<mpsc::Sender<Bytes>>>>,
+    /// Per-stream attachment generation counter. Incremented on every
+    /// `attach_stream` under the slot's mutex. The writer task returns this
+    /// token to `detach_stream_gen` to clear the slot ONLY if a newer
+    /// reconnect has not happened in the meantime — avoids clobbering a fresh
+    /// sender with a stale detach from the previous connection, and removes
+    /// the need to hold a `Sender` clone for `same_channel` comparison (the
+    /// clone was leaking frame_rx.recv() liveness, see v0.18.0 hotfix notes).
+    pub attach_gen:    Vec<AtomicU64>,
     /// Per-stream packet channels for TUN→transport packets. One sender per
     /// stream_idx; `tun_dispatch_loop` picks the slot via `flow_stream_idx`.
     /// Each receiver is drained by a dedicated `stream_batch_loop` task.
@@ -76,20 +85,30 @@ pub struct VpnSession {
 impl VpnSession {
     /// Build a new coordinator with all stream slots empty.
     /// Used by h2_server path; caller will attach streams as clients connect.
+    /// `effective_n` is the negotiated stream count (`min(server, client)`),
+    /// must equal `tun_pkt_txs.len()`.
     pub fn new_coordinator(
         fingerprint: String,
+        effective_n: usize,
         tun_pkt_txs: Vec<mpsc::Sender<Bytes>>,
         close_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Self {
+        assert_eq!(
+            tun_pkt_txs.len(), effective_n,
+            "new_coordinator: tun_pkt_txs length must equal effective_n"
+        );
         let now = now_unix_secs();
-        let data_sends = (0..N_STREAMS)
+        let data_sends = (0..effective_n)
             .map(|_| std::sync::Mutex::new(None))
             .collect();
+        let attach_gen = (0..effective_n).map(|_| AtomicU64::new(0)).collect();
         let tun_pkt_txs_wrapped: Vec<Option<mpsc::Sender<Bytes>>> =
             tun_pkt_txs.into_iter().map(Some).collect();
         Self {
             created_at: now,
+            effective_n,
             data_sends,
+            attach_gen,
             tun_pkt_txs: std::sync::Mutex::new(tun_pkt_txs_wrapped),
             close_tx: std::sync::Mutex::new(Some(close_tx)),
             last_seen: AtomicU64::new(now),
@@ -103,31 +122,37 @@ impl VpnSession {
         }
     }
 
-    /// Attach a stream sender at `stream_idx`. Returns the previously attached
-    /// sender (if any), which the caller should drop to signal the old writer
-    /// loop to terminate.
+    /// Attach a stream sender at `stream_idx`. Returns a generation token that
+    /// the caller must pass to `detach_stream_gen` when the writer exits — the
+    /// detach then only clears the slot if no newer reconnect has taken place
+    /// under that stream_idx. Any previously-held sender in the slot is
+    /// dropped immediately, which signals the old writer to terminate.
     pub fn attach_stream(
         &self,
         stream_idx: usize,
         sender: mpsc::Sender<Bytes>,
-    ) -> Option<mpsc::Sender<Bytes>> {
+    ) -> u64 {
         if stream_idx >= self.data_sends.len() {
-            return Some(sender);
+            return 0;
         }
         let mut slot = self.data_sends[stream_idx].lock().unwrap();
-        slot.replace(sender)
+        // Increment and slot update are both under the mutex, so a concurrent
+        // detach observing `attach_gen == gen` is guaranteed to see our Sender.
+        let gen = self.attach_gen[stream_idx]
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        *slot = Some(sender); // drops the old sender, if any
+        gen
     }
 
-    /// Detach a stream sender at `stream_idx` (called when the transport write
-    /// loop exits). Only clears the slot if the currently-held sender matches
-    /// `expected`, to avoid clobbering a fresh reconnect.
-    pub fn detach_stream_if(&self, stream_idx: usize, expected: &mpsc::Sender<Bytes>) {
+    /// Detach a stream sender at `stream_idx` using the generation token that
+    /// `attach_stream` returned. Only clears the slot if no newer `attach_stream`
+    /// has overwritten this slot in the meantime.
+    pub fn detach_stream_gen(&self, stream_idx: usize, gen: u64) {
         if stream_idx >= self.data_sends.len() { return; }
         let mut slot = self.data_sends[stream_idx].lock().unwrap();
-        if let Some(cur) = slot.as_ref() {
-            if cur.same_channel(expected) {
-                *slot = None;
-            }
+        if self.attach_gen[stream_idx].load(Ordering::Acquire) == gen {
+            *slot = None;
         }
     }
 
@@ -290,7 +315,7 @@ pub async fn tun_dispatch_loop(
                 }
             }
 
-            let idx = flow_stream_idx(&pkt, N_STREAMS);
+            let idx = flow_stream_idx(&pkt, session.effective_n);
             // Snapshot the sender at slot `idx` under the mutex, then release
             // the lock before try_send.
             let sender_opt: Option<mpsc::Sender<Bytes>> = {
@@ -347,7 +372,12 @@ pub fn reap_session_fp(by_fp: &SessionByFp, session: &Arc<VpnSession>) {
     by_fp.remove_if(&fp, |_, v| Arc::ptr_eq(v, session));
 }
 
-pub async fn cleanup_task(sessions: VpnSessionMap, idle_secs: u64, hard_timeout_secs: u64) {
+pub async fn cleanup_task(
+    sessions: VpnSessionMap,
+    sessions_by_fp: SessionByFp,
+    idle_secs: u64,
+    hard_timeout_secs: u64,
+) {
     #[derive(Copy, Clone)]
     enum ExpireReason {
         Idle,
@@ -384,6 +414,12 @@ pub async fn cleanup_task(sessions: VpnSessionMap, idle_secs: u64, hard_timeout_
             });
             if let Some((_, session)) = removed {
                 session.close();
+                // Also reap the fingerprint-keyed index so a reconnect from
+                // the same client creates a fresh coordinator with live
+                // stream_batch_loops — not a zombie whose batch loops have
+                // already exited as a side-effect of close() dropping every
+                // tun_pkt_tx (v0.18 post-ship NL-direct download=0 bug).
+                reap_session_fp(&sessions_by_fp, &session);
                 match reason {
                     ExpireReason::Idle => {
                         removed_idle += 1;

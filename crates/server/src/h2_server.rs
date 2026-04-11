@@ -13,19 +13,21 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
-use futures_util::future::poll_fn;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
-    wire::{BATCH_MAX_PLAINTEXT, N_STREAMS, QUIC_TUNNEL_MSS},
+    wire::{BATCH_MAX_PLAINTEXT, MAX_N_STREAMS, MIN_N_STREAMS, QUIC_TUNNEL_MSS},
 };
+
+use crate::fakeapp;
+use crate::mimicry;
 
 use crate::vpn_session::{
     self, ClientAllowList, DestEntry, SessionByFp, VpnSession, VpnSessionMap,
@@ -73,8 +75,8 @@ pub async fn run_h2_accept_loop(
                 .unwrap_or_default();
 
             if peer_certs.is_empty() {
-                tracing::info!("Unauthenticated TLS from {} → H2 fallback", remote);
-                handle_fallback_h2(tls_stream, remote).await;
+                tracing::info!("Unauthenticated TLS from {} → fake app-face", remote);
+                fakeapp::handle(tls_stream, remote).await;
                 return;
             }
 
@@ -88,40 +90,111 @@ pub async fn run_h2_accept_loop(
                 }
             }
 
-            // ─── Read stream_idx byte (new in v0.17 wire protocol) ────────────
+            // ─── Read handshake: [stream_idx, client_max_streams] (v0.18+) ────
+            // v0.18 clients atomically write both bytes in write_handshake().
+            // Earlier prototype used a 200ms timeout after the first byte to
+            // stay compatible with v0.17 one-byte handshake, but that window
+            // could fire spuriously on high-latency paths (RU-bastion hop) and
+            // pin effective_n to the server's core count, permanently freezing
+            // the session below the client's requested parallelism. Read both
+            // bytes with a single read_exact — if the client really is v0.17
+            // (none in the wild) it'll disconnect and we'll error naturally.
             let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
-            let mut idx_buf = [0u8; 1];
-            if let Err(e) = tls_read.read_exact(&mut idx_buf).await {
-                tracing::warn!("stream_idx read failed from {} ({}): {}", remote, &client_fp[..16], e);
+            let mut hs_buf = [0u8; 2];
+            if let Err(e) = tls_read.read_exact(&mut hs_buf).await {
+                tracing::warn!(
+                    "handshake read failed from {} ({}…): {}",
+                    remote, &client_fp[..16], e
+                );
                 return;
             }
-            let stream_idx = idx_buf[0] as usize;
-            if stream_idx >= N_STREAMS {
+            let stream_idx = hs_buf[0] as usize;
+            let client_max: usize = (hs_buf[1] as usize).clamp(MIN_N_STREAMS, MAX_N_STREAMS);
+            // Honor the client's request. Client picks parallelism based on its
+            // own core count (phone = 8, desktop = 16, ...); server-side cost of
+            // extra streams is just more mpsc channels + tokio tasks, which are
+            // cheap regardless of the server's physical core count. Clamped so a
+            // misbehaving client can't push beyond MAX_N_STREAMS.
+            let effective_n = client_max.clamp(MIN_N_STREAMS, MAX_N_STREAMS);
+
+            if stream_idx >= effective_n {
                 tracing::warn!(
-                    "Invalid stream_idx {} from {} (fp={}…, max={})",
-                    stream_idx, remote, &client_fp[..16], N_STREAMS
+                    "Invalid stream_idx {} from {} (fp={}…, effective_n={})",
+                    stream_idx, remote, &client_fp[..16], effective_n
                 );
                 return;
             }
 
             tracing::info!(
                 "Authenticated VPN client from {} (fp={}…, stream {}/{})",
-                remote, &client_fp[..16], stream_idx, N_STREAMS
+                remote, &client_fp[..16], stream_idx, effective_n
             );
 
             // ─── Lookup or create SessionCoordinator by fingerprint ──────────
+            // If a stale session exists whose `effective_n` is smaller than
+            // the client's newly-requested `client_max` (or whose batch_loops
+            // may have been torn down by an earlier cleanup-task close()), we
+            // evict it before falling through to the Vacant path so a fresh
+            // coordinator is built. This fixes two v0.18 post-ship bugs:
+            //   1) Bastion path pinned to effective_n=2 forever because the
+            //      initial handshake timed out the 200ms fallback window and
+            //      rejected stream_idx>=2 on every reconnect.
+            //   2) NL-direct zombie sessions where cleanup_task had removed
+            //      the IP mapping and close()'d the coordinator (which drops
+            //      all tun_pkt_txs so every `stream_batch_loop` exits), but
+            //      left the entry in `sessions_by_fp` — a subsequent reconnect
+            //      found the corpse, attached fresh writers, but had no
+            //      batching task alive to feed them → download = 0.
+            let stale_session = sessions_by_fp.get(&client_fp).map(|e| e.value().clone());
+            if let Some(ref old) = stale_session {
+                let need_wider   = client_max != old.effective_n;
+                let idx_out      = stream_idx >= old.effective_n;
+                let dead_batches = old.all_streams_down()
+                    && old.tun_pkt_txs.lock().map(|g| g.iter().all(|s| s.is_none())).unwrap_or(true);
+                if need_wider || idx_out || dead_batches {
+                    tracing::warn!(
+                        "Evicting stale session fp={}… (old_n={}, new_n={}, idx={}, dead={})",
+                        &client_fp[..16], old.effective_n, client_max, stream_idx, dead_batches
+                    );
+                    // Remove from both maps and close the coordinator. close()
+                    // drops all per-stream TUN senders → any remaining batch
+                    // loops wake up with pkt_rx=None and exit, any live writer
+                    // drops its TLS half → TCP FIN.
+                    sessions_by_fp.remove_if(&client_fp, |_, v| Arc::ptr_eq(v, old));
+                    let mut victims: Vec<IpAddr> = Vec::new();
+                    for entry in sessions.iter() {
+                        if Arc::ptr_eq(entry.value(), old) {
+                            victims.push(*entry.key());
+                        }
+                    }
+                    for ip in victims {
+                        let _ = sessions.remove_if(&ip, |_, v| Arc::ptr_eq(v, old));
+                    }
+                    old.close();
+                }
+            }
+            drop(stale_session);
+
             let (session, is_new) = {
                 if let Some(existing) = sessions_by_fp.get(&client_fp) {
-                    (existing.value().clone(), false)
+                    // Reject stream_idx outside this session's effective_n.
+                    // With eviction above this branch is hit only when the
+                    // entry survived eviction (concurrent races are benign).
+                    let existing_session = existing.value().clone();
+                    if stream_idx >= existing_session.effective_n {
+                        tracing::warn!(
+                            "stream_idx {} exceeds existing session effective_n={} (fp={}…)",
+                            stream_idx, existing_session.effective_n, &client_fp[..16]
+                        );
+                        return;
+                    }
+                    (existing_session, false)
                 } else {
-                    // Create a fresh coordinator with N per-stream packet channels.
-                    // Each stream_batch_loop drains one channel independently, so
-                    // a slow stream cannot stall dispatch across the others.
-                    let mut pkt_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_STREAMS);
-                    let mut pkt_rxs: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(N_STREAMS);
-                    for _ in 0..N_STREAMS {
-                        // Per-stream depth 1024 → N_STREAMS × 1024 total (4096 for N=4),
-                        // matching the previous 2048 single-channel depth × 2.
+                    // Create a fresh coordinator with `effective_n` per-stream channels.
+                    let mut pkt_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(effective_n);
+                    let mut pkt_rxs: Vec<mpsc::Receiver<Bytes>> = Vec::with_capacity(effective_n);
+                    for _ in 0..effective_n {
+                        // Per-stream depth 1024 → effective_n × 1024 total.
                         let (tx, rx) = mpsc::channel::<Bytes>(1024);
                         pkt_txs.push(tx);
                         pkt_rxs.push(rx);
@@ -129,6 +202,7 @@ pub async fn run_h2_accept_loop(
                     let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
                     let sess = Arc::new(VpnSession::new_coordinator(
                         client_fp.clone(),
+                        effective_n,
                         pkt_txs,
                         close_tx,
                     ));
@@ -159,24 +233,36 @@ pub async fn run_h2_accept_loop(
             let _ = is_new;
 
             // ─── Per-stream frame channel, attach into slot[stream_idx] ─────
+            //
+            // IMPORTANT: move frame_tx into the slot (no clone kept outside).
+            // An earlier revision held a `frame_tx_for_detach = frame_tx.clone()`
+            // inside the writer's spawn closure so it could call
+            // `detach_stream_if(same_channel)` after the loop. That clone kept
+            // the channel's sender-side alive, which meant `frame_rx.recv()`
+            // never returned `None` — the writer task could only exit on a
+            // TLS write error. If no TX traffic flowed through a freshly-
+            // attached (but stale-session) writer, it would park forever and
+            // prevent reap. Use generation tokens instead.
             let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(512);
-            let replaced = session.attach_stream(stream_idx, frame_tx.clone());
-            if replaced.is_some() {
-                tracing::warn!(
-                    "stream {} for fp={}… replaced by reconnect from {}",
-                    stream_idx, &client_fp[..16], remote
-                );
-            }
+            let attach_gen = session.attach_stream(stream_idx, frame_tx);
 
-            // Writer: frame channel → TLS write half
+            // Writer: frame channel → TLS write half.
+            // Only stream 0 runs the mimicry warmup. Other streams skip it —
+            // we don't want N parallel warmups burning CPU in first 5 seconds.
+            let run_warmup = stream_idx == 0 && is_new;
             let session_for_writer = session.clone();
             let sessions_for_reap = sessions.clone();
             let sessions_by_fp_for_reap = sessions_by_fp.clone();
-            let frame_tx_for_detach = frame_tx.clone();
+            let client_fp_for_writer = client_fp.clone();
             tokio::spawn(async move {
+                if run_warmup {
+                    if let Err(e) = mimicry::warmup_write(&mut tls_write).await {
+                        tracing::debug!("mimicry warmup failed for {}: {}", remote, e);
+                    }
+                }
                 tls_write_loop(frame_rx, &mut tls_write, remote).await;
-                // Clear our slot
-                session_for_writer.detach_stream_if(stream_idx, &frame_tx_for_detach);
+                // Clear our slot ONLY if no newer reconnect overwrote it.
+                session_for_writer.detach_stream_gen(stream_idx, attach_gen);
                 // If every stream is down, reap the coordinator from both maps.
                 if session_for_writer.all_streams_down() {
                     vpn_session::reap_session_fp(&sessions_by_fp_for_reap, &session_for_writer);
@@ -195,7 +281,7 @@ pub async fn run_h2_accept_loop(
                     }
                     tracing::info!(
                         "Session reaped: fp={}… (all streams down)",
-                        &session_for_writer.fingerprint[..16.min(session_for_writer.fingerprint.len())]
+                        &client_fp_for_writer[..16.min(client_fp_for_writer.len())]
                     );
                 }
             });
@@ -214,9 +300,11 @@ pub async fn run_h2_accept_loop(
                 stream_idx,
             ).await;
 
-            // RX loop exited → drop frame_tx for this slot so the writer task
-            // also unwinds (detach + reap handled in the writer task above).
-            drop(frame_tx);
+            // RX loop exited (client TCP FIN, read error, or EOF). Clear our
+            // slot — this drops the Sender, which in turn makes the writer's
+            // frame_rx.recv() return None so the writer task unwinds. The
+            // generation check is idempotent with the writer's own detach.
+            session.detach_stream_gen(stream_idx, attach_gen);
         });
     }
 }
@@ -397,54 +485,4 @@ async fn tls_write_loop<W: AsyncWriteExt + Unpin>(
     tracing::debug!("TLS write loop ended for {}", remote);
 }
 
-/// Fallback handler for unauthenticated connections.
-/// Performs HTTP/2 handshake and serves a static page — makes probes see a real website.
-pub async fn handle_fallback_h2<S>(stream: S, remote: SocketAddr)
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let mut h2_conn = match h2::server::Builder::default().handshake(stream).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::debug!("Fallback H2 handshake failed from {}: {}", remote, e);
-            return;
-        }
-    };
-
-    loop {
-        let accept_result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            poll_fn(|cx: &mut std::task::Context<'_>| h2_conn.poll_accept(cx)),
-        ).await;
-
-        match accept_result {
-            Ok(poll_outcome) => match poll_outcome {
-                Some(Ok((req, mut send))) => {
-                    let mut body = req.into_body();
-                    while body.data().await.is_some() {}
-
-                    let response = http::Response::builder()
-                        .status(200)
-                        .header("content-type", "text/html; charset=utf-8")
-                        .body(())
-                        .unwrap();
-
-                    let mut send = match send.send_response(response, false) {
-                        Ok(s) => s,
-                        Err(_) => break,
-                    };
-                    let html = "<html><body><h1>nl2.bikini-bottom.com</h1><p>Service is running.</p></body></html>";
-                    let _ = send.send_data(Bytes::copy_from_slice(html.as_bytes()), true);
-                }
-                Some(Err(_)) | None => break,
-            },
-            Err(_) => break,
-        }
-    }
-
-    tracing::debug!("Fallback H2 connection from {} ended", remote);
-}
-
-// Silence unused-variable warning.
-#[allow(dead_code)]
-fn _unused_atomic_placeholder(_: AtomicU64) {}
+// Fallback handler moved to `fakeapp.rs` module.

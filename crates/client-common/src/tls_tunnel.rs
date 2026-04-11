@@ -15,21 +15,25 @@ use phantom_core::{
 
 const RX_BUF_INIT: usize = 128 * 1024;
 
-/// Write the per-connection stream index header (1 byte) on freshly-opened
-/// TLS stream. Must be called *before* entering the tx/rx loops; matches
-/// server-side `read_stream_idx`.
-pub async fn write_stream_idx<W: AsyncWriteExt + Unpin>(
+/// Write the per-connection handshake header (2 bytes) on freshly-opened
+/// TLS stream: `[stream_idx, max_streams]`. Must be called *before* entering
+/// the tx/rx loops. The server reads `stream_idx` first and then waits up to
+/// 200 ms for `max_streams`; if absent (v0.17 client) the server falls back
+/// to its own `n_data_streams()`. Negotiated stream count is
+/// `effective_n = min(server_n, client_max_streams)`.
+pub async fn write_handshake<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     stream_idx: u8,
+    max_streams: u8,
 ) -> anyhow::Result<()> {
     writer
-        .write_all(&[stream_idx])
+        .write_all(&[stream_idx, max_streams])
         .await
-        .map_err(|e| anyhow::anyhow!("write stream_idx: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("write handshake: {}", e))?;
     writer
         .flush()
         .await
-        .map_err(|e| anyhow::anyhow!("flush stream_idx: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("flush handshake: {}", e))?;
     Ok(())
 }
 
@@ -75,10 +79,17 @@ pub async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
             if offset + pkt_len > frame_len {
                 break;
             }
-            // Clamp MSS in place, then hand off as a zero-copy slice.
-            if pkt_len >= 20 && (buf[offset] >> 4) == 4 {
-                let _ = clamp_tcp_mss(&mut buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
+            // Drop anything that isn't a valid IPv4 packet. This silently
+            // discards the mimicry warmup placeholder (16-byte stub) the
+            // server prepends to stream 0 on new sessions — the TUN fd would
+            // otherwise return EINVAL on write(). TUN is v4-only (10.7.0.0/24),
+            // so IPv6 bytes are also junk we don't want.
+            if pkt_len < 20 || (buf[offset] >> 4) != 4 {
+                offset += pkt_len;
+                continue;
             }
+            // Clamp MSS in place, then hand off as a zero-copy slice.
+            let _ = clamp_tcp_mss(&mut buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
             let pkt = Bytes::copy_from_slice(&buf[offset..offset + pkt_len]);
             // NOTE: `Bytes::copy_from_slice` keeps a single owned allocation per
             // packet, which is unavoidable because the backing `BytesMut` is

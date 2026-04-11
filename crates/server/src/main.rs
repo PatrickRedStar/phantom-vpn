@@ -6,6 +6,8 @@ pub mod vpn_session;
 pub mod quic_server;
 pub mod h2_server;
 pub mod admin;
+pub mod mimicry;
+pub mod fakeapp;
 
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -191,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(86_400);
     tokio::spawn(vpn_session::cleanup_task(
         sessions.clone(),
+        sessions_by_fp.clone(),
         idle_secs,
         hard_timeout_secs,
     ));
