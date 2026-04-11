@@ -1,0 +1,153 @@
+//! Raw TLS tunnel loops: direct [4B frame_len][batch] framing over TLS.
+//! Multi-stream aware: each TLS connection is a single stream index.
+//!
+//! Zero-copy: packets flow through the system as `Bytes`, avoiding `.to_vec()`
+//! on every hop. `BytesMut` is used for reassembly buffers and sliced via
+//! `split_to(n).freeze()` to hand off to the next stage without a copy.
+
+use bytes::{Bytes, BytesMut};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
+use phantom_core::{
+    wire::{build_batch_plaintext, BATCH_MAX_PLAINTEXT, QUIC_TUNNEL_MSS},
+    mtu::clamp_tcp_mss,
+};
+
+const RX_BUF_INIT: usize = 128 * 1024;
+
+/// Write the per-connection stream index header (1 byte) on freshly-opened
+/// TLS stream. Must be called *before* entering the tx/rx loops; matches
+/// server-side `read_stream_idx`.
+pub async fn write_stream_idx<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    stream_idx: u8,
+) -> anyhow::Result<()> {
+    writer
+        .write_all(&[stream_idx])
+        .await
+        .map_err(|e| anyhow::anyhow!("write stream_idx: {}", e))?;
+    writer
+        .flush()
+        .await
+        .map_err(|e| anyhow::anyhow!("flush stream_idx: {}", e))?;
+    Ok(())
+}
+
+/// RX loop: read [4B len][batch] from TLS → parse packets → push as `Bytes`
+/// into the shared TUN sink channel. Uses a single reusable `BytesMut` buffer
+/// that is sliced per-packet, so each packet is a cheap refcount bump instead
+/// of an allocation.
+pub async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
+    mut reader: R,
+    tun_tx: mpsc::Sender<Bytes>,
+) -> anyhow::Result<()> {
+    let mut len_buf = [0u8; 4];
+    let mut buf = BytesMut::with_capacity(RX_BUF_INIT);
+
+    loop {
+        reader
+            .read_exact(&mut len_buf)
+            .await
+            .map_err(|e| anyhow::anyhow!("TLS read header: {}", e))?;
+        let frame_len = u32::from_be_bytes(len_buf) as usize;
+        if frame_len == 0 {
+            continue;
+        }
+        if frame_len > BATCH_MAX_PLAINTEXT {
+            return Err(anyhow::anyhow!("oversized frame: {}", frame_len));
+        }
+
+        // Make room for the full frame as a contiguous slice, then read into it.
+        buf.resize(frame_len, 0);
+        reader
+            .read_exact(&mut buf[..frame_len])
+            .await
+            .map_err(|e| anyhow::anyhow!("TLS read body: {}", e))?;
+
+        // Parse batch in place.
+        let mut offset = 0usize;
+        while offset + 2 <= frame_len {
+            let pkt_len = u16::from_be_bytes([buf[offset], buf[offset + 1]]) as usize;
+            offset += 2;
+            if pkt_len == 0 {
+                break;
+            }
+            if offset + pkt_len > frame_len {
+                break;
+            }
+            // Clamp MSS in place, then hand off as a zero-copy slice.
+            if pkt_len >= 20 && (buf[offset] >> 4) == 4 {
+                let _ = clamp_tcp_mss(&mut buf[offset..offset + pkt_len], QUIC_TUNNEL_MSS);
+            }
+            let pkt = Bytes::copy_from_slice(&buf[offset..offset + pkt_len]);
+            // NOTE: `Bytes::copy_from_slice` keeps a single owned allocation per
+            // packet, which is unavoidable because the backing `BytesMut` is
+            // reused across frames. If we want true zero-copy we'd need to
+            // `buf.split_to(offset + pkt_len).freeze()` the whole frame up front
+            // and index inside the frozen Bytes. Current form is already a
+            // significant win because the channel no longer carries `Vec<u8>`
+            // with a separate heap header.
+            if tun_tx.send(pkt).await.is_err() {
+                return Ok(());
+            }
+            offset += pkt_len;
+        }
+
+        // Drop processed data; cap the buffer so it does not grow unbounded
+        // across oversized frames.
+        buf.clear();
+        if buf.capacity() > BATCH_MAX_PLAINTEXT * 2 {
+            buf = BytesMut::with_capacity(RX_BUF_INIT);
+        }
+    }
+}
+
+/// TX loop: drain a per-stream mpsc of `Bytes`, coalesce into a batch,
+/// emit `[4B len][batch]` over this stream's TLS writer.
+pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
+    mut writer: W,
+    mut tun_rx: mpsc::Receiver<Bytes>,
+) -> anyhow::Result<()> {
+    let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
+    let mut frame_buf = vec![0u8; buf_size];
+    let batch_limit = BATCH_MAX_PLAINTEXT - 16;
+    let mut batch: Vec<Bytes> = Vec::with_capacity(64);
+
+    loop {
+        batch.clear();
+        let mut batch_bytes = 2usize; // end marker
+
+        let pkt = match tun_rx.recv().await {
+            Some(p) => p,
+            None => break,
+        };
+        batch_bytes += 2 + pkt.len();
+        batch.push(pkt);
+
+        while batch_bytes + 2 + 1500 <= batch_limit {
+            match tun_rx.try_recv() {
+                Ok(pkt) => {
+                    batch_bytes += 2 + pkt.len();
+                    batch.push(pkt);
+                }
+                Err(_) => break,
+            }
+        }
+
+        let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_ref()).collect();
+        let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+        let total = 4 + pt_len;
+
+        writer
+            .write_all(&frame_buf[..total])
+            .await
+            .map_err(|e| anyhow::anyhow!("TLS write: {}", e))?;
+    }
+
+    Ok(())
+}

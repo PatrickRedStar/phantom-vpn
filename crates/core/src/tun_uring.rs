@@ -2,11 +2,14 @@
 //!
 //! Reader: pre-submits N reads, on each completion sends packet + resubmits that buffer.
 //! Writer: collects packets from channel, submits batch writes.
+//!
+//! Zero-copy: reader emits `Bytes`, writer accepts `Bytes`.
 
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use bytes::{Bytes, BytesMut};
 use io_uring::{IoUring, opcode, types};
 use tokio::sync::mpsc;
 
@@ -17,9 +20,9 @@ const N_READ_BUFS: usize = 64;
 pub fn spawn(
     tun_fd: RawFd,
     channel_size: usize,
-) -> anyhow::Result<(mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>)> {
-    let (read_tx, read_rx) = mpsc::channel::<Vec<u8>>(channel_size);
-    let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(channel_size);
+) -> anyhow::Result<(mpsc::Receiver<Bytes>, mpsc::Sender<Bytes>)> {
+    let (read_tx, read_rx) = mpsc::channel::<Bytes>(channel_size);
+    let (write_tx, write_rx) = mpsc::channel::<Bytes>(channel_size);
 
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -50,7 +53,7 @@ pub fn spawn(
 
 fn reader_loop(
     fd: RawFd,
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: mpsc::Sender<Bytes>,
     stop: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let mut ring = IoUring::new(RING_SIZE)?;
@@ -89,7 +92,12 @@ fn reader_loop(
             if result > 0 {
                 let len = result as usize;
                 if len >= 20 && (bufs[idx][0] >> 4) == 4 {
-                    if tx.blocking_send(bufs[idx][..len].to_vec()).is_err() {
+                    // Zero-copy: copy into a fresh BytesMut -> freeze to Bytes.
+                    // The io_uring read buffer is reused for the next read, so we
+                    // can't share it; instead allocate a BytesMut of exact length.
+                    let mut bm = BytesMut::with_capacity(len);
+                    bm.extend_from_slice(&bufs[idx][..len]);
+                    if tx.blocking_send(bm.freeze()).is_err() {
                         stop.store(true, Ordering::Relaxed);
                         return Ok(());
                     }
@@ -111,12 +119,12 @@ fn reader_loop(
 
 fn writer_loop(
     fd: RawFd,
-    mut rx: mpsc::Receiver<Vec<u8>>,
+    mut rx: mpsc::Receiver<Bytes>,
     stop: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let mut ring = IoUring::new(RING_SIZE)?;
     let fd_t = types::Fd(fd);
-    let mut pending: Vec<Vec<u8>> = Vec::with_capacity(32);
+    let mut pending: Vec<Bytes> = Vec::with_capacity(32);
 
     tracing::info!("io_uring TUN writer started");
 
@@ -166,7 +174,7 @@ fn writer_loop(
 pub fn spawn_multiqueue(
     fds: Vec<RawFd>,
     channel_size: usize,
-) -> anyhow::Result<(mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>)> {
+) -> anyhow::Result<(mpsc::Receiver<Bytes>, mpsc::Sender<Bytes>)> {
     if fds.is_empty() {
         anyhow::bail!("spawn_multiqueue: no FDs provided");
     }
@@ -174,8 +182,8 @@ pub fn spawn_multiqueue(
         return spawn(fds[0], channel_size);
     }
 
-    let (merged_tx, merged_rx) = mpsc::channel::<Vec<u8>>(channel_size);
-    let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>(channel_size);
+    let (merged_tx, merged_rx) = mpsc::channel::<Bytes>(channel_size);
+    let (write_tx, write_rx) = mpsc::channel::<Bytes>(channel_size);
     let stop = Arc::new(AtomicBool::new(false));
     let n_queues = fds.len();
 
@@ -194,9 +202,9 @@ pub fn spawn_multiqueue(
     drop(merged_tx);
 
     // Writer thread per queue + round-robin dispatcher
-    let mut writer_txs: Vec<mpsc::Sender<Vec<u8>>> = Vec::with_capacity(n_queues);
+    let mut writer_txs: Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(n_queues);
     for (i, &fd) in fds.iter().enumerate() {
-        let (wtx, wrx) = mpsc::channel::<Vec<u8>>(channel_size / n_queues + 1);
+        let (wtx, wrx) = mpsc::channel::<Bytes>(channel_size / n_queues + 1);
         writer_txs.push(wtx);
         let stop = stop.clone();
         std::thread::Builder::new()

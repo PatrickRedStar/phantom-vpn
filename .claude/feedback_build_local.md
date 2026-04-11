@@ -1,11 +1,11 @@
 ---
-name: build_locally_only
-description: All builds must happen locally, server is only for deploying binaries — no repo on server
+name: build_on_vdsina
+description: Claude Code runs directly on vdsina server — cargo builds happen locally, no SSH needed for builds
 type: feedback
 ---
 
-Сборка только локально. На сервер кидать только готовые бинарники.
+Claude Code перенесён на сервер vdsina (89.110.109.128). cargo установлен локально.
 
-**Why:** Пользователь не хочет держать репозиторий на сервере, не хочет собирать там.
+**Why:** Упрощение разработки — не нужен rsync/ssh для сборки.
 
-**How to apply:** Установить cargo/rustup/NDK локально. Для деплоя — только `scp` бинарника на сервер. Не использовать `rsync crates/` на сервер, не запускать `cargo build` на сервере.
+**How to apply:** Собирать `cargo build` напрямую в `/opt/github_projects/phantom-vpn/`. Деплой сервера: `install` бинарник в `/opt/phantom-vpn/` + `systemctl restart`. SSH ключ `~/.ssh/bot` для RU relay (193.187.95.128).

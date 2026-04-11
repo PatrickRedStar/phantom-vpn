@@ -1,7 +1,7 @@
 //! TUN интерфейс на Linux: создание, настройка, async read/write.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io::{self};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::pin::Pin;
 use std::task::Poll;

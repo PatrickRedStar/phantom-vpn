@@ -5,7 +5,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -14,8 +14,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use phantom_core::{
     mtu::clamp_tcp_mss,
-    shaper::H264Shaper,
-    wire::{build_batch_plaintext, flow_stream_idx, BATCH_MAX_PLAINTEXT, N_DATA_STREAMS, QUIC_TUNNEL_MSS},
+    wire::{BATCH_MAX_PLAINTEXT, N_STREAMS, QUIC_TUNNEL_MSS},
 };
 
 use crate::vpn_session::{self, VpnSession, VpnSessionMap, ClientAllowList, DestEntry};
@@ -24,7 +23,7 @@ use crate::vpn_session::{self, VpnSession, VpnSessionMap, ClientAllowList, DestE
 
 pub async fn run_accept_loop(
     endpoint: quinn::Endpoint,
-    tun_tx:   mpsc::Sender<Vec<u8>>,
+    tun_tx:   mpsc::Sender<Bytes>,
     sessions: VpnSessionMap,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
@@ -70,7 +69,7 @@ pub async fn run_accept_loop(
 
 async fn handle_connection(
     connection:  quinn::Connection,
-    tun_tx:      mpsc::Sender<Vec<u8>>,
+    tun_tx:      mpsc::Sender<Bytes>,
     sessions:    VpnSessionMap,
     tun_network: Ipv4Addr,
     tun_prefix:  u8,
@@ -105,13 +104,23 @@ async fn handle_connection(
 
     tracing::info!("Authenticated VPN client from {} (fp={}…)", remote, &client_fp[..16]);
 
-    let shaper = H264Shaper::new().map_err(|e| anyhow::anyhow!("shaper: {}", e))?;
+    // Accept N_STREAMS bidirectional data streams; spawn per-stream write loops.
+    // Each QUIC sub-stream occupies one slot in the coordinator's `data_sends`.
+    let mut data_recvs: Vec<quinn::RecvStream> = Vec::with_capacity(N_STREAMS);
 
-    // Accept N_DATA_STREAMS bidirectional data streams; spawn per-stream write loops
-    let mut frame_txs:  Vec<mpsc::Sender<Bytes>> = Vec::with_capacity(N_DATA_STREAMS);
-    let mut data_recvs: Vec<quinn::RecvStream>   = Vec::with_capacity(N_DATA_STREAMS);
+    // Per-session TUN packet channel + batching task
+    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Bytes>(2048);
 
-    for i in 0..N_DATA_STREAMS {
+    // Transport-agnostic shutdown: close_tx signals the transport to close
+    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let session = Arc::new(VpnSession::new_coordinator(
+        client_fp.clone(),
+        tun_pkt_tx,
+        close_tx,
+    ));
+
+    for i in 0..N_STREAMS {
         let (ds, dr) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             connection.accept_bi(),
@@ -121,37 +130,18 @@ async fn handle_connection(
         .with_context(|| format!("Failed to accept data stream {}", i))?;
 
         let (frame_tx, frame_rx) = mpsc::channel::<Bytes>(512);
+        session.attach_stream(i, frame_tx);
         tokio::spawn(session_write_loop(frame_rx, ds, remote));
-        frame_txs.push(frame_tx);
         data_recvs.push(dr);
     }
 
-    tracing::debug!("{} data streams accepted from {}", N_DATA_STREAMS, remote);
-
-    // Per-session TUN packet channel + batching task
-    let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(2048);
-
-    // Transport-agnostic shutdown: close_tx signals the transport to close
-    let (close_tx, close_rx) = tokio::sync::oneshot::channel::<()>();
-
+    tracing::debug!("{} QUIC data streams accepted from {}", N_STREAMS, remote);
+    // created_at timestamp for logs (already set inside new_coordinator)
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-
-    let session = Arc::new(VpnSession {
-        created_at:    now,
-        data_sends:    frame_txs,
-        tun_pkt_tx,
-        close_tx:      std::sync::Mutex::new(Some(close_tx)),
-        last_seen:     AtomicU64::new(now),
-        bytes_rx:      AtomicU64::new(0),
-        bytes_tx:      AtomicU64::new(0),
-        dest_log:      std::sync::Mutex::new(std::collections::VecDeque::new()),
-        stats_samples: std::sync::Mutex::new(std::collections::VecDeque::new()),
-        dns_cache:     dashmap::DashMap::new(),
-        log_counter:   AtomicU64::new(0),
-    });
+    let _ = now;
 
     // Background task: wait for close signal → close QUIC connection
     {
@@ -163,7 +153,7 @@ async fn handle_connection(
     }
 
     // Spawn per-session batching task (TUN packets → QUIC streams)
-    tokio::spawn(vpn_session::session_batch_loop(tun_pkt_rx, session.clone(), shaper, true));
+    tokio::spawn(vpn_session::session_batch_loop(tun_pkt_rx, session.clone()));
 
     // Run N stream RX loops
     let registered_ip: Arc<Mutex<Option<IpAddr>>> = Arc::new(Mutex::new(None));
@@ -204,7 +194,7 @@ async fn handle_connection(
 async fn stream_rx_loop(
     mut recv:      quinn::RecvStream,
     session:       Arc<VpnSession>,
-    tun_tx:        mpsc::Sender<Vec<u8>>,
+    tun_tx:        mpsc::Sender<Bytes>,
     sessions:      VpnSessionMap,
     registered_ip: Arc<Mutex<Option<IpAddr>>>,
     tun_network:   Ipv4Addr,
@@ -296,7 +286,8 @@ async fn stream_rx_loop(
                 }
             }
 
-            if let Err(e) = tun_tx.send(frame_buf[offset..offset + pkt_len].to_vec()).await {
+            let pkt_bytes = Bytes::copy_from_slice(&frame_buf[offset..offset + pkt_len]);
+            if let Err(e) = tun_tx.send(pkt_bytes).await {
                 tracing::error!("tun_tx send error: {}", e);
             }
             offset += pkt_len;
@@ -308,7 +299,7 @@ async fn stream_rx_loop(
 
 pub async fn tun_reader_loop(
     mut tun_reader: tokio::io::ReadHalf<crate::tun_iface::AsyncTun>,
-    pkt_tx:         mpsc::Sender<Vec<u8>>,
+    pkt_tx:         mpsc::Sender<Bytes>,
 ) {
     let mut buf = vec![0u8; 65536];
     tracing::info!("TUN reader loop started");
@@ -320,69 +311,8 @@ pub async fn tun_reader_loop(
         if len < 20 || (buf[0] >> 4) != 4 {
             continue;
         }
-        if pkt_tx.send(buf[..len].to_vec()).await.is_err() {
+        if pkt_tx.send(Bytes::copy_from_slice(&buf[..len])).await.is_err() {
             break;
-        }
-    }
-}
-
-// ─── Per-session batching: TUN packets → QUIC streams ───────────────────────
-
-async fn session_batch_loop(
-    mut pkt_rx: mpsc::Receiver<Vec<u8>>,
-    session:    Arc<VpnSession>,
-    mut shaper: H264Shaper,
-) {
-    let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
-    let mut frame_buf = vec![0u8; buf_size];
-    let n_streams = session.data_sends.len();
-
-    loop {
-        let first = match pkt_rx.recv().await {
-            Some(p) => p,
-            None => break,
-        };
-
-        // Collect packets into per-stream batches
-        let mut stream_batches: Vec<Vec<Vec<u8>>> = (0..n_streams).map(|_| Vec::new()).collect();
-
-        // Route first packet
-        let idx = flow_stream_idx(&first, n_streams);
-        stream_batches[idx].push(first);
-
-        // Drain more (up to 256)
-        let mut collected = 1usize;
-        while collected < 256 {
-            match pkt_rx.try_recv() {
-                Ok(pkt) => {
-                    let idx = flow_stream_idx(&pkt, n_streams);
-                    stream_batches[idx].push(pkt);
-                    collected += 1;
-                }
-                Err(_) => break,
-            }
-        }
-
-        // Build and send batch per stream
-        for (idx, batch) in stream_batches.iter().enumerate() {
-            if batch.is_empty() { continue; }
-
-            let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_slice()).collect();
-            let data_size: usize = refs.iter().map(|p| 2 + p.len()).sum::<usize>() + 2;
-            let frame = shaper.next_frame();
-            shaper.report_data_size(data_size, frame.target_bytes);
-            let pt_len = match build_batch_plaintext(&refs, frame.target_bytes, &mut frame_buf[4..]) {
-                Ok(n) => n,
-                Err(_) => continue,
-            };
-
-            frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
-
-            let frame = Bytes::copy_from_slice(&frame_buf[..4 + pt_len]);
-            if session.data_sends[idx].send(frame).await.is_err() {
-                return; // session closed
-            }
-            session.bytes_tx.fetch_add((4 + pt_len) as u64, Ordering::Relaxed);
         }
     }
 }
