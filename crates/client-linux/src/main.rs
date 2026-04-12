@@ -302,7 +302,10 @@ async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
     // Load server CA cert — inline PEM or file path
     let server_ca = helpers::load_server_ca(&cfg)?;
 
-    let skip_verify = cfg.network.insecure || (server_ca.is_none() && client_identity.is_none());
+    let skip_verify = cfg.network.insecure;
+    if !skip_verify && server_ca.is_none() {
+        anyhow::bail!("No CA certificate provided and insecure=false. Set insecure=true or provide ca_cert_path.");
+    }
 
     // Resolve transport: CLI override > config/conn string > default h2
     let transport = resolve_transport(&args, &cfg)?;

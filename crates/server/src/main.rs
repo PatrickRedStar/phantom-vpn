@@ -144,19 +144,16 @@ async fn main() -> anyhow::Result<()> {
         tun_main.configure(tun_addr, tun_mtu as u32)?;
 
         let f0 = tun_main.into_file();
-        tun_fds.push(std::os::unix::io::AsRawFd::as_raw_fd(&f0));
-        std::mem::forget(f0);
+        tun_fds.push(std::os::unix::io::IntoRawFd::into_raw_fd(f0));
         for f in extra {
-            tun_fds.push(std::os::unix::io::AsRawFd::as_raw_fd(&f));
-            std::mem::forget(f);
+            tun_fds.push(std::os::unix::io::IntoRawFd::into_raw_fd(f));
         }
     } else {
         let tun = tun_iface::TunInterface::create(tun_name)
             .with_context(|| format!("Failed to create TUN {}", tun_name))?;
         tun.configure(tun_addr, tun_mtu as u32)?;
         let f = tun.into_file();
-        tun_fds.push(std::os::unix::io::AsRawFd::as_raw_fd(&f));
-        std::mem::forget(f);
+        tun_fds.push(std::os::unix::io::IntoRawFd::into_raw_fd(f));
     }
     tracing::info!("TUN {} configured: addr={} mtu={}", tun_name, tun_addr, tun_mtu);
 
@@ -217,12 +214,16 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("No allowed_clients_path configured — all authenticated clients accepted");
     }
 
+    // Keyring lock: guards all read-modify-write on clients.json
+    let keyring_lock: admin::KeyringLock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+
     // Subscription expiry checker
     if let Some(ref cp) = allow_list_path {
         let cp2 = std::path::PathBuf::from(cp);
         let sessions2 = sessions.clone();
         let allow_list2 = allow_list.clone();
-        tokio::spawn(admin::run_subscription_checker(cp2, sessions2, allow_list2));
+        let kl2 = keyring_lock.clone();
+        tokio::spawn(admin::run_subscription_checker(cp2, sessions2, allow_list2, kl2));
     }
 
     // SIGHUP → hot-reload allowlist
@@ -289,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
                             .unwrap_or_else(|| cfg.network.listen_addr.clone()),
                         server_name,
                         exit_ip: cfg.network.exit_ip.clone(),
+                        keyring_lock: keyring_lock.clone(),
                     };
                     tokio::spawn(async move {
                         if let Err(e) = admin::run(admin_addr, admin_state).await {
@@ -358,7 +360,9 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(());
     });
 
-    // ─── QUIC accept loop (main) ────────────────────────────────────────────
+    // ─── QUIC accept loop (legacy, not used in production) ────────────────────
+    // H2/TLS over TCP is the active transport (see h2_server). The QUIC endpoint
+    // is kept for backward compatibility but carries no production traffic.
     tracing::info!("Server ready. Listening on {} (QUIC/UDP)", listen_addr);
 
     // tun_network, tun_prefix already parsed above for H2
@@ -396,11 +400,19 @@ fn parse_cidr(cidr: &str) -> Option<(std::net::Ipv4Addr, u8)> {
     Some((network, prefix))
 }
 
-/// "10.7.0.1/24" → "10.7.0.0/24"
+/// "10.7.0.1/24" → "10.7.0.0/24"  (works for any prefix length, not just /24)
 fn cidr_to_network(cidr: &str) -> String {
     let parts: Vec<&str> = cidr.split('/').collect();
     if parts.len() != 2 { return cidr.to_string(); }
-    let ip_parts: Vec<&str> = parts[0].split('.').collect();
-    if ip_parts.len() != 4 { return cidr.to_string(); }
-    format!("{}.{}.{}.0/{}", ip_parts[0], ip_parts[1], ip_parts[2], parts[1])
+    let prefix: u32 = match parts[1].parse() {
+        Ok(p) => p,
+        Err(_) => return cidr.to_string(),
+    };
+    let ip: std::net::Ipv4Addr = match parts[0].parse() {
+        Ok(ip) => ip,
+        Err(_) => return cidr.to_string(),
+    };
+    let mask = if prefix == 0 { 0 } else { !0u32 << (32 - prefix) };
+    let network = std::net::Ipv4Addr::from(u32::from(ip) & mask);
+    format!("{}/{}", network, prefix)
 }

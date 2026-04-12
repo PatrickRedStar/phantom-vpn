@@ -73,8 +73,9 @@ pub struct VpnSession {
     pub bytes_tx:      AtomicU64,
     pub dest_log:      std::sync::Mutex<std::collections::VecDeque<DestEntry>>,
     pub stats_samples: std::sync::Mutex<std::collections::VecDeque<StatsSample>>,
-    /// Passive DNS cache: IPv4 → hostname, populated from DNS responses (src_port=53)
-    pub dns_cache:     DashMap<Ipv4Addr, String>,
+    /// Passive DNS cache: IPv4 → (hostname, insert_time), populated from DNS responses (src_port=53).
+    /// LRU with capacity 2048 and 5-minute TTL per entry.
+    pub dns_cache:     std::sync::Mutex<lru::LruCache<Ipv4Addr, (String, std::time::Instant)>>,
     /// Counter for dest_log sampling (log every 64th packet to reduce mutex contention)
     pub log_counter:   AtomicU64,
     /// Client cert fingerprint (hex). Set for h2_server path — used to locate the
@@ -116,7 +117,9 @@ impl VpnSession {
             bytes_tx: AtomicU64::new(0),
             dest_log: std::sync::Mutex::new(std::collections::VecDeque::new()),
             stats_samples: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            dns_cache: DashMap::new(),
+            dns_cache: std::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(2048).unwrap(),
+            )),
             log_counter: AtomicU64::new(0),
             fingerprint,
         }
@@ -162,7 +165,27 @@ impl VpnSession {
     }
 }
 
+/// DNS cache TTL: entries older than this are evicted on read.
+const DNS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
 impl VpnSession {
+    /// Look up a hostname in the DNS cache. Returns `None` if not found or expired (TTL 5 min).
+    pub fn dns_lookup(&self, ip: &Ipv4Addr) -> Option<String> {
+        let mut cache = self.dns_cache.lock().ok()?;
+        // peek does not promote — avoids keeping expired entries "hot"
+        let expired = match cache.peek(ip) {
+            Some((_, inserted)) => inserted.elapsed() > DNS_CACHE_TTL,
+            None => return None,
+        };
+        if expired {
+            cache.pop(ip);
+            None
+        } else {
+            // Now promote via get and clone
+            cache.get(ip).map(|(h, _)| h.clone())
+        }
+    }
+
     pub fn touch(&self) {
         self.last_seen.store(now_unix_secs(), Ordering::Relaxed);
     }
@@ -464,7 +487,8 @@ pub fn dns_parse_response(data: &[u8], session: &VpnSession) {
         pos += 4;
     }
 
-    if session.dns_cache.len() > 4096 { session.dns_cache.clear(); }
+    // Collect A-record entries before acquiring the cache lock
+    let mut entries: Vec<(Ipv4Addr, String)> = Vec::new();
 
     for _ in 0..ancount {
         let name_start = pos;
@@ -483,11 +507,20 @@ pub fn dns_parse_response(data: &[u8], session: &VpnSession) {
             let mut name_pos = pos - rdlen - 10;
             if let Some(hostname) = dns_read_name(data, &mut name_pos) {
                 if !hostname.is_empty() {
-                    session.dns_cache.insert(ip, hostname);
+                    entries.push((ip, hostname));
                 }
             }
         }
         pos += rdlen;
+    }
+
+    if !entries.is_empty() {
+        if let Ok(mut cache) = session.dns_cache.lock() {
+            let now = std::time::Instant::now();
+            for (ip, hostname) in entries {
+                cache.put(ip, (hostname, now));
+            }
+        }
     }
 }
 

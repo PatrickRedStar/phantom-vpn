@@ -5,6 +5,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -20,6 +21,10 @@ use serde::Deserialize;
 
 use crate::vpn_session::{ClientAllowList, VpnSessionMap};
 
+/// Mutex guarding all read-modify-write operations on the keyring file (clients.json).
+/// Prevents TOCTOU race between admin API handlers and the subscription checker.
+pub type KeyringLock = Arc<tokio::sync::Mutex<()>>;
+
 #[derive(Clone)]
 pub struct AdminState {
     pub sessions: VpnSessionMap,
@@ -33,6 +38,7 @@ pub struct AdminState {
     pub server_addr: String,
     pub server_name: String,
     pub exit_ip: Option<String>,
+    pub keyring_lock: KeyringLock,
 }
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
@@ -134,6 +140,17 @@ async fn create_client(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Generate client cert/key (CPU-intensive, do outside lock)
+    let (cert_pem, key_pem, fingerprint) = match (&state.ca_cert_path, &state.ca_key_path) {
+        (Some(ca_cert_path), Some(ca_key_path)) => {
+            generate_client_cert(&name, ca_cert_path, ca_key_path)
+                .map_err(|e| { tracing::error!("cert gen: {}", e); StatusCode::INTERNAL_SERVER_ERROR })?
+        }
+        _ => return Err(StatusCode::NOT_IMPLEMENTED),
+    };
+
+    let _guard = state.keyring_lock.lock().await;
+
     let mut keyring = read_keyring(&state.clients_path)?;
     let clients = keyring
         .get_mut("clients")
@@ -153,15 +170,6 @@ async fn create_client(
         .map(|i| format!("10.7.0.{}/24", i))
         .find(|addr| !used_ips.contains(addr))
         .ok_or(StatusCode::INSUFFICIENT_STORAGE)?;
-
-    // Generate client cert/key
-    let (cert_pem, key_pem, fingerprint) = match (&state.ca_cert_path, &state.ca_key_path) {
-        (Some(ca_cert_path), Some(ca_key_path)) => {
-            generate_client_cert(&name, ca_cert_path, ca_key_path)
-                .map_err(|e| { tracing::error!("cert gen: {}", e); StatusCode::INTERNAL_SERVER_ERROR })?
-        }
-        _ => return Err(StatusCode::NOT_IMPLEMENTED),
-    };
 
     // Save cert files
     let client_dir = state.clients_path.parent()
@@ -192,6 +200,8 @@ async fn create_client(
     // Reload allow list
     reload_allow_list(&state.clients_path, &state.allow_list).await;
 
+    drop(_guard);
+
     // Build conn_string (includes admin URL/token so the Android client can auto-configure admin panel)
     let conn_str = build_conn_string(&state.server_addr, &state.server_name, &tun_addr, &cert_pem, &key_pem, &state.admin_url, &state.token);
 
@@ -209,6 +219,8 @@ async fn delete_client(
     State(state): State<AdminState>,
     AxPath(name): AxPath<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let _guard = state.keyring_lock.lock().await;
+
     let mut keyring = read_keyring(&state.clients_path)?;
     let clients = keyring
         .get_mut("clients")
@@ -267,6 +279,8 @@ async fn manage_subscription(
     AxPath(name): AxPath<String>,
     Json(body): Json<SubscriptionBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let _guard = state.keyring_lock.lock().await;
+
     let mut keyring = read_keyring(&state.clients_path)?;
     let now = now_secs();
 
@@ -338,6 +352,8 @@ async fn set_client_enabled(
     name: &str,
     enabled: bool,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    let _guard = state.keyring_lock.lock().await;
+
     let mut keyring = read_keyring(&state.clients_path)?;
     let clients = keyring
         .get_mut("clients")
@@ -571,8 +587,20 @@ fn read_keyring(path: &Path) -> Result<serde_json::Value, StatusCode> {
 }
 
 fn write_keyring(path: &Path, keyring: &serde_json::Value) -> Result<(), StatusCode> {
-    let content = serde_json::to_string_pretty(keyring).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    std::fs::write(path, content).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+    use std::io::Write;
+
+    let content = serde_json::to_string_pretty(keyring)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let tmp = path.with_extension("json.tmp");
+    let mut f = std::fs::File::create(&tmp)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    f.write_all(content.as_bytes())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    f.sync_all()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    std::fs::rename(&tmp, path)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(())
 }
 
 async fn reload_allow_list(clients_path: &Path, allow_list: &ClientAllowList) {
@@ -644,11 +672,14 @@ pub async fn run_subscription_checker(
     clients_path: std::path::PathBuf,
     sessions: VpnSessionMap,
     allow_list: ClientAllowList,
+    keyring_lock: KeyringLock,
 ) {
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
         let now = now_secs();
+
+        let _guard = keyring_lock.lock().await;
 
         let content = match std::fs::read_to_string(&clients_path) {
             Ok(c) => c,
@@ -703,14 +734,14 @@ pub async fn run_subscription_checker(
             }
         }
 
-        if let Ok(content) = serde_json::to_string_pretty(&keyring) {
-            let _ = std::fs::write(&clients_path, content);
-        }
+        let _ = write_keyring(&clients_path, &keyring);
 
         match crate::vpn_session::load_allow_list(&clients_path) {
             Ok(fps) => { *allow_list.write().await = fps; }
             Err(e) => tracing::error!("Subscription checker: reload allow list failed: {}", e),
         }
+
+        drop(_guard);
 
         for ip in to_evict {
             if let Some((_, session)) = sessions.remove(&ip) {

@@ -209,6 +209,7 @@ fn write_tun_packet(fd: RawFd, pkt: &[u8], writer_name: &str) -> io::Result<()> 
 
 struct TunnelHandle {
     shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    join_handle: std::thread::JoinHandle<()>,
 }
 
 static TUNNEL: Mutex<Option<TunnelHandle>> = Mutex::new(None);
@@ -331,7 +332,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let key_path_str_clone = key_path_str.clone();
     let ca_cert_path_str_clone = ca_cert_path_str.clone();
 
-    std::thread::Builder::new()
+    let join_handle = std::thread::Builder::new()
         .name("ghoststream-tunnel".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -366,10 +367,12 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
                 unsafe { libc::close(fd); }
                 log::info!("Tunnel stopped");
             });
+            // Runtime is dropped here, ensuring all worker threads are joined
+            // before the tunnel thread exits.
         })
         .unwrap();
 
-    *TUNNEL.lock().unwrap() = Some(TunnelHandle { shutdown_tx });
+    *TUNNEL.lock().unwrap() = Some(TunnelHandle { shutdown_tx, join_handle });
     0
 }
 
@@ -381,7 +384,11 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     IS_CONNECTED.store(false, Ordering::Relaxed);
     if let Some(handle) = TUNNEL.lock().unwrap().take() {
         let _ = handle.shutdown_tx.send(());
-        log::info!("Tunnel stop signal sent");
+        log::info!("Tunnel stop signal sent, waiting for tunnel thread to finish");
+        if let Err(_) = handle.join_handle.join() {
+            log::error!("Tunnel thread panicked during join");
+        }
+        log::info!("Tunnel thread joined");
     }
 }
 
@@ -414,12 +421,13 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
             .filter(|e| (e.seq as i64) > since_seq)
             .map(|e| {
                 let secs = e.ts_secs % 86400;
+                let escaped_msg = serde_json::to_string(&e.msg).unwrap_or_else(|_| "\"\"".to_string());
                 format!(
-                    r#"{{"seq":{},"ts":"{:02}:{:02}:{:02}","level":"{}","msg":"{}"}}"#,
+                    r#"{{"seq":{},"ts":"{:02}:{:02}:{:02}","level":"{}","msg":{}}}"#,
                     e.seq,
                     secs / 3600, (secs % 3600) / 60, secs % 60,
                     e.level,
-                    e.msg.replace('\\', "\\\\").replace('"', "\\\""),
+                    escaped_msg,
                 )
             })
             .collect()

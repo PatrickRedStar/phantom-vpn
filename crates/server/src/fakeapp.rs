@@ -169,15 +169,9 @@ where
     tracing::debug!("fakeapp connection from {} ended", remote);
 }
 
-/// Cheap pseudo-random u64 for x-request-id header. Not cryptographic —
-/// just enough variance so probers don't see the same ID.
+/// Random u64 for x-request-id header. Uses thread-local CSPRNG so the
+/// output is not predictable by DPI / active probers.
 fn rand_u64() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static CTR: AtomicU64 = AtomicU64::new(0);
-    let ctr = CTR.fetch_add(1, Ordering::Relaxed);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    now ^ ctr.wrapping_mul(0x9E3779B97F4A7C15)
+    use rand::Rng;
+    rand::thread_rng().gen::<u64>()
 }

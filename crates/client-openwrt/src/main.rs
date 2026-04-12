@@ -173,13 +173,22 @@ mod linux {
 
     // ─── Main ─────────────────────────────────────────────────────────────────
 
-    #[tokio::main(flavor = "current_thread")]
-    pub async fn async_main() -> anyhow::Result<()> {
+    pub fn async_main() -> anyhow::Result<()> {
         // Ring crypto provider must be installed before any TLS usage
         rustls::crypto::ring::default_provider()
             .install_default()
             .expect("Failed to install ring crypto provider");
 
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build tokio runtime");
+
+        let local = tokio::task::LocalSet::new();
+        rt.block_on(local.run_until(inner_main()))
+    }
+
+    async fn inner_main() -> anyhow::Result<()> {
         let opts = parse_args()?;
 
         // Logging
