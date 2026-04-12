@@ -172,6 +172,35 @@ pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
                     .await
                     .map_err(|e| anyhow::anyhow!("TLS write: {}", e))?;
 
+                // Drain + coalesce: write queued frames before flushing so
+                // multiple batches merge into fewer TLS records / syscalls.
+                let mut extra_write_err = false;
+                for _ in 0..31 {
+                    match tun_rx.try_recv() {
+                        Ok(extra_pkt) => {
+                            let refs: Vec<&[u8]> = vec![extra_pkt.as_ref()];
+                            let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
+                                Ok(n) => n,
+                                Err(_) => continue,
+                            };
+                            frame_buf[..4].copy_from_slice(&(pt_len as u32).to_be_bytes());
+                            let t = 4 + pt_len;
+                            if writer.write_all(&frame_buf[..t]).await.is_err() {
+                                extra_write_err = true;
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if extra_write_err {
+                    return Err(anyhow::anyhow!("TLS write failed during drain"));
+                }
+                writer
+                    .flush()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("TLS flush: {}", e))?;
+
                 // Real traffic just went out — push the next heartbeat out.
                 next_heartbeat = Instant::now() + next_heartbeat_delay();
             }
@@ -181,6 +210,10 @@ pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
                     .write_all(&hb)
                     .await
                     .map_err(|e| anyhow::anyhow!("TLS heartbeat write: {}", e))?;
+                writer
+                    .flush()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("TLS heartbeat flush: {}", e))?;
                 tracing::trace!(bytes = hb.len(), "tls_tx heartbeat fired");
                 next_heartbeat = Instant::now() + next_heartbeat_delay();
             }

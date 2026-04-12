@@ -484,6 +484,14 @@ async def add_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def _add_fallback_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    """Catch-all fallback: any unrecognised callback while inside the add-client
+    conversation ends the conversation and lets the main dispatcher handle it."""
+    ctx.user_data.pop("add_name", None)
+    ctx.user_data.pop("add_role", None)
+    return ConversationHandler.END
+
+
 def add_conversation() -> ConversationHandler:
     admin_filter = filters.User(user_id=CONFIG.admin_telegram_id)
     return ConversationHandler(
@@ -505,8 +513,12 @@ def add_conversation() -> ConversationHandler:
         fallbacks=[
             CallbackQueryHandler(add_cancel, pattern=r"^acancel$"),
             CommandHandler("cancel", add_cancel),
+            # Catch-all: end conversation on any other callback so it doesn't
+            # get stuck and block future "add" attempts.
+            CallbackQueryHandler(_add_fallback_cb),
         ],
         per_message=False,
+        allow_reentry=True,
     )
 
 
