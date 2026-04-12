@@ -1,0 +1,14 @@
+{
+    "luci-proto-ghoststream": {
+        "description": "Grant access to GhostStream VPN protocol",
+        "read": {
+            "ubus": {
+                "network.interface.ghoststream*": [ "status", "dump" ]
+            },
+            "uci": [ "network" ]
+        },
+        "write": {
+            "uci": [ "network" ]
+        }
+    }
+}
