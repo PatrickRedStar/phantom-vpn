@@ -60,28 +60,20 @@ jobs:
         if: matrix.use_zigbuild
         run: pip3 install ziglang && cargo install cargo-zigbuild
 
-      - name: Install mipsel musl cross-compiler
+      - name: Install cross
         if: ${{ !matrix.use_zigbuild }}
-        run: |
-          # Download musl cross-compiler for mipsel (with retries)
-          curl --retry 3 --retry-delay 5 -fsSL -o /tmp/mipsel-cross.tgz \
-            https://musl.cc/mipsel-linux-musl-cross.tgz
-          tar xf /tmp/mipsel-cross.tgz -C /opt
-          echo "/opt/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
-          # Override .cargo/config.toml for CI (remove dev machine paths)
-          cat > .cargo/config.toml <<'CARGO_EOF'
-          [target.mipsel-unknown-linux-musl]
-          linker = "mipsel-linux-musl-gcc"
-          CARGO_EOF
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build with zigbuild
         if: matrix.use_zigbuild
         run: cargo zigbuild --release --target ${{ matrix.target }} -p phantom-client-openwrt
 
-      - name: Build with build-std (mipsel)
+      - name: Build with cross (mipsel)
         if: ${{ !matrix.use_zigbuild }}
+        env:
+          CROSS_CONTAINER_ENGINE: docker
         run: |
-          cargo build --release --target ${{ matrix.target }} -p phantom-client-openwrt \
+          cross build --release --target ${{ matrix.target }} -p phantom-client-openwrt \
             -Z build-std=std,panic_abort
 
       - name: Check size
