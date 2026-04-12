@@ -185,7 +185,7 @@ pub fn load_tls_identity(
         // Inline PEM has priority
         if let (Some(ref cert_pem), Some(ref key_pem)) = (&qc.cert_pem, &qc.key_pem) {
             tracing::info!("Loading client TLS certificate from inline PEM");
-            let identity = phantom_core::quic::parse_pem_identity(
+            let identity = phantom_core::tls::parse_pem_identity(
                 cert_pem.as_bytes(), key_pem.as_bytes(),
             ).context("Failed to parse inline client TLS certificate")?;
             return Ok(Some(identity));
@@ -193,7 +193,7 @@ pub fn load_tls_identity(
         // Fallback to file paths
         if let (Some(ref cp), Some(ref kp)) = (&qc.cert_path, &qc.key_path) {
             tracing::info!("Loading client TLS certificate from {}", cp);
-            let identity = phantom_core::quic::load_pem_certs(Path::new(cp), Path::new(kp))
+            let identity = phantom_core::tls::load_pem_certs(Path::new(cp), Path::new(kp))
                 .context("Failed to load client TLS certificate")?;
             return Ok(Some(identity));
         }
@@ -210,13 +210,13 @@ pub fn load_server_ca(
         // Inline PEM has priority
         if let Some(ref ca_pem) = qc.ca_cert_pem {
             tracing::info!("Loading server CA cert from inline PEM");
-            let certs = phantom_core::quic::parse_pem_cert_chain(ca_pem.as_bytes())
+            let certs = phantom_core::tls::parse_pem_cert_chain(ca_pem.as_bytes())
                 .context("Failed to parse inline CA cert")?;
             return Ok(Some(certs));
         }
         // Fallback to file path
         if let Some(ref ca_path) = qc.ca_cert_path {
-            let certs = phantom_core::quic::load_pem_cert_chain(Path::new(ca_path))
+            let certs = phantom_core::tls::load_pem_cert_chain(Path::new(ca_path))
                 .context("Failed to load server CA cert")?;
             return Ok(Some(certs));
         }

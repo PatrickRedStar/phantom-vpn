@@ -15,8 +15,8 @@ toml           = "0.8"
 base64         = "0.22"
 libc           = "0.2"
 tokio          = { version = "1", features = ["full"] }
-quinn          = "0.11"
-quinn-proto    = "0.11"
+quinn          = { version = "0.11", optional = true }
+quinn-proto    = { version = "0.11", optional = true }
 rustls         = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen          = "0.13"
 rustls-pemfile = "2"
@@ -24,8 +24,9 @@ webpki-roots   = "0.26"
 ipnet          = "2"
 
 [features]
-default = ["io-uring-tun"]
+default = ["io-uring-tun", "quic"]
 io-uring-tun = ["io-uring"]
+quic = ["quinn", "quinn-proto"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 io-uring       = { version = "0.7", optional = true }
