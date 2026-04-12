@@ -17,20 +17,30 @@ jobs:
         include:
           - target: mipsel-unknown-linux-musl
             name: ghoststream-mipsel
+            toolchain: nightly
+            build_std: true
           - target: aarch64-unknown-linux-musl
             name: ghoststream-aarch64
+            toolchain: stable
+            build_std: false
           - target: armv7-unknown-linux-musleabihf
             name: ghoststream-armv7
+            toolchain: stable
+            build_std: false
           - target: x86_64-unknown-linux-musl
             name: ghoststream-x86_64
+            toolchain: stable
+            build_std: false
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable + target
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
-          targets: ${{ matrix.target }}
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ !matrix.build_std && matrix.target || '' }}
+          components: ${{ matrix.build_std && 'rust-src' || '' }}
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -45,7 +55,14 @@ jobs:
       - name: Install cargo-zigbuild
         run: pip3 install ziglang && cargo install cargo-zigbuild
 
-      - name: Build
+      - name: Build (with build-std)
+        if: matrix.build_std
+        run: |
+          cargo zigbuild --release --target ${{ matrix.target }} -p phantom-client-openwrt \
+            -Z build-std=std,panic_abort
+
+      - name: Build (standard)
+        if: ${{ !matrix.build_std }}
         run: cargo zigbuild --release --target ${{ matrix.target }} -p phantom-client-openwrt
 
       - name: Check size
