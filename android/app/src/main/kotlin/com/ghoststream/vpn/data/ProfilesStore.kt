@@ -154,6 +154,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     _activeId.value?.let { put("activeId", it) }
                 }.toString(2),
             )
+        }.onFailure { e ->
+            android.util.Log.e("ProfilesStore", "Failed to save profiles: ${e.message}", e)
         }
     }
 }

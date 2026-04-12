@@ -56,13 +56,14 @@ pub fn flow_stream_idx(pkt: &[u8], n: usize) -> usize {
     if n <= 1 || pkt.len() < 20 || (pkt[0] >> 4) != 4 {
         return 0;
     }
+    let ihl = ((pkt[0] & 0x0F) as usize) * 4; // IHL field: 5-15 → 20-60 bytes
     let src = u32::from_be_bytes([pkt[12], pkt[13], pkt[14], pkt[15]]);
     let dst = u32::from_be_bytes([pkt[16], pkt[17], pkt[18], pkt[19]]);
     let proto = pkt[9] as u32;
     let mut h = src.wrapping_add(dst).wrapping_add(proto);
-    if pkt.len() >= 24 && (proto == 6 || proto == 17) {
-        let sp = u16::from_be_bytes([pkt[20], pkt[21]]) as u32;
-        let dp = u16::from_be_bytes([pkt[22], pkt[23]]) as u32;
+    if pkt.len() >= ihl + 4 && (proto == 6 || proto == 17) {
+        let sp = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]) as u32;
+        let dp = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]) as u32;
         h = h.wrapping_add(sp ^ dp);
     }
     h as usize % n
@@ -147,9 +148,9 @@ pub fn extract_batch_packets(plaintext: &[u8]) -> Result<Vec<Vec<u8>>, PacketErr
 // — all receivers' existing IPv4 filters silently drop them before tun_tx.
 
 /// Minimum interval between consecutive heartbeats on an idle stream.
-pub const HEARTBEAT_INTERVAL_MIN_SECS: u64 = 20;
+pub const HEARTBEAT_INTERVAL_MIN_SECS: u64 = 15;
 /// Maximum interval between consecutive heartbeats on an idle stream.
-pub const HEARTBEAT_INTERVAL_MAX_SECS: u64 = 30;
+pub const HEARTBEAT_INTERVAL_MAX_SECS: u64 = 45;
 /// Min start jitter for first heartbeat after stream creation (desync streams).
 pub const HEARTBEAT_START_JITTER_MIN_SECS: u64 = 5;
 /// Max start jitter for first heartbeat after stream creation.
@@ -325,6 +326,67 @@ mod tests {
             let d = next_heartbeat_delay();
             assert!(d >= lo && d <= hi, "next_heartbeat_delay out of bounds: {d:?}");
         }
+    }
+
+    // ─── Edge-case tests for extract_batch_packets (L4) ────────────────────
+
+    #[test]
+    fn test_extract_batch_empty_batch_only_terminator() {
+        // Only the 0x0000 terminator — should return zero packets
+        let buf = [0u8, 0];
+        let packets = extract_batch_packets(&buf).unwrap();
+        assert!(packets.is_empty());
+    }
+
+    #[test]
+    fn test_extract_batch_truncated_pkt_len_past_buffer() {
+        // pkt_len says 100 bytes but buffer only has 4 bytes after the length field
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&100u16.to_be_bytes()); // pkt_len = 100
+        buf.extend_from_slice(&[0xAA; 4]); // only 4 bytes of payload
+        let err = extract_batch_packets(&buf).unwrap_err();
+        match err {
+            PacketError::BadIpLen(100) => {} // expected
+            other => panic!("expected BadIpLen(100), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_extract_batch_no_terminator() {
+        // One valid packet that consumes the entire buffer — no terminator follows.
+        // After reading the packet, offset+2 > len → TooShort error.
+        let payload = b"full_buffer_packet";
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        buf.extend_from_slice(payload);
+        // No terminator appended
+        let err = extract_batch_packets(&buf).unwrap_err();
+        match err {
+            PacketError::TooShort(_) => {} // expected
+            other => panic!("expected TooShort, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_extract_batch_max_size_packet() {
+        // Single packet of u16::MAX bytes
+        let pkt_len: usize = u16::MAX as usize;
+        let mut buf = Vec::with_capacity(2 + pkt_len + 2);
+        buf.extend_from_slice(&(pkt_len as u16).to_be_bytes());
+        buf.resize(2 + pkt_len, 0xBB);
+        buf.extend_from_slice(&0u16.to_be_bytes()); // terminator
+        let packets = extract_batch_packets(&buf).unwrap();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].len(), pkt_len);
+    }
+
+    #[test]
+    fn test_extract_batch_first_pkt_len_zero() {
+        // First length field is 0x0000 — same as terminator, so zero packets.
+        // This is by design: pkt_len==0 at any position means end-of-batch.
+        let buf = [0u8, 0, 0xAA, 0xBB]; // terminator + trailing garbage
+        let packets = extract_batch_packets(&buf).unwrap();
+        assert!(packets.is_empty());
     }
 
     #[test]

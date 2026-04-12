@@ -22,19 +22,35 @@
 
 use std::time::Duration;
 
+use rand::Rng;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use phantom_core::wire::build_batch_plaintext;
 
-/// Warmup schedule: (delay_before_burst, target_bytes_in_burst).
+/// Base warmup schedule: (delay_before_burst, target_bytes_in_burst).
 /// Total on-wire bytes over warmup: ~50 KB over ~1300 ms. Matches an HTTPS
 /// page load with HTML + a couple of lazy-loaded images.
-const SCHEDULE: &[(Duration, usize)] = &[
-    (Duration::from_millis(70),  2 * 1024),  // "HTML"
-    (Duration::from_millis(330), 8 * 1024),  // "image 1"
-    (Duration::from_millis(200), 16 * 1024), // "image 2"
-    (Duration::from_millis(200), 24 * 1024), // "bundle"
+/// Each element gets per-session random jitter applied at runtime (see
+/// `jittered_schedule`) so that successive sessions do not share the same
+/// timing/size fingerprint.
+const SCHEDULE: &[(u64, usize)] = &[
+    (70,  2 * 1024),  // "HTML"
+    (330, 8 * 1024),  // "image 1"
+    (200, 16 * 1024), // "image 2"
+    (200, 24 * 1024), // "bundle"
 ];
+
+/// Apply random jitter to the base schedule: delay ±25%, size ±20%.
+fn jittered_schedule() -> Vec<(Duration, usize)> {
+    let mut rng = rand::thread_rng();
+    SCHEDULE.iter().map(|&(delay_ms, size)| {
+        let d_jitter: f64 = rng.gen_range(0.75..=1.25);
+        let s_jitter: f64 = rng.gen_range(0.80..=1.20);
+        let jittered_delay = Duration::from_millis((delay_ms as f64 * d_jitter) as u64);
+        let jittered_size  = ((size as f64 * s_jitter) as usize).max(64);
+        (jittered_delay, jittered_size)
+    }).collect()
+}
 
 /// Placeholder IP packet: 16 zero bytes. Fails IPv4 parse (version nibble = 0)
 /// so the client TUN writer discards it without side effects.
@@ -50,7 +66,8 @@ pub async fn warmup_write<W>(writer: &mut W) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    for &(delay, target) in SCHEDULE {
+    let schedule = jittered_schedule();
+    for &(delay, target) in &schedule {
         tokio::time::sleep(delay).await;
 
         // Build one valid batch frame: [2B pktlen=16][16B zeros][2B 0x0000][padding]

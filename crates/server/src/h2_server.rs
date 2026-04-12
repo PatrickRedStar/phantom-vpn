@@ -434,7 +434,7 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
                     0
                 };
                 let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-                let dst_host = session.dns_cache.get(&dst_ip).map(|v| v.clone());
+                let dst_host = session.dns_lookup(&dst_ip);
                 if let Ok(mut log) = session.dest_log.lock() {
                     if log.len() >= 1000 { log.pop_front(); }
                     log.push_back(DestEntry { ts, dst_ip, dst_host, dst_port, proto, bytes: pkt_bytes.len() as u32 });

@@ -42,12 +42,29 @@ fn clamp_mss_v6(packet: &mut [u8], max_mss: u16) -> Result<bool, MtuError> {
     if packet.len() < 40 {
         return Ok(false);
     }
-    // IPv6 next header
-    let next_hdr = packet[6];
-    if next_hdr != IP_PROTO_TCP {
-        return Ok(false); // упрощённо, без extension headers
+    // Walk IPv6 extension headers to find TCP
+    let mut next_header = packet[6];
+    let mut offset = 40usize; // IPv6 base header length
+    // Skip known extension headers: Hop-by-Hop(0), Routing(43), Fragment(44), Destination(60)
+    while matches!(next_header, 0 | 43 | 44 | 60) {
+        if offset + 2 > packet.len() {
+            return Ok(false);
+        }
+        let ext_len = if next_header == 44 {
+            8 // Fragment header is always 8 bytes
+        } else {
+            (packet[offset + 1] as usize + 1) * 8
+        };
+        next_header = packet[offset];
+        offset += ext_len;
     }
-    let tcp = &mut packet[40..];
+    if next_header != IP_PROTO_TCP {
+        return Ok(false);
+    }
+    if offset + 20 > packet.len() {
+        return Ok(false);
+    }
+    let tcp = &mut packet[offset..];
     clamp_tcp_options(tcp, max_mss)
 }
 
@@ -183,6 +200,45 @@ mod tests {
         // Проверяем что MSS изменился
         let mss = u16::from_be_bytes([pkt[42], pkt[43]]);
         assert_eq!(mss, 1340);
+    }
+
+    /// Build an IPv6 packet with a Routing extension header before TCP SYN.
+    fn make_ipv6_syn_with_ext_header(mss: u16) -> Vec<u8> {
+        // IPv6 base (40B) + Routing ext header (8B) + TCP (24B, doff=6) = 72 bytes
+        let mut pkt = vec![0u8; 72];
+        // IPv6 header
+        pkt[0] = 0x60; // Version 6
+        let payload_len: u16 = 8 + 24; // ext header + TCP
+        pkt[4..6].copy_from_slice(&payload_len.to_be_bytes());
+        pkt[6] = 43; // Next Header = Routing (extension header)
+        // Routing extension header at offset 40 (8 bytes: next_hdr, len=0 → (0+1)*8=8)
+        pkt[40] = 6;  // Next Header = TCP
+        pkt[41] = 0;  // Hdr Ext Len = 0 → 8 bytes total
+        // TCP header at offset 48
+        let tcp_off = 48;
+        pkt[tcp_off + 12] = 0x60; // Data offset = 6 (24 bytes)
+        pkt[tcp_off + 13] = 0x02; // SYN flag
+        // MSS option at tcp_off + 20
+        pkt[tcp_off + 20] = 2; // kind
+        pkt[tcp_off + 21] = 4; // len
+        pkt[tcp_off + 22..tcp_off + 24].copy_from_slice(&mss.to_be_bytes());
+        pkt
+    }
+
+    #[test]
+    fn test_mss_clamping_ipv6_with_extension_header() {
+        let mut pkt = make_ipv6_syn_with_ext_header(1460);
+        let result = clamp_tcp_mss(&mut pkt, 1340).unwrap();
+        assert!(result, "should clamp MSS through extension header");
+        let mss = u16::from_be_bytes([pkt[70], pkt[71]]);
+        assert_eq!(mss, 1340);
+    }
+
+    #[test]
+    fn test_mss_clamping_ipv6_ext_header_skips_if_smaller() {
+        let mut pkt = make_ipv6_syn_with_ext_header(1000);
+        let result = clamp_tcp_mss(&mut pkt, 1340).unwrap();
+        assert!(!result);
     }
 
     #[test]
