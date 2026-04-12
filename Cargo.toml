@@ -5,6 +5,7 @@ members = [
     "crates/client-common",
     "crates/client-linux",
     "crates/client-android",
+    "crates/client-openwrt",
     "crates/relay",
 ]
 resolver = "2"
@@ -20,3 +21,10 @@ strip = "symbols"
 inherits = "release"
 debug = true
 strip = "none"
+
+# Size-optimized profile for OpenWrt/MIPS/ARM routers
+[profile.release-openwrt]
+inherits      = "release"
+opt-level     = "z"
+strip         = true
+codegen-units = 1
