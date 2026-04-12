@@ -84,8 +84,11 @@ impl TunInterface {
 
     pub fn configure(&self, addr_cidr: &str, mtu: u32) -> io::Result<()> {
         run_cmd("ip", &["addr", "add", addr_cidr, "dev", &self.name])?;
-        run_cmd("ip", &["link", "set", "dev", &self.name, "mtu", &mtu.to_string(), "up"])?;
-        tracing::info!("TUN {} up: addr={} mtu={}", self.name, addr_cidr, mtu);
+        run_cmd("ip", &["link", "set", "dev", &self.name,
+            "mtu", &mtu.to_string(),
+            "txqueuelen", "10000",
+            "up"])?;
+        tracing::info!("TUN {} up: addr={} mtu={} txqueuelen=10000", self.name, addr_cidr, mtu);
         Ok(())
     }
 

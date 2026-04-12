@@ -11,9 +11,9 @@ android {
         applicationId = "com.ghoststream.vpn"
         minSdk = 26
         targetSdk = 34
-        versionCode = 45
-        versionName = "0.18.2"
-        buildConfigField("String", "GIT_TAG", "\"v0.18.2\"")
+        versionCode = 46
+        versionName = "0.18.3"
+        buildConfigField("String", "GIT_TAG", "\"v0.18.3\"")
     }
 
     buildFeatures {

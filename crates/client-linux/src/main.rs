@@ -65,8 +65,11 @@ fn create_tun(name: &str, addr_cidr: &str, mtu: u32) -> anyhow::Result<File> {
 
     // Configure
     run_cmd("ip", &["addr", "add", addr_cidr, "dev", name])?;
-    run_cmd("ip", &["link", "set", name, "mtu", &mtu.to_string(), "up"])?;
-    tracing::info!("TUN {} up: addr={} mtu={}", name, addr_cidr, mtu);
+    run_cmd("ip", &["link", "set", name,
+        "mtu", &mtu.to_string(),
+        "txqueuelen", "10000",
+        "up"])?;
+    tracing::info!("TUN {} up: addr={} mtu={} txqueuelen=10000", name, addr_cidr, mtu);
 
     Ok(file)
 }

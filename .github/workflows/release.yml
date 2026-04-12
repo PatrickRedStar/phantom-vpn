@@ -63,7 +63,7 @@ jobs:
           restore-keys: server-cargo-
 
       - name: Build phantom-server + phantom-keygen
-        run: cargo build --release -p phantom-server -p phantom-keygen
+        run: cargo build --release -p phantom-server
 
       - name: Upload phantom-server
         uses: actions/upload-artifact@v4
