@@ -502,7 +502,7 @@ async fn run_tunnel(
     let client_identity = if !cert_path.is_empty() && !key_path.is_empty() {
         log::info!("Loading client cert: {}", cert_path);
         Some(
-            phantom_core::quic::load_pem_certs(Path::new(cert_path), Path::new(key_path))
+            phantom_core::tls::load_pem_certs(Path::new(cert_path), Path::new(key_path))
                 .context("Failed to load client cert/key")?,
         )
     } else {
@@ -512,7 +512,7 @@ async fn run_tunnel(
 
     let server_ca = if !ca_cert_path.is_empty() {
         match std::fs::read(ca_cert_path) {
-            Ok(bytes) => match phantom_core::quic::parse_pem_cert_chain(&bytes) {
+            Ok(bytes) => match phantom_core::tls::parse_pem_cert_chain(&bytes) {
                 Ok(certs) => { log::info!("Loaded CA cert from {}", ca_cert_path); Some(certs) }
                 Err(e)    => { log::error!("Failed to parse CA cert: {}", e); None }
             },

@@ -50,17 +50,17 @@ pub fn make_h2_client_tls(
     let tls_config: rustls::ClientConfig = match (skip_server_verify, client_identity) {
         (true, Some((certs, key))) => rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(crate::quic::SkipVerification))
+            .with_custom_certificate_verifier(Arc::new(crate::tls::SkipVerification))
             .with_client_auth_cert(certs, key)?,
         (true, None) => rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(crate::quic::SkipVerification))
+            .with_custom_certificate_verifier(Arc::new(crate::tls::SkipVerification))
             .with_no_client_auth(),
         (false, Some((certs, key))) => rustls::ClientConfig::builder()
-            .with_root_certificates(crate::quic::build_root_store(server_ca)?)
+            .with_root_certificates(crate::tls::build_root_store(server_ca)?)
             .with_client_auth_cert(certs, key)?,
         (false, None) => rustls::ClientConfig::builder()
-            .with_root_certificates(crate::quic::build_root_store(server_ca)?)
+            .with_root_certificates(crate::tls::build_root_store(server_ca)?)
             .with_no_client_auth(),
     };
 
