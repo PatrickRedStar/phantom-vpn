@@ -1,0 +1,96 @@
+name: Build OpenWrt Client
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+
+# ─────────────────────────────────────────────────────────────────────────────
+  build-openwrt:
+    name: OpenWrt client (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: mipsel-unknown-linux-musl
+            name: ghoststream-mipsel
+          - target: aarch64-unknown-linux-musl
+            name: ghoststream-aarch64
+          - target: armv7-unknown-linux-musleabihf
+            name: ghoststream-armv7
+          - target: x86_64-unknown-linux-musl
+            name: ghoststream-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: openwrt-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: openwrt-${{ matrix.target }}-cargo-
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }} -p phantom-client-openwrt
+
+      - name: Check size
+        run: ls -lh target/${{ matrix.target }}/release/ghoststream
+
+      - name: Rename artifact
+        run: cp target/${{ matrix.target }}/release/ghoststream ${{ matrix.name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+  release-openwrt:
+    name: Attach OpenWrt binaries to Release
+    needs: build-openwrt
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          for dir in artifacts/ghoststream-*; do
+            name=$(basename "$dir")
+            cp "$dir/$name" "release-files/$name"
+            chmod +x "release-files/$name"
+          done
+          cp openwrt/proto/ghoststream.sh release-files/
+          cp openwrt/luci/htdocs/luci-static/resources/protocol/ghoststream.js release-files/
+          cp openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json release-files/
+
+      - name: Create/Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*
+          append_body: true
+          body: |
+            ## OpenWrt Client
+            Install: `sh <(wget -O - https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/master/ghoststream-install.sh)`
