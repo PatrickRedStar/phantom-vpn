@@ -19,18 +19,22 @@ jobs:
             name: ghoststream-mipsel
             toolchain: nightly
             build_std: true
+            use_zigbuild: false
           - target: aarch64-unknown-linux-musl
             name: ghoststream-aarch64
             toolchain: stable
             build_std: false
+            use_zigbuild: true
           - target: armv7-unknown-linux-musleabihf
             name: ghoststream-armv7
             toolchain: stable
             build_std: false
+            use_zigbuild: true
           - target: x86_64-unknown-linux-musl
             name: ghoststream-x86_64
             toolchain: stable
             build_std: false
+            use_zigbuild: true
 
     steps:
       - uses: actions/checkout@v4
@@ -53,17 +57,31 @@ jobs:
           restore-keys: openwrt-${{ matrix.target }}-cargo-
 
       - name: Install cargo-zigbuild
+        if: matrix.use_zigbuild
         run: pip3 install ziglang && cargo install cargo-zigbuild
 
-      - name: Build (with build-std)
-        if: matrix.build_std
+      - name: Install mipsel musl cross-compiler
+        if: ${{ !matrix.use_zigbuild }}
         run: |
-          cargo zigbuild --release --target ${{ matrix.target }} -p phantom-client-openwrt \
-            -Z build-std=std,panic_abort
+          # Download musl cross-compiler for mipsel
+          wget -q https://musl.cc/mipsel-linux-musl-cross.tgz
+          tar xf mipsel-linux-musl-cross.tgz -C /opt
+          echo "/opt/mipsel-linux-musl-cross/bin" >> $GITHUB_PATH
+          # Override .cargo/config.toml for CI (remove dev machine paths)
+          cat > .cargo/config.toml <<'CARGO_EOF'
+          [target.mipsel-unknown-linux-musl]
+          linker = "mipsel-linux-musl-gcc"
+          CARGO_EOF
 
-      - name: Build (standard)
-        if: ${{ !matrix.build_std }}
+      - name: Build with zigbuild
+        if: matrix.use_zigbuild
         run: cargo zigbuild --release --target ${{ matrix.target }} -p phantom-client-openwrt
+
+      - name: Build with build-std (mipsel)
+        if: ${{ !matrix.use_zigbuild }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p phantom-client-openwrt \
+            -Z build-std=std,panic_abort
 
       - name: Check size
         run: ls -lh target/${{ matrix.target }}/release/ghoststream
