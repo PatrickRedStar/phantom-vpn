@@ -23,5 +23,9 @@ rustls-pemfile = "2"
 webpki-roots   = "0.26"
 ipnet          = "2"
 
+[features]
+default = ["io-uring-tun"]
+io-uring-tun = ["io-uring"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
-io-uring       = "0.7"
+io-uring       = { version = "0.7", optional = true }

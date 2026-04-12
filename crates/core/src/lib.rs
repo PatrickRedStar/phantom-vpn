@@ -6,8 +6,11 @@ pub mod quic;
 pub mod h2_transport;
 pub mod congestion;
 pub mod routing;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "io-uring-tun"))]
 pub mod tun_uring;
+
+#[cfg(target_os = "linux")]
+pub mod tun_simple;
 
 pub use error::*;
 pub use wire::*;
