@@ -66,12 +66,11 @@ pub fn build_root_store(
     ca_certs: Option<Vec<CertificateDer<'static>>>,
 ) -> anyhow::Result<Arc<rustls::RootCertStore>> {
     let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     if let Some(certs) = ca_certs {
         for cert in certs {
             roots.add(cert)?;
         }
-    } else {
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
     Ok(Arc::new(roots))
 }
