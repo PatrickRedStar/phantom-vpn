@@ -13,7 +13,6 @@ object ConnStringParser {
         val tun: String,
         val cert: String,
         val key: String,
-        val transport: String = "h2",
     )
 
     /**
@@ -56,7 +55,6 @@ object ConnStringParser {
         var sni: String? = null
         var tun: String? = null
         var version: String? = null
-        var transport = "h2"
         for (pair in query.split('&')) {
             if (pair.isEmpty()) continue
             val eq = pair.indexOf('=')
@@ -67,7 +65,6 @@ object ConnStringParser {
                 "sni" -> sni = v
                 "tun" -> tun = v
                 "v" -> version = v
-                "transport" -> transport = v
             }
         }
         require(!sni.isNullOrEmpty()) { "Missing 'sni' query param" }
@@ -80,7 +77,6 @@ object ConnStringParser {
             tun = tun!!,
             cert = certPem,
             key = keyPem,
-            transport = transport,
         )
     }
 

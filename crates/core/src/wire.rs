@@ -78,6 +78,9 @@ pub fn flow_stream_idx(pkt: &[u8], n: usize) -> usize {
 ///
 /// `target_size` — целевой размер кадра из H264Shaper для имитации H.264 паттерна.
 /// Если реальные данные больше target_size — padding не добавляется.
+///
+/// `target_size=0` отключает padding (shaper удалён в v0.17+).
+/// Параметр зарезервирован под будущую re-integration shaper-а.
 pub fn build_batch_plaintext(
     packets: &[&[u8]],
     target_size: usize,
@@ -197,8 +200,8 @@ pub fn build_heartbeat_frame() -> Bytes {
 /// Single-source-of-truth filter: returns true if `pkt` should be dropped as
 /// a dummy/heartbeat (or otherwise malformed non-IPv4) packet.
 ///
-/// Both client rx (`tls_rx_loop`) and server rx (`h2_server`, `quic_server`)
-/// call this before forwarding to tun_tx.
+/// Both client rx (`tls_rx_loop`) and server rx (`h2_server`) call this
+/// before forwarding to tun_tx.
 #[inline]
 pub fn is_heartbeat_packet(pkt: &[u8]) -> bool {
     pkt.is_empty() || (pkt[0] >> 4) != 4

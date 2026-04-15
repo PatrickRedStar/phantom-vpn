@@ -126,7 +126,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         certPath   = certFile.absolutePath,
                         keyPath    = keyFile.absolutePath,
                         tunAddr    = parsed.tun,
-                        transport  = parsed.transport,
                     ),
                 )
 

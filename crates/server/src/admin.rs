@@ -285,7 +285,9 @@ async fn delete_client(
     }
     // Try to remove empty dir
     if let Some(p) = info.get("cert_path").and_then(|v| v.as_str()) {
-        let _ = std::fs::remove_dir(Path::new(p).parent().unwrap_or(Path::new("/")));
+        if let Some(parent) = Path::new(p).parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 
     write_keyring(&state.clients_path, &keyring)?;

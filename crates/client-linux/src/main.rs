@@ -225,16 +225,6 @@ enum TunnelExit {
     TunnelDied,
 }
 
-fn resolve_transport(args: &Args, cfg: &ClientConfig) -> anyhow::Result<String> {
-    if let Some(transport) = args.transport.as_deref() {
-        return helpers::normalize_transport(transport);
-    }
-    if let Some(transport) = cfg.transport.as_deref() {
-        return helpers::normalize_transport(transport);
-    }
-    Ok("h2".to_string())
-}
-
 async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
     if *shutdown_rx.borrow() {
         return;
@@ -307,9 +297,7 @@ async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
         anyhow::bail!("No CA certificate provided and insecure=false. Set insecure=true or provide ca_cert_path.");
     }
 
-    // Resolve transport: CLI override > config/conn string > default h2
-    let transport = resolve_transport(&args, &cfg)?;
-    tracing::info!("Using transport: {}", transport);
+    tracing::info!("Using transport: h2");
 
     let exit = run_tls_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?;
 

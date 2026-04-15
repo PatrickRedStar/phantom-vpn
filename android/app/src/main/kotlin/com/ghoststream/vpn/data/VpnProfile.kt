@@ -9,8 +9,6 @@ data class VpnProfile(
     val certPath: String = "",
     val keyPath: String = "",
     val tunAddr: String = "10.7.0.2/24",
-    // Transport: "quic" (default) or "h2"
-    val transport: String = "h2",
     // Per-profile overrides (null = use global defaults)
     val dnsServers: List<String>? = null,
     val splitRouting: Boolean? = null,

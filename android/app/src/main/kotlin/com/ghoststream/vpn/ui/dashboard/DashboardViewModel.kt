@@ -50,7 +50,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             certPath        = p?.certPath ?: "",
             keyPath         = p?.keyPath ?: "",
             tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
-            transport       = p?.transport ?: "h2",
             dnsServers      = p?.dnsServers ?: prefs.dnsServers,
             splitRouting    = p?.splitRouting ?: prefs.splitRouting,
             directCountries = p?.directCountries ?: prefs.directCountries,
@@ -243,7 +242,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 putExtra(GhostStreamVpnService.EXTRA_CERT_PATH, cfg.certPath)
                 putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
                 putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)
-                putExtra(GhostStreamVpnService.EXTRA_TRANSPORT, cfg.transport)
                 putExtra(GhostStreamVpnService.EXTRA_DNS_SERVERS, cfg.dnsServers.joinToString(","))
                 putExtra(GhostStreamVpnService.EXTRA_SPLIT_ROUTING, cfg.splitRouting)
                 putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, directCidrsPath)

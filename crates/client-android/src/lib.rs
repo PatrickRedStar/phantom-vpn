@@ -332,7 +332,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let key_path_str_clone = key_path_str.clone();
     let ca_cert_path_str_clone = ca_cert_path_str.clone();
 
-    let join_handle = std::thread::Builder::new()
+    let join_handle = match std::thread::Builder::new()
         .name("ghoststream-tunnel".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -370,7 +370,15 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
             // Runtime is dropped here, ensuring all worker threads are joined
             // before the tunnel thread exits.
         })
-        .unwrap();
+    {
+        Ok(h) => h,
+        Err(e) => {
+            log::error!("Failed to spawn tunnel thread: {}", e);
+            IS_CONNECTED.store(false, Ordering::Relaxed);
+            unsafe { libc::close(fd); }
+            return -10;
+        }
+    };
 
     *TUNNEL.lock().unwrap() = Some(TunnelHandle { shutdown_tx, join_handle });
     0

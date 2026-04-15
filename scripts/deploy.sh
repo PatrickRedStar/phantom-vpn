@@ -143,7 +143,7 @@ if [[ "$DRY_RUN" == "--dry-run" ]]; then
 else
     ssh "${SSH_OPTS[@]}" "$REMOTE" "cat > /etc/systemd/system/$SERVICE <<'EOF'
 [Unit]
-Description=PhantomVPN Server (QUIC/HTTP3 transport)
+Description=PhantomVPN Server (H2/TLS transport)
 After=network-online.target
 Wants=network-online.target
 

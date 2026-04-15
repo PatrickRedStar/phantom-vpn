@@ -62,7 +62,7 @@ impl Default for ServerNetworkConfig {
     }
 }
 
-// ─── QUIC секция ─────────────────────────────────────────────────────────────
+// ─── TLS / H2 секции ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct H2Config {
@@ -72,8 +72,11 @@ pub struct H2Config {
     pub enabled: Option<bool>,
 }
 
+/// mTLS сертификаты и allowlist (server + client). Секция называется `[tls]`
+/// в конфиге; `quic` оставлен как serde alias для backward-compat со старыми
+/// конфигами до v0.19.x.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct QuicConfig {
+pub struct TlsConfig {
     /// Путь к PEM сертификату (если не задан — генерируется self-signed)
     pub cert_path: Option<String>,
     /// Путь к PEM приватному ключу
@@ -84,8 +87,6 @@ pub struct QuicConfig {
     pub key_pem: Option<String>,
     /// Subject Alternative Names для self-signed сертификата
     pub cert_subjects: Option<Vec<String>>,
-    /// ALPN протокол (default: "h3")
-    pub alpn: Option<String>,
     /// Idle timeout в секундах (default: 30)
     pub idle_timeout_secs: Option<u64>,
     /// Путь к CA сертификату PEM для mTLS:
@@ -186,8 +187,8 @@ pub struct ServerConfig {
     pub timeouts: Option<TimeoutsConfig>,
     #[serde(default)]
     pub shaper:   Option<ShaperConfig>,
-    #[serde(default)]
-    pub quic:     Option<QuicConfig>,
+    #[serde(default, alias = "quic")]
+    pub tls:      Option<TlsConfig>,
     #[serde(default)]
     pub h2:       Option<H2Config>,
     #[serde(default)]
@@ -207,15 +208,12 @@ impl ServerConfig {
 pub struct ClientConfig {
     #[serde(default)]
     pub network: ClientNetworkConfig,
-    /// Transport override: "quic" | "h2" | "auto"
-    #[serde(default)]
-    pub transport: Option<String>,
     #[serde(default)]
     pub keys:    Option<KeysConfig>,
     #[serde(default)]
     pub shaper:  Option<ShaperConfig>,
-    #[serde(default)]
-    pub quic:    Option<QuicConfig>,
+    #[serde(default, alias = "quic")]
+    pub tls:     Option<TlsConfig>,
 }
 
 impl ClientConfig {
