@@ -508,6 +508,31 @@ fun SettingsScreen(
             }
         }
 
+        // ── Autostart ────────────────────────────────────────────────────────
+        item {
+            val autoStart by viewModel.autoStartOnBoot.collectAsStateWithLifecycle()
+            SettingsSection("Автозапуск") {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Запускать VPN после ребута")
+                        Text(
+                            "Туннель поднимется автоматически при загрузке устройства, если был включён до перезагрузки.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                        )
+                    }
+                    Switch(
+                        checked = autoStart,
+                        onCheckedChange = { viewModel.setAutoStartOnBoot(it) },
+                    )
+                }
+            }
+        }
+
         // ── Per-app ──────────────────────────────────────────────────────────
         item {
             SettingsSection("Приложения") {

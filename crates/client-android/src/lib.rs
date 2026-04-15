@@ -382,13 +382,29 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     _class: JClass,
 ) {
     IS_CONNECTED.store(false, Ordering::Relaxed);
-    if let Some(handle) = TUNNEL.lock().unwrap().take() {
-        let _ = handle.shutdown_tx.send(());
-        log::info!("Tunnel stop signal sent, waiting for tunnel thread to finish");
-        if let Err(_) = handle.join_handle.join() {
-            log::error!("Tunnel thread panicked during join");
+    if let Some(TunnelHandle { shutdown_tx, join_handle }) = TUNNEL.lock().unwrap().take() {
+        let _ = shutdown_tx.send(());
+        log::info!("Tunnel stop signal sent, waiting up to 2s for tunnel thread to finish");
+        // Bounded wait: if tokio tasks are stuck (half-open TLS, blocking writer),
+        // we detach the join handle and return. Thread will terminate when the
+        // runtime eventually drops or when the process exits.
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_millis(2000);
+        while start.elapsed() < timeout && !join_handle.is_finished() {
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
-        log::info!("Tunnel thread joined");
+        if join_handle.is_finished() {
+            let _ = join_handle.join();
+            log::info!("Tunnel thread joined cleanly");
+        } else {
+            // Detach: drop JoinHandle without join. Further nativeStart will spawn a
+            // fresh runtime; old tasks are cancelled via drop of the oneshot sender
+            // and the shutdown_flag they observe.
+            log::warn!(
+                "Tunnel thread did not finish within 2s — detaching, cleanup is async"
+            );
+            drop(join_handle);
+        }
     }
 }
 

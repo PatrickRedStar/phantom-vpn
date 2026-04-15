@@ -71,6 +71,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val theme: StateFlow<String> = preferencesStore.theme
         .stateIn(viewModelScope, SharingStarted.Eagerly, "system")
 
+    val autoStartOnBoot: StateFlow<Boolean> = preferencesStore.autoStartOnBoot
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setAutoStartOnBoot(enabled: Boolean) {
+        viewModelScope.launch { preferencesStore.setAutoStartOnBoot(enabled) }
+    }
+
     // ── Import dialog state ───────────────────────────────────────────────────
 
     private val _pendingConnString = MutableStateFlow("")

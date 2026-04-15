@@ -6,6 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
@@ -13,10 +17,96 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.ghoststream.vpn.R
+import com.ghoststream.vpn.data.PreferencesStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
 class GhostStreamVpnService : VpnService() {
+
+    private data class StartExtras(
+        val serverAddr: String,
+        val serverName: String,
+        val insecure: Boolean,
+        val certPath: String,
+        val keyPath: String,
+        val caCertPath: String,
+        val transport: String,
+        val tunAddr: String,
+        val dnsServers: List<String>,
+        val splitRouting: Boolean,
+        val directCidrs: String,
+        val perAppMode: String,
+        val perAppList: List<String>,
+    ) {
+        fun toJson(): String = JSONObject().apply {
+            put("server_addr", serverAddr); put("server_name", serverName)
+            put("insecure", insecure); put("cert_path", certPath); put("key_path", keyPath)
+            put("ca_cert_path", caCertPath); put("transport", transport)
+            put("tun_addr", tunAddr); put("dns_servers", dnsServers.joinToString(","))
+            put("split_routing", splitRouting); put("direct_cidrs", directCidrs)
+            put("per_app_mode", perAppMode); put("per_app_list", perAppList.joinToString(","))
+        }.toString()
+
+        companion object {
+            fun fromJson(raw: String): StartExtras? = runCatching {
+                val o = JSONObject(raw)
+                StartExtras(
+                    serverAddr = o.optString("server_addr"),
+                    serverName = o.optString("server_name"),
+                    insecure = o.optBoolean("insecure"),
+                    certPath = o.optString("cert_path"),
+                    keyPath = o.optString("key_path"),
+                    caCertPath = o.optString("ca_cert_path"),
+                    transport = o.optString("transport", "h2"),
+                    tunAddr = o.optString("tun_addr", "10.7.0.2/24"),
+                    dnsServers = o.optString("dns_servers", "8.8.8.8,1.1.1.1")
+                        .split(",").filter { it.isNotBlank() },
+                    splitRouting = o.optBoolean("split_routing"),
+                    directCidrs = o.optString("direct_cidrs"),
+                    perAppMode = o.optString("per_app_mode", "none"),
+                    perAppList = o.optString("per_app_list")
+                        .split(",").filter { it.isNotBlank() },
+                )
+            }.getOrNull()
+        }
+    }
+
+    private fun resolveStartExtras(intent: Intent?): StartExtras? {
+        val serverAddr = intent?.getStringExtra(EXTRA_SERVER_ADDR)
+        if (serverAddr != null) {
+            val serverName = intent.getStringExtra(EXTRA_SERVER_NAME) ?: serverAddr.substringBefore(":")
+            return StartExtras(
+                serverAddr = serverAddr,
+                serverName = serverName,
+                insecure = intent.getBooleanExtra(EXTRA_INSECURE, false),
+                certPath = intent.getStringExtra(EXTRA_CERT_PATH) ?: "",
+                keyPath = intent.getStringExtra(EXTRA_KEY_PATH) ?: "",
+                caCertPath = intent.getStringExtra(EXTRA_CA_CERT_PATH) ?: "",
+                transport = normalizeTransport(intent.getStringExtra(EXTRA_TRANSPORT)),
+                tunAddr = intent.getStringExtra(EXTRA_TUN_ADDR) ?: "10.7.0.2/24",
+                dnsServers = (intent.getStringExtra(EXTRA_DNS_SERVERS) ?: "8.8.8.8,1.1.1.1")
+                    .split(",").filter { it.isNotBlank() },
+                splitRouting = intent.getBooleanExtra(EXTRA_SPLIT_ROUTING, false),
+                directCidrs = intent.getStringExtra(EXTRA_DIRECT_CIDRS) ?: "",
+                perAppMode = intent.getStringExtra(EXTRA_PER_APP_MODE) ?: "none",
+                perAppList = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
+                    .split(",").filter { it.isNotBlank() },
+            )
+        }
+        // Null intent (process killed & system restarted service): restore from prefs
+        // only if user had an active session.
+        val wasRunning = prefs.wasRunningBlocking()
+        if (!wasRunning) return null
+        val json = prefs.loadLastTunnelParamsBlocking() ?: return null
+        val restored = StartExtras.fromJson(json) ?: return null
+        Log.i(TAG, "Restored tunnel params from prefs after process kill")
+        return restored
+    }
 
     private data class TunnelParams(
         val serverAddr: String,
@@ -40,11 +130,27 @@ class GhostStreamVpnService : VpnService() {
     private var startupThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var savedParams: TunnelParams? = null
+    @Volatile private var savedTunAddr: String = "10.7.0.2/24"
+    @Volatile private var savedDnsServers: List<String> = listOf("8.8.8.8", "1.1.1.1")
+    @Volatile private var savedSplitRouting: Boolean = false
+    @Volatile private var savedDirectCidrs: String = ""
+    @Volatile private var savedPerAppMode: String = "none"
+    @Volatile private var savedPerAppList: List<String> = emptyList()
     @Volatile private var userStopped = false
     @Volatile private var runtimeTransport = "h2"
     @Volatile private var autoFallbackCount = 0
     @Volatile private var lastAutoFallbackAtMs = 0L
     @Volatile private var nextAutoQuicRetryAtMs = 0L
+
+    // Used by watchdog to sleep-with-wakeup. notifyAll() from network callback or stopTunnel
+    // short-circuits exponential backoff so reconnect happens immediately.
+    private val watchdogLock = Object()
+    @Volatile private var networkChangedTick: Long = 0L
+
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private lateinit var prefs: PreferencesStore
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Instance method so JNI receives the service object for VpnService.protect()
     external fun nativeStart(
@@ -102,28 +208,48 @@ class GhostStreamVpnService : VpnService() {
         private const val MAX_SPLIT_ROUTES = 8000
     }
 
+    override fun onCreate() {
+        super.onCreate()
+        prefs = PreferencesStore(applicationContext)
+        registerNetworkCallback()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            stopTunnel()
+            // User-initiated stop: clear persistence flag so BootReceiver won't resurrect us.
+            serviceScope.launch { runCatching { prefs.setWasRunning(false) } }
+            stopTunnelAsync()
             return START_NOT_STICKY
         }
 
-        val serverAddr = intent?.getStringExtra(EXTRA_SERVER_ADDR) ?: return START_NOT_STICKY
-        val serverName = intent.getStringExtra(EXTRA_SERVER_NAME)
-            ?: serverAddr.substringBefore(":")
-        val insecure   = intent.getBooleanExtra(EXTRA_INSECURE, false)
-        val certPath   = intent.getStringExtra(EXTRA_CERT_PATH) ?: ""
-        val keyPath    = intent.getStringExtra(EXTRA_KEY_PATH)  ?: ""
-        val tunAddr    = intent.getStringExtra(EXTRA_TUN_ADDR)  ?: "10.7.0.2/24"
-        val dnsServers = (intent.getStringExtra(EXTRA_DNS_SERVERS) ?: "8.8.8.8,1.1.1.1")
-            .split(",").filter { it.isNotBlank() }
-        val splitRouting   = intent.getBooleanExtra(EXTRA_SPLIT_ROUTING, false)
-        val directCidrs    = intent.getStringExtra(EXTRA_DIRECT_CIDRS) ?: ""
-        val perAppMode     = intent.getStringExtra(EXTRA_PER_APP_MODE) ?: "none"
-        val perAppList     = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
-            .split(",").filter { it.isNotBlank() }
-        val caCertPath     = intent.getStringExtra(EXTRA_CA_CERT_PATH) ?: ""
-        val transport      = normalizeTransport(intent.getStringExtra(EXTRA_TRANSPORT))
+        // Resolve extras — either from intent, or restored from prefs if system re-created us with null intent.
+        val resolved = resolveStartExtras(intent) ?: run {
+            Log.w(TAG, "onStartCommand: no params to start with")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val serverAddr     = resolved.serverAddr
+        val serverName     = resolved.serverName
+        val insecure       = resolved.insecure
+        val certPath       = resolved.certPath
+        val keyPath        = resolved.keyPath
+        val tunAddr        = resolved.tunAddr
+        val dnsServers     = resolved.dnsServers
+        val splitRouting   = resolved.splitRouting
+        val directCidrs    = resolved.directCidrs
+        val perAppMode     = resolved.perAppMode
+        val perAppList     = resolved.perAppList
+        val caCertPath     = resolved.caCertPath
+        val transport      = resolved.transport
+
+        // Persist for crash recovery + BootReceiver.
+        serviceScope.launch {
+            runCatching {
+                prefs.setWasRunning(true)
+                prefs.saveLastTunnelParams(resolved.toJson())
+            }
+        }
 
         createNotificationChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -229,6 +355,12 @@ class GhostStreamVpnService : VpnService() {
         }
 
         userStopped = false
+        savedTunAddr = tunAddr
+        savedDnsServers = dnsServers
+        savedSplitRouting = splitRouting
+        savedDirectCidrs = directCidrsPath
+        savedPerAppMode = perAppMode
+        savedPerAppList = perAppList
         savedParams = TunnelParams(
             serverAddr = serverAddr,
             serverName = serverName,
@@ -277,11 +409,7 @@ class GhostStreamVpnService : VpnService() {
             var connectedAtMs = 0L
             var quicProbeStart: NativeStatsSnapshot? = null
             outer@ while (!Thread.currentThread().isInterrupted) {
-                try {
-                    Thread.sleep(1000)
-                } catch (_: InterruptedException) {
-                    break
-                }
+                if (!watchdogSleep(1000L)) break@outer
                 try {
                     val params = savedParams ?: continue
                     val stats = readNativeStats() ?: continue
@@ -362,7 +490,7 @@ class GhostStreamVpnService : VpnService() {
                         var backoffMs = 3_000L
                         var reconnected = false
                         for (attempt in 1..8) {
-                            try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { break@outer }
+                            if (!watchdogSleep(backoffMs)) break@outer
                             if (userStopped) break@outer
                             if (restartNativeTunnel(params, runtimeTransport)) {
                                 timeoutSecs = 60
@@ -395,10 +523,7 @@ class GhostStreamVpnService : VpnService() {
                                 continue@outer
                             }
                         }
-                        mainHandler.post {
-                            VpnStateManager.update(VpnState.Error("Тайм-аут подключения к серверу"))
-                            stopTunnel()
-                        }
+                        mainHandler.post { failTunnel("Тайм-аут подключения к серверу") }
                         break
                     }
                 } catch (_: Exception) {}
@@ -534,48 +659,122 @@ class GhostStreamVpnService : VpnService() {
         else -> "h2"
     }
 
-    private fun stopTunnel() {
+    /**
+     * Public stop called from callers that may be on UI thread. Runs the actual
+     * blocking cleanup (nativeStop + fd close) on a dedicated thread with a hard
+     * timeout so a stuck native side can't ANR the caller or leave the Service
+     * unable to stopSelf().
+     */
+    private fun stopTunnelAsync(finalState: VpnState = VpnState.Disconnected) {
         userStopped = true
+        synchronized(watchdogLock) { watchdogLock.notifyAll() }
         startupThread?.interrupt()
         startupThread = null
         watchdogThread?.interrupt()
         watchdogThread = null
-        nativeStop()
-        vpnInterface?.close()
-        vpnInterface = null
         savedParams = null
-        runtimeTransport = "h2"
-        resetAutoRuntimeState()
-        VpnStateManager.update(VpnState.Disconnected)
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        if (finalState !is VpnState.Error) {
+            mainHandler.post { VpnStateManager.update(VpnState.Disconnecting) }
+        }
+
+        Thread {
+            val nativeStopDone = Thread {
+                runCatching { nativeStop() }
+            }.apply { name = "vpn-native-stop"; isDaemon = true; start() }
+            nativeStopDone.join(3_000L)
+            if (nativeStopDone.isAlive) {
+                Log.w(TAG, "nativeStop did not return in 3s — proceeding anyway")
+            }
+            runCatching { vpnInterface?.close() }
+            vpnInterface = null
+            runtimeTransport = "h2"
+            resetAutoRuntimeState()
+            mainHandler.post {
+                VpnStateManager.update(finalState)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }.apply { name = "vpn-stop"; isDaemon = true; start() }
     }
 
+    // Legacy name retained for onRevoke/onDestroy call sites.
+    private fun stopTunnel() = stopTunnelAsync()
+
     private fun failTunnel(message: String) {
-        userStopped = true
-        startupThread?.interrupt()
-        startupThread = null
-        watchdogThread?.interrupt()
-        watchdogThread = null
-        nativeStop()
-        vpnInterface?.close()
-        vpnInterface = null
-        savedParams = null
-        runtimeTransport = "h2"
-        resetAutoRuntimeState()
-        VpnStateManager.update(VpnState.Error(message))
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        serviceScope.launch { runCatching { prefs.setWasRunning(false) } }
+        stopTunnelAsync(VpnState.Error(message))
     }
 
     override fun onRevoke() {
+        serviceScope.launch { runCatching { prefs.setWasRunning(false) } }
         stopTunnel()
         super.onRevoke()
     }
 
     override fun onDestroy() {
+        unregisterNetworkCallback()
         stopTunnel()
+        serviceScope.cancel()
         super.onDestroy()
+    }
+
+    // ── Watchdog sleep with wake-up support ────────────────────────────────
+    // Returns false if interrupted or userStopped — caller must break its loop.
+    private fun watchdogSleep(ms: Long): Boolean {
+        val tickAtEntry = networkChangedTick
+        val deadline = System.currentTimeMillis() + ms
+        synchronized(watchdogLock) {
+            while (true) {
+                if (userStopped) return false
+                if (Thread.currentThread().isInterrupted) return false
+                if (networkChangedTick != tickAtEntry) return true // early-wake for fast reconnect
+                val remaining = deadline - System.currentTimeMillis()
+                if (remaining <= 0L) return true
+                try {
+                    watchdogLock.wait(remaining)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
+        }
+        @Suppress("UNREACHABLE_CODE") return true
+    }
+
+    // ── Network change detection ───────────────────────────────────────────
+    private fun registerNetworkCallback() {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        connectivityManager = cm
+        val req = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { wakeWatchdog("onAvailable") }
+            override fun onLost(network: Network)      { wakeWatchdog("onLost") }
+            override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
+                // Fires on SIM/Wi-Fi handoff too.
+                wakeWatchdog("onCapabilitiesChanged")
+            }
+        }
+        networkCallback = cb
+        runCatching { cm.registerNetworkCallback(req, cb) }
+            .onFailure { Log.w(TAG, "registerNetworkCallback failed", it) }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cm = connectivityManager ?: return
+        val cb = networkCallback ?: return
+        runCatching { cm.unregisterNetworkCallback(cb) }
+        networkCallback = null
+    }
+
+    private fun wakeWatchdog(reason: String) {
+        Log.i(TAG, "Network changed ($reason) — waking watchdog")
+        synchronized(watchdogLock) {
+            networkChangedTick += 1
+            watchdogLock.notifyAll()
+        }
     }
 
     private fun createNotificationChannel() {
