@@ -170,6 +170,8 @@ pub struct AdminConfig {
     pub ca_cert_path: Option<String>,
     /// Path to CA key for signing new client certs
     pub ca_key_path: Option<String>,
+    /// Listen address for loopback bot/break-glass listener (default: "127.0.0.1:8081")
+    pub bot_listen_addr: Option<String>,
 }
 
 // ─── ServerConfig ─────────────────────────────────────────────────────────────

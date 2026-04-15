@@ -6,7 +6,6 @@ data class VpnConfig(
     val insecure: Boolean = false,
     val certPath: String = "",
     val keyPath: String = "",
-    val caCertPath: String? = null,
     val tunAddr: String = "10.7.0.2/24",
     val transport: String = "h2",
     val dnsServers: List<String> = listOf("8.8.8.8", "1.1.1.1"),

@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ghoststream.vpn.data.AdminHttpClient
 import com.ghoststream.vpn.data.ConnStringParser
 import com.ghoststream.vpn.data.PairingClient
 import com.ghoststream.vpn.data.PreferencesStore
@@ -26,13 +27,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Request
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.ByteArrayInputStream
-import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.net.URL
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 
@@ -58,7 +59,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             insecure        = p?.insecure ?: false,
             certPath        = p?.certPath ?: "",
             keyPath         = p?.keyPath ?: "",
-            caCertPath      = p?.caCertPath,
             tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
             dnsServers      = p?.dnsServers ?: prefs.dnsServers,
             splitRouting    = p?.splitRouting ?: prefs.splitRouting,
@@ -110,13 +110,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 certFile.writeText(parsed.cert)
                 keyFile.writeText(parsed.key)
 
-                var caPath: String? = null
-                if (parsed.ca != null) {
-                    val caFile = File(profileDir, "ca.crt")
-                    caFile.writeText(parsed.ca)
-                    caPath = caFile.absolutePath
-                }
-
                 val name = _pendingName.value.trim().ifEmpty {
                     extractClientNameFromCert(parsed.cert)
                         ?: parsed.sni.substringBefore(".").replaceFirstChar { it.uppercase() }
@@ -132,10 +125,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         insecure   = false,
                         certPath   = certFile.absolutePath,
                         keyPath    = keyFile.absolutePath,
-                        caCertPath = caPath,
                         tunAddr    = parsed.tun,
-                        adminUrl   = parsed.adminUrl,
-                        adminToken = parsed.adminToken,
                         transport  = parsed.transport,
                     ),
                 )
@@ -239,53 +229,64 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private fun fetchAllSubscriptions() {
         profiles.value
-            .filter { it.adminUrl != null && it.adminToken != null }
+            .filter { it.certPath.isNotBlank() && it.keyPath.isNotBlank() }
             .forEach { fetchProfileSubscription(it) }
     }
 
     private fun fetchProfileSubscription(profile: VpnProfile) {
-        val adminUrl = profile.adminUrl ?: return
-        val adminToken = profile.adminToken ?: return
         val myTunIp = profile.tunAddr.substringBefore('/')
+        val parts = myTunIp.split('.')
+        val gateway = if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.1" else "10.7.0.1"
+        val baseUrl = "https://$gateway:8080"
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val url = URL("${adminUrl.trimEnd('/')}/api/clients")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.setRequestProperty("Authorization", "Bearer $adminToken")
-                conn.connectTimeout = 5000
-                conn.readTimeout = 10000
-                if (conn.responseCode == 200) {
-                    val body = conn.inputStream.bufferedReader().readText()
-                    conn.disconnect()
-                    val arr = JSONArray(body)
-                    for (i in 0 until arr.length()) {
-                        val o = arr.getJSONObject(i)
-                        if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
-                            val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
-                            val enabled = o.optBoolean("enabled", true)
-                            val text = if (expiresAt == null) {
-                                "бессрочно"
-                            } else {
-                                val rem = expiresAt - (System.currentTimeMillis() / 1000)
-                                if (rem > 0) {
-                                    val d = rem / 86400
-                                    val h = (rem % 86400) / 3600
-                                    when {
-                                        d > 0 -> "${d}д"
-                                        h > 0 -> "${h}ч"
-                                        else  -> "< 1ч ⚠"
-                                    }
-                                } else "истекла ⚠"
-                            }
-                            _profileSubscriptions.value = _profileSubscriptions.value + (profile.id to text)
-                            profilesStore.updateProfile(
-                                profile.copy(cachedExpiresAt = expiresAt, cachedEnabled = enabled),
-                            )
-                            break
+                val outcome = AdminHttpClient.build(
+                    certPemPath = profile.certPath,
+                    keyPemPath = profile.keyPath,
+                    pinnedFp = profile.cachedAdminServerCertFp,
+                )
+                val meReq = Request.Builder().url("$baseUrl/api/me").get().build()
+                val isAdmin = outcome.client.newCall(meReq).execute().use { resp ->
+                    if (!resp.isSuccessful) return@launch
+                    JSONObject(resp.body?.string().orEmpty()).optBoolean("is_admin", false)
+                }
+                val clReq = Request.Builder().url("$baseUrl/api/clients").get().build()
+                val body = outcome.client.newCall(clReq).execute().use {
+                    if (!it.isSuccessful) return@launch
+                    it.body?.string().orEmpty()
+                }
+                val arr = JSONArray(body)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
+                        val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
+                        val enabled = o.optBoolean("enabled", true)
+                        val text = if (expiresAt == null) "бессрочно" else {
+                            val rem = expiresAt - (System.currentTimeMillis() / 1000)
+                            if (rem > 0) {
+                                val d = rem / 86400
+                                val h = (rem % 86400) / 3600
+                                when {
+                                    d > 0 -> "${d}д"
+                                    h > 0 -> "${h}ч"
+                                    else  -> "< 1ч ⚠"
+                                }
+                            } else "истекла ⚠"
                         }
+                        _profileSubscriptions.value = _profileSubscriptions.value + (profile.id to text)
+                        profilesStore.updateProfile(
+                            profile.copy(
+                                cachedExpiresAt = expiresAt,
+                                cachedEnabled = enabled,
+                                cachedIsAdmin = isAdmin,
+                                cachedAdminServerCertFp = outcome.serverCertFpRef.value
+                                    ?: profile.cachedAdminServerCertFp,
+                            ),
+                        )
+                        break
                     }
-                } else conn.disconnect()
+                }
             } catch (_: Exception) {}
         }
     }
@@ -357,8 +358,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 sb.appendLine("SNI: ${activeProfile.serverName}")
                 sb.appendLine("Insecure: ${activeProfile.insecure}")
                 sb.appendLine("TUN: ${activeProfile.tunAddr}")
-                sb.appendLine("CA cert: ${if (activeProfile.caCertPath != null) "есть" else "нет"}")
-                sb.appendLine("Admin URL: ${if (activeProfile.adminUrl != null) "настроен" else "нет"}")
+                sb.appendLine("Admin: ${if (activeProfile.cachedIsAdmin == true) "да" else "нет"}")
             } else {
                 sb.appendLine("Нет активного профиля")
             }
@@ -422,7 +422,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 insecure   = old.insecure,
                 certPath   = old.certPath,
                 keyPath    = old.keyPath,
-                caCertPath = old.caCertPath,
                 tunAddr    = old.tunAddr,
             )
         }

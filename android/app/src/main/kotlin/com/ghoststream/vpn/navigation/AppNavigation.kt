@@ -139,10 +139,9 @@ fun AppNavigation() {
                 val settingsViewModel: SettingsViewModel = viewModel()
                 val profile = settingsViewModel.profiles.collectAsStateWithLifecycle().value
                     .find { it.id == profileId }
-                if (profile?.adminUrl != null && profile.adminToken != null) {
+                if (profile != null) {
                     AdminScreen(
-                        adminUrl = profile.adminUrl,
-                        adminToken = profile.adminToken,
+                        profile = profile,
                         onBack = { navController.popBackStack() },
                     )
                 }

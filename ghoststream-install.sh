@@ -1,6 +1,6 @@
 #!/bin/sh
 # GhostStream VPN — OpenWrt one-liner installer
-# Usage: sh <(wget -O - https://raw.githubusercontent.com/PatrickRedStar/phantom-vpn/refs/heads/master/ghoststream-install.sh)
+# Usage: wget -O /tmp/gs-install.sh https://github.com/PatrickRedStar/phantom-vpn/releases/latest/download/ghoststream-install.sh && sh /tmp/gs-install.sh
 set -e
 
 GITHUB="https://github.com/PatrickRedStar/phantom-vpn/releases/latest/download"
@@ -41,7 +41,7 @@ echo ""
 
 # 4. Скачиваем бинарник
 echo "[1/4] Downloading ${BIN} → /usr/bin/ghoststream ..."
-wget -q --show-progress -O /usr/bin/ghoststream "${GITHUB}/${BIN}" || {
+wget -O /usr/bin/ghoststream "${GITHUB}/${BIN}" || {
     echo "ERROR: Failed to download ${GITHUB}/${BIN}" >&2
     exit 1
 }
@@ -51,7 +51,7 @@ echo "      OK"
 # 5. Скачиваем netifd proto handler
 echo "[2/4] Downloading netifd handler → /lib/netifd/proto/ghoststream.sh ..."
 mkdir -p /lib/netifd/proto
-wget -q --show-progress -O /lib/netifd/proto/ghoststream.sh \
+wget -O /lib/netifd/proto/ghoststream.sh \
     "${GITHUB}/ghoststream.sh" || {
     echo "ERROR: Failed to download netifd handler" >&2
     exit 1
@@ -62,7 +62,7 @@ echo "      OK"
 # 6. Скачиваем LuCI JS
 echo "[3/4] Downloading LuCI JS → /www/luci-static/resources/protocol/ghoststream.js ..."
 mkdir -p /www/luci-static/resources/protocol
-wget -q --show-progress -O /www/luci-static/resources/protocol/ghoststream.js \
+wget -O /www/luci-static/resources/protocol/ghoststream.js \
     "${GITHUB}/ghoststream.js" || {
     echo "ERROR: Failed to download LuCI JS" >&2
     exit 1
@@ -72,7 +72,7 @@ echo "      OK"
 # 7. Скачиваем ACL
 echo "[4/4] Downloading ACL → /usr/share/rpcd/acl.d/luci-proto-ghoststream.json ..."
 mkdir -p /usr/share/rpcd/acl.d
-wget -q --show-progress -O /usr/share/rpcd/acl.d/luci-proto-ghoststream.json \
+wget -O /usr/share/rpcd/acl.d/luci-proto-ghoststream.json \
     "${GITHUB}/luci-proto-ghoststream.json" || {
     echo "ERROR: Failed to download ACL" >&2
     exit 1

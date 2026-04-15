@@ -147,7 +147,9 @@ buildConfigField("String", "GIT_TAG", "\"vX.Y.Z\"")
 | v0.8.8 | 14 |
 | v0.8.9 | 15 |
 | v0.9.0 | 16 |
-| **v0.10.0** | **17** ← текущий |
+| v0.10.0 | 17 |
+| v0.18.5 | 48 |
+| **v0.19.0** | **49** ← текущий |
 
 После обновления `build.gradle.kts`:
 ```bash
@@ -171,20 +173,34 @@ GitHub Actions автоматически создаст Release при пуше
 
 ## Admin HTTP API
 
-Встроен в `phantom-server`. Слушает на `[admin].listen_addr` (по умолчанию `10.7.0.1:8080`).
-Доступен **только через VPN-туннель**. Все запросы: `Authorization: Bearer <token>`.
+Встроен в `phantom-server`. **Два listener-а** (v0.19+):
+
+| Listener | Bind | Транспорт | Auth | Назначение |
+|----------|------|-----------|------|------------|
+| mTLS | `[admin].listen_addr` = `10.7.0.1:8080` | HTTPS + mTLS (наша PhantomVPN CA) | client cert → fingerprint → `is_admin` в keyring | Android/Linux админ-панель через VPN-туннель |
+| loopback | `[admin].bot_listen_addr` = `127.0.0.1:8081` | plain HTTP | `Authorization: Bearer <[admin].token>` | Telegram-бот (break-glass канал, same-host только) |
+
+Server cert для mTLS listener-а — self-signed для `10.7.0.1`, генерится при первом
+старте в `/opt/phantom-vpn/config/admin-server.{crt,key}`. Android клиент пиннит
+SHA-256 сертификата (TOFU) в `VpnProfile.cachedAdminServerCertFp`.
+
+Role-авторизация (`is_admin`) хранится на сервере — в `clients.json` для каждой
+записи. Toggle через `POST /api/clients/:name/admin`. Bootstrap первого админа —
+через `phantom-keygen admin-grant --name <n> --enable`.
 
 ### Endpoints
 
 | Метод | Путь | Описание |
 |-------|------|----------|
 | GET | `/api/status` | Uptime, активные сессии, IP сервера |
-| GET | `/api/clients` | Список клиентов с онлайн-статусом и expires_at |
-| POST | `/api/clients` | Создать клиента `{"name":"alice","expires_days":30}` |
+| GET | `/api/me` | Self-inspection: `{"name": "...", "is_admin": bool}` (любой client cert) |
+| GET | `/api/clients` | Список клиентов (включает `is_admin`) |
+| POST | `/api/clients` | Создать клиента `{"name":"alice","expires_days":30,"is_admin":false}` |
+| POST | `/api/clients/:name/admin` | Toggle `is_admin`: `{"is_admin": true/false}` |
 | DELETE | `/api/clients/:name` | Удалить клиента + файлы сертификатов |
 | POST | `/api/clients/:name/enable` | Включить клиента |
 | POST | `/api/clients/:name/disable` | Отключить клиента (существующая сессия сохраняется) |
-| GET | `/api/clients/:name/conn_string` | Получить строку подключения |
+| GET | `/api/clients/:name/conn_string` | Получить строку подключения (`ghs://...`) |
 | GET | `/api/clients/:name/stats` | Статистика трафика `[{ts,bytes_rx,bytes_tx}]` |
 | GET | `/api/clients/:name/logs` | Последние 200 dst-записей `[{ts,dst,port,proto,bytes}]` |
 | POST | `/api/clients/:name/subscription` | Управление подпиской (см. ниже) |
@@ -214,7 +230,8 @@ GitHub Actions автоматически создаст Release при пуше
   "bytes_tx": 654321,
   "created_at": "2025-01-01T00:00:00Z",
   "last_seen_secs": 3,
-  "expires_at": 1780000000   // Unix timestamp, null = бессрочно
+  "expires_at": 1780000000,   // Unix timestamp, null = бессрочно
+  "is_admin": false
 }]
 ```
 
@@ -222,25 +239,30 @@ GitHub Actions автоматически создаст Release при пуше
 
 ## Строка подключения (Connection String)
 
-Base64url-кодированный JSON. Используется во всех клиентах (Android, Linux).
+v0.19+ — URL-формат `ghs://`. Используется во всех клиентах (Android, Linux, OpenWrt).
 
-```json
-{
-  "addr": "89.110.109.128:8443",
-  "sni":  "vpn.example.com",
-  "tun":  "10.7.0.2/24",
-  "cert": "-----BEGIN CERTIFICATE-----\n...",
-  "key":  "-----BEGIN PRIVATE KEY-----\n...",
-  "ca":   "-----BEGIN CERTIFICATE-----\n...",   // опционально
-  "admin": {
-    "url":   "http://10.7.0.1:8080",
-    "token": "secret-token"
-  }
-}
+```
+ghs://<base64url(cert_pem + "\n" + key_pem)>@<host>:<port>?sni=<sni>&tun=<cidr>&v=1
 ```
 
-Парсинг: `android/app/.../data/ConnStringParser.kt`
-Генерация: `crates/server/src/admin.rs` → `build_conn_string()`
+- **userinfo** — base64url двух PEM-блоков подряд (cert chain + PKCS8 key); парсер
+  сплитит по маркерам `-----BEGIN`.
+- **host:port** — адрес phantom-server.
+- **query**:
+  - `sni` — обязательный (TLS SNI, должен матчить сертификат сервера / LE cert).
+  - `tun` — обязательный, CIDR TUN-клиента (URL-encoded `/` → `%2F`).
+  - `v=1` — версия формата.
+
+**Нет `ca`, `admin`, `insecure`.** Сервер верифицируется через системный + webpki
+root store (LE cert). Админство — динамическое, из `is_admin` в keyring, см.
+секцию «Admin HTTP API». Backcompat со старым base64-JSON форматом **не
+поддерживается** — старые conn_string после v0.19.0 надо перегенерировать через бота.
+
+Парсинг: `crates/client-common/src/helpers.rs::parse_conn_string` +
+`android/app/.../data/ConnStringParser.kt` +
+`openwrt/proto/ghoststream.sh` (через `ghoststream --print-tun-addr`).
+
+Генерация: `crates/server/src/admin.rs::build_conn_string`.
 
 ---
 

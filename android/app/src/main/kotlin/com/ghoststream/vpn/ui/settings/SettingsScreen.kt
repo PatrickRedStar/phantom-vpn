@@ -214,7 +214,7 @@ fun SettingsScreen(
                         viewModel.deleteProfile(selectedProfile.id)
                         selectedProfileId = null
                     },
-                    onAdminClick = if (selectedProfile.adminUrl != null) {
+                    onAdminClick = if (selectedProfile.cachedIsAdmin == true) {
                         {
                             selectedProfileId = null
                             onAdminNavigate(selectedProfile.id)
@@ -707,7 +707,7 @@ private fun ProfileRow(
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(profile.name, style = MaterialTheme.typography.bodyMedium)
-                if (profile.adminUrl != null && profile.adminToken != null) {
+                if (profile.cachedIsAdmin == true) {
                     Spacer(Modifier.width(6.dp))
                     Surface(
                         shape = RoundedCornerShape(8.dp),

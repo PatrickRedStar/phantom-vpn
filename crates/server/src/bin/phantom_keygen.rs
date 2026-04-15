@@ -29,6 +29,10 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.get(1).map(|s| s.as_str()) == Some("admin-grant") {
+        return admin_grant_cmd(&raw[2..]);
+    }
     let args = Args::parse();
     let out = Path::new(&args.out);
 
@@ -103,4 +107,49 @@ fn main() -> anyhow::Result<()> {
 fn write_pem(path: impl AsRef<Path>, pem: String) -> anyhow::Result<()> {
     std::fs::write(&path, pem)
         .with_context(|| format!("Failed to write {}", path.as_ref().display()))
+}
+
+fn admin_grant_cmd(args: &[String]) -> anyhow::Result<()> {
+    // Usage: phantom-keygen admin-grant --name NAME [--enable|--disable]
+    //        [--clients /opt/phantom-vpn/config/clients.json]
+    let mut name: Option<String> = None;
+    let mut enable: Option<bool> = None;
+    let mut clients_path =
+        "/opt/phantom-vpn/config/clients.json".to_string();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--name"    => { name = args.get(i + 1).cloned(); i += 2; }
+            "--enable"  => { enable = Some(true);  i += 1; }
+            "--disable" => { enable = Some(false); i += 1; }
+            "--clients" => { clients_path = args.get(i + 1).cloned().unwrap_or(clients_path); i += 2; }
+            "--help" | "-h" => {
+                println!("Usage: phantom-keygen admin-grant --name NAME [--enable|--disable] [--clients PATH]");
+                return Ok(());
+            }
+            other => anyhow::bail!("Unknown arg: {}", other),
+        }
+    }
+    let name = name.context("--name required")?;
+    let enable = enable.unwrap_or(true);
+
+    let content = std::fs::read_to_string(&clients_path)
+        .with_context(|| format!("read {}", clients_path))?;
+    let mut root: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("parse {}", clients_path))?;
+    let clients = root.get_mut("clients").and_then(|c| c.as_object_mut())
+        .context("'clients' object missing in keyring")?;
+    let entry = clients.get_mut(&name)
+        .with_context(|| format!("client '{}' not found", name))?;
+    let obj = entry.as_object_mut().context("malformed client entry")?;
+    obj.insert("is_admin".to_string(), serde_json::Value::Bool(enable));
+
+    let tmp = format!("{}.tmp", clients_path);
+    std::fs::write(&tmp, serde_json::to_string_pretty(&root)?)
+        .with_context(|| format!("write {}", tmp))?;
+    std::fs::rename(&tmp, &clients_path)
+        .with_context(|| format!("rename {} -> {}", tmp, clients_path))?;
+    println!("{}: is_admin = {}", name, enable);
+    Ok(())
 }

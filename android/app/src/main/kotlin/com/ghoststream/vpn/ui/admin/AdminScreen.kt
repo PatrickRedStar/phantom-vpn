@@ -29,6 +29,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ghoststream.vpn.data.ProfilesStore
+import com.ghoststream.vpn.data.VpnProfile
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 
@@ -37,13 +39,13 @@ enum class ClientFilter { ALL, ONLINE, DISABLED }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminScreen(
-    adminUrl: String,
-    adminToken: String,
+    profile: VpnProfile,
     onBack: () -> Unit,
     viewModel: AdminViewModel = viewModel(),
 ) {
-    LaunchedEffect(adminUrl, adminToken) {
-        viewModel.init(adminUrl, adminToken)
+    val ctx = LocalContext.current
+    LaunchedEffect(profile.id) {
+        viewModel.init(profile, ProfilesStore.getInstance(ctx))
     }
 
     val status by viewModel.status.collectAsStateWithLifecycle()

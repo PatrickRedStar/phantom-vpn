@@ -7,6 +7,6 @@ services:
     env_file: .env
     volumes:
       - ./data:/data
-    # network_mode: host нужен чтобы дотянуться до 10.7.0.1:8080 (TUN
-    # интерфейс phantom-server на том же хосте) + исходящий до api.telegram.org.
+    # network_mode: host нужен чтобы дотянуться до 127.0.0.1:8081
+    # (loopback bot-API phantom-server с Bearer-auth) + исходящий до api.telegram.org.
     network_mode: host

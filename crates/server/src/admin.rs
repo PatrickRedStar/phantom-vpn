@@ -2,7 +2,6 @@
 //! Listens on [admin].listen_addr (default 10.7.0.1:8080, only reachable through VPN tunnel).
 //! All endpoints require: Authorization: Bearer <token>
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -43,22 +42,67 @@ pub struct AdminState {
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
 
-async fn require_token(
-    State(state): State<AdminState>,
-    req: Request,
-    next: Next,
-) -> Result<impl IntoResponse, StatusCode> {
-    let token_ok = req
-        .headers()
+fn bearer_token_matches(req: &Request, state: &AdminState) -> bool {
+    req.headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
         .map(|t| t == state.token)
-        .unwrap_or(false);
-    if !token_ok {
-        return Err(StatusCode::UNAUTHORIZED);
+        .unwrap_or(false)
+}
+
+/// Accept admin-privileged requests:
+/// * loopback Bearer (bot / break-glass channel) — if `ClientIdentity` is absent
+///   AND the shared token matches.
+/// * mTLS with a client cert whose fingerprint is marked `is_admin` in keyring.
+async fn require_admin(
+    State(state): State<AdminState>,
+    req: Request,
+    next: Next,
+) -> Result<impl IntoResponse, StatusCode> {
+    let ident = req.extensions().get::<crate::admin_tls::ClientIdentity>().cloned();
+    match ident {
+        None => {
+            // Loopback/plain path — require shared token
+            if bearer_token_matches(&req, &state) {
+                Ok(next.run(req).await)
+            } else {
+                Err(StatusCode::UNAUTHORIZED)
+            }
+        }
+        Some(id) => {
+            let keyring = read_keyring(&state.clients_path)?;
+            let clients = keyring.get("clients").and_then(|c| c.as_object())
+                .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+            let is_admin = clients.values().any(|info| {
+                let fp_match = info.get("fingerprint").and_then(|v| v.as_str())
+                    .map(|fp| fp.eq_ignore_ascii_case(&id.fingerprint)).unwrap_or(false);
+                let admin = info.get("is_admin").and_then(|v| v.as_bool()).unwrap_or(false);
+                fp_match && admin
+            });
+            if is_admin {
+                Ok(next.run(req).await)
+            } else {
+                Err(StatusCode::FORBIDDEN)
+            }
+        }
     }
-    Ok(next.run(req).await)
+}
+
+/// Accept any valid client cert (mTLS) OR loopback+Bearer.
+/// Used for /api/me where caller just needs to know "who am I".
+async fn require_valid_client(
+    State(state): State<AdminState>,
+    req: Request,
+    next: Next,
+) -> Result<impl IntoResponse, StatusCode> {
+    if req.extensions().get::<crate::admin_tls::ClientIdentity>().is_some() {
+        return Ok(next.run(req).await);
+    }
+    if bearer_token_matches(&req, &state) {
+        return Ok(next.run(req).await);
+    }
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 // ─── GET /api/status ─────────────────────────────────────────────────────────
@@ -104,6 +148,7 @@ async fn get_clients(
             })
             .unwrap_or((false, 0, 0, 0));
         let expires_at = info.get("expires_at").and_then(|v| v.as_u64());
+        let is_admin = info.get("is_admin").and_then(|v| v.as_bool()).unwrap_or(false);
         result.push(serde_json::json!({
             "name": name,
             "fingerprint": fp,
@@ -115,6 +160,7 @@ async fn get_clients(
             "bytes_tx": bytes_tx,
             "last_seen_secs": last_seen_secs,
             "expires_at": expires_at,
+            "is_admin": is_admin,
         }));
     }
     result.sort_by(|a, b| {
@@ -129,6 +175,8 @@ async fn get_clients(
 struct CreateClientBody {
     name: String,
     expires_days: Option<u32>,
+    #[serde(default)]
+    is_admin: bool,
 }
 
 async fn create_client(
@@ -194,6 +242,7 @@ async fn create_client(
         "enabled":   true,
         "created_at": now,
         "expires_at": expires_at,
+        "is_admin":   body.is_admin,
     }));
     write_keyring(&state.clients_path, &keyring)?;
 
@@ -202,8 +251,7 @@ async fn create_client(
 
     drop(_guard);
 
-    // Build conn_string (includes admin URL/token so the Android client can auto-configure admin panel)
-    let conn_str = build_conn_string(&state.server_addr, &state.server_name, &tun_addr, &cert_pem, &key_pem, &state.admin_url, &state.token);
+    let conn_str = build_conn_string(&state.server_addr, &state.server_name, &tun_addr, &cert_pem, &key_pem);
 
     Ok(Json(serde_json::json!({
         "name": name,
@@ -347,6 +395,59 @@ async fn manage_subscription(
     Ok(Json(serde_json::json!({ "ok": true, "expires_at": new_expires })))
 }
 
+// ─── POST /api/clients/:name/admin { "is_admin": true } ─────────────────────
+
+#[derive(Deserialize)]
+struct SetAdminBody {
+    is_admin: bool,
+}
+
+async fn set_client_admin(
+    State(state): State<AdminState>,
+    AxPath(name): AxPath<String>,
+    Json(body): Json<SetAdminBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let _guard = state.keyring_lock.lock().await;
+    let mut keyring = read_keyring(&state.clients_path)?;
+    let clients = keyring
+        .get_mut("clients")
+        .and_then(|c| c.as_object_mut())
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let client = clients.get_mut(&name).ok_or(StatusCode::NOT_FOUND)?;
+    if let Some(obj) = client.as_object_mut() {
+        obj.insert("is_admin".to_string(), serde_json::Value::Bool(body.is_admin));
+    }
+    write_keyring(&state.clients_path, &keyring)?;
+    Ok(Json(serde_json::json!({ "ok": true, "is_admin": body.is_admin })))
+}
+
+// ─── GET /api/me — requires valid client cert (via mTLS) ─────────────────────
+
+async fn get_me(
+    State(state): State<AdminState>,
+    req: Request,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Try to get ClientIdentity from extensions (mTLS path)
+    if let Some(ident) = req.extensions().get::<crate::admin_tls::ClientIdentity>() {
+        let keyring = read_keyring(&state.clients_path)?;
+        let clients = keyring.get("clients").and_then(|c| c.as_object())
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        for (name, info) in clients {
+            let fp = info.get("fingerprint").and_then(|v| v.as_str()).unwrap_or("");
+            if fp.eq_ignore_ascii_case(&ident.fingerprint) {
+                let is_admin = info.get("is_admin").and_then(|v| v.as_bool()).unwrap_or(false);
+                return Ok(Json(serde_json::json!({
+                    "name": name,
+                    "is_admin": is_admin,
+                })));
+            }
+        }
+        return Err(StatusCode::NOT_FOUND);
+    }
+    // Loopback/bot path — has no client identity
+    Err(StatusCode::BAD_REQUEST)
+}
+
 async fn set_client_enabled(
     state: &AdminState,
     name: &str,
@@ -409,7 +510,7 @@ async fn get_conn_string(
 
     let cert_pem = std::fs::read_to_string(cert_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let key_pem  = std::fs::read_to_string(key_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let conn_str = build_conn_string(&state.server_addr, &state.server_name, tun_addr, &cert_pem, &key_pem, &state.admin_url, &state.token);
+    let conn_str = build_conn_string(&state.server_addr, &state.server_name, tun_addr, &cert_pem, &key_pem);
 
     Ok(Json(serde_json::json!({ "conn_string": conn_str })))
 }
@@ -554,18 +655,19 @@ pub fn make_router(state: AdminState) -> Router {
         .route("/api/clients/:name/logs",         get(get_client_logs))
         .route("/api/clients/:name/stats",        get(get_client_stats))
         .route("/api/clients/:name/subscription", post(manage_subscription))
+        .route("/api/clients/:name/admin", post(set_client_admin))
         .route("/api/client-config/:tun_addr", get(get_client_config))
-        .layer(middleware::from_fn_with_state(state.clone(), require_token));
-    Router::new().merge(protected).with_state(state)
+        .layer(middleware::from_fn_with_state(state.clone(), require_admin));
+
+    // /api/me — requires only a valid client cert (handled inside handler)
+    let me = Router::new()
+        .route("/api/me", get(get_me))
+        .layer(middleware::from_fn_with_state(state.clone(), require_valid_client));
+
+    Router::new().merge(protected).merge(me).with_state(state)
 }
 
-pub async fn run(listen_addr: SocketAddr, state: AdminState) -> anyhow::Result<()> {
-    let app = make_router(state);
-    tracing::info!("Admin HTTP API listening on {}", listen_addr);
-    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    axum::serve(listener, app).await?;
-    Ok(())
-}
+// (admin listeners live in admin_tls::{run_mtls, run_plain})
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -614,21 +716,37 @@ async fn reload_allow_list(clients_path: &Path, allow_list: &ClientAllowList) {
     }
 }
 
-fn build_conn_string(server_addr: &str, server_name: &str, tun_addr: &str, cert_pem: &str, key_pem: &str, admin_url: &str, admin_token: &str) -> String {
-    let payload = serde_json::json!({
-        "v": 1,
-        "addr": server_addr,
-        "sni": server_name,
-        "tun": tun_addr,
-        "cert": cert_pem,
-        "key": key_pem,
-        "admin": {
-            "url": admin_url,
-            "token": admin_token,
-        },
-    });
-    let json_bytes = serde_json::to_vec(&payload).unwrap_or_default();
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json_bytes)
+fn url_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.as_bytes() {
+        let c = *b;
+        let safe = matches!(c,
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' |
+            b'-' | b'_' | b'.' | b'~'
+        );
+        if safe {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("%{:02X}", c));
+        }
+    }
+    out
+}
+
+fn build_conn_string(server_addr: &str, server_name: &str, tun_addr: &str, cert_pem: &str, key_pem: &str) -> String {
+    // Userinfo = base64url(cert_pem + "\n" + key_pem)
+    let mut pem = String::with_capacity(cert_pem.len() + key_pem.len() + 1);
+    pem.push_str(cert_pem.trim_end());
+    pem.push('\n');
+    pem.push_str(key_pem.trim());
+    let userinfo = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pem.as_bytes());
+    format!(
+        "ghs://{}@{}?sni={}&tun={}&v=1",
+        userinfo,
+        server_addr,
+        url_encode(server_name),
+        url_encode(tun_addr),
+    )
 }
 
 fn generate_client_cert(

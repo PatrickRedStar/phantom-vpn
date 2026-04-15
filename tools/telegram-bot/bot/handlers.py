@@ -26,24 +26,20 @@ from telegram.ext import (
 from .api import PhantomAPI, PhantomApiError
 from .auth import admin_only
 from .config import CONFIG
-from .conn_string import strip_admin
 from .qr import generate_qr
-from .roles import RoleStore
 
 log = logging.getLogger(__name__)
 
 # ConversationHandler states
-ADD_ROLE, ADD_NAME, ADD_EXPIRES = range(3)
+ADD_NAME, ADD_EXPIRES, ADD_ADMIN = range(3)
 
 # Globals wired by main.py
 _api: Optional[PhantomAPI] = None
-_roles: Optional[RoleStore] = None
 
 
-def init(api: PhantomAPI, roles: RoleStore) -> None:
-    global _api, _roles
+def init(api: PhantomAPI) -> None:
+    global _api
     _api = api
-    _roles = roles
 
 
 # ─── Formatting helpers ────────────────────────────────────────────────────
@@ -80,9 +76,9 @@ def _days_left(expires_at: Optional[int]) -> str:
     return f"{d}д"
 
 
-def _client_card(c: dict, role: str) -> str:
+def _client_card(c: dict) -> str:
     name = html.escape(c["name"])
-    role_tag = "👤 admin" if role == "admin" else "🙂 regular"
+    role_tag = "👑 admin" if c.get("is_admin") else "🙂 regular"
     connected = "🟢 подключён" if c.get("connected") else "⚪ offline"
     last_seen = _fmt_last_seen(c.get("last_seen_secs"))
     enabled = "✅ enabled" if c.get("enabled") else "❌ disabled"
@@ -114,8 +110,9 @@ def _kb_client_list(clients: list[dict]) -> InlineKeyboardMarkup:
     for c in sorted(clients, key=lambda x: x["name"]):
         mark = "✅" if c.get("enabled") else "❌"
         conn = "🟢" if c.get("connected") else ""
+        crown = "👑" if c.get("is_admin") else ""
         dleft = _days_left(c.get("expires_at"))
-        label = f"{mark}{conn} {c['name']} ({dleft})"
+        label = f"{mark}{conn}{crown} {c['name']} ({dleft})"
         rows.append([InlineKeyboardButton(label, callback_data=f"c:{c['name']}")])
     rows.append([InlineKeyboardButton("⬅ В меню", callback_data="main")])
     return InlineKeyboardMarkup(rows)
@@ -124,6 +121,7 @@ def _kb_client_list(clients: list[dict]) -> InlineKeyboardMarkup:
 def _kb_client_detail(c: dict) -> InlineKeyboardMarkup:
     name = c["name"]
     toggle_label = "⏸ Disable" if c.get("enabled") else "▶ Enable"
+    admin_label = "👤 Снять админа" if c.get("is_admin") else "👑 Сделать админом"
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📱 QR", callback_data=f"qr:{name}"),
@@ -133,6 +131,7 @@ def _kb_client_detail(c: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(toggle_label, callback_data=f"tog:{name}"),
             InlineKeyboardButton("⏰ Подписка", callback_data=f"sub:{name}"),
         ],
+        [InlineKeyboardButton(admin_label, callback_data=f"adm:{name}")],
         [InlineKeyboardButton("🗑 Удалить", callback_data=f"del:{name}")],
         [InlineKeyboardButton("⬅ Список", callback_data="list")],
     ])
@@ -214,9 +213,8 @@ async def _show_client(update: Update, name: str) -> None:
     if c is None:
         await q.edit_message_text(f"Клиент {name!r} не найден.", reply_markup=_kb_main())
         return
-    role = _roles.get(name)
     await q.edit_message_text(
-        _client_card(c, role),
+        _client_card(c),
         reply_markup=_kb_client_detail(c),
         parse_mode=ParseMode.HTML,
     )
@@ -224,42 +222,29 @@ async def _show_client(update: Update, name: str) -> None:
 
 # ─── Conn string / QR ─────────────────────────────────────────────────────
 
-async def _prepare_conn_string(name: str) -> str:
-    """Fetch + strip if regular role."""
-    raw = await _api.conn_string(name)
-    role = _roles.get(name)
-    if role == "regular":
-        return strip_admin(raw)
-    return raw
-
-
 async def _send_qr(update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str) -> None:
     q = update.callback_query
     try:
-        s = await _prepare_conn_string(name)
+        s = await _api.conn_string(name)
     except PhantomApiError as e:
         await q.message.reply_text(f"❌ API error: {e}")
         return
-    role = _roles.get(name)
-    tag = "admin" if role == "admin" else "regular"
     img = generate_qr(s)
     await q.message.reply_photo(
         photo=InputFile(img, filename=f"{name}.png"),
-        caption=f"QR · {name} [{tag}]",
+        caption=f"QR · {name}",
     )
 
 
 async def _send_conn(update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str) -> None:
     q = update.callback_query
     try:
-        s = await _prepare_conn_string(name)
+        s = await _api.conn_string(name)
     except PhantomApiError as e:
         await q.message.reply_text(f"❌ API error: {e}")
         return
-    role = _roles.get(name)
-    tag = "admin" if role == "admin" else "regular"
     await q.message.reply_text(
-        f"<b>{html.escape(name)}</b> [{tag}]\n<code>{html.escape(s)}</code>",
+        f"<b>{html.escape(name)}</b>\n<code>{html.escape(s)}</code>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -278,6 +263,21 @@ async def _toggle(update: Update, name: str) -> None:
             await _api.disable_client(name)
         else:
             await _api.enable_client(name)
+    except PhantomApiError as e:
+        await q.message.reply_text(f"❌ API error: {e}")
+        return
+    await _show_client(update, name)
+
+
+async def _toggle_admin(update: Update, name: str) -> None:
+    q = update.callback_query
+    try:
+        clients = await _api.list_clients()
+        c = next((x for x in clients if x["name"] == name), None)
+        if c is None:
+            await q.message.reply_text(f"Клиент {name!r} не найден.")
+            return
+        await _api.set_admin(name, not bool(c.get("is_admin")))
     except PhantomApiError as e:
         await q.message.reply_text(f"❌ API error: {e}")
         return
@@ -322,7 +322,6 @@ async def _del_exec(update: Update, name: str) -> None:
     except PhantomApiError as e:
         await q.message.reply_text(f"❌ API error: {e}")
         return
-    _roles.delete(name)
     await _show_list(update)
 
 
@@ -347,6 +346,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await _send_conn(update, ctx, data[5:])
         elif data.startswith("tog:"):
             await _toggle(update, data[4:])
+        elif data.startswith("adm:"):
+            await _toggle_admin(update, data[4:])
         elif data.startswith("sub:"):
             await _sub_menu(update, data[4:])
         elif data.startswith("sa:"):
@@ -372,25 +373,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def add_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
     await q.answer()
-    kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("👤 Admin", callback_data="arole:admin"),
-            InlineKeyboardButton("🙂 Regular", callback_data="arole:regular"),
-        ],
-        [InlineKeyboardButton("❌ Отмена", callback_data="acancel")],
-    ])
-    await q.edit_message_text("Роль нового клиента?", reply_markup=kb)
-    return ADD_ROLE
-
-
-async def add_role(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    q = update.callback_query
-    await q.answer()
-    role = q.data.split(":", 1)[1]
-    ctx.user_data["add_role"] = role
     await q.edit_message_text(
-        f"Роль: <b>{role}</b>\n\nВведи имя клиента (a-z, 0-9, _, -, 1..32 символа):",
-        parse_mode=ParseMode.HTML,
+        "Введи имя клиента (a-z, 0-9, _, -, 1..32 символа):",
     )
     return ADD_NAME
 
@@ -426,8 +410,29 @@ async def add_expires(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await q.answer()
     days_s = q.data.split(":", 1)[1]
     days = int(days_s)
+    ctx.user_data["add_days"] = days
     name = ctx.user_data.get("add_name", "")
-    role = ctx.user_data.get("add_role", "regular")
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👑 Админ", callback_data="aadm:1"),
+            InlineKeyboardButton("🙂 Обычный", callback_data="aadm:0"),
+        ],
+        [InlineKeyboardButton("❌ Отмена", callback_data="acancel")],
+    ])
+    await q.edit_message_text(
+        f"Имя: <b>{html.escape(name)}</b>\nСрок: {'∞' if days < 0 else str(days) + 'д'}\n\nТип клиента?",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML,
+    )
+    return ADD_ADMIN
+
+
+async def add_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = update.callback_query
+    await q.answer()
+    is_admin = q.data.split(":", 1)[1] == "1"
+    name = ctx.user_data.get("add_name", "")
+    days = ctx.user_data.get("add_days", -1)
 
     await q.edit_message_text(f"Создаю <b>{html.escape(name)}</b>…", parse_mode=ParseMode.HTML)
 
@@ -435,40 +440,36 @@ async def add_expires(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await _api.create_client(
             name,
             expires_days=(None if days < 0 else days),
+            is_admin=is_admin,
         )
     except PhantomApiError as e:
         await q.message.reply_text(f"❌ API error: {e}")
         return ConversationHandler.END
 
-    _roles.set(name, "admin" if role == "admin" else "regular")
-
-    # Fetch conn_string + strip for regular
     try:
-        raw = await _api.conn_string(name)
+        conn = await _api.conn_string(name)
     except PhantomApiError as e:
         await q.message.reply_text(f"Клиент создан, но conn_string не получить: {e}")
         return ConversationHandler.END
 
-    conn = strip_admin(raw) if role == "regular" else raw
-
+    tag = "admin 👑" if is_admin else "regular"
     await q.message.reply_text(
-        f"✅ Создан <b>{html.escape(name)}</b> [{role}]\n"
+        f"✅ Создан <b>{html.escape(name)}</b> [{tag}]\n"
         f"Срок: {'∞' if days < 0 else str(days) + 'д'}",
         parse_mode=ParseMode.HTML,
     )
     img = generate_qr(conn)
     await q.message.reply_photo(
         photo=InputFile(img, filename=f"{name}.png"),
-        caption=f"QR · {name} [{role}]",
+        caption=f"QR · {name} [{tag}]",
     )
     await q.message.reply_text(
         f"<code>{html.escape(conn)}</code>",
         parse_mode=ParseMode.HTML,
     )
-    # Back to main menu
     await q.message.reply_text("Меню:", reply_markup=_kb_main())
     ctx.user_data.pop("add_name", None)
-    ctx.user_data.pop("add_role", None)
+    ctx.user_data.pop("add_days", None)
     return ConversationHandler.END
 
 
@@ -480,15 +481,13 @@ async def add_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     else:
         await update.message.reply_text("Отменено.", reply_markup=_kb_main())
     ctx.user_data.pop("add_name", None)
-    ctx.user_data.pop("add_role", None)
+    ctx.user_data.pop("add_days", None)
     return ConversationHandler.END
 
 
 async def _add_fallback_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    """Catch-all fallback: any unrecognised callback while inside the add-client
-    conversation ends the conversation and lets the main dispatcher handle it."""
     ctx.user_data.pop("add_name", None)
-    ctx.user_data.pop("add_role", None)
+    ctx.user_data.pop("add_days", None)
     return ConversationHandler.END
 
 
@@ -497,16 +496,16 @@ def add_conversation() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(add_entry, pattern=r"^add$")],
         states={
-            ADD_ROLE: [
-                CallbackQueryHandler(add_role, pattern=r"^arole:(admin|regular)$"),
-                CallbackQueryHandler(add_cancel, pattern=r"^acancel$"),
-            ],
             ADD_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND & admin_filter, add_name),
                 CallbackQueryHandler(add_cancel, pattern=r"^acancel$"),
             ],
             ADD_EXPIRES: [
                 CallbackQueryHandler(add_expires, pattern=r"^aexp:(-?\d+)$"),
+                CallbackQueryHandler(add_cancel, pattern=r"^acancel$"),
+            ],
+            ADD_ADMIN: [
+                CallbackQueryHandler(add_admin, pattern=r"^aadm:[01]$"),
                 CallbackQueryHandler(add_cancel, pattern=r"^acancel$"),
             ],
         },

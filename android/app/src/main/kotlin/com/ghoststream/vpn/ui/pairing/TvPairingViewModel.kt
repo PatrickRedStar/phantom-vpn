@@ -93,9 +93,6 @@ class TvPairingViewModel(application: Application) : AndroidViewModel(applicatio
                 val profileDir = File(app.filesDir, "profiles/$id").also { it.mkdirs() }
                 val certFile = File(profileDir, "client.crt").also { it.writeText(parsed.cert) }
                 val keyFile  = File(profileDir, "client.key").also { it.writeText(parsed.key) }
-                val caPath   = parsed.ca?.let {
-                    File(profileDir, "ca.crt").also { f -> f.writeText(it) }.absolutePath
-                }
                 ProfilesStore.getInstance(app).addProfile(
                     VpnProfile(
                         id         = id,
@@ -106,10 +103,8 @@ class TvPairingViewModel(application: Application) : AndroidViewModel(applicatio
                         insecure   = false,
                         certPath   = certFile.absolutePath,
                         keyPath    = keyFile.absolutePath,
-                        caCertPath = caPath,
                         tunAddr    = parsed.tun,
-                        adminUrl   = parsed.adminUrl,
-                        adminToken = parsed.adminToken,
+                        transport  = parsed.transport,
                     ),
                 )
                 _state.value = TvPairingState.Received
