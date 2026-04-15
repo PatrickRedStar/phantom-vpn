@@ -543,9 +543,11 @@ class GhostStreamVpnService : VpnService() {
     }
 
     private fun restartNativeTunnel(params: TunnelParams, transport: String): Boolean {
+        if (userStopped) return false
         val iface = vpnInterface ?: return false
         val targetTransport = normalizeManualTransport(transport)
         nativeStop()
+        if (userStopped) return false
         val result = nativeStart(
             iface.fd, params.serverAddr, params.serverName,
             params.insecure, params.certPath, params.keyPath, "",
@@ -684,6 +686,16 @@ class GhostStreamVpnService : VpnService() {
             mainHandler.post { VpnStateManager.update(VpnState.Disconnecting) }
         }
 
+        // КРИТИЧНО: закрываем tun fd ДО nativeStop. Это заставляет все native
+        // read/write на tun получить EBADF и мгновенно разблокирует любой
+        // зависший nativeStart/tun-io loop. Без этого при disconnect во время
+        // реконнекта сервис продолжает держать tun-интерфейс (иконка ключа в
+        // статус-баре остаётся, интернета нет) пока не отработает 3-секундный
+        // watchdog на nativeStop.
+        val iface = vpnInterface
+        vpnInterface = null
+        runCatching { iface?.close() }
+
         Thread {
             val nativeStopDone = Thread {
                 runCatching { nativeStop() }
@@ -692,8 +704,6 @@ class GhostStreamVpnService : VpnService() {
             if (nativeStopDone.isAlive) {
                 Log.w(TAG, "nativeStop did not return in 3s — proceeding anyway")
             }
-            runCatching { vpnInterface?.close() }
-            vpnInterface = null
             runtimeTransport = "h2"
             resetAutoRuntimeState()
             mainHandler.post {
