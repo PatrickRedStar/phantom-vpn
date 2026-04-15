@@ -3,7 +3,7 @@
 'require form';
 'require network';
 
-network.registerProtocol('ghoststream', {
+return network.registerProtocol('ghoststream', {
     getI18n: function() {
         return _('GhostStream VPN');
     },

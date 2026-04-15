@@ -10,6 +10,7 @@ proto_ghoststream_init_config() {
     proto_config_add_string 'connection_string'
     proto_config_add_int 'mtu'
     available=1
+    no_device=1
 }
 
 proto_ghoststream_setup() {
@@ -30,31 +31,9 @@ proto_ghoststream_setup() {
 
     local tun_name="gs-${config}"
 
-    # Start daemon in background
-    proto_run_command "$config" /usr/bin/ghoststream \
-        --conn-string "$connection_string" \
-        --tun-name "$tun_name" \
-        --mtu "$mtu"
-
-    # Wait for TUN interface to appear
-    local waited=0
-    while [ ! -d "/sys/class/net/${tun_name}" ] && [ "$waited" -lt 10 ]; do
-        sleep 1
-        waited=$((waited + 1))
-    done
-
-    if [ ! -d "/sys/class/net/${tun_name}" ]; then
-        echo "GhostStream: TUN ${tun_name} did not appear" >&2
-        proto_notify_error "$config" "TUN_FAILED"
-        proto_kill_command "$config"
-        return 1
-    fi
-
-    # Parse tunnel address from connection string
-    local tun_json
-    tun_json=$(echo "$connection_string" | base64 -d 2>/dev/null)
+    # Parse tunnel address from connection string (ghs:// URL)
     local tun_addr
-    tun_addr=$(echo "$tun_json" | jsonfilter -e '@.tun' 2>/dev/null)
+    tun_addr=$(/usr/bin/ghoststream --print-tun-addr "$connection_string" 2>/dev/null)
     [ -z "$tun_addr" ] && tun_addr="10.7.0.2/24"
 
     local ip_addr="${tun_addr%%/*}"
@@ -62,10 +41,32 @@ proto_ghoststream_setup() {
     local gateway
     gateway=$(echo "$ip_addr" | awk -F. '{printf "%s.%s.%s.1", $1, $2, $3}')
 
+    # Start daemon
+    proto_run_command "$config" /usr/bin/ghoststream \
+        --conn-string "$connection_string" \
+        --tun-name "$tun_name" \
+        --mtu "$mtu"
+
+    # Wait for TUN interface to appear
+    local waited=0
+    while [ ! -d "/sys/class/net/${tun_name}" ] && [ "$waited" -lt 15 ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if [ ! -d "/sys/class/net/${tun_name}" ]; then
+        echo "GhostStream: TUN ${tun_name} did not appear after ${waited}s" >&2
+        proto_notify_error "$config" "TUN_FAILED"
+        proto_kill_command "$config"
+        return 1
+    fi
+
     proto_init_update "$tun_name" 1
     proto_add_ipv4_address "$ip_addr" "$prefix"
-    proto_add_ipv4_route "0.0.0.0" 0 "$gateway"
     proto_add_dns_server "$gateway"
+    # NOTE: No default route added here. Configure routing via LuCI:
+    # Set interface metric lower than WAN (e.g. 10) to make it the default route.
+    # OpenWrt handles the VPN server route exception automatically via metric.
     proto_send_update "$config"
 }
 

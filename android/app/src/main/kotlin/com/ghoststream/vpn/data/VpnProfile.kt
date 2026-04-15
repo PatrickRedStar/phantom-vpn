@@ -8,10 +8,7 @@ data class VpnProfile(
     val insecure: Boolean = false,
     val certPath: String = "",
     val keyPath: String = "",
-    val caCertPath: String? = null,
     val tunAddr: String = "10.7.0.2/24",
-    val adminUrl: String? = null,
-    val adminToken: String? = null,
     // Transport: "quic" (default) or "h2"
     val transport: String = "h2",
     // Per-profile overrides (null = use global defaults)
@@ -23,4 +20,8 @@ data class VpnProfile(
     // Cached subscription data from last admin API fetch
     val cachedExpiresAt: Long? = null,
     val cachedEnabled: Boolean? = null,
+    // Cached admin status from /api/me
+    val cachedIsAdmin: Boolean? = null,
+    // SHA-256 (hex) of the admin-server cert pinned after first mTLS handshake
+    val cachedAdminServerCertFp: String? = null,
 )

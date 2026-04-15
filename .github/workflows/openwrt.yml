@@ -114,6 +114,7 @@ jobs:
           cp openwrt/proto/ghoststream.sh release-files/
           cp openwrt/luci/htdocs/luci-static/resources/protocol/ghoststream.js release-files/
           cp openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json release-files/
+          cp ghoststream-install.sh release-files/
 
       - name: Create/Update Release
         uses: softprops/action-gh-release@v2
@@ -122,4 +123,4 @@ jobs:
           append_body: true
           body: |
             ## OpenWrt Client
-            Install: `sh <(wget -O - https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/master/ghoststream-install.sh)`
+            Install: `wget -O /tmp/gs-install.sh https://github.com/${{ github.repository }}/releases/latest/download/ghoststream-install.sh && sh /tmp/gs-install.sh`

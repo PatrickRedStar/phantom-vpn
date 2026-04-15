@@ -21,7 +21,6 @@ class PreferencesStore(private val context: Context) {
         private val INSECURE    = booleanPreferencesKey("insecure")
         private val CERT_PATH   = stringPreferencesKey("cert_path")
         private val KEY_PATH    = stringPreferencesKey("key_path")
-        private val CA_CERT_PATH = stringPreferencesKey("ca_cert_path")
         private val TUN_ADDR    = stringPreferencesKey("tun_addr")
         private val DNS_SERVERS = stringPreferencesKey("dns_servers")
         private val THEME             = stringPreferencesKey("theme")
@@ -68,7 +67,6 @@ class PreferencesStore(private val context: Context) {
             insecure   = prefs[INSECURE] ?: false,
             certPath   = prefs[CERT_PATH] ?: "",
             keyPath    = prefs[KEY_PATH] ?: "",
-            caCertPath = prefs[CA_CERT_PATH],
             tunAddr    = prefs[TUN_ADDR] ?: "10.7.0.2/24",
             dnsServers = (prefs[DNS_SERVERS] ?: "8.8.8.8,1.1.1.1")
                 .split(",").filter { it.isNotBlank() },
@@ -88,9 +86,6 @@ class PreferencesStore(private val context: Context) {
             prefs[INSECURE]    = config.insecure
             prefs[CERT_PATH]   = config.certPath
             prefs[KEY_PATH]    = config.keyPath
-            if (config.caCertPath != null) {
-                prefs[CA_CERT_PATH] = config.caCertPath
-            }
             prefs[TUN_ADDR]    = config.tunAddr
             prefs[DNS_SERVERS]      = config.dnsServers.joinToString(",")
             prefs[SPLIT_ROUTING]    = config.splitRouting

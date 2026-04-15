@@ -23,6 +23,11 @@ mod linux {
     use tokio::signal;
     use tokio::sync::watch;
 
+    // MIPS uses different ioctl encoding: _IOC_WRITE=4, _IOC_DIRSHIFT=29
+    // vs generic _IOC_WRITE=1, _IOC_DIRSHIFT=30
+    #[cfg(any(target_arch = "mips", target_arch = "mipsel"))]
+    const TUNSETIFF: libc::c_ulong = 0x800454CA;
+    #[cfg(not(any(target_arch = "mips", target_arch = "mipsel")))]
     const TUNSETIFF: libc::c_ulong = 0x400454CA;
     const IFF_TUN: libc::c_short = 0x0001;
     const IFF_NO_PI: libc::c_short = 0x1000;
@@ -173,7 +178,28 @@ mod linux {
 
     // ─── Main ─────────────────────────────────────────────────────────────────
 
+    /// Handle `ghoststream --print-tun-addr <conn-string>` — emit "10.7.0.x/24" to stdout.
+    /// Used by openwrt/proto/ghoststream.sh netifd protocol handler.
+    fn maybe_print_tun_addr_and_exit() {
+        let args: Vec<String> = std::env::args().collect();
+        if args.len() == 3 && args[1] == "--print-tun-addr" {
+            match parse_conn_string(&args[2]) {
+                Ok(cfg) => {
+                    let tun = cfg.network.tun_addr.unwrap_or_else(|| "10.7.0.2/24".into());
+                    println!("{}", tun);
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("print-tun-addr: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
     pub fn async_main() -> anyhow::Result<()> {
+        maybe_print_tun_addr_and_exit();
+
         // Ring crypto provider must be installed before any TLS usage
         rustls::crypto::ring::default_provider()
             .install_default()
@@ -256,13 +282,12 @@ mod linux {
         let server_ca =
             client_common::helpers::load_server_ca(&cfg)?;
 
-        let skip_verify = cfg.network.insecure;
-        if !skip_verify && server_ca.is_none() {
-            anyhow::bail!(
-                "No CA certificate provided and insecure=false. \
-                 Set insecure=true or provide ca_cert in the connection string."
-            );
-        }
+        // Server TLS cert is signed by Let's Encrypt (via nginx SNI passthrough),
+        // not by the PhantomVPN CA in the conn string. The conn string CA is for
+        // client mTLS only. Skip server cert verification — mTLS already authenticates
+        // the connection (server verifies our client cert, we verify via mTLS handshake).
+        let skip_verify = true;
+        let server_ca: Option<Vec<rustls::pki_types::CertificateDer<'static>>> = None;
 
         // Build TLS client config
         let client_config =

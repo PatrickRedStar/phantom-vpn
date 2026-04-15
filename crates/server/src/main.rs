@@ -6,6 +6,7 @@ pub mod vpn_session;
 pub mod quic_server;
 pub mod h2_server;
 pub mod admin;
+pub mod admin_tls;
 pub mod mimicry;
 pub mod fakeapp;
 
@@ -292,11 +293,45 @@ async fn main() -> anyhow::Result<()> {
                         exit_ip: cfg.network.exit_ip.clone(),
                         keyring_lock: keyring_lock.clone(),
                     };
+                    let bot_listen_str = admin_cfg.bot_listen_addr.as_deref()
+                        .unwrap_or("127.0.0.1:8081")
+                        .to_string();
+                    let ca_for_mtls = admin_state.ca_cert_path.clone();
+                    let config_dir = admin_state.clients_path.parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("/opt/phantom-vpn/config"));
+
+                    // mTLS primary listener (10.7.0.1:8080)
+                    let mtls_state = admin_state.clone();
+                    let mtls_ca = ca_for_mtls.clone();
+                    let mtls_cfg_dir = config_dir.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = admin::run(admin_addr, admin_state).await {
-                            tracing::error!("Admin server error: {}", e);
+                        match mtls_ca {
+                            Some(ca) => {
+                                if let Err(e) = admin_tls::run_mtls(admin_addr, mtls_state, &ca, &mtls_cfg_dir).await {
+                                    tracing::error!("Admin mTLS server error: {}", e);
+                                }
+                            }
+                            None => {
+                                tracing::warn!("No CA cert configured — falling back to plain HTTP for admin listener");
+                                if let Err(e) = admin_tls::run_plain(admin_addr, mtls_state).await {
+                                    tracing::error!("Admin HTTP server error: {}", e);
+                                }
+                            }
                         }
                     });
+
+                    // Loopback Bearer listener for the Telegram bot (127.0.0.1:8081)
+                    if let Ok(bot_addr) = bot_listen_str.parse::<SocketAddr>() {
+                        let bot_state = admin_state.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = admin_tls::run_plain(bot_addr, bot_state).await {
+                                tracing::error!("Admin bot HTTP listener error: {}", e);
+                            }
+                        });
+                    } else {
+                        tracing::warn!("Invalid bot_listen_addr '{}', skipping bot listener", bot_listen_str);
+                    }
                 }
                 Err(e) => tracing::warn!("Invalid admin listen_addr '{}': {}", listen_str, e),
             }

@@ -2,28 +2,33 @@ package com.ghoststream.vpn.ui.admin
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ghoststream.vpn.data.AdminHttpClient
+import com.ghoststream.vpn.data.ProfilesStore
+import com.ghoststream.vpn.data.VpnProfile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 
 data class ClientInfo(
     val name: String,
     val tunAddr: String,
     val fingerprint: String,
     val enabled: Boolean,
+    val isAdmin: Boolean,
     val connected: Boolean,
     val bytesRx: Long,
     val bytesTx: Long,
     val createdAt: String,
     val lastSeenSecs: Long,
-    val expiresAt: Long? = null,  // Unix timestamp, null = no expiry (unlimited)
+    val expiresAt: Long? = null,
 )
 
 data class ServerStatus(
@@ -33,19 +38,8 @@ data class ServerStatus(
     val exitIp: String? = null,
 )
 
-data class StatsSample(
-    val ts: Long,
-    val bytesRx: Long,
-    val bytesTx: Long,
-)
-
-data class DestEntry(
-    val ts: Long,
-    val dst: String,
-    val port: Int,
-    val proto: String,
-    val bytes: Long,
-)
+data class StatsSample(val ts: Long, val bytesRx: Long, val bytesTx: Long)
+data class DestEntry(val ts: Long, val dst: String, val port: Int, val proto: String, val bytes: Long)
 
 class AdminViewModel : ViewModel() {
 
@@ -74,12 +68,39 @@ class AdminViewModel : ViewModel() {
     val selectedClient: StateFlow<String?> = _selectedClient
 
     private var baseUrl: String = ""
-    private var token: String = ""
+    private var http: OkHttpClient? = null
+    private var fpRef: AdminHttpClient.ServerCertFpRef? = null
+    private var profilesStore: ProfilesStore? = null
+    private var profileId: String? = null
 
-    fun init(adminUrl: String, adminToken: String) {
-        baseUrl = adminUrl.trimEnd('/')
-        token = adminToken
+    /** Initialize client from a VpnProfile: derives gateway URL + builds mTLS client. */
+    fun init(profile: VpnProfile, store: ProfilesStore) {
+        profilesStore = store
+        profileId = profile.id
+        baseUrl = "https://${gatewayOf(profile.tunAddr)}:8080"
+        val outcome = AdminHttpClient.build(
+            certPemPath = profile.certPath,
+            keyPemPath = profile.keyPath,
+            pinnedFp = profile.cachedAdminServerCertFp,
+        )
+        http = outcome.client
+        fpRef = outcome.serverCertFpRef
         refresh()
+    }
+
+    private fun gatewayOf(tunCidr: String): String {
+        val ip = tunCidr.substringBefore('/', tunCidr)
+        val parts = ip.split('.')
+        return if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.1" else "10.7.0.1"
+    }
+
+    private fun persistFpIfNeeded() {
+        val store = profilesStore ?: return
+        val id = profileId ?: return
+        val fp = fpRef?.value ?: return
+        val p = store.profiles.value.find { it.id == id } ?: return
+        if (p.cachedAdminServerCertFp == fp) return
+        store.updateProfile(p.copy(cachedAdminServerCertFp = fp))
     }
 
     fun refresh() {
@@ -89,12 +110,11 @@ class AdminViewModel : ViewModel() {
             try {
                 _status.value = fetchStatus()
                 _clients.value = fetchClients()
+                persistFpIfNeeded()
             } catch (e: Exception) {
                 val msg = e.message ?: "Ошибка подключения"
-                _error.value = if (msg.contains("connect", ignoreCase = true) ||
-                    msg.contains("timeout", ignoreCase = true) ||
-                    msg.contains("refused", ignoreCase = true) ||
-                    msg.contains("unreachable", ignoreCase = true))
+                _error.value = if (msg.contains("connect", true) || msg.contains("timeout", true) ||
+                    msg.contains("refused", true) || msg.contains("unreachable", true))
                     "$msg\n\nAdmin API доступен только через VPN-туннель. Подключитесь к VPN и повторите."
                 else msg
             } finally {
@@ -103,13 +123,13 @@ class AdminViewModel : ViewModel() {
         }
     }
 
-    fun createClient(name: String, expiresDays: Int? = null) {
+    fun createClient(name: String, expiresDays: Int? = null, isAdmin: Boolean = false) {
         viewModelScope.launch {
             _loading.value = true
             _error.value = null
             _newConnString.value = null
             try {
-                val body = JSONObject().put("name", name)
+                val body = JSONObject().put("name", name).put("is_admin", isAdmin)
                 if (expiresDays != null) body.put("expires_days", expiresDays)
                 val result = apiPost("/api/clients", body.toString())
                 _newConnString.value = result.optString("conn_string")
@@ -123,12 +143,8 @@ class AdminViewModel : ViewModel() {
 
     fun deleteClient(name: String) {
         viewModelScope.launch {
-            try {
-                apiDelete("/api/clients/$name")
-                refresh()
-            } catch (e: Exception) {
-                _error.value = e.message ?: "Ошибка удаления"
-            }
+            try { apiDelete("/api/clients/$name"); refresh() }
+            catch (e: Exception) { _error.value = e.message ?: "Ошибка удаления" }
         }
     }
 
@@ -136,11 +152,17 @@ class AdminViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val endpoint = if (currentlyEnabled) "/api/clients/$name/disable" else "/api/clients/$name/enable"
-                apiPost(endpoint, "{}")
+                apiPost(endpoint, "{}"); refresh()
+            } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
+        }
+    }
+
+    fun toggleAdmin(name: String, makeAdmin: Boolean) {
+        viewModelScope.launch {
+            try {
+                apiPost("/api/clients/$name/admin", JSONObject().put("is_admin", makeAdmin).toString())
                 refresh()
-            } catch (e: Exception) {
-                _error.value = e.message ?: "Ошибка"
-            }
+            } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
         }
     }
 
@@ -149,9 +171,7 @@ class AdminViewModel : ViewModel() {
             try {
                 val result = apiGet("/api/clients/$name/conn_string")
                 _newConnString.value = result.optString("conn_string")
-            } catch (e: Exception) {
-                _error.value = e.message ?: "Ошибка получения строки подключения"
-            }
+            } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
         }
     }
 
@@ -167,7 +187,7 @@ class AdminViewModel : ViewModel() {
                 apiPost("/api/clients/$name/subscription", body.toString())
                 refresh()
             } catch (e: Exception) {
-                _error.value = e.message ?: "Ошибка управления подпиской"
+                _error.value = e.message ?: "Ошибка"
                 _loading.value = false
             }
         }
@@ -180,15 +200,9 @@ class AdminViewModel : ViewModel() {
                 val arr = apiGetArray("/api/clients/$name/stats")
                 _clientStats.value = (0 until arr.length()).map { i ->
                     val o = arr.getJSONObject(i)
-                    StatsSample(
-                        ts = o.optLong("ts"),
-                        bytesRx = o.optLong("bytes_rx"),
-                        bytesTx = o.optLong("bytes_tx"),
-                    )
+                    StatsSample(o.optLong("ts"), o.optLong("bytes_rx"), o.optLong("bytes_tx"))
                 }
-            } catch (e: Exception) {
-                _error.value = e.message ?: "Ошибка загрузки статистики"
-            }
+            } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
         }
     }
 
@@ -198,17 +212,10 @@ class AdminViewModel : ViewModel() {
                 val arr = apiGetArray("/api/clients/$name/logs")
                 _clientLogs.value = (0 until arr.length()).map { i ->
                     val o = arr.getJSONObject(i)
-                    DestEntry(
-                        ts = o.optLong("ts"),
-                        dst = o.optString("dst"),
-                        port = o.optInt("port"),
-                        proto = o.optString("proto"),
-                        bytes = o.optLong("bytes"),
-                    )
+                    DestEntry(o.optLong("ts"), o.optString("dst"), o.optInt("port"),
+                              o.optString("proto"), o.optLong("bytes"))
                 }
-            } catch (e: Exception) {
-                _error.value = e.message ?: "Ошибка загрузки логов"
-            }
+            } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
         }
     }
 
@@ -237,6 +244,7 @@ class AdminViewModel : ViewModel() {
                 tunAddr = o.optString("tun_addr"),
                 fingerprint = o.optString("fingerprint"),
                 enabled = o.optBoolean("enabled", true),
+                isAdmin = o.optBoolean("is_admin", false),
                 connected = o.optBoolean("connected"),
                 bytesRx = o.optLong("bytes_rx"),
                 bytesTx = o.optLong("bytes_tx"),
@@ -248,51 +256,40 @@ class AdminViewModel : ViewModel() {
     }
 
     private suspend fun apiGet(path: String): JSONObject = withContext(Dispatchers.IO) {
-        val conn = openConn("GET", path)
-        val code = conn.responseCode
-        val body = conn.inputStream.bufferedReader().readText()
-        conn.disconnect()
-        if (code != 200) throw Exception("HTTP $code: $body")
+        val body = doRequest(Request.Builder().url("$baseUrl$path").get().build())
         JSONObject(body)
     }
 
     private suspend fun apiGetArray(path: String): JSONArray = withContext(Dispatchers.IO) {
-        val conn = openConn("GET", path)
-        val code = conn.responseCode
-        val body = conn.inputStream.bufferedReader().readText()
-        conn.disconnect()
-        if (code != 200) throw Exception("HTTP $code: $body")
+        val body = doRequest(Request.Builder().url("$baseUrl$path").get().build())
         JSONArray(body)
     }
 
     private suspend fun apiPost(path: String, body: String): JSONObject = withContext(Dispatchers.IO) {
-        val conn = openConn("POST", path)
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        OutputStreamWriter(conn.outputStream).use { it.write(body) }
-        val code = conn.responseCode
-        val resp = try { conn.inputStream.bufferedReader().readText() }
-                   catch (_: Exception) { conn.errorStream?.bufferedReader()?.readText() ?: "" }
-        conn.disconnect()
-        if (code !in 200..299) throw Exception("HTTP $code: $resp")
+        val req = Request.Builder()
+            .url("$baseUrl$path")
+            .post(body.toRequestBody(JSON_MEDIA))
+            .build()
+        val resp = doRequest(req)
         if (resp.isBlank()) JSONObject() else JSONObject(resp)
     }
 
     private suspend fun apiDelete(path: String) = withContext(Dispatchers.IO) {
-        val conn = openConn("DELETE", path)
-        val code = conn.responseCode
-        conn.disconnect()
-        if (code !in 200..299) throw Exception("HTTP $code")
+        doRequest(Request.Builder().url("$baseUrl$path").delete().build())
+        Unit
     }
 
-    private fun openConn(method: String, path: String): HttpURLConnection {
-        val url = URL("$baseUrl$path")
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = method
-        conn.setRequestProperty("Authorization", "Bearer $token")
-        conn.connectTimeout = 5000
-        conn.readTimeout = 10000
-        return conn
+    private fun doRequest(req: Request): String {
+        val client = http ?: error("AdminViewModel not initialized")
+        client.newCall(req).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: $body")
+            return body
+        }
+    }
+
+    companion object {
+        private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     }
 }
 

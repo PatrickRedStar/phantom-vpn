@@ -22,13 +22,13 @@ class Config:
     admin_telegram_id: int
     phantom_admin_url: str
     phantom_admin_token: str
-    roles_path: str
 
 
 CONFIG = Config(
     bot_token=_req("BOT_TOKEN"),
     admin_telegram_id=int(_req("ADMIN_TELEGRAM_ID")),
-    phantom_admin_url=_req("PHANTOM_ADMIN_URL").rstrip("/"),
+    phantom_admin_url=os.environ.get(
+        "PHANTOM_ADMIN_URL", "http://127.0.0.1:8081"
+    ).rstrip("/"),
     phantom_admin_token=_req("PHANTOM_ADMIN_TOKEN"),
-    roles_path=os.environ.get("ROLES_PATH", "/data/roles.json"),
 )

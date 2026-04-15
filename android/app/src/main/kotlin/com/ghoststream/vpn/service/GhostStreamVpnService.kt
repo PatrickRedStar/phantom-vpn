@@ -34,7 +34,6 @@ class GhostStreamVpnService : VpnService() {
         val insecure: Boolean,
         val certPath: String,
         val keyPath: String,
-        val caCertPath: String,
         val transport: String,
         val tunAddr: String,
         val dnsServers: List<String>,
@@ -46,7 +45,7 @@ class GhostStreamVpnService : VpnService() {
         fun toJson(): String = JSONObject().apply {
             put("server_addr", serverAddr); put("server_name", serverName)
             put("insecure", insecure); put("cert_path", certPath); put("key_path", keyPath)
-            put("ca_cert_path", caCertPath); put("transport", transport)
+            put("transport", transport)
             put("tun_addr", tunAddr); put("dns_servers", dnsServers.joinToString(","))
             put("split_routing", splitRouting); put("direct_cidrs", directCidrs)
             put("per_app_mode", perAppMode); put("per_app_list", perAppList.joinToString(","))
@@ -61,7 +60,6 @@ class GhostStreamVpnService : VpnService() {
                     insecure = o.optBoolean("insecure"),
                     certPath = o.optString("cert_path"),
                     keyPath = o.optString("key_path"),
-                    caCertPath = o.optString("ca_cert_path"),
                     transport = o.optString("transport", "h2"),
                     tunAddr = o.optString("tun_addr", "10.7.0.2/24"),
                     dnsServers = o.optString("dns_servers", "8.8.8.8,1.1.1.1")
@@ -86,7 +84,6 @@ class GhostStreamVpnService : VpnService() {
                 insecure = intent.getBooleanExtra(EXTRA_INSECURE, false),
                 certPath = intent.getStringExtra(EXTRA_CERT_PATH) ?: "",
                 keyPath = intent.getStringExtra(EXTRA_KEY_PATH) ?: "",
-                caCertPath = intent.getStringExtra(EXTRA_CA_CERT_PATH) ?: "",
                 transport = normalizeTransport(intent.getStringExtra(EXTRA_TRANSPORT)),
                 tunAddr = intent.getStringExtra(EXTRA_TUN_ADDR) ?: "10.7.0.2/24",
                 dnsServers = (intent.getStringExtra(EXTRA_DNS_SERVERS) ?: "8.8.8.8,1.1.1.1")
@@ -114,7 +111,6 @@ class GhostStreamVpnService : VpnService() {
         val insecure: Boolean,
         val certPath: String,
         val keyPath: String,
-        val caCertPath: String,
         val requestedTransport: String,
     )
 
@@ -189,7 +185,6 @@ class GhostStreamVpnService : VpnService() {
         const val EXTRA_DIRECT_CIDRS  = "direct_cidrs_path"
         const val EXTRA_PER_APP_MODE  = "per_app_mode"
         const val EXTRA_PER_APP_LIST  = "per_app_list"
-        const val EXTRA_CA_CERT_PATH  = "ca_cert_path"
         const val EXTRA_TRANSPORT     = "transport"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
@@ -240,7 +235,6 @@ class GhostStreamVpnService : VpnService() {
         val directCidrs    = resolved.directCidrs
         val perAppMode     = resolved.perAppMode
         val perAppList     = resolved.perAppList
-        val caCertPath     = resolved.caCertPath
         val transport      = resolved.transport
 
         // Persist for crash recovery + BootReceiver.
@@ -264,7 +258,7 @@ class GhostStreamVpnService : VpnService() {
         startupThread?.interrupt()
         startupThread = Thread {
             startTunnel(
-                serverAddr, serverName, insecure, certPath, keyPath, caCertPath, transport,
+                serverAddr, serverName, insecure, certPath, keyPath, transport,
                 tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
             )
         }.apply {
@@ -277,7 +271,7 @@ class GhostStreamVpnService : VpnService() {
 
     private fun startTunnel(
         serverAddr: String, serverName: String,
-        insecure: Boolean, certPath: String, keyPath: String, caCertPath: String,
+        insecure: Boolean, certPath: String, keyPath: String,
         transport: String,
         tunAddr: String, dnsServers: List<String>,
         splitRouting: Boolean, directCidrsPath: String,
@@ -367,7 +361,6 @@ class GhostStreamVpnService : VpnService() {
             insecure = insecure,
             certPath = certPath,
             keyPath = keyPath,
-            caCertPath = caCertPath,
             requestedTransport = transport,
         )
         runtimeTransport = resolveInitialTransport(transport)
@@ -375,7 +368,7 @@ class GhostStreamVpnService : VpnService() {
 
         val fd = vpnInterface!!.fd
         val result = nativeStart(
-            fd, serverAddr, serverName, insecure, certPath, keyPath, caCertPath, runtimeTransport,
+            fd, serverAddr, serverName, insecure, certPath, keyPath, "", runtimeTransport,
         )
         if (result != 0) {
             vpnInterface?.close()
@@ -541,7 +534,7 @@ class GhostStreamVpnService : VpnService() {
         nativeStop()
         val result = nativeStart(
             iface.fd, params.serverAddr, params.serverName,
-            params.insecure, params.certPath, params.keyPath, params.caCertPath,
+            params.insecure, params.certPath, params.keyPath, "",
             targetTransport,
         )
         if (result == 0) {

@@ -11,9 +11,9 @@ android {
         applicationId = "com.ghoststream.vpn"
         minSdk = 26
         targetSdk = 34
-        versionCode = 48
-        versionName = "0.18.5"
-        buildConfigField("String", "GIT_TAG", "\"v0.18.5\"")
+        versionCode = 49
+        versionName = "0.19.0"
+        buildConfigField("String", "GIT_TAG", "\"v0.19.0\"")
     }
 
     buildFeatures {
@@ -81,6 +81,9 @@ dependencies {
 
     // ZXing core for QR code generation
     implementation("com.google.zxing:core:3.5.3")
+
+    // OkHttp for mTLS admin API
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
 
 val cargoWorkspaceDir = file("${rootProject.rootDir}/..")

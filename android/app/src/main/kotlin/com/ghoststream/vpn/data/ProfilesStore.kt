@@ -53,7 +53,6 @@ class ProfilesStore private constructor(private val context: Context) {
         _profiles.value.find { it.id == id }?.also { p ->
             runCatching { File(p.certPath).delete() }
             runCatching { File(p.keyPath).delete() }
-            p.caCertPath?.let { runCatching { File(it).delete() } }
             // Remove profile directory if empty
             runCatching { File(context.filesDir, "profiles/$id").deleteRecursively() }
         }
@@ -70,7 +69,7 @@ class ProfilesStore private constructor(private val context: Context) {
     /** Migrate from legacy flat config. Call once if profiles.json doesn't exist. */
     fun migrateFromLegacy(
         serverAddr: String, serverName: String, insecure: Boolean,
-        certPath: String, keyPath: String, caCertPath: String?, tunAddr: String,
+        certPath: String, keyPath: String, tunAddr: String,
     ) {
         if (file.exists()) return // already migrated
         if (serverAddr.isBlank()) return
@@ -82,7 +81,6 @@ class ProfilesStore private constructor(private val context: Context) {
                 insecure = insecure,
                 certPath = certPath,
                 keyPath = keyPath,
-                caCertPath = caCertPath,
                 tunAddr = tunAddr,
             ),
         )
@@ -103,10 +101,7 @@ class ProfilesStore private constructor(private val context: Context) {
                     insecure   = p.optBoolean("insecure", false),
                     certPath   = p.optString("certPath", ""),
                     keyPath    = p.optString("keyPath", ""),
-                    caCertPath  = p.optString("caCertPath").takeIf { it.isNotBlank() },
                     tunAddr     = p.optString("tunAddr", "10.7.0.2/24"),
-                    adminUrl    = p.optString("adminUrl").takeIf { it.isNotBlank() },
-                    adminToken  = p.optString("adminToken").takeIf { it.isNotBlank() },
                     dnsServers  = p.optString("dnsServers").takeIf { it.isNotBlank() }
                         ?.split(",")?.filter { it.isNotBlank() },
                     splitRouting    = if (p.has("splitRouting")) p.optBoolean("splitRouting") else null,
@@ -117,6 +112,8 @@ class ProfilesStore private constructor(private val context: Context) {
                         ?.split(",")?.filter { it.isNotBlank() },
                     cachedExpiresAt = p.optLong("cachedExpiresAt", 0).takeIf { it > 0 },
                     cachedEnabled   = if (p.has("cachedEnabled")) p.optBoolean("cachedEnabled") else null,
+                    cachedIsAdmin   = if (p.has("cachedIsAdmin")) p.optBoolean("cachedIsAdmin") else null,
+                    cachedAdminServerCertFp = p.optString("cachedAdminServerCertFp").takeIf { it.isNotBlank() },
                 )
             }
             _activeId.value = obj.optString("activeId").takeIf { it.isNotBlank() }
@@ -135,10 +132,7 @@ class ProfilesStore private constructor(private val context: Context) {
                     put("insecure", p.insecure)
                     put("certPath", p.certPath)
                     put("keyPath", p.keyPath)
-                    if (p.caCertPath != null) put("caCertPath", p.caCertPath)
                     put("tunAddr", p.tunAddr)
-                    if (p.adminUrl != null) put("adminUrl", p.adminUrl)
-                    if (p.adminToken != null) put("adminToken", p.adminToken)
                     if (p.dnsServers != null) put("dnsServers", p.dnsServers.joinToString(","))
                     if (p.splitRouting != null) put("splitRouting", p.splitRouting)
                     if (p.directCountries != null) put("directCountries", p.directCountries.joinToString(","))
@@ -146,6 +140,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     if (p.perAppList != null) put("perAppList", p.perAppList.joinToString(","))
                     if (p.cachedExpiresAt != null) put("cachedExpiresAt", p.cachedExpiresAt)
                     if (p.cachedEnabled != null) put("cachedEnabled", p.cachedEnabled)
+                    if (p.cachedIsAdmin != null) put("cachedIsAdmin", p.cachedIsAdmin)
+                    if (p.cachedAdminServerCertFp != null) put("cachedAdminServerCertFp", p.cachedAdminServerCertFp)
                 })
             }
             file.writeText(

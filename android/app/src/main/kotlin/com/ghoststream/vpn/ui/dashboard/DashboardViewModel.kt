@@ -4,11 +4,13 @@ import android.app.Application
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ghoststream.vpn.data.AdminHttpClient
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.data.VpnConfig
 import com.ghoststream.vpn.data.VpnStats
+import okhttp3.Request
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.service.VpnStateManager
@@ -24,8 +26,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.time.Duration
 import java.time.Instant
 
@@ -49,7 +49,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             insecure        = p?.insecure ?: false,
             certPath        = p?.certPath ?: "",
             keyPath         = p?.keyPath ?: "",
-            caCertPath      = p?.caCertPath,
             tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
             transport       = p?.transport ?: "h2",
             dnsServers      = p?.dnsServers ?: prefs.dnsServers,
@@ -124,35 +123,49 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun fetchSubscriptionInfo() {
         val profile = profilesStore.getActiveProfile() ?: return
-        val adminUrl = profile.adminUrl ?: return
-        val adminToken = profile.adminToken ?: return
-        val myTunIp = profile.tunAddr.substringBefore('/')
+        val tunIp = profile.tunAddr.substringBefore('/')
+        val parts = tunIp.split('.')
+        val gateway = if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.1" else "10.7.0.1"
+        val baseUrl = "https://$gateway:8080"
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val url = URL("${adminUrl.trimEnd('/')}/api/clients")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.setRequestProperty("Authorization", "Bearer $adminToken")
-                conn.connectTimeout = 5000
-                conn.readTimeout = 10000
-                if (conn.responseCode == 200) {
-                    val body = conn.inputStream.bufferedReader().readText()
-                    conn.disconnect()
-                    val arr = JSONArray(body)
-                    for (i in 0 until arr.length()) {
-                        val o = arr.getJSONObject(i)
-                        if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
-                            val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
-                            val enabled = o.optBoolean("enabled", true)
-                            _subscriptionText.value = formatExpiry(expiresAt)
-                            profilesStore.updateProfile(
-                                profile.copy(cachedExpiresAt = expiresAt, cachedEnabled = enabled),
-                            )
-                            break
-                        }
+                val outcome = AdminHttpClient.build(
+                    certPemPath = profile.certPath,
+                    keyPemPath = profile.keyPath,
+                    pinnedFp = profile.cachedAdminServerCertFp,
+                )
+                val meReq = Request.Builder().url("$baseUrl/api/me").get().build()
+                val meBody = outcome.client.newCall(meReq).execute().use {
+                    if (!it.isSuccessful) return@launch
+                    it.body?.string().orEmpty()
+                }
+                val me = JSONObject(meBody)
+                val isAdmin = me.optBoolean("is_admin", false)
+
+                val clReq = Request.Builder().url("$baseUrl/api/clients").get().build()
+                val clBody = outcome.client.newCall(clReq).execute().use {
+                    if (!it.isSuccessful) return@launch
+                    it.body?.string().orEmpty()
+                }
+                val arr = JSONArray(clBody)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    if (o.optString("tun_addr").substringBefore('/') == tunIp) {
+                        val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
+                        val enabled = o.optBoolean("enabled", true)
+                        _subscriptionText.value = formatExpiry(expiresAt)
+                        profilesStore.updateProfile(
+                            profile.copy(
+                                cachedExpiresAt = expiresAt,
+                                cachedEnabled = enabled,
+                                cachedIsAdmin = isAdmin,
+                                cachedAdminServerCertFp = outcome.serverCertFpRef.value
+                                    ?: profile.cachedAdminServerCertFp,
+                            ),
+                        )
+                        break
                     }
-                } else {
-                    conn.disconnect()
                 }
             } catch (_: Exception) {}
         }
@@ -236,7 +249,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, directCidrsPath)
                 putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
                 putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
-                putExtra(GhostStreamVpnService.EXTRA_CA_CERT_PATH, cfg.caCertPath ?: "")
             }
             ctx.startForegroundService(intent)
         }

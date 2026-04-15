@@ -5,14 +5,13 @@ Telegram-бот для управления `phantom-server` через admin HT
 
 ## Возможности
 
-- Список клиентов + детали (статус, трафик, подписка)
-- Создать клиента с выбором роли **Admin** / **Regular**
-  - Regular → в `conn_string` вырезается `admin` (url+token панели)
-  - Admin → `conn_string` отдаётся как есть
+- Список клиентов + детали (статус, трафик, подписка, 👑 для админов)
+- Создать клиента: имя → срок подписки → тип (админ/обычный)
+- Toggle «Сделать админом / Снять админа» в карточке клиента
 - Удалить клиента
 - Enable / Disable
 - Управление подпиской (extend / set / cancel / revoke)
-- QR-код + текстовая строка подключения
+- QR-код + текстовая строка подключения (формат `ghs://...`)
 
 ## Развёртывание
 
@@ -29,6 +28,16 @@ docker logs -f phantom-telegram-bot
 
 В логах должно появиться `Application started`.
 
+## Admin-статус
+
+Админство клиента хранится **на сервере** (`clients.json` → `is_admin`).
+Бот выставляет его через `POST /api/clients/<name>/admin` и читает из
+`GET /api/clients`. Никакой локальной базы ролей больше нет.
+
+Бот ходит в phantom-server через `http://127.0.0.1:8081` (loopback-only
+plain HTTP + Bearer token listener — канал break-glass). Основной admin
+API на `10.7.0.1:8080` требует mTLS и доступен только клиентам VPN.
+
 ## Структура
 
 ```
@@ -38,21 +47,12 @@ tools/telegram-bot/
 ├── .env                    # gitignored, секреты
 ├── .env.example
 ├── requirements.txt
-├── data/                   # bind-mount, roles.json
+├── data/                   # bind-mount (пусто)
 └── bot/
     ├── main.py             # entry
     ├── config.py           # чтение .env
     ├── api.py              # httpx обёртка над admin API
-    ├── conn_string.py      # strip_admin для regular
-    ├── roles.py            # локальный store ролей
     ├── qr.py               # генерация QR PNG
     ├── auth.py             # фильтр по Telegram ID
     └── handlers.py         # /start, меню, ConversationHandler
 ```
-
-## Роли
-
-Роли хранятся только в `data/roles.json` — на сервере (phantom-server) нет
-концепции admin/regular. Единственный эффект роли: для `regular` клиента
-бот вырезает поле `admin` из conn_string перед отправкой пользователю,
-чтобы тот не получил доступ к admin-панели сервера.

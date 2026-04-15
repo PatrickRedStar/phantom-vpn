@@ -68,21 +68,11 @@ pub fn load_config(path: &str) -> anyhow::Result<ClientConfig> {
 
 // ─── Connection string ──────────────────────────────────────────────────────
 
-/// Parse a base64url-encoded connection string into ClientConfig.
-///
-/// Connection string JSON format (v1):
-/// ```json
-/// {
-///   "v": 1,
-///   "addr": "1.2.3.4:8443",
-///   "sni": "example.com",
-///   "tun": "10.7.0.4/24",
-///   "transport": "h2",
-///   "cert": "-----BEGIN CERTIFICATE-----\n...",
-///   "key": "-----BEGIN EC PRIVATE KEY-----\n...",
-///   "ca": "-----BEGIN CERTIFICATE-----\n..."  // optional
-/// }
+/// New connection string format (v0.19+):
 /// ```
+/// ghs://<base64url(cert_pem + "\n" + key_pem)>@<host>:<port>?sni=<sni>&tun=<cidr>&v=1
+/// ```
+/// Legacy base64-JSON formats are rejected.
 pub fn normalize_transport(value: &str) -> anyhow::Result<String> {
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -91,48 +81,112 @@ pub fn normalize_transport(value: &str) -> anyhow::Result<String> {
     }
 }
 
+fn url_decode(input: &str) -> anyhow::Result<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => { out.push(b' '); i += 1; }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i+1..i+3])
+                    .map_err(|_| anyhow::anyhow!("invalid percent-encoding"))?;
+                let v = u8::from_str_radix(hex, 16)
+                    .map_err(|_| anyhow::anyhow!("invalid percent-encoding: %{}", hex))?;
+                out.push(v);
+                i += 3;
+            }
+            b => { out.push(b); i += 1; }
+        }
+    }
+    String::from_utf8(out).context("URL-decoded value is not valid UTF-8")
+}
+
 pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
     let trimmed = input.trim();
 
-    let json_str = if trimmed.starts_with('{') {
-        trimmed.to_string()
-    } else {
-        // base64url → JSON
-        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-        let bytes = URL_SAFE_NO_PAD.decode(trimmed)
-            .context("Invalid base64url in connection string")?;
-        String::from_utf8(bytes).context("Connection string is not valid UTF-8")?
-    };
+    let rest = trimmed.strip_prefix("ghs://")
+        .ok_or_else(|| anyhow::anyhow!(
+            "Unsupported conn_string format: expected 'ghs://…'. \
+             Regenerate connection link via the bot."))?;
 
-    let obj: serde_json::Value = serde_json::from_str(&json_str)
-        .context("Invalid JSON in connection string")?;
+    // userinfo@authority?query
+    let (userinfo, after_at) = rest.split_once('@')
+        .ok_or_else(|| anyhow::anyhow!("Malformed ghs:// URL: missing '@'"))?;
+    let (authority, query) = after_at.split_once('?')
+        .ok_or_else(|| anyhow::anyhow!("Malformed ghs:// URL: missing query string"))?;
 
-    let addr = obj["addr"].as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'addr' in connection string"))?;
-    let sni = obj["sni"].as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'sni' in connection string"))?;
-    let tun = obj["tun"].as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'tun' in connection string"))?;
-    let cert = obj["cert"].as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'cert' in connection string"))?;
-    let key = obj["key"].as_str()
-        .ok_or_else(|| anyhow::anyhow!("Missing 'key' in connection string"))?;
-    let ca = obj["ca"].as_str(); // optional
-    let transport = match obj["transport"].as_str() {
-        Some(value) => normalize_transport(value)?,
-        None => "h2".to_string(),
-    };
-
-    let mut quic = QuicConfig {
-        cert_pem: Some(cert.to_string()),
-        key_pem: Some(key.to_string()),
-        ..Default::default()
-    };
-    if let Some(ca_pem) = ca {
-        quic.ca_cert_pem = Some(ca_pem.to_string());
+    if userinfo.is_empty() {
+        anyhow::bail!("Malformed ghs:// URL: empty userinfo");
+    }
+    if authority.is_empty() {
+        anyhow::bail!("Malformed ghs:// URL: empty host:port");
     }
 
-    // Extract gateway from tun addr (e.g. "10.7.0.4/24" → "10.7.0.1")
+    // Decode userinfo = base64url(cert_pem + "\n" + key_pem)
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let pem_bytes = URL_SAFE_NO_PAD.decode(userinfo.as_bytes())
+        .context("Invalid base64url userinfo in ghs:// URL")?;
+    let pem_str = String::from_utf8(pem_bytes)
+        .context("Userinfo is not valid UTF-8 after base64url decode")?;
+
+    // Split on -----BEGIN marker: expect exactly two PEM blocks (cert + key)
+    let mut begin_positions: Vec<usize> = pem_str.match_indices("-----BEGIN").map(|(i, _)| i).collect();
+    if begin_positions.len() != 2 {
+        anyhow::bail!(
+            "Expected 2 PEM blocks in userinfo (cert + key), found {}",
+            begin_positions.len()
+        );
+    }
+    begin_positions.push(pem_str.len());
+    let first  = pem_str[begin_positions[0]..begin_positions[1]].trim().to_string();
+    let second = pem_str[begin_positions[1]..begin_positions[2]].trim().to_string();
+    let (cert_pem, key_pem) = if first.contains("CERTIFICATE") {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    if !cert_pem.contains("CERTIFICATE") {
+        anyhow::bail!("No CERTIFICATE PEM block found in userinfo");
+    }
+    if !key_pem.contains("PRIVATE KEY") {
+        anyhow::bail!("No PRIVATE KEY PEM block found in userinfo");
+    }
+
+    // Parse query
+    let mut sni: Option<String> = None;
+    let mut tun: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut transport_q: Option<String> = None;
+    for pair in query.split('&') {
+        if pair.is_empty() { continue; }
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = url_decode(v)?;
+        match k {
+            "sni"       => sni = Some(v),
+            "tun"       => tun = Some(v),
+            "v"         => version = Some(v),
+            "transport" => transport_q = Some(v),
+            _           => {} // forward-compat: ignore unknown params
+        }
+    }
+
+    let sni = sni.ok_or_else(|| anyhow::anyhow!("Missing 'sni' query param"))?;
+    let tun = tun.ok_or_else(|| anyhow::anyhow!("Missing 'tun' query param"))?;
+    if version.as_deref() != Some("1") {
+        anyhow::bail!("Unsupported ghs:// version: {:?}", version);
+    }
+    let transport = match transport_q {
+        Some(t) => normalize_transport(&t)?,
+        None    => "h2".to_string(),
+    };
+
+    let quic = QuicConfig {
+        cert_pem: Some(cert_pem),
+        key_pem:  Some(key_pem),
+        ..Default::default()
+    };
+
     let default_gw = tun.split('/').next()
         .and_then(|ip| {
             let parts: Vec<&str> = ip.split('.').collect();
@@ -145,11 +199,11 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
 
     Ok(ClientConfig {
         network: ClientNetworkConfig {
-            server_addr: addr.to_string(),
-            server_name: Some(sni.to_string()),
+            server_addr: authority.to_string(),
+            server_name: Some(sni),
             insecure: false,
             tun_name: None,
-            tun_addr: Some(tun.to_string()),
+            tun_addr: Some(tun),
             tun_mtu: Some(1350),
             default_gw,
         },
@@ -158,6 +212,42 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
         shaper: None,
         quic: Some(quic),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    fn sample_pem() -> String {
+        "-----BEGIN CERTIFICATE-----\nMIIBcert\n-----END CERTIFICATE-----\n\
+         -----BEGIN PRIVATE KEY-----\nMIIBkey\n-----END PRIVATE KEY-----\n".to_string()
+    }
+
+    #[test]
+    fn parses_ghs_url() {
+        let enc = URL_SAFE_NO_PAD.encode(sample_pem().as_bytes());
+        let s = format!("ghs://{}@1.2.3.4:443?sni=tls.example.com&tun=10.7.0.5%2F24&v=1", enc);
+        let cfg = parse_conn_string(&s).expect("parse");
+        assert_eq!(cfg.network.server_addr, "1.2.3.4:443");
+        assert_eq!(cfg.network.server_name.as_deref(), Some("tls.example.com"));
+        assert_eq!(cfg.network.tun_addr.as_deref(), Some("10.7.0.5/24"));
+        assert_eq!(cfg.network.default_gw.as_deref(), Some("10.7.0.1"));
+    }
+
+    #[test]
+    fn rejects_legacy_base64_json() {
+        let legacy = URL_SAFE_NO_PAD.encode(b"{\"addr\":\"x\"}");
+        let err = parse_conn_string(&legacy).unwrap_err().to_string();
+        assert!(err.contains("Unsupported conn_string format"), "got: {}", err);
+    }
+
+    #[test]
+    fn rejects_missing_tun() {
+        let enc = URL_SAFE_NO_PAD.encode(sample_pem().as_bytes());
+        let s = format!("ghs://{}@1.2.3.4:443?sni=x&v=1", enc);
+        assert!(parse_conn_string(&s).is_err());
+    }
 }
 
 /// Load connection string from CLI args (--conn-string or --conn-string-file).

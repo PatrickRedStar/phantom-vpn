@@ -53,11 +53,17 @@ class PhantomAPI:
         self,
         name: str,
         expires_days: Optional[int] = None,
+        is_admin: bool = False,
     ) -> dict:
-        body: dict[str, Any] = {"name": name}
+        body: dict[str, Any] = {"name": name, "is_admin": is_admin}
         if expires_days is not None:
             body["expires_days"] = expires_days
         return await self._request("POST", "/api/clients", json=body)
+
+    async def set_admin(self, name: str, is_admin: bool) -> None:
+        await self._request(
+            "POST", f"/api/clients/{name}/admin", json={"is_admin": is_admin}
+        )
 
     async def delete_client(self, name: str) -> None:
         await self._request("DELETE", f"/api/clients/{name}")
