@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ghoststream_prefs")
@@ -28,7 +29,37 @@ class PreferencesStore(private val context: Context) {
         private val DIRECT_COUNTRIES  = stringPreferencesKey("direct_countries")
         private val PER_APP_MODE      = stringPreferencesKey("per_app_mode")
         private val PER_APP_LIST      = stringPreferencesKey("per_app_list")
+        private val AUTO_START_ON_BOOT = booleanPreferencesKey("auto_start_on_boot")
+        private val WAS_RUNNING        = booleanPreferencesKey("was_running")
+        private val LAST_TUNNEL_PARAMS = stringPreferencesKey("last_tunnel_params")
     }
+
+    val autoStartOnBoot: Flow<Boolean> = context.dataStore.data.map { it[AUTO_START_ON_BOOT] ?: false }
+
+    suspend fun setAutoStartOnBoot(enabled: Boolean) {
+        context.dataStore.edit { it[AUTO_START_ON_BOOT] = enabled }
+    }
+
+    // "was user-intent: running" — true between user-tapped Connect and user-tapped Disconnect.
+    // Used by BootReceiver and by Service after process kill.
+    suspend fun setWasRunning(running: Boolean) {
+        context.dataStore.edit { it[WAS_RUNNING] = running }
+    }
+    fun wasRunningBlocking(): Boolean = runCatching {
+        kotlinx.coroutines.runBlocking {
+            context.dataStore.data.map { it[WAS_RUNNING] ?: false }.first()
+        }
+    }.getOrDefault(false)
+
+    // Last successful ACTION_START extras as JSON — service re-reads when intent=null.
+    suspend fun saveLastTunnelParams(json: String) {
+        context.dataStore.edit { it[LAST_TUNNEL_PARAMS] = json }
+    }
+    fun loadLastTunnelParamsBlocking(): String? = runCatching {
+        kotlinx.coroutines.runBlocking {
+            context.dataStore.data.map { it[LAST_TUNNEL_PARAMS] }.first()
+        }
+    }.getOrNull()
 
     val config: Flow<VpnConfig> = context.dataStore.data.map { prefs ->
         VpnConfig(
