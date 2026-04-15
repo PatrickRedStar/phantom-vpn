@@ -13,9 +13,9 @@ type: reference
 Read, Write, Edit, TaskCreate, TaskUpdate, TaskList, TaskGet
 
 ## Файлы под управлением
-- `/home/spongebob/.claude/projects/-home-spongebob-project-ghoststream/memory/MEMORY.md` — индекс памяти
-- `/home/spongebob/.claude/projects/-home-spongebob-project-ghoststream/memory/*.md` — все memory-файлы
-- `/home/spongebob/project/ghoststream/CHANGELOG.md` — история изменений (создать если нет)
+- `/root/.claude/projects/-opt-github-projects-phantom-vpn/memory/MEMORY.md` — индекс памяти
+- `/root/.claude/projects/-opt-github-projects-phantom-vpn/memory/*.md` — все memory-файлы
+- `/opt/github_projects/phantom-vpn/CHANGELOG.md` — история изменений
 
 ## Задачи после каждого спринта
 1. Обновить или создать memory-файлы с новыми фактами о проекте
@@ -41,3 +41,9 @@ Read, Write, Edit, TaskCreate, TaskUpdate, TaskList, TaskGet
 - Прочитать MEMORY.md и все связанные файлы
 - Прочитать TaskList для текущих задач
 - Вернуть краткий контекст: текущее состояние проекта
+
+## Крупные изменения
+Если спринт — большое изменение (релиз, рефакторинг, удаление), создать/обновить:
+1. `project_v0XX_shipped.md` с deployed state + diff stats
+2. Обновить устаревшие reference-записи (что было правдой, но больше не актуально)
+3. Добавить/обновить ссылку в MEMORY.md (одна строка, ≤150 символов)
