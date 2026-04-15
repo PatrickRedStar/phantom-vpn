@@ -2,21 +2,36 @@
 
 > Линейная история релизов PhantomVPN / GhostStream. Для перформанс-замеров см. [ROADMAP.md](ROADMAP.md), для архитектурного контекста — [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## v0.19.x — 2026-04-15
+## v0.19.4 — 2026-04-15
 
 ### Removed
 - **QUIC транспорт удалён полностью.** `normalize_transport` в парсере conn_string уже
   принимал только "h2"; UDP:443 listener висел впустую. Удалены `crates/core/src/quic.rs`,
   `congestion.rs`, `crates/server/src/quic_server.rs` (~640 строк). Android-клиент больше
-  не пытается QUIC-fallback на `transport=auto`.
+  не пытается QUIC-fallback на `transport=auto`. Зависимости `quinn`, `quinn-proto`
+  вырезаны из `Cargo.toml`.
+- 6 устаревших `other_docs/speedtest_*.csv` и `scripts/build-android-local.sh`.
+
+### Changed
+- `QuicConfig` → `TlsConfig` по всему коду (`crates/core/src/config.rs`, `helpers.rs`,
+  server/client call-sites). Serde `alias = "quic"` на поле `tls` сохраняет совместимость
+  со старыми `server.toml`.
+- Systemd unit description: «PhantomVPN Server (QUIC/HTTP3 transport)» → «H2/TLS transport».
 
 ### Fixed
-- DNS-парсер в `vpn_session.rs`: некорректный `name_pos` → в кэш попадали пустые hostname,
-  в debug возможен integer underflow на malformed response. Исправлено использованием
-  сохранённого `name_start`.
-- `tun_uring`: `.expect("SQ full")` в hot-path заменён на graceful `bail!` через retry-helper.
-- Android: `.unwrap()` на `thread::spawn` заменён на возврат error code -10.
-- `admin.rs`: убран `remove_dir("/")` fallback.
+- DNS-парсер в `vpn_session.rs`: некорректный `name_pos = pos - rdlen - 10` указывал **за**
+  qname → в пассивный кэш попадали пустые hostname → `/api/clients/:name/logs` не
+  резолвил IP → домен. Исправлено использованием сохранённого `name_start`. Добавлены
+  4 unit-теста (valid A / compressed pointer / malicious pointer loop / multi-A).
+- `tun_uring`: 3× `.expect("push")` в hot-path заменены на `push_entry()` helper с
+  submit+retry — возвращает `Err` вместо panic на переполнение SQ.
+- Android: `thread::Builder::spawn(...).unwrap()` заменён на match — при OOM/EAGAIN
+  JNI возвращает `-10` вместо SIGABRT. `VpnStateManager` отображает "ресурсы исчерпаны".
+- `admin.rs`: убран `remove_dir("/")` fallback (было no-op, но выглядело security-дыркой).
+
+### Infra
+- Весь релиз выполнен через 4 параллельных субагента (Dev-Server / core /
+  Dev-Android / docs) — non-overlapping файловые зоны, merge на сервере.
 
 ## v0.18.2 — 2026-04-12
 

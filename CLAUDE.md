@@ -23,9 +23,9 @@
 ```
 ghoststream/
 ├── crates/
-│   ├── core/               # Общая библиотека (крипто, wire-формат, шейпинг)
+│   ├── core/               # Общая библиотека (wire-формат, TLS, tun_uring, константы)
 │   ├── server/             # phantom-server + phantom-keygen
-│   ├── client-common/      # QUIC handshake + TX/RX циклы (переиспользуется всеми клиентами)
+│   ├── client-common/      # H2/TLS handshake + TX/RX циклы (переиспользуется всеми клиентами)
 │   ├── client-linux/       # Linux TUN клиент
 │   └── client-android/     # Android JNI библиотека → libphantom_android.so
 ├── android/                # Android приложение (Kotlin + Compose)
@@ -149,7 +149,11 @@ buildConfigField("String", "GIT_TAG", "\"vX.Y.Z\"")
 | v0.9.0 | 16 |
 | v0.10.0 | 17 |
 | v0.18.5 | 48 |
-| **v0.19.0** | **49** ← текущий |
+| v0.19.0 | 49 |
+| v0.19.1 | 50 |
+| v0.19.2 | 51 |
+| v0.19.3 | 52 |
+| **v0.19.4** | **53** ← текущий |
 
 После обновления `build.gradle.kts`:
 ```bash
@@ -307,16 +311,15 @@ server_public_key  = "..."
 
 ### Транспорт
 
-Активный режим — **H2 / TLS поверх TCP с мульти-стрим шардингом** (v0.17.0+):
+Единственный режим транспорта — **H2 / TLS поверх TCP с мульти-стрим шардингом** (v0.17.0+, QUIC удалён в v0.19.4):
 - Порт `8443` на NL exit (через nginx stream SNI-routing с `443`)
-- TLS 1.3 + mTLS (клиентский cert используется как аутентификация вместо Noise)
-- **N_DATA_STREAMS = 4** параллельных TLS-соединений на одного клиента
-  — каждый TLS занимает свой CPU core (шифрование single-threaded per stream)
+- TLS 1.3 + mTLS (клиентский cert — единственная аутентификация; Noise удалён в v0.18)
+- **`n_data_streams()`** = `available_parallelism().clamp(2, 16)` параллельных TLS-соединений на одного клиента. Каждая сторона вычисляет свой `n` локально, handshake обменивается байтами, `effective_n = client_max.clamp(MIN, MAX)` (см. `crates/core/src/wire.rs` + `reference_tx_ceiling.md`).
 - **flow_stream_idx** (5-tuple hash src_ip/dst_ip/src_port/dst_port/proto) —
   раскладывает поток по стримам, сохраняя порядок внутри одного TCP-flow
   (нет HoL blocking для несвязанных соединений, нет reordering внутри одного TCP)
 - Zero-copy путь через `Bytes`/`BytesMut` (нет `.to_vec()` в горячем пути)
-- Первый байт каждого TLS-стрима после handshake — `stream_idx: u8` (0..N_DATA_STREAMS)
+- Handshake (v0.18+): `[1B stream_idx][1B client_max_streams]` атомарно в первом write каждого TLS-стрима
 
 ### Handshake (H2 / mTLS)
 
@@ -325,11 +328,16 @@ Client: N параллельных TCP connect к tls.nl2.bikini-bottom.com:443
         (каждый сокет защищён VpnService.protect() на Android)
 nginx (NL:443) с ssl_preread: SNI=tls.nl2 → passthrough к 127.0.0.1:8443
 phantom-server: TLS 1.3 + mTLS (client cert → fingerprint → keyring lookup)
-Client → Server: [1B stream_idx]   (0, 1, 2, 3)
-Server: attach_stream(stream_idx, mpsc::Sender) в SessionCoordinator
+Client → Server: [1B stream_idx][1B client_max_streams]    (атомарно, read_exact)
+Server: effective_n = client_max.clamp(MIN=2, MAX=16)
+        attach_stream(stream_idx, mpsc::Sender) в SessionCoordinator
         (один SessionCoordinator на fingerprint, Vec<Mutex<Option<Sender>>>)
 # Handshake complete
 ```
+
+**Mimicry warmup** (`crates/server/src/mimicry.rs`): после handshake server на stream_idx==0 шлёт 4 плейсхолдер-батча (2/8/16/24 KB) за ~800ms, имитируя H.264 I-frame pattern. Клиент silently drop'ит non-IPv4 пакеты в `tls_rx_loop`.
+
+**Fakeapp** (`crates/server/src/fakeapp.rs`): fallback H2-сервер для соединений без правильного client cert. Отдаёт `/`, `/favicon.ico`, `/robots.txt`, `/api/v1/{health,status}` с nginx-like headers. Для active-probing резистентности.
 
 ### Wire Format (внутри каждого TLS-стрима)
 
@@ -347,9 +355,11 @@ Batch:
 Константы (`crates/core/src/wire.rs`):
 ```
 BATCH_MAX_PLAINTEXT = 65536        # макс. размер одного фрейма
-N_DATA_STREAMS      = 4            # кол-во параллельных TLS-стримов
-QUIC_TUNNEL_MTU     = 1350         # MTU TUN интерфейса
-QUIC_TUNNEL_MSS     = 1310         # TCP MSS clamping
+MIN_N_STREAMS       = 2            # минимум параллельных TLS-стримов
+MAX_N_STREAMS       = 16           # жёсткий cap (bounds stream_idx/data_sends)
+n_data_streams()    = clamp(2..16) # derive from available_parallelism() per host
+QUIC_TUNNEL_MTU     = 1350         # MTU TUN интерфейса (legacy naming)
+QUIC_TUNNEL_MSS     = 1310         # TCP MSS clamping (legacy naming)
 ```
 
 ### SNI Passthrough Relay (RU hop, v0.17.0+)
@@ -363,14 +373,11 @@ QUIC_TUNNEL_MSS     = 1310         # TCP MSS clamping
 
 Это убирает двойное шифрование в RU-хоп — relay теперь I/O-bound, не CPU-bound.
 
-### Шифрование (`core/src/crypto.rs`)
+### Шифрование
 
-```
-Noise_IK_25519_ChaChaPoly_BLAKE2s
-```
-- IK: клиент знает pub key сервера → нет лишнего round-trip
-- `StatelessTransportState`, nonce = u64 (явный)
-- Рекейинг: каждые 100 MB или 600 сек
+**TLS 1.3 + mTLS** — `rustls 0.23` с `ring` crypto provider. Cipher suites по умолчанию (TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256). Клиентская аутентификация — mTLS через self-signed PhantomVPN CA, fingerprint → `clients.json` keyring lookup. Noise protocol удалён в v0.18 (заменён на mTLS).
+
+Ключи клиентов (серверный CA + client cert/key) — все в `clients.json` и per-client файлах `/opt/phantom-vpn/config/clients/<name>.{crt,key}`. Нет статических Noise keypair'ов — каждый клиент = уникальный x509 сертификат.
 
 ### Шейпинг трафика
 
@@ -527,6 +534,38 @@ ssh -i ~/.ssh/bot root@193.187.95.128
 | `adb uninstall` перед install | Нужно при смене подписи или очистке данных |
 | versionCode не совпадает | Обновить `build.gradle.kts` перед тегом (см. таблицу выше) |
 | Подписка не отображается | Требует `adminUrl` + `adminToken` в профиле (нужна строка подключения v0.7+) |
+
+## Мульти-агентный workflow (REQUIRED для крупных задач)
+
+**При задачах, затрагивающих >5 файлов или ≥3 независимых файловых зон — обязательно запускать параллельных субагентов через `Agent` tool одним сообщением.** Не делать всё инлайн — это медленно и разбазаривает контекст.
+
+### Декомпозиция по зонам (non-overlapping edits)
+
+| Агент | Зона |
+|-------|------|
+| **Dev-Server** | `crates/server/` |
+| **Dev-Android** | `android/`, `crates/client-android/` |
+| **Dev-Linux** | `crates/client-linux/` |
+| **general-purpose** | `crates/core/`, `crates/client-common/` (по желанию разбить) |
+| **general-purpose (docs)** | `*.md`, `config/`, `scripts/` |
+
+### Правила
+
+1. **Запуск** — один tool-call с несколькими `Agent` блоками = параллельное выполнение. Последовательные вызовы = серия (медленнее в N раз).
+2. **Non-overlap** — агенты не должны править одни и те же файлы. Иначе merge conflicts в рабочем дереве.
+3. **Self-contained prompts** — у агента нет контекста беседы. Каждому давать: цель, затрагиваемые файлы, что-уже-сделано, что-сделать, как валидировать.
+4. **Валидация после merge** — главный агент сам прогоняет `cargo check -p <crate>`, `cargo test`, фиксит cross-crate compile errors (агенты их пропускают).
+5. **Точечные правки** (1 файл, <50 строк) — субагент не нужен, делать инлайн.
+
+### Sign of task fit
+
+- ≥3 crate'ов/модулей
+- Низкая взаимозависимость правок
+- Можно сформулировать задачу ≤200 слов на агента
+
+**Пример:** v0.19.4 релиз (удаление QUIC + 4 bug fixes + renaming) → 4 агента × ~20 минут вместо ~80 минут инлайн.
+
+---
 
 ## gstack (REQUIRED — global install)
 

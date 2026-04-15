@@ -6,88 +6,84 @@ type: reference
 
 # Оркестрация GhostStream Multi-Agent System
 
-## Агенты и их файлы
+**Для крупных задач (>5 файлов или ≥3 независимых файловых зон) — всегда использовать
+параллельных субагентов.** См. CLAUDE.md → "Мульти-агентный workflow".
 
-| Агент | Файл | Зона ответственности |
-|-------|------|----------------------|
-| Архитектор | agents/architect.md | cross-crate API, wire format, JNI контракт |
-| Секретарь | agents/secretary.md | memory, tasks, CHANGELOG |
-| Валидатор | agents/validator.md | cargo check, JNI сигнатуры, сборка |
+## Агенты и их зоны
+
+| Агент | Файл роли | Зона ответственности |
+|-------|-----------|----------------------|
+| Architect | agents/architect.md | cross-crate API, wire format, JNI контракт (только чтение) |
+| Secretary | agents/secretary.md | memory, tasks, CHANGELOG |
+| Validator | agents/validator.md | cargo check, JNI сигнатуры, сборка |
 | Dev-Server | agents/dev_server.md | crates/server/ |
 | Dev-Linux | agents/dev_linux.md | crates/client-linux/ |
-| Dev-macOS | agents/dev_macos.md | crates/client-macos/ |
 | Dev-Android | agents/dev_android.md | android/ + crates/client-android/ |
 
-## Как загружать агента
+**Удалено:** Dev-macOS (платформа выпилена в v0.15+).
 
-В начале каждого Agent-промпта добавлять:
-```
-Прочитай файл роли: /home/spongebob/.claude/projects/-home-spongebob-project-ghoststream/memory/agents/<agent>.md
-Прочитай контекст проекта: /home/spongebob/project/ghoststream/CLAUDE.md
-Работай строго в рамках своей зоны ответственности.
-```
+## Как запускать параллельно
 
-## Схема запуска задачи
+**Критически важно:** несколько `Agent` блоков в одном сообщении = параллель. Серия
+вызовов = медленнее в N раз. Non-overlapping файловые зоны обязательны (иначе
+merge conflicts).
 
-### Задача затрагивает один компонент
-```
-1. [Архитектор] — проверить риски и выдать план
-2. [Dev-X] — реализовать в worktree
-3. [Валидатор] — проверить
-4. [Секретарь] — обновить задачи и память
-```
+### Пример для крупной задачи (v0.19.4)
 
-### Задача затрагивает несколько компонентов (например, новая JNI функция)
+Один tool-call с 4 параллельными блоками:
 ```
-1. [Архитектор] — план: что меняется в Rust, что в Kotlin
-2. ПАРАЛЛЕЛЬНО (worktree изоляция):
-   - [Dev-Android JNI] → crates/client-android/src/lib.rs
-   - [Dev-Android UI]  → android/ Kotlin код
-3. [Валидатор] — проверить оба worktree
-4. merge + [Секретарь]
+Agent(subagent_type="Dev-Server",       prompt="...crates/server/...")
+Agent(subagent_type="general-purpose",  prompt="...crates/core/ + client-common/...")
+Agent(subagent_type="Dev-Android",      prompt="...android/ + client-android/...")
+Agent(subagent_type="general-purpose",  prompt="...docs + config + scripts...")
 ```
 
-### Параллельный запуск разных компонентов
+После merge — главный агент:
+1. Прогоняет `cargo check --workspace` и `cargo test`
+2. Фиксит cross-crate compile errors (субагенты их пропускают)
+3. Деплоит бинарь, поднимает systemd unit
+4. Обновляет CHANGELOG + memory
+
+### Задача на один компонент
+
 ```
-Одновременно (независимые задачи):
-- [Dev-Server]  worktree A
-- [Dev-Android] worktree B
-- [Dev-Linux]   worktree C
+1. [Architect] (опционально) — проверить риски, выдать план
+2. [Dev-X] — реализовать
+3. [Validator] — cargo check, тесты
+4. [Secretary] — обновить CHANGELOG / memory
 ```
 
-## Worktree naming convention
-```
-feature/server-<краткое-описание>
-feature/android-<краткое-описание>
-feature/linux-<краткое-описание>
-feature/macos-<краткое-описание>
-feature/jni-<краткое-описание>
-```
+Для мелких правок (1 файл, <50 строк) — субагенты не нужны, делать инлайн.
 
-## Стандартный промпт для запуска агента
+## Стандартный промпт для агента
+
+Subагенты **не видят беседы** — всё в prompt:
+
 ```
 Ты — [Роль] GhostStream VPN проекта.
-Прочитай свою роль: [путь к файлу роли]
-Прочитай CLAUDE.md: /home/spongebob/project/ghoststream/CLAUDE.md
+Прочитай свою роль: .claude/agents/<role>.md
+Прочитай CLAUDE.md: /opt/github_projects/phantom-vpn/CLAUDE.md
 
-Задача: [описание задачи]
+Контекст: [что уже сделано, что сломано, что надо]
+Задача:   [точные файлы + строки + что изменить + что проверить]
 
-Работаешь ТОЛЬКО в своей зоне ответственности.
-Не меняй файлы вне своей зоны без явного указания.
-В конце верни: список изменённых файлов + краткое описание что сделал.
+Работаешь ТОЛЬКО в своей зоне. Не меняй файлы вне зоны без явного указания.
+В конце верни: список изменённых файлов + краткое описание.
 ```
 
-## Выполненные задачи
-- [x] Android: Jetpack Compose + Material 3 UI
-- [x] Android: nativeGetStats() / nativeGetLogs() JNI
-- [x] Android: настраиваемые DNS серверы (пресеты + кастомные)
-- [x] Android: QR-сканер (CameraX + ML Kit)
-- [x] Android: ребрендинг → com.ghoststream.vpn
-- [x] Android: vpnInterface fd management (dup() вместо detachFd)
-- [x] Android: таймер сессии + 4 карточки статистики
-- [x] Все платформы: base64 connection string авторизация (v0.7.0)
-- [x] Сервер: fingerprint-based client allowlist + SIGHUP hot-reload (v0.6.1)
-- [x] Android: IP-based split routing + per-app VPN (v0.5.0)
+## Выполненные крупные вехи
 
-## Текущие задачи (обновлять через Секретаря)
-(пусто — ожидает новых задач от пользователя)
+- [x] v0.19.4 — удалён весь QUIC stack (−870 строк), 4 bug fixes, renaming QuicConfig→TlsConfig
+- [x] v0.18.0 — mimicry warmup, fakeapp, multi-stream handshake negotiation
+- [x] v0.17.2 — parallel per-stream batch loops (138→625 Mbit/s)
+- [x] v0.17.0 — H2/TLS multi-stream, nginx SNI-passthrough relay
+- [x] v0.15 — первый H2+TLS transport
+- [x] Android: com.ghoststream.vpn ребрендинг, Jetpack Compose UI, admin panel, QR scanner
+- [x] Connection string `ghs://` URL-формат (v0.19+, legacy base64-JSON отвергается)
+
+## Текущие приоритеты
+
+См. `memory/project_v019_priorities.md`:
+- Priority 1 Stealth: detection vectors 11/13 (timing jitter, connection migration)
+- Priority 2 UX: Android Clone profile
+- Priority 3 Research: buffer pool, telemetry endpoint
