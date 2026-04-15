@@ -10,6 +10,8 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputFile,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
     Update,
 )
 from telegram.constants import ParseMode
@@ -105,6 +107,16 @@ def _kb_main() -> InlineKeyboardMarkup:
     ])
 
 
+_REPLY_KB = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("👥 Клиенты"), KeyboardButton("➕ Добавить")],
+        [KeyboardButton("🏠 Меню")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
 def _kb_client_list(clients: list[dict]) -> InlineKeyboardMarkup:
     rows = []
     for c in sorted(clients, key=lambda x: x["name"]):
@@ -171,9 +183,44 @@ def _kb_delete_confirm(name: str) -> InlineKeyboardMarkup:
 @admin_only
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_chat.send_message(
-        "phantom-vpn admin bot. Выбери действие:",
+        "phantom-vpn admin bot. Меню снизу всегда доступно.",
+        reply_markup=_REPLY_KB,
+    )
+    await update.effective_chat.send_message(
+        "Выбери действие:",
         reply_markup=_kb_main(),
     )
+
+
+@admin_only
+async def on_reply_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        clients = await _api.list_clients()
+    except PhantomApiError as e:
+        await update.message.reply_text(f"❌ API error: {e}")
+        return
+    if not clients:
+        await update.message.reply_text("Клиентов пока нет.", reply_markup=_kb_main())
+        return
+    await update.message.reply_text(
+        f"Клиенты ({len(clients)}):",
+        reply_markup=_kb_client_list(clients),
+    )
+
+
+@admin_only
+async def on_reply_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text("Главное меню:", reply_markup=_kb_main())
+
+
+@admin_only
+async def on_reply_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    """Reply-keyboard entry point into the add-client conversation."""
+    await update.message.reply_text(
+        "Введи имя клиента (a-z, 0-9, _, -, 1..32 символа):",
+        reply_markup=_KB_CANCEL,
+    )
+    return ADD_NAME
 
 
 async def _show_main(update: Update) -> None:
@@ -222,18 +269,29 @@ async def _show_client(update: Update, name: str) -> None:
 
 # ─── Conn string / QR ─────────────────────────────────────────────────────
 
+def _kb_after_send(name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⬅ К клиенту", callback_data=f"c:{name}"),
+            InlineKeyboardButton("📋 Список", callback_data="list"),
+            InlineKeyboardButton("🏠 Меню", callback_data="main"),
+        ],
+    ])
+
+
 async def _send_qr(update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str) -> None:
     q = update.callback_query
     try:
         s = await _api.conn_string(name)
     except PhantomApiError as e:
-        await q.message.reply_text(f"❌ API error: {e}")
+        await q.message.reply_text(f"❌ API error: {e}", reply_markup=_kb_after_send(name))
         return
     img = generate_qr(s)
     await q.message.reply_photo(
         photo=InputFile(img, filename=f"{name}.png"),
         caption=f"QR · {name}",
     )
+    await q.message.reply_text("Навигация:", reply_markup=_kb_after_send(name))
 
 
 async def _send_conn(update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str) -> None:
@@ -241,12 +299,13 @@ async def _send_conn(update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str) 
     try:
         s = await _api.conn_string(name)
     except PhantomApiError as e:
-        await q.message.reply_text(f"❌ API error: {e}")
+        await q.message.reply_text(f"❌ API error: {e}", reply_markup=_kb_after_send(name))
         return
     await q.message.reply_text(
         f"<b>{html.escape(name)}</b>\n<code>{html.escape(s)}</code>",
         parse_mode=ParseMode.HTML,
     )
+    await q.message.reply_text("Навигация:", reply_markup=_kb_after_send(name))
 
 
 # ─── Enable/Disable / Delete / Subscription ──────────────────────────────
@@ -369,12 +428,18 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ─── Add-client ConversationHandler ───────────────────────────────────────
 
+_KB_CANCEL = InlineKeyboardMarkup([
+    [InlineKeyboardButton("❌ Отмена", callback_data="acancel")],
+])
+
+
 @admin_only
 async def add_entry(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = update.callback_query
     await q.answer()
     await q.edit_message_text(
         "Введи имя клиента (a-z, 0-9, _, -, 1..32 символа):",
+        reply_markup=_KB_CANCEL,
     )
     return ADD_NAME
 
@@ -384,7 +449,10 @@ async def add_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     import re
 
     if not re.fullmatch(r"[a-zA-Z0-9_\-]{1,32}", name):
-        await update.message.reply_text("Плохое имя. Попробуй ещё раз:")
+        await update.message.reply_text(
+            "Плохое имя. Попробуй ещё раз:",
+            reply_markup=_KB_CANCEL,
+        )
         return ADD_NAME
     ctx.user_data["add_name"] = name
     kb = InlineKeyboardMarkup([
@@ -467,7 +535,7 @@ async def add_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         f"<code>{html.escape(conn)}</code>",
         parse_mode=ParseMode.HTML,
     )
-    await q.message.reply_text("Меню:", reply_markup=_kb_main())
+    await q.message.reply_text("Навигация:", reply_markup=_kb_after_send(name))
     ctx.user_data.pop("add_name", None)
     ctx.user_data.pop("add_days", None)
     return ConversationHandler.END
@@ -494,7 +562,13 @@ async def _add_fallback_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
 def add_conversation() -> ConversationHandler:
     admin_filter = filters.User(user_id=CONFIG.admin_telegram_id)
     return ConversationHandler(
-        entry_points=[CallbackQueryHandler(add_entry, pattern=r"^add$")],
+        entry_points=[
+            CallbackQueryHandler(add_entry, pattern=r"^add$"),
+            MessageHandler(
+                filters.Regex(r"^\u2795 \u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c$") & admin_filter,
+                on_reply_add,
+            ),
+        ],
         states={
             ADD_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND & admin_filter, add_name),
@@ -526,7 +600,13 @@ def add_conversation() -> ConversationHandler:
 def register(app: Application) -> None:
     admin_filter = filters.User(user_id=CONFIG.admin_telegram_id)
     app.add_handler(CommandHandler("start", cmd_start, filters=admin_filter))
-    # ConversationHandler must be registered BEFORE the general CallbackQueryHandler
-    # so its `add` entry point wins over the catch-all dispatcher.
+    # ConversationHandler must be registered BEFORE other MessageHandlers so its
+    # reply-keyboard entry point wins over the top-level reply-text handlers.
     app.add_handler(add_conversation())
+    app.add_handler(
+        MessageHandler(filters.Regex(r"^👥 Клиенты$") & admin_filter, on_reply_list)
+    )
+    app.add_handler(
+        MessageHandler(filters.Regex(r"^🏠 Меню$") & admin_filter, on_reply_menu)
+    )
     app.add_handler(CallbackQueryHandler(on_callback))

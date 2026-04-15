@@ -479,12 +479,24 @@ class GhostStreamVpnService : VpnService() {
                             getSystemService(NotificationManager::class.java)
                                 ?.notify(NOTIFICATION_ID, buildNotification("Переподключение..."))
                         }
-                        // Exponential backoff: 3s, 6s, 12s, 24s, 48s, 60s, 60s, 60s
+                        // Exponential backoff: 3s, 6s, 12s, 24s, 48s, 60s, 60s, 60s.
+                        // Attempt counter НЕ увеличивается пока сеть недоступна —
+                        // иначе 8 попыток сгорают за ~3.5 мин с выключенным WiFi,
+                        // что приводит к failTunnel и ложной "ошибке таймаута".
                         var backoffMs = 3_000L
                         var reconnected = false
-                        for (attempt in 1..8) {
+                        var attempt = 0
+                        while (attempt < 8) {
+                            if (!hasUsableNetwork()) {
+                                Log.i(TAG, "No usable network — parking reconnect until onAvailable")
+                                if (!waitForUsableNetwork()) break@outer
+                                // Сеть появилась — пробуем сразу, без exponential задержки.
+                                backoffMs = 3_000L
+                            }
                             if (!watchdogSleep(backoffMs)) break@outer
                             if (userStopped) break@outer
+                            if (!hasUsableNetwork()) continue  // пропала пока спали
+                            attempt++
                             if (restartNativeTunnel(params, runtimeTransport)) {
                                 timeoutSecs = 60
                                 reconnected = true
@@ -506,7 +518,9 @@ class GhostStreamVpnService : VpnService() {
                         }
                         continue@outer
                     }
-                    timeoutSecs--
+                    // Не декрементируем таймаут пока underlying сеть недоступна —
+                    // иначе 60-секундный бюджет сгорает за время простоя WiFi.
+                    if (hasUsableNetwork()) timeoutSecs--
                     if (!connected && timeoutSecs <= 0) {
                         if (params.requestedTransport == "auto" && runtimeTransport == "quic") {
                             recordAutoFallback(nowMs)
@@ -768,6 +782,32 @@ class GhostStreamVpnService : VpnService() {
             networkChangedTick += 1
             watchdogLock.notifyAll()
         }
+    }
+
+    /** Есть ли не-VPN сеть с INTERNET capability (иначе нет смысла пытаться реконнектиться). */
+    private fun hasUsableNetwork(): Boolean {
+        val cm = connectivityManager ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        // Исключаем наш же VPN (его transport = VPN).
+        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return false
+        return true
+    }
+
+    /** Блокируется на watchdogLock пока сеть не появится (или userStopped). */
+    private fun waitForUsableNetwork(): Boolean {
+        synchronized(watchdogLock) {
+            while (!userStopped && !hasUsableNetwork()) {
+                try {
+                    watchdogLock.wait(30_000L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return false
+                }
+            }
+        }
+        return !userStopped
     }
 
     private fun createNotificationChannel() {
