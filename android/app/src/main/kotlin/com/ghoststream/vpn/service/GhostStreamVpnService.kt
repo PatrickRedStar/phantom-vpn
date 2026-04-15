@@ -367,8 +367,12 @@ class GhostStreamVpnService : VpnService() {
         resetAutoRuntimeState()
 
         val fd = vpnInterface!!.fd
+        // Резолвим hostname через не-VPN сеть до вызова native: если VPN DNS
+        // уже настроен системой, но tun мёртв, tokio-резолвер внутри Rust
+        // зависает в getaddrinfo. Передаём уже готовый IP:port.
+        val effectiveAddr = resolveServerAddrViaUnderlying(serverAddr)
         val result = nativeStart(
-            fd, serverAddr, serverName, insecure, certPath, keyPath, "", runtimeTransport,
+            fd, effectiveAddr, serverName, insecure, certPath, keyPath, "", runtimeTransport,
         )
         if (result != 0) {
             vpnInterface?.close()
@@ -548,8 +552,9 @@ class GhostStreamVpnService : VpnService() {
         val targetTransport = normalizeManualTransport(transport)
         nativeStop()
         if (userStopped) return false
+        val effectiveAddr = resolveServerAddrViaUnderlying(params.serverAddr)
         val result = nativeStart(
-            iface.fd, params.serverAddr, params.serverName,
+            iface.fd, effectiveAddr, params.serverName,
             params.insecure, params.certPath, params.keyPath, "",
             targetTransport,
         )
@@ -784,6 +789,41 @@ class GhostStreamVpnService : VpnService() {
         val cb = networkCallback ?: return
         runCatching { cm.unregisterNetworkCallback(cb) }
         networkCallback = null
+    }
+
+    /**
+     * Резолвим hostname в IP через underlying (не-VPN) сеть. Это критично при
+     * реконнекте после падения/смены сети: если VPN установил свой DNS (10.7.0.1),
+     * а tun мёртв, стандартный резолвер зависает. Используем ConnectivityManager
+     * для явного выбора не-VPN сети и InetAddress.getByName на её сокете.
+     * Возвращает "ip:port" если удалось, иначе исходный "host:port".
+     */
+    private fun resolveServerAddrViaUnderlying(hostPort: String): String {
+        val lastColon = hostPort.lastIndexOf(':')
+        if (lastColon <= 0) return hostPort
+        val host = hostPort.substring(0, lastColon)
+        val port = hostPort.substring(lastColon + 1)
+        // Если уже IP — ничего не делаем.
+        if (host.matches(Regex("^[0-9.]+$")) || host.contains(':')) return hostPort
+
+        val cm = connectivityManager ?: return hostPort
+        val net = cm.activeNetwork ?: return hostPort
+        val caps = cm.getNetworkCapabilities(net)
+        if (caps == null ||
+            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        ) return hostPort
+
+        return runCatching {
+            val addrs = net.getAllByName(host)
+            val ip = addrs.firstOrNull { it is java.net.Inet4Address }
+                ?: addrs.firstOrNull()
+                ?: return@runCatching hostPort
+            val ipStr = ip.hostAddress ?: return@runCatching hostPort
+            val out = if (ip is java.net.Inet6Address) "[$ipStr]:$port" else "$ipStr:$port"
+            Log.i(TAG, "Pre-resolved $host → $ipStr via underlying network")
+            out
+        }.getOrDefault(hostPort)
     }
 
     private fun wakeWatchdog(reason: String) {
