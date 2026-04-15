@@ -17,10 +17,11 @@ type: reference
 | Secretary | agents/secretary.md | memory, tasks, CHANGELOG |
 | Validator | agents/validator.md | cargo check, JNI сигнатуры, сборка |
 | Dev-Server | agents/dev_server.md | crates/server/ |
-| Dev-Linux | agents/dev_linux.md | crates/client-linux/ |
+| Dev-Linux | agents/dev_linux.md | crates/client-linux/ (CLI) |
+| Dev-Linux-GUI | agents/dev_linux_gui.md | apps/linux-gui/ (Slint/GTK4) |
 | Dev-Android | agents/dev_android.md | android/ + crates/client-android/ |
-
-**Удалено:** Dev-macOS (платформа выпилена в v0.15+).
+| Dev-macOS-GUI | agents/dev_macos_gui.md | apps/macos/ + crates/client-macos/ (SwiftUI + NEPacketTunnelProvider) |
+| Dev-Windows-GUI | agents/dev_windows_gui.md | apps/windows/ + crates/client-windows/ (Slint/WinUI3 + Wintun) |
 
 ## Как запускать параллельно
 
