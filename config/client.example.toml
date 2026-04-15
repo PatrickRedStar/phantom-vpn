@@ -1,7 +1,7 @@
-# PhantomVPN Client Configuration (QUIC Transport)
+# PhantomVPN Client Configuration (H2/TLS Transport)
 
 [network]
-# Server address (QUIC/UDP port 443)
+# Server address (H2/TLS TCP port 443)
 server_addr = "SERVER_PUBLIC_IP:443"
 
 # Server hostname for TLS SNI verification

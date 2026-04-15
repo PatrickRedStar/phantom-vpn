@@ -6,7 +6,7 @@
 
 ## Обзор проекта
 
-**GhostStream / PhantomVPN** — кастомный VPN-протокол, маскирующий трафик под WebRTC/SRTP (имитация видеозвонков) для обхода DPI/TSPU. Трафик выглядит как зашифрованные H.264-видеопотоки поверх QUIC/HTTP3.
+**GhostStream / PhantomVPN** — кастомный VPN-протокол, маскирующий трафик под обычный HTTPS для обхода DPI/TSPU. Транспорт — HTTP/2 поверх TLS 1.3 поверх TCP, с мульти-стрим шардингом и mTLS.
 
 ### Платформы
 
@@ -318,8 +318,6 @@ server_public_key  = "..."
 - Zero-copy путь через `Bytes`/`BytesMut` (нет `.to_vec()` в горячем пути)
 - Первый байт каждого TLS-стрима после handshake — `stream_idx: u8` (0..N_DATA_STREAMS)
 
-Legacy режимы: QUIC + Noise (не используется), UDP+SRTP (не используется).
-
 ### Handshake (H2 / mTLS)
 
 ```
@@ -374,11 +372,11 @@ Noise_IK_25519_ChaChaPoly_BLAKE2s
 - `StatelessTransportState`, nonce = u64 (явный)
 - Рекейинг: каждые 100 MB или 600 сек
 
-### Шейпинг трафика (`core/src/shaper.rs`)
+### Шейпинг трафика
 
-H.264 симуляция, 30 fps, GOP=60:
-- I-кадр (каждые 60 фреймов): burst 15–50 KB
-- P-кадры: LogNormal (μ=7.0, σ=0.8), ~1–4 KB
+Padding отключён начиная с v0.17 (модуль `shaper` удалён). Anti-DPI достигается
+за счёт H2 mux, nginx SNI-passthrough и natural H.264-like бёрстов от
+WebRTC-подобных pattern-ов.
 
 ### Сессии (`server/src/vpn_session.rs`)
 
@@ -389,9 +387,9 @@ H.264 симуляция, 30 fps, GOP=60:
 - Когда все стримы отвалились (`all_streams_down()`) — сессия удаляется из DashMap
 - TUN→client: единый `mpsc::Sender<Bytes>` у координатора, распределитель читает batch и шлёт в любой живой стрим
 
-### Пассивный DNS-кэш (`server/quic_server.rs`)
+### Пассивный DNS-кэш (`server/src/vpn_session.rs`)
 
-Сервер перехватывает UDP пакеты с src_port=53 (ответы DNS) → парсит A-записи → кэширует IP→hostname в `QuicSession.dns_cache`. Используется в логах `/api/clients/:name/logs` для отображения доменов вместо IP.
+Сервер перехватывает UDP пакеты с src_port=53 (ответы DNS) → парсит A-записи → кэширует IP→hostname в `VpnSession.dns_cache`. Используется в логах `/api/clients/:name/logs` для отображения доменов вместо IP.
 
 ---
 

@@ -26,7 +26,7 @@
 * **Сервер на 2 vCPU упирается в single-thread CPU при шифровании UDP-пачек.** TCP-TLS с N сокетами тривиально параллелится: каждый сокет — свой `tokio::task` на своём ядре. Параллельные per-stream batch loops в v0.17.2 дали **download 138 → 625 Mbit/s** на wired тесте.
 * **Handshake fingerprint.** TLS 1.3 ClientHello от браузера и от `rustls` с настроенным cipher-order практически неразличимы; QUIC ClientHello — гораздо более узкий набор возможных паттернов.
 
-QUIC/H3 сохранён как legacy/fallback: `transport = "quic" | "h2" | "auto"` в клиентском конфиге. Auto-режим пробует QUIC, замеряет throughput, переключается на H2 при дросселировании.
+QUIC полностью удалён в v0.19.x: `normalize_transport` в парсере conn_string уже принимал только `"h2"`, UDP-сокет висел впустую. Крейты `crates/core/src/quic.rs`, `crates/core/src/congestion.rs`, `crates/server/src/quic_server.rs` и Android-fallback удалены.
 
 ### Multi-stream dispatch
 
@@ -228,5 +228,5 @@ iperf3 = sustained bulk transfer (большие пакеты), speedtest = ре
 
 * [ROADMAP.md](ROADMAP.md) — таблица версий с замерами
 * [CHANGELOG.md](CHANGELOG.md) — линейная история релизов
-* [other_docs/PLAN_v2_transport.md](other_docs/PLAN_v2_transport.md) — исторический план миграции с QUIC на HTTP/2 (все фазы выполнены)
+* [other_docs/PLAN_v2_transport.md](other_docs/PLAN_v2_transport.md) — исторический план миграции с QUIC на HTTP/2 (QUIC полностью удалён в v0.19.x)
 * [ANALYZE.md](ANALYZE.md) / [ANALYZE_RESPONSE.md](ANALYZE_RESPONSE.md) — внешний аудит 2025 + наш ответ

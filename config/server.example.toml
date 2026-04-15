@@ -1,4 +1,4 @@
-# PhantomVPN Server Configuration (QUIC Transport)
+# PhantomVPN Server Configuration (H2/TLS Transport)
 # Run `phantom-keygen` to generate keys and replace the placeholders below.
 
 [network]

@@ -3,7 +3,7 @@
 use std::path::Path;
 use anyhow::Context;
 
-use phantom_core::config::{ClientConfig, ClientNetworkConfig, QuicConfig};
+use phantom_core::config::{ClientConfig, ClientNetworkConfig, TlsConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 // ─── CLI Args ────────────────────────────────────────────────────────────────
@@ -33,10 +33,6 @@ pub struct Args {
     /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
-
-    /// Transport override: "quic", "h2", or "auto"
-    #[arg(long)]
-    pub transport: Option<String>,
 }
 
 // ─── Init logging ────────────────────────────────────────────────────────────
@@ -69,18 +65,9 @@ pub fn load_config(path: &str) -> anyhow::Result<ClientConfig> {
 // ─── Connection string ──────────────────────────────────────────────────────
 
 /// New connection string format (v0.19+):
-/// ```
-/// ghs://<base64url(cert_pem + "\n" + key_pem)>@<host>:<port>?sni=<sni>&tun=<cidr>&v=1
-/// ```
+/// `ghs://<base64url(cert_pem + "\n" + key_pem)>@<host>:<port>?sni=<sni>&tun=<cidr>&v=1`
+///
 /// Legacy base64-JSON formats are rejected.
-pub fn normalize_transport(value: &str) -> anyhow::Result<String> {
-    let normalized = value.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "h2" | "tls" => Ok("h2".to_string()),
-        _ => anyhow::bail!("Unsupported transport: {} (only 'h2' is supported)", value),
-    }
-}
-
 fn url_decode(input: &str) -> anyhow::Result<String> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -157,7 +144,6 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
     let mut sni: Option<String> = None;
     let mut tun: Option<String> = None;
     let mut version: Option<String> = None;
-    let mut transport_q: Option<String> = None;
     for pair in query.split('&') {
         if pair.is_empty() { continue; }
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
@@ -166,8 +152,7 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
             "sni"       => sni = Some(v),
             "tun"       => tun = Some(v),
             "v"         => version = Some(v),
-            "transport" => transport_q = Some(v),
-            _           => {} // forward-compat: ignore unknown params
+            _           => {} // forward-compat: ignore unknown params (e.g. legacy "transport")
         }
     }
 
@@ -176,12 +161,8 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
     if version.as_deref() != Some("1") {
         anyhow::bail!("Unsupported ghs:// version: {:?}", version);
     }
-    let transport = match transport_q {
-        Some(t) => normalize_transport(&t)?,
-        None    => "h2".to_string(),
-    };
 
-    let quic = QuicConfig {
+    let tls_cfg = TlsConfig {
         cert_pem: Some(cert_pem),
         key_pem:  Some(key_pem),
         ..Default::default()
@@ -207,10 +188,9 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
             tun_mtu: Some(1350),
             default_gw,
         },
-        transport: Some(transport),
         keys: None,
         shaper: None,
-        quic: Some(quic),
+        tls: Some(tls_cfg),
     })
 }
 
@@ -271,9 +251,9 @@ pub fn load_conn_string(args: &Args) -> anyhow::Result<Option<ClientConfig>> {
 pub fn load_tls_identity(
     cfg: &ClientConfig,
 ) -> anyhow::Result<Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>> {
-    if let Some(ref qc) = cfg.quic {
+    if let Some(ref tc) = cfg.tls {
         // Inline PEM has priority
-        if let (Some(ref cert_pem), Some(ref key_pem)) = (&qc.cert_pem, &qc.key_pem) {
+        if let (Some(ref cert_pem), Some(ref key_pem)) = (&tc.cert_pem, &tc.key_pem) {
             tracing::info!("Loading client TLS certificate from inline PEM");
             let identity = phantom_core::tls::parse_pem_identity(
                 cert_pem.as_bytes(), key_pem.as_bytes(),
@@ -281,7 +261,7 @@ pub fn load_tls_identity(
             return Ok(Some(identity));
         }
         // Fallback to file paths
-        if let (Some(ref cp), Some(ref kp)) = (&qc.cert_path, &qc.key_path) {
+        if let (Some(ref cp), Some(ref kp)) = (&tc.cert_path, &tc.key_path) {
             tracing::info!("Loading client TLS certificate from {}", cp);
             let identity = phantom_core::tls::load_pem_certs(Path::new(cp), Path::new(kp))
                 .context("Failed to load client TLS certificate")?;
@@ -296,16 +276,16 @@ pub fn load_tls_identity(
 pub fn load_server_ca(
     cfg: &ClientConfig,
 ) -> anyhow::Result<Option<Vec<CertificateDer<'static>>>> {
-    if let Some(ref qc) = cfg.quic {
+    if let Some(ref tc) = cfg.tls {
         // Inline PEM has priority
-        if let Some(ref ca_pem) = qc.ca_cert_pem {
+        if let Some(ref ca_pem) = tc.ca_cert_pem {
             tracing::info!("Loading server CA cert from inline PEM");
             let certs = phantom_core::tls::parse_pem_cert_chain(ca_pem.as_bytes())
                 .context("Failed to parse inline CA cert")?;
             return Ok(Some(certs));
         }
         // Fallback to file path
-        if let Some(ref ca_path) = qc.ca_cert_path {
+        if let Some(ref ca_path) = tc.ca_cert_path {
             let certs = phantom_core::tls::load_pem_cert_chain(Path::new(ca_path))
                 .context("Failed to load server CA cert")?;
             return Ok(Some(certs));

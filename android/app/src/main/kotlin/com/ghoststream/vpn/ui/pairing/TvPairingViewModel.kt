@@ -104,7 +104,6 @@ class TvPairingViewModel(application: Application) : AndroidViewModel(applicatio
                         certPath   = certFile.absolutePath,
                         keyPath    = keyFile.absolutePath,
                         tunAddr    = parsed.tun,
-                        transport  = parsed.transport,
                     ),
                 )
                 _state.value = TvPairingState.Received

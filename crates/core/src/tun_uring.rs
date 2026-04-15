@@ -11,11 +11,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bytes::{Bytes, BytesMut};
 use io_uring::{IoUring, opcode, types};
+use io_uring::squeue::Entry;
 use tokio::sync::mpsc;
 
 const RING_SIZE: u32 = 256;
 const BUF_SIZE: usize = 2048;
 const N_READ_BUFS: usize = 64;
+
+/// Push an SQE into the submission queue, falling back to a `submit()` flush
+/// if the SQ is full. Avoids the `.expect("SQ full")` panics that could fire
+/// under sustained pressure.
+fn push_entry(ring: &mut IoUring, entry: &Entry) -> anyhow::Result<()> {
+    unsafe {
+        if ring.submission().push(entry).is_ok() {
+            return Ok(());
+        }
+    }
+    ring.submit()?;
+    unsafe {
+        ring.submission()
+            .push(entry)
+            .map_err(|_| anyhow::anyhow!("io_uring SQ full after submit"))
+    }
+}
 
 pub fn spawn(
     tun_fd: RawFd,
@@ -69,7 +87,7 @@ fn reader_loop(
         let entry = opcode::Read::new(fd_t, buf.as_mut_ptr(), buf.len() as u32)
             .build()
             .user_data(i as u64);
-        unsafe { ring.submission().push(&entry).expect("SQ full on init"); }
+        push_entry(&mut ring, &entry)?;
     }
     ring.submit()?;
 
@@ -108,7 +126,7 @@ fn reader_loop(
             let entry = opcode::Read::new(fd_t, bufs[idx].as_mut_ptr(), bufs[idx].len() as u32)
                 .build()
                 .user_data(idx as u64);
-            unsafe { ring.submission().push(&entry).expect("SQ full on resubmit"); }
+            push_entry(&mut ring, &entry)?;
         }
 
         ring.submit()?;
@@ -151,12 +169,7 @@ fn writer_loop(
             let entry = opcode::Write::new(fd_t, pkt.as_ptr(), pkt.len() as u32)
                 .build()
                 .user_data(i as u64);
-            unsafe {
-                if ring.submission().push(&entry).is_err() {
-                    ring.submit()?;
-                    ring.submission().push(&entry).expect("SQ full after drain");
-                }
-            }
+            push_entry(&mut ring, &entry)?;
         }
 
         ring.submit_and_wait(pending.len())?;

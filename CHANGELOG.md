@@ -2,6 +2,22 @@
 
 > Линейная история релизов PhantomVPN / GhostStream. Для перформанс-замеров см. [ROADMAP.md](ROADMAP.md), для архитектурного контекста — [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## v0.19.x — 2026-04-15
+
+### Removed
+- **QUIC транспорт удалён полностью.** `normalize_transport` в парсере conn_string уже
+  принимал только "h2"; UDP:443 listener висел впустую. Удалены `crates/core/src/quic.rs`,
+  `congestion.rs`, `crates/server/src/quic_server.rs` (~640 строк). Android-клиент больше
+  не пытается QUIC-fallback на `transport=auto`.
+
+### Fixed
+- DNS-парсер в `vpn_session.rs`: некорректный `name_pos` → в кэш попадали пустые hostname,
+  в debug возможен integer underflow на malformed response. Исправлено использованием
+  сохранённого `name_start`.
+- `tun_uring`: `.expect("SQ full")` в hot-path заменён на graceful `bail!` через retry-helper.
+- Android: `.unwrap()` на `thread::spawn` заменён на возврат error code -10.
+- `admin.rs`: убран `remove_dir("/")` fallback.
+
 ## v0.18.2 — 2026-04-12
 
 * **Detection vector 12 (idle heartbeat frames)** — на idle стримах каждые 20–30с отправляется случайный 40–200B dummy frame с sentinel-версией `0x0`. Имитирует keepalive обычного мобильного клиента, закрывает вектор «стрим стоит молча N минут».

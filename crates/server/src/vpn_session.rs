@@ -493,7 +493,6 @@ pub fn dns_parse_response(data: &[u8], session: &VpnSession) {
     for _ in 0..ancount {
         let name_start = pos;
         if !dns_skip_name(data, &mut pos) { return; }
-        let _ = name_start;
 
         if pos + 10 > data.len() { return; }
         let rtype  = u16::from_be_bytes([data[pos], data[pos + 1]]);
@@ -504,7 +503,7 @@ pub fn dns_parse_response(data: &[u8], session: &VpnSession) {
 
         if rtype == 1 && rdlen == 4 {
             let ip = Ipv4Addr::new(data[pos], data[pos + 1], data[pos + 2], data[pos + 3]);
-            let mut name_pos = pos - rdlen - 10;
+            let mut name_pos = name_start;
             if let Some(hostname) = dns_read_name(data, &mut name_pos) {
                 if !hostname.is_empty() {
                     entries.push((ip, hostname));
@@ -698,4 +697,137 @@ fn dns_read_name(data: &[u8], pos: &mut usize) -> Option<String> {
         p += len;
     }
     Some(name)
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod dns_tests {
+    use super::*;
+
+    /// Build a minimal VpnSession suitable for exercising `dns_parse_response`.
+    /// Only `dns_cache`, `bytes_*`, `last_seen`, counters are touched — none of
+    /// the transport plumbing is needed.
+    fn mock_session() -> VpnSession {
+        let (close_tx, _close_rx) = tokio::sync::oneshot::channel();
+        let effective_n = 1;
+        let (tx, _rx) = mpsc::channel::<Bytes>(4);
+        VpnSession::new_coordinator("deadbeef".to_string(), effective_n, vec![tx], close_tx)
+    }
+
+    /// Encode a QNAME from a dotted hostname, terminated with a zero label.
+    fn encode_name(out: &mut Vec<u8>, host: &str) {
+        for label in host.split('.') {
+            out.push(label.len() as u8);
+            out.extend_from_slice(label.as_bytes());
+        }
+        out.push(0);
+    }
+
+    /// Build a DNS response packet: single QD for `host`/A, plus `answers`
+    /// (each with its own name encoding and IP). `answer_name` can be the raw
+    /// name bytes (e.g. compressed pointer 0xC0 0x0C) to exercise compression.
+    fn build_response(host: &str, answers: &[(Vec<u8>, [u8; 4])]) -> Vec<u8> {
+        let mut pkt = Vec::with_capacity(64);
+        // header: id=0x1234, flags=0x8180 (response, no error), qd=1, an=N, ns=0, ar=0
+        pkt.extend_from_slice(&[0x12, 0x34, 0x81, 0x80]);
+        pkt.extend_from_slice(&(1u16).to_be_bytes());
+        pkt.extend_from_slice(&(answers.len() as u16).to_be_bytes());
+        pkt.extend_from_slice(&[0, 0, 0, 0]);
+        // question: name, type=A, class=IN
+        encode_name(&mut pkt, host);
+        pkt.extend_from_slice(&[0, 1, 0, 1]);
+        // answers
+        for (name_bytes, ip) in answers {
+            pkt.extend_from_slice(name_bytes);
+            pkt.extend_from_slice(&[0, 1]);       // type A
+            pkt.extend_from_slice(&[0, 1]);       // class IN
+            pkt.extend_from_slice(&[0, 0, 0, 60]); // ttl
+            pkt.extend_from_slice(&(4u16).to_be_bytes()); // rdlen
+            pkt.extend_from_slice(ip);
+        }
+        pkt
+    }
+
+    #[test]
+    fn valid_a_record_populates_cache() {
+        let session = mock_session();
+        // Question QNAME starts at offset 12 → pointer 0xC0 0x0C.
+        let mut answer_name = Vec::new();
+        encode_name(&mut answer_name, "example.com");
+        let pkt = build_response("example.com", &[(answer_name, [1, 2, 3, 4])]);
+
+        dns_parse_response(&pkt, &session);
+
+        let mut cache = session.dns_cache.lock().unwrap();
+        let entry = cache.get(&Ipv4Addr::new(1, 2, 3, 4)).cloned();
+        assert!(entry.is_some(), "cache should contain 1.2.3.4");
+        assert_eq!(entry.unwrap().0, "example.com");
+    }
+
+    #[test]
+    fn compressed_pointer_resolves_hostname() {
+        let session = mock_session();
+        // 0xC0 0x0C → pointer back to the question QNAME at offset 12.
+        let answer_name = vec![0xC0, 0x0C];
+        let pkt = build_response("example.com", &[(answer_name, [5, 6, 7, 8])]);
+
+        dns_parse_response(&pkt, &session);
+
+        let mut cache = session.dns_cache.lock().unwrap();
+        let entry = cache.get(&Ipv4Addr::new(5, 6, 7, 8)).cloned();
+        assert!(entry.is_some(), "cache should contain 5.6.7.8");
+        assert_eq!(entry.unwrap().0, "example.com");
+    }
+
+    #[test]
+    fn malicious_pointer_loop_does_not_panic() {
+        // Hand-craft a packet where the question QNAME is a self-referential
+        // compressed pointer (0xC0 0x0C at offset 12 → points to itself).
+        // `dns_skip_name` must bail, and `dns_parse_response` must return
+        // cleanly without panicking.
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(&[0x12, 0x34, 0x81, 0x80]); // header
+        pkt.extend_from_slice(&(1u16).to_be_bytes());     // qd=1
+        pkt.extend_from_slice(&(1u16).to_be_bytes());     // an=1
+        pkt.extend_from_slice(&[0, 0, 0, 0]);
+        // QNAME at offset 12: self-pointer
+        pkt.extend_from_slice(&[0xC0, 0x0C]);
+        pkt.extend_from_slice(&[0, 1, 0, 1]);             // type/class
+        // Answer: name is also a valid pointer, but rdlen=0 to stress the
+        // `pos - rdlen - 10` underflow bug that this fix removes.
+        pkt.extend_from_slice(&[0xC0, 0x0C]);             // pointer into QNAME (loops)
+        pkt.extend_from_slice(&[0, 1]);                   // type A
+        pkt.extend_from_slice(&[0, 1]);                   // class
+        pkt.extend_from_slice(&[0, 0, 0, 60]);            // ttl
+        pkt.extend_from_slice(&(0u16).to_be_bytes());     // rdlen=0 (degenerate)
+
+        let session = mock_session();
+        // Must not panic.
+        dns_parse_response(&pkt, &session);
+    }
+
+    #[test]
+    fn multi_a_answers_both_cached() {
+        let session = mock_session();
+        let mut name_a = Vec::new();
+        encode_name(&mut name_a, "multi.example.org");
+        let name_b = vec![0xC0, 0x0C]; // second answer uses compression
+        let pkt = build_response(
+            "multi.example.org",
+            &[(name_a, [9, 9, 9, 1]), (name_b, [9, 9, 9, 2])],
+        );
+
+        dns_parse_response(&pkt, &session);
+
+        let mut cache = session.dns_cache.lock().unwrap();
+        assert_eq!(
+            cache.get(&Ipv4Addr::new(9, 9, 9, 1)).map(|(h, _)| h.clone()),
+            Some("multi.example.org".to_string())
+        );
+        assert_eq!(
+            cache.get(&Ipv4Addr::new(9, 9, 9, 2)).map(|(h, _)| h.clone()),
+            Some("multi.example.org".to_string())
+        );
+    }
 }

@@ -1,9 +1,8 @@
 //! phantom-server: точка входа.
-//! Инициализирует TUN интерфейс, настраивает NAT, запускает QUIC сервер.
+//! Инициализирует TUN интерфейс, настраивает NAT, запускает H2/TLS сервер.
 
 pub mod tun_iface;
 pub mod vpn_session;
-pub mod quic_server;
 pub mod h2_server;
 pub mod admin;
 pub mod admin_tls;
@@ -24,7 +23,7 @@ use phantom_core::config::ServerConfig;
 #[derive(Parser, Debug)]
 #[command(
     name  = "phantom-server",
-    about = "PhantomVPN server — QUIC transport with Noise encryption"
+    about = "PhantomVPN server — H2/TLS transport with mTLS"
 )]
 struct Args {
     /// Path to TOML config file
@@ -64,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
         .compact()
         .init();
 
-    tracing::info!("PhantomVPN Server starting (QUIC transport)...");
+    tracing::info!("PhantomVPN Server starting (H2/TLS transport)...");
 
     // Загрузка конфига
     let cfg = if std::path::Path::new(&args.config).exists() {
@@ -77,48 +76,40 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Config loaded: listen={}", cfg.network.listen_addr);
 
-    // Override listen addr from CLI if provided
-    let listen_addr: SocketAddr = if let Some(ref la) = args.listen {
-        la.parse().context("Invalid --listen address")?
-    } else {
-        cfg.network.listen_addr.parse().context("Invalid config listen_addr")?
-    };
+    // --listen is accepted for backward compatibility but no longer used —
+    // the active transport is H2/TLS on [h2].listen_addr. Warn if supplied.
+    if args.listen.is_some() {
+        tracing::warn!("--listen flag is deprecated (QUIC transport removed); configure [h2].listen_addr instead");
+    }
 
     // ─── TLS сертификаты ──────────────────────────────────────────────────
-    let (certs, key) = if let Some(ref qc) = cfg.quic {
+    let (certs, key) = if let Some(ref qc) = cfg.tls {
         if let (Some(ref cp), Some(ref kp)) = (&qc.cert_path, &qc.key_path) {
             tracing::info!("Loading TLS certificates from PEM files...");
-            phantom_core::quic::load_pem_certs(Path::new(cp), Path::new(kp))
+            phantom_core::tls::load_pem_certs(Path::new(cp), Path::new(kp))
                 .context("Failed to load PEM certificates")?
         } else {
             let subjects = qc.cert_subjects.clone()
                 .unwrap_or_else(|| vec!["localhost".into()]);
             tracing::info!("Generating self-signed certificate for {:?}", subjects);
-            phantom_core::quic::self_signed_cert(subjects)
+            phantom_core::tls::self_signed_cert(subjects)
                 .context("Failed to generate self-signed cert")?
         }
     } else {
-        tracing::info!("No [quic] config section — generating self-signed cert for localhost");
-        phantom_core::quic::self_signed_cert(vec!["localhost".into()])
+        tracing::info!("No [tls] config section — generating self-signed cert for localhost");
+        phantom_core::tls::self_signed_cert(vec!["localhost".into()])
             .context("Failed to generate self-signed cert")?
     };
 
-    let idle_timeout = cfg.quic.as_ref()
-        .and_then(|q| q.idle_timeout_secs)
-        .unwrap_or(30);
-
     // Load CA cert for mTLS client verification (if configured)
-    let client_ca = if let Some(ref ca_path) = cfg.quic.as_ref().and_then(|q| q.ca_cert_path.clone()) {
+    let client_ca = if let Some(ref ca_path) = cfg.tls.as_ref().and_then(|q| q.ca_cert_path.clone()) {
         tracing::info!("Loading client CA cert from {}", ca_path);
-        Some(phantom_core::quic::load_pem_cert_chain(Path::new(ca_path))
+        Some(phantom_core::tls::load_pem_cert_chain(Path::new(ca_path))
             .context("Failed to load client CA cert")?)
     } else {
-        tracing::warn!("No ca_cert_path in [quic] config — client authentication disabled");
+        tracing::warn!("No ca_cert_path in [tls] config — client authentication disabled");
         None
     };
-
-    let server_config = phantom_core::quic::make_server_config(certs.clone(), key.clone_key(), idle_timeout, client_ca.clone())
-        .context("Failed to create QUIC server config")?;
 
     // ─── HTTP/2 TLS config ─────────────────────────────────────────────────
     let h2_tls_config = phantom_core::h2_transport::make_h2_server_tls(
@@ -173,13 +164,6 @@ async fn main() -> anyhow::Result<()> {
     let (tun_read_rx, tun_tx) = phantom_core::tun_uring::spawn_multiqueue(tun_fds, 4096)
         .context("Failed to start io_uring TUN handler")?;
 
-    // ─── QUIC endpoint ──────────────────────────────────────────────────────
-
-    tracing::info!("Binding QUIC endpoint on {} ...", listen_addr);
-    let endpoint = quinn::Endpoint::server(server_config, listen_addr)
-        .with_context(|| format!("Failed to bind QUIC endpoint on {}", listen_addr))?;
-    tracing::info!("QUIC endpoint bound on {}", listen_addr);
-
     // ─── Sessions ───────────────────────────────────────────────────────────
     let sessions = vpn_session::new_session_map();
     let sessions_by_fp = vpn_session::new_session_by_fp();
@@ -198,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ─── Client allowlist (fingerprint-based) ────────────────────────────
     let allow_list = vpn_session::new_allow_list();
-    let allow_list_path = cfg.quic.as_ref()
+    let allow_list_path = cfg.tls.as_ref()
         .and_then(|q| q.allowed_clients_path.clone());
 
     if let Some(ref path) = allow_list_path {
@@ -258,7 +242,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(admin_addr) => {
                     // Resolve server SNI: explicit config > cert path > listen_addr
                     let server_name = cfg.network.server_name.clone()
-                        .or_else(|| cfg.quic.as_ref()
+                        .or_else(|| cfg.tls.as_ref()
                             .and_then(|q| q.cert_path.as_deref())
                             .and_then(|p| {
                                 // Extract domain from /etc/letsencrypt/live/<domain>/fullchain.pem
@@ -268,14 +252,14 @@ async fn main() -> anyhow::Result<()> {
 
                     let ca_cert_path = admin_cfg.ca_cert_path.as_ref()
                         .map(PathBuf::from)
-                        .or_else(|| cfg.quic.as_ref().and_then(|q| q.ca_cert_path.as_deref()).map(PathBuf::from));
+                        .or_else(|| cfg.tls.as_ref().and_then(|q| q.ca_cert_path.as_deref()).map(PathBuf::from));
                     let ca_key_path = admin_cfg.ca_key_path.as_ref()
                         .map(PathBuf::from)
                         .or_else(|| ca_cert_path.as_ref().map(|p| p.with_extension("key")));
 
                     let admin_state = admin::AdminState {
                         sessions: sessions.clone(),
-                        clients_path: PathBuf::from(cfg.quic.as_ref()
+                        clients_path: PathBuf::from(cfg.tls.as_ref()
                             .and_then(|q| q.allowed_clients_path.as_deref())
                             .unwrap_or("/opt/phantom-vpn/config/clients.json")),
                         token: token.clone(),
@@ -395,26 +379,13 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(());
     });
 
-    // ─── QUIC accept loop (legacy, not used in production) ────────────────────
-    // H2/TLS over TCP is the active transport (see h2_server). The QUIC endpoint
-    // is kept for backward compatibility but carries no production traffic.
-    tracing::info!("Server ready. Listening on {} (QUIC/UDP)", listen_addr);
+    // ─── Wait for shutdown ────────────────────────────────────────────────────
+    tracing::info!("Server ready (H2/TLS transport).");
 
-    // tun_network, tun_prefix already parsed above for H2
-
-    tokio::select! {
-        result = quic_server::run_accept_loop(endpoint.clone(), tun_tx, sessions, tun_network, tun_prefix, allow_list) => {
-            if let Err(e) = result {
-                tracing::error!("Accept loop exited: {}", e);
-            }
-        }
-        _ = shutdown_rx => {
-            tracing::info!("Shutdown signal received");
-        }
-    }
+    let _ = shutdown_rx.await;
+    tracing::info!("Shutdown signal received");
 
     // ─── Cleanup ────────────────────────────────────────────────────────────
-    endpoint.close(0u32.into(), b"server shutdown");
     if let Some((tun, wan, subnet, exit_ip)) = nat_info {
         tun_iface::teardown_nat(&tun, &wan, &subnet, exit_ip.as_deref());
     }

@@ -308,7 +308,7 @@ def generate_client_cert(name, ca_cert_path, ca_key_path, out_dir):
 # ─── Client config renderer ───────────────────────────────────────────────────
 
 def render_client_toml(server_host, server_port, server_name, tun_addr,
-                       cert_path, key_path, transport="quic"):
+                       cert_path, key_path, transport="h2"):
     return f"""[network]
 server_addr = "{server_host}:{server_port}"
 server_name = "{server_name}"
@@ -317,9 +317,7 @@ tun_addr    = "{tun_addr}"
 tun_mtu     = 1350
 default_gw  = "10.7.0.1"
 
-transport = "{transport}"
-
-[quic]
+[tls]
 cert_path = "{cert_path}"
 key_path  = "{key_path}"
 """
@@ -385,23 +383,13 @@ def add_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name
     }
     save_keyring(keyring_path, keyring)
 
-    # Config for Linux/macOS
-    linux_toml_quic = render_client_toml(
-        connect_host, quic_port, server_name, tun_addr,
-        "/etc/phantom-vpn/client.crt",
-        "/etc/phantom-vpn/client.key",
-        transport="quic",
-    )
+    # Config for Linux/macOS (H2/TLS — единственный транспорт)
     linux_toml_h2 = render_client_toml(
         connect_host, h2_port, server_name, tun_addr,
         "/etc/phantom-vpn/client.crt",
         "/etc/phantom-vpn/client.key",
         transport="h2",
     )
-    print(f"\nКонфиг Linux/macOS (/etc/phantom-vpn/client.toml) — QUIC:\n")
-    print("─" * 60)
-    print(linux_toml_quic)
-    print("─" * 60)
     print(f"\nКонфиг Linux/macOS (/etc/phantom-vpn/client.toml) — HTTP/2:\n")
     print("─" * 60)
     print(linux_toml_h2)
@@ -437,13 +425,6 @@ def show_client(keyring, server_ip, quic_port, h2_port, connect_host, server_nam
     name = names[idx]
     item = clients[name]
 
-    linux_toml_quic = render_client_toml(
-        connect_host, quic_port, server_name,
-        item["tun_addr"],
-        "/etc/phantom-vpn/client.crt",
-        "/etc/phantom-vpn/client.key",
-        transport="quic",
-    )
     linux_toml_h2 = render_client_toml(
         connect_host, h2_port, server_name,
         item["tun_addr"],
@@ -451,10 +432,6 @@ def show_client(keyring, server_ip, quic_port, h2_port, connect_host, server_nam
         "/etc/phantom-vpn/client.key",
         transport="h2",
     )
-    print(f"\nКонфиг {name!r} (Linux/macOS) — QUIC:\n")
-    print("─" * 60)
-    print(linux_toml_quic)
-    print("─" * 60)
     print(f"\nКонфиг {name!r} (Linux/macOS) — HTTP/2:\n")
     print("─" * 60)
     print(linux_toml_h2)
@@ -492,9 +469,14 @@ def _pick_client(clients, prompt="Выберите клиента для экс�
 
 
 def _generate_conn_string(connect_host: str, server_name: str, server_port: str, tun_addr: str,
-                          cert_pem: str, key_pem: str, transport: str,
+                          cert_pem: str, key_pem: str,
                           admin_url: Optional[str] = None, admin_token: Optional[str] = None) -> str:
-    """Генерирует строку подключения (base64url JSON)."""
+    """Генерирует строку подключения (base64url JSON).
+
+    Транспорт всегда H2/TLS — поле `transport` опущено (QUIC удалён в v0.19.x).
+    Современный формат — `ghs://...` (см. CLAUDE.md), `build_conn_string` в
+    `crates/server/src/admin.rs`. Этот скрипт оставлен для совместимости.
+    """
     payload = {
         "v": 1,
         "addr": f"{connect_host}:{server_port}",
@@ -502,7 +484,6 @@ def _generate_conn_string(connect_host: str, server_name: str, server_port: str,
         "tun": tun_addr,
         "cert": cert_pem,
         "key": key_pem,
-        "transport": transport,
     }
     if admin_url and admin_token:
         payload["admin"] = {"url": admin_url, "token": admin_token}
@@ -512,7 +493,7 @@ def _generate_conn_string(connect_host: str, server_name: str, server_port: str,
 
 
 def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name):
-    """Генерирует ДВЕ строки подключения: QUIC + HTTP/2 (порты из server.toml)."""
+    """Генерирует строку подключения HTTP/2 (единственный транспорт в v0.19.x)."""
     name, item = _pick_client(keyring["clients"])
     if name is None:
         return
@@ -524,18 +505,6 @@ def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name):
         print(f"[ОШИБКА] Не удалось прочитать файлы сертификата: {e}")
         return
 
-    # Строка для QUIC
-    conn_str_quic = _generate_conn_string(
-        connect_host=connect_host,
-        server_name=server_name,
-        server_port=quic_port,
-        tun_addr=item["tun_addr"],
-        cert_pem=cert_pem,
-        key_pem=key_pem,
-        transport="quic",
-    )
-
-    # Строка для HTTP/2
     conn_str_h2 = _generate_conn_string(
         connect_host=connect_host,
         server_name=server_name,
@@ -543,13 +512,7 @@ def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name):
         tun_addr=item["tun_addr"],
         cert_pem=cert_pem,
         key_pem=key_pem,
-        transport="h2",
     )
-
-    print(f"\n=== Строка подключения для {name!r} — QUIC (порт {quic_port}) ===")
-    print("─" * 60)
-    print(conn_str_quic)
-    print("─" * 60)
 
     print(f"\n=== Строка подключения для {name!r} — HTTP/2 (порт {h2_port}) ===")
     print("─" * 60)
@@ -558,15 +521,13 @@ def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name):
 
     print(f"\nИспользование:")
     print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
-    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str_quic}'  # QUIC")
-    print(f"           sudo phantom-client-linux --conn-string '{conn_str_h2}'  # HTTP/2")
-    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str_quic}'  # QUIC")
-    print(f"           sudo phantom-client-macos --conn-string '{conn_str_h2}'  # HTTP/2")
+    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str_h2}'")
+    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str_h2}'")
 
 
 def export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name,
                           admin_addr, admin_token):
-    """Генерирует ДВЕ строки подключения с admin правами: QUIC + HTTP/2."""
+    """Генерирует строку подключения с admin правами (HTTP/2)."""
     name, item = _pick_client(keyring["clients"],
                                prompt="Выберите клиента для экспорта (admin):")
     if name is None:
@@ -595,20 +556,6 @@ def export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name
     if not admin_addr.startswith("http://") and not admin_addr.startswith("https://"):
         admin_addr = "http://" + admin_addr
 
-    # Строка для QUIC
-    conn_str_quic = _generate_conn_string(
-        connect_host=connect_host,
-        server_name=server_name,
-        server_port=quic_port,
-        tun_addr=item["tun_addr"],
-        cert_pem=cert_pem,
-        key_pem=key_pem,
-        transport="quic",
-        admin_url=admin_addr,
-        admin_token=admin_token,
-    )
-
-    # Строка для HTTP/2
     conn_str_h2 = _generate_conn_string(
         connect_host=connect_host,
         server_name=server_name,
@@ -616,15 +563,9 @@ def export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name
         tun_addr=item["tun_addr"],
         cert_pem=cert_pem,
         key_pem=key_pem,
-        transport="h2",
         admin_url=admin_addr,
         admin_token=admin_token,
     )
-
-    print(f"\n=== Admin-строка для {name!r} — QUIC (порт {quic_port}) ===")
-    print("─" * 60)
-    print(conn_str_quic)
-    print("─" * 60)
 
     print(f"\n=== Admin-строка для {name!r} — HTTP/2 (порт {h2_port}) ===")
     print("─" * 60)
@@ -633,10 +574,8 @@ def export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name
 
     print(f"\nИспользование:")
     print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
-    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str_quic}'  # QUIC")
-    print(f"           sudo phantom-client-linux --conn-string '{conn_str_h2}'  # HTTP/2")
-    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str_quic}'  # QUIC")
-    print(f"           sudo phantom-client-macos --conn-string '{conn_str_h2}'  # HTTP/2")
+    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str_h2}'")
+    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str_h2}'")
     print(f"\n[admin] url={admin_addr}  token={admin_token[:8]}…")
 
 
