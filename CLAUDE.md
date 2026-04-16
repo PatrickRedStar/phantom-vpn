@@ -13,7 +13,7 @@
 | Платформа | Статус | Описание |
 |-----------|--------|----------|
 | Android | ✅ Production | Compose UI, JNI, Foreground VPN Service |
-| iOS | 🚧 Scaffold | SwiftUI + `NEPacketTunnelProvider`, Rust через `crates/client-apple` → `PhantomCore.xcframework` (`apps/ios/`, требует полного Xcode) |
+| iOS | ✅ Production | SwiftUI + NEPacketTunnelProvider, PhantomKit package, Rust via client-core-runtime |
 | Linux | ✅ Production | CLI-клиент (`phantom-client-linux`) |
 | Server | ✅ Production | `phantom-server` на VDS `89.110.109.128` |
 
@@ -26,6 +26,7 @@ ghoststream/
 ├── crates/                     # Shared Rust libraries
 │   ├── core/                   # phantom-core (wire-формат, TLS, tun_uring, константы)
 │   ├── client-common/          # H2/TLS handshake + TX/RX (переиспользуется всеми клиентами)
+│   ├── client-core-runtime/    # Unified tunnel runtime (Linux/iOS/Android)
 │   ├── client-android/         # Android JNI → libphantom_android.so
 │   ├── client-apple/           # iOS FFI → PhantomCore.xcframework
 │   └── gui-ipc/                # IPC протокол между GUI и helper
@@ -49,7 +50,10 @@ ghoststream/
 │   │       │   ├── navigation/         # AppNavigation.kt
 │   │       │   └── MainActivity.kt
 │   │       └── jniLibs/arm64-v8a/      # libphantom_android.so
-│   ├── ios/                    # iOS (SwiftUI + NEPacketTunnelProvider)
+│   ├── ios/
+│   │   ├── Packages/PhantomKit/    # Swift package: models, storage, FFI bridge
+│   │   ├── GhostStream/            # Host app
+│   │   └── PacketTunnelProvider/   # NE extension
 │   ├── linux/
 │   │   ├── cli/                # phantom-client-linux (TUN CLI)
 │   │   ├── gui/                # ghoststream-gui (Slint desktop)
@@ -410,6 +414,64 @@ WebRTC-подобных pattern-ов.
 
 ---
 
+## Архитектура клиентского ядра
+
+Все клиенты используют единый `crates/client-core-runtime`:
+
+```
+┌── crates/gui-ipc  (canonical wire types) ─────────────────────────────────┐
+│   StatusFrame · ConnState · LogFrame · TunnelSettings · ConnectProfile     │
+└────────────────────────────────┬───────────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼───────────────────────────────────────────┐
+│  crates/client-core-runtime                                                │
+│  pub async fn run(cfg, tun: TunIo, settings, status_tx, log_tx)            │
+│    ├── Telemetry (250ms EMA α=0.35 → StatusFrame → watch::Sender)          │
+│    ├── supervise() FSM  (BACKOFF=[3,6,12,24,48,60,60,60], 8 attempts)      │
+│    ├── BroadcastLayer  (tracing → LogFrame → mpsc::Sender)                 │
+│    └── TunIo: Uring(fd) | BlockingThreads(fd) | Callback(Arc<dyn>)        │
+└────┬──────────────┬───────────────────┬───────────────┬────────────────────┘
+     │              │                   │               │
+linux-helper    linux-cli       client-android    client-apple
+TunIo::Uring   TunIo::Uring   TunIo::Blocking   TunIo::Callback
+```
+
+### TunIo variants
+| Variant | Platform | Mechanism |
+|---------|----------|-----------|
+| `Uring(RawFd)` | Linux helper + CLI | `phantom_core::tun_uring` (io_uring) |
+| `BlockingThreads(RawFd)` | Android | blocking read/write threads |
+| `Callback(Arc<dyn PacketIo>)` | iOS | packetFlow callback |
+
+### iOS Apple FFI (crates/client-apple)
+C functions exposed to Swift via xcframework:
+- `phantom_runtime_start(cfg_json, settings_json, status_cb, log_cb, outbound_cb, ctx)`
+- `phantom_runtime_submit_inbound(buf, len)` — outbound from device
+- `phantom_runtime_stop()`
+- `phantom_parse_conn_string(input) → char*`
+- `phantom_compute_vpn_routes(cidrs_path) → char*`
+- `phantom_free_string(ptr)`
+
+### iOS PhantomKit Swift package
+`apps/ios/Packages/PhantomKit/`:
+- `PhantomBridge` — actor-isolated FFI wrapper
+- `StatusFrame/ConnState/LogFrame/TunnelSettings/ConnectProfile` — Codable mirrors of gui-ipc
+- `VpnProfile` — storage model
+- `ProfilesStore/PreferencesStore/Keychain` — App Group shared storage
+- `TunnelIpcBridge` — sendProviderMessage wrapper for host↔extension IPC
+
+### Android JNI (crates/client-android)
+Push-based listener interface (no more polling):
+```kotlin
+interface PhantomListener {
+    fun onStatusFrame(json: String)
+    fun onLogFrame(json: String)
+}
+external fun nativeStart(tunFd: Int, cfgJson: String, settingsJson: String, listener: PhantomListener): Int
+```
+
+---
+
 ## Android — архитектура
 
 ### Стек
@@ -556,6 +618,8 @@ ssh -i ~/.ssh/bot root@193.187.95.128
 | **Dev-Server** | `crates/server/` |
 | **Dev-Android** | `android/`, `crates/client-android/` |
 | **Dev-Linux** | `crates/client-linux/` |
+| **Dev-macOS-GUI** | `apps/ios/` (UI/Swift) |
+| **general-purpose (ios-core)** | `crates/client-apple/` |
 | **general-purpose** | `crates/core/`, `crates/client-common/` (по желанию разбить) |
 | **general-purpose (docs)** | `*.md`, `server/config/`, `server/scripts/` |
 
