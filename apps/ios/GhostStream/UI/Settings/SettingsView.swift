@@ -20,6 +20,7 @@ public struct SettingsView: View {
     @State private var editorProfileId: String? = nil
     @State private var deleteProfileId: String? = nil
     @State private var importErrorText: String? = nil
+    @State private var adminProfile: VpnProfile? = nil
 
     // DNS editor
     @State private var dnsDraft: [String] = []
@@ -56,6 +57,14 @@ public struct SettingsView: View {
             .background(C.bg.ignoresSafeArea())
             .scrollIndicators(.hidden)
             .navigationBarHidden(true)
+            .navigationDestination(isPresented: Binding(
+                get: { adminProfile != nil },
+                set: { if !$0 { adminProfile = nil } }
+            )) {
+                if let p = adminProfile {
+                    AdminView(profile: p)
+                }
+            }
             .task {
                 hydrate()
                 await model.refreshPings()
@@ -172,6 +181,13 @@ public struct SettingsView: View {
                     onLongPress: { deleteProfileId = profile.id }
                 )
                 .contextMenu {
+                    if profile.cachedIsAdmin == true {
+                        Button {
+                            adminProfile = profile
+                        } label: {
+                            Label("Admin Panel", systemImage: "shield.fill")
+                        }
+                    }
                     Button("Изменить") { editorProfileId = profile.id }
                     Button("Сделать активным") { model.setActiveProfile(id: profile.id) }
                     Button("Измерить пинг") { Task { _ = await model.pingProfile(profile) } }
