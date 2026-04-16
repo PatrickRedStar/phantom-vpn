@@ -52,7 +52,6 @@ import com.ghoststream.vpn.ui.components.ScreenHeader
 import com.ghoststream.vpn.ui.components.serifAccent
 import com.ghoststream.vpn.ui.theme.C
 import kotlinx.coroutines.delay
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect as LE
 
 @Composable

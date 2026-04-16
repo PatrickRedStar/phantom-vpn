@@ -31,13 +31,9 @@
     <string name="kv_assigned">Assigned</string>
     <string name="kv_subscription">Subscription</string>
     <string name="kv_value_dash">—</string>
-    <string name="kv_value_perpetual">perpetual</string>
-    <string name="kv_value_expired">expired</string>
     <string name="action_disconnect">Disconnect</string>
     <string name="action_connect">Connect</string>
     <string name="action_retry">Retry</string>
-    <string name="unit_mbps">Mb/s</string>
-    <string name="scope_window">60s</string>
     <string name="hdr_meta_live">live</string>
     <string name="hdr_meta_lines">%1$s lines</string>
 
@@ -49,9 +45,6 @@
     <string name="chip_warn">Warn</string>
     <string name="chip_error">Error</string>
     <string name="chip_share">Share</string>
-    <string name="action_copy_all">Copy all</string>
-    <string name="action_clear">Clear</string>
-
     <!-- Settings -->
     <string name="set_endpoints">Endpoints</string>
     <string name="set_routing">Routing</string>
@@ -65,7 +58,6 @@
     <string name="row_always_on">Always-on</string>
     <string name="row_language">Language</string>
     <string name="row_theme">Theme</string>
-    <string name="row_log_level">Log level</string>
     <string name="row_share_debug">Share debug report</string>
     <string name="row_insecure">Skip server cert check</string>
 
@@ -75,11 +67,9 @@
     <string name="sub_always_on">Reconnect on boot</string>
     <string name="sub_interface_locale">Interface locale</string>
     <string name="sub_theme_descr">Phosphor · warm black</string>
-    <string name="sub_log_level_descr">Ring buffer · 10 MB</string>
     <string name="sub_debug_descr">config + last 500 log lines</string>
 
     <string name="value_custom">Custom</string>
-    <string name="value_system">System</string>
     <string name="value_export">▸ Export</string>
     <string name="value_edit">Edit</string>
     <string name="edit_profile_title">Edit profile</string>
@@ -99,10 +89,8 @@
     <string name="split_mode_all">All via VPN</string>
     <string name="split_mode_bypass">Bypass lists</string>
     <string name="split_download_all">Download all</string>
-    <string name="split_cidrs">%1$d CIDRs</string>
     <string name="split_download">Download</string>
     <string name="split_downloaded">Downloaded</string>
-    <string name="split_preview">Preview</string>
 
     <string name="tag_active">Active</string>
     <string name="tag_standby">Standby</string>
@@ -113,15 +101,12 @@
     <string name="tag_exp_days_left">%1$d d left</string>
 
     <string name="profile_add_cta">+ Scan QR · Paste ghs://…</string>
-    <string name="action_ping_all">Ping all</string>
     <string name="action_paste">Paste</string>
     <string name="action_qr">QR</string>
     <string name="action_save">Save</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_close">Close</string>
     <string name="action_delete">Delete</string>
-    <string name="action_rename">Rename</string>
-    <string name="action_make_active">Make active</string>
     <string name="action_admin_panel">Admin panel</string>
     <string name="action_share_to_tv">Send to TV</string>
     <string name="action_get_from_phone">Get from phone</string>
@@ -169,13 +154,6 @@
     <string name="qr_paste_tap">tap</string>
     <string name="qr_close">✕ close</string>
     <string name="qr_permission">Allow camera access</string>
-
-    <!-- Connect state labels -->
-    <string name="connect_state_disconnected">Disconnected</string>
-    <string name="connect_state_connecting">Connecting…</string>
-    <string name="connect_state_connected">Connected</string>
-    <string name="connect_state_error">Error: %1$s</string>
-    <string name="connect_state_disconnecting">Disconnecting…</string>
 
     <!-- Misc -->
     <string name="no_profiles">No profiles. Add a connection.</string>
