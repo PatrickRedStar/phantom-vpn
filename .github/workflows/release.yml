@@ -115,9 +115,9 @@ jobs:
           cargo ndk -t arm64-v8a --platform 26 \
             build --release -p phantom-client-android
 
-          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p apps/android/app/src/main/jniLibs/arm64-v8a
           cp target/aarch64-linux-android/release/libphantom_android.so \
-            android/app/src/main/jniLibs/arm64-v8a/
+            apps/android/app/src/main/jniLibs/arm64-v8a/
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -125,16 +125,16 @@ jobs:
           gradle-version: "8.7"
 
       - name: Generate Gradle wrapper
-        run: cd android && gradle wrapper --gradle-version 8.7
+        run: cd apps/android && gradle wrapper --gradle-version 8.7
 
       - name: Build debug APK
-        run: cd android && ./gradlew assembleDebug --no-daemon
+        run: cd apps/android && ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: PhantomVPN-Android
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
 
 # ─────────────────────────────────────────────────────────────────────────────
   build-linux-gui:
@@ -168,8 +168,8 @@ jobs:
           mkdir -p dist
           cp target/release/ghoststream-gui    dist/
           cp target/release/ghoststream-helper dist/
-          cp -r apps/linux-gui/packaging       dist/packaging
-          cp apps/linux-gui/assets/icons/ghoststream.png dist/ 2>/dev/null || true
+          cp -r apps/linux/gui/packaging       dist/packaging
+          cp apps/linux/gui/assets/icons/ghoststream.png dist/ 2>/dev/null || true
           cd dist && tar czf ../ghoststream-linux-gui-x86_64.tar.gz *
 
       - name: Upload artifact

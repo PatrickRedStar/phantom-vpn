@@ -23,38 +23,47 @@
 
 ```
 ghoststream/
-├── crates/
-│   ├── core/               # Общая библиотека (wire-формат, TLS, tun_uring, константы)
-│   ├── server/             # phantom-server + phantom-keygen
-│   ├── client-common/      # H2/TLS handshake + TX/RX циклы (переиспользуется всеми клиентами)
-│   ├── client-linux/       # Linux TUN клиент
-│   ├── client-android/     # Android JNI библиотека → libphantom_android.so
-│   └── client-apple/       # iOS FFI → PhantomCore.xcframework (apps/ios/)
-├── android/                # Android приложение (Kotlin + Compose)
-│   └── app/src/main/
-│       ├── kotlin/com/ghoststream/vpn/
-│       │   ├── data/               # ProfilesStore, PreferencesStore, VpnProfile, ConnStringParser
-│       │   ├── service/            # GhostStreamVpnService, VpnStateManager
-│       │   ├── ui/
-│       │   │   ├── dashboard/      # DashboardScreen + DashboardViewModel
-│       │   │   ├── logs/           # LogsScreen + LogsViewModel
-│       │   │   ├── settings/       # SettingsScreen + SettingsViewModel
-│       │   │   ├── admin/          # AdminScreen + AdminViewModel
-│       │   │   ├── components/     # ConnectButton, StatCard, QrScannerScreen
-│       │   │   └── theme/          # Color.kt, Theme.kt
-│       │   ├── navigation/         # AppNavigation.kt
-│       │   └── MainActivity.kt
-│       ├── jniLibs/arm64-v8a/      # libphantom_android.so (собирается cargo ndk)
-│       └── res/xml/
-│           ├── file_paths.xml      # FileProvider пути (logs/, debug/)
-│           └── network_security_config.xml
+├── crates/                     # Shared Rust libraries
+│   ├── core/                   # phantom-core (wire-формат, TLS, tun_uring, константы)
+│   ├── client-common/          # H2/TLS handshake + TX/RX (переиспользуется всеми клиентами)
+│   ├── client-android/         # Android JNI → libphantom_android.so
+│   ├── client-apple/           # iOS FFI → PhantomCore.xcframework
+│   └── gui-ipc/                # IPC протокол между GUI и helper
+├── server/                     # Серверные бинари
+│   ├── server/                 # phantom-server + phantom-keygen
+│   └── relay/                  # phantom-relay (RU SNI-passthrough relay)
+├── apps/                       # Клиентские приложения
+│   ├── android/                # Android (Kotlin + Compose)
+│   │   └── app/src/main/
+│   │       ├── kotlin/com/ghoststream/vpn/
+│   │       │   ├── data/               # ProfilesStore, PreferencesStore, VpnProfile
+│   │       │   ├── service/            # GhostStreamVpnService, VpnStateManager
+│   │       │   ├── ui/
+│   │       │   │   ├── dashboard/      # DashboardScreen + DashboardViewModel
+│   │       │   │   ├── logs/           # LogsScreen + LogsViewModel
+│   │       │   │   ├── settings/       # SettingsScreen + SettingsViewModel
+│   │       │   │   ├── admin/          # AdminScreen + AdminViewModel
+│   │       │   │   └── theme/          # Color.kt, Theme.kt
+│   │       │   ├── navigation/         # AppNavigation.kt
+│   │       │   └── MainActivity.kt
+│   │       └── jniLibs/arm64-v8a/      # libphantom_android.so
+│   ├── ios/                    # iOS (SwiftUI + NEPacketTunnelProvider)
+│   ├── linux/
+│   │   ├── cli/                # phantom-client-linux (TUN CLI)
+│   │   ├── gui/                # ghoststream-gui (Slint desktop)
+│   │   └── helper/             # ghoststream-helper (privileged TUN helper)
+│   └── openwrt/
+│       ├── client/             # phantom-client-openwrt (MIPS/ARM binary)
+│       ├── proto/              # ghoststream.sh (netifd protocol)
+│       └── luci/               # LuCI web UI
 ├── config/
 │   ├── server.example.toml
 │   └── client.example.toml
 ├── scripts/
 │   └── deploy.sh
 └── .github/workflows/
-    └── release.yml         # CI: Linux + Android APK → GitHub Release
+    ├── release.yml             # CI: Linux + Android APK + server → GitHub Release
+    └── openwrt.yml             # CI: OpenWrt cross-compile
 ```
 
 ---
@@ -93,14 +102,14 @@ systemctl restart phantom-server.service
 export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
 cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android
 cp target/aarch64-linux-android/release/libphantom_android.so \
-  android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
+  apps/android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
 ```
 
 ### Android APK (локально)
 
 ```bash
-cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
-# APK: android/app/build/outputs/apk/debug/app-debug.apk
+cd apps/android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
+# APK: apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
@@ -131,7 +140,7 @@ journalctl -u phantom-server.service -n 50 -f
 
 ## Релизный процесс (Android)
 
-При каждом новом релизе **обязательно** обновить `android/app/build.gradle.kts`:
+При каждом новом релизе **обязательно** обновить `apps/android/app/build.gradle.kts`:
 
 ```kotlin
 versionCode = <N+1>          // инкремент целого числа
@@ -162,17 +171,17 @@ buildConfigField("String", "GIT_TAG", "\"vX.Y.Z\"")
 После обновления `build.gradle.kts`:
 ```bash
 # Собрать APK
-cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
+cd apps/android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
 
 # Коммит + тег + пуш
-git add android/app/build.gradle.kts ...
+git add apps/android/app/build.gradle.kts ...
 git commit -m "feat: vX.Y.Z ..."
 git tag vX.Y.Z
 git push origin master && git push origin vX.Y.Z
 
 # Установить на телефон
 adb uninstall com.ghoststream.vpn 2>/dev/null
-adb install android/app/build/outputs/apk/debug/app-debug.apk
+adb install apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 GitHub Actions автоматически создаст Release при пуше тега `v*`.

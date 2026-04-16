@@ -13,7 +13,7 @@ name = "phantom-keygen"
 path = "src/bin/phantom_keygen.rs"
 
 [dependencies]
-phantom-core    = { path = "../core" }
+phantom-core    = { path = "../../crates/core" }
 tokio           = { version = "1", features = ["full"] }
 tracing         = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

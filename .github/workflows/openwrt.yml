@@ -111,9 +111,9 @@ jobs:
             cp "$dir/$name" "release-files/$name"
             chmod +x "release-files/$name"
           done
-          cp openwrt/proto/ghoststream.sh release-files/
-          cp openwrt/luci/htdocs/luci-static/resources/protocol/ghoststream.js release-files/
-          cp openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json release-files/
+          cp apps/openwrt/proto/ghoststream.sh release-files/
+          cp apps/openwrt/luci/htdocs/luci-static/resources/protocol/ghoststream.js release-files/
+          cp apps/openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json release-files/
           cp ghoststream-install.sh release-files/
 
       - name: Create/Update Release
