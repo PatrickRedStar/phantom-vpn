@@ -1,0 +1,30 @@
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Build artifacts
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# XcodeGen generated project (regenerate from project.yml)
+GhostStream.xcodeproj/
+
+# Rust-built xcframework (built by scripts/build-xcframework.sh, not checked in)
+Frameworks/PhantomCore.xcframework/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# CocoaPods (not used here, but safety)
+Pods/
+
+# macOS
+.DS_Store

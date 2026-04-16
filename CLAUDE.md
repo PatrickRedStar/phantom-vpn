@@ -13,6 +13,7 @@
 | Платформа | Статус | Описание |
 |-----------|--------|----------|
 | Android | ✅ Production | Compose UI, JNI, Foreground VPN Service |
+| iOS | 🚧 Scaffold | SwiftUI + `NEPacketTunnelProvider`, Rust через `crates/client-apple` → `PhantomCore.xcframework` (`apps/ios/`, требует полного Xcode) |
 | Linux | ✅ Production | CLI-клиент (`phantom-client-linux`) |
 | Server | ✅ Production | `phantom-server` на VDS `89.110.109.128` |
 
@@ -27,7 +28,8 @@ ghoststream/
 │   ├── server/             # phantom-server + phantom-keygen
 │   ├── client-common/      # H2/TLS handshake + TX/RX циклы (переиспользуется всеми клиентами)
 │   ├── client-linux/       # Linux TUN клиент
-│   └── client-android/     # Android JNI библиотека → libphantom_android.so
+│   ├── client-android/     # Android JNI библиотека → libphantom_android.so
+│   └── client-apple/       # iOS FFI → PhantomCore.xcframework (apps/ios/)
 ├── android/                # Android приложение (Kotlin + Compose)
 │   └── app/src/main/
 │       ├── kotlin/com/ghoststream/vpn/

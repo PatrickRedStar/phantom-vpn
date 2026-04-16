@@ -5,6 +5,7 @@ members = [
     "crates/client-common",
     "crates/client-linux",
     "crates/client-android",
+    "crates/client-apple",
     "crates/client-openwrt",
     "crates/relay",
     "crates/gui-ipc",
