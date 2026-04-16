@@ -1,20 +1,25 @@
-# Memory Index
-
-- [user_goals.md](user_goals.md) — User requirements: speed, stealth, infrastructure, constraints (no CDN)
-- [research_dpi_evasion_2026.md](research_dpi_evasion_2026.md) — DPI evasion research: TSPU capabilities, VLESS/Reality internals, performance techniques, emerging threats
-- [optimization_history.md](optimization_history.md) — Complete record of all optimizations: successes, failures, lessons learned, v13 speed push, H2 benchmarks (v0.15.2: 44.7/36.7 Mbps), known issues
-- [feedback_build_local.md](feedback_build_local.md) — All builds must happen locally, server only for deploying binaries
-- [feedback_version_sync.md](feedback_version_sync.md) — Always update versionCode/versionName in build.gradle.kts when tagging
-
-## TSPU & Transport
-- [tspu_quic_throttling.md](tspu_quic_throttling.md) — TSPU throttles QUIC ~80Mbps on consumer, SNI-IP verification, TCP not throttled (567Mbps)
-- [v2_transport_plan.md](v2_transport_plan.md) — HTTP/2 transport plan: phases, key decisions, deps (h2, tokio-rustls)
-
-## Multi-Agent System
-- [agents/ORCHESTRATION.md](agents/ORCHESTRATION.md) — Схема запуска агентов, naming convention, стандартные промпты
-- [agents/architect.md](agents/architect.md) — Архитектор: константы, JNI контракт, wire format
-- [agents/secretary.md](agents/secretary.md) — Секретарь: memory, tasks, CHANGELOG
-- [agents/validator.md](agents/validator.md) — Валидатор: cargo check, JNI сигнатуры
-- [agents/dev_server.md](agents/dev_server.md) — Dev-Server: crates/server/
-- [agents/dev_linux.md](agents/dev_linux.md) — Dev-Linux: crates/client-linux/
-- [agents/dev_android.md](agents/dev_android.md) — Dev-Android: android/ + crates/client-android/
+- [APK deployment workflow](workflow_apk_deploy.md) — после install APK автоматически удалять/создавать клиента `spongebob` и выдавать conn string
+- [APK build pipeline](reference_apk_build.md) — .so собирается на vdsina, APK — на машине пользователя через SSH тунель (port 22222)
+- [TCP auto-tune footgun](feedback_tcp_auto_tune.md) — не ставить SO_SNDBUF/SO_RCVBUF setsockopt в relay, ломает auto-tune, регресс 68→15 Mbit/s
+- [splice serial pipeline](feedback_splice_pipeline.md) — hand-rolled splice(2) в relay даёт 5 Mbit/s, использовать tokio::io::copy_bidirectional
+- [sysctl tuning на обоих хостах](project_sysctl_tuning.md) — vdsina+hostkey затюнены BBR+fq+16MB, конфиг /etc/sysctl.d/99-phantom-net.conf
+- [Perf baseline 2026-04-11 (v0.17.2)](reference_perf_baseline.md) — wired 625 Mbit, phone direct 205/75, relay 222/105 — ISP ест 400+ Mbit/s
+- [Android profile UX gap](feedback_profile_ux.md) — нет «Clone profile»; пользователь вынужден руками менять serverAddr — надо добавить клонирование
+- [Server TX 138→625 Mbit/s fix (v0.17.2)](reference_tx_ceiling.md) — parallel per-stream batch loops устранили serial session_batch_loop; 4.5× download, upload стабильно
+- [Как мерить server-side без телефона](reference_server_side_bench.md) — phantom-client-linux на hostkey + iperf3 через туннель, 5 минут на чистый замер
+- [v0.17.2 measured bottlenecks](reference_bottleneck_v0172.md) — tun_uring writer = 1 syscall/pkt, RX path 3.2× хуже TX per CPU, crypto не при чём
+- [Auto-detect cores for parallelism](feedback_auto_threads.md) — N_STREAMS и любая per-CPU параллельность derive from available_parallelism(), не хардкод
+- [VPN landscape 2026](reference_vpn_landscape_2026.md) — все 10 протоколов + 10 транспортов, TSPU механики, gRPC→xHTTP migration, почему REALITY мёртв
+- [GhostStream v0.18 design](project_ghoststream_v018.md) — RBT + mimicry + flow-affine io_uring + fake app-face, матрица изменений file-by-file
+- [v0.18 detection vectors](project_ghoststream_v018_detection_vectors.md) — 10 векторов как спалить v0.18, severity, план v0.19/v0.20
+- [v0.18.0 shipped state 2026-04-11](project_v018_shipped.md) — задеплоено server-side, plus round-2 hotfixes (handshake, zombie eviction, generation detach)
+- [Single-flow ceiling is by design](reference_single_flow_ceiling.md) — ya.ru 20 Mbit vs Ookla 124 — flow-affine hash, не баг, не трогать
+- [Multi-origin shard design for v0.19+](reference_multi_origin_design.md) — flow-level sharding, почему 5 IP на одном VPS не помогает, нужны разные AS
+- [Detection vectors 11-13](reference_detection_vectors_11_13.md) — timing jitter, heartbeat frames, connection migration — низкий приоритет, v0.20
+- [v0.19 priorities](project_v019_priorities.md) — batch TUN writes, client RX zero-copy, timing jitter, conn migration, clone profile
+- [v0.19 perf test results](reference_v019_perf_tests.md) — forwarder elim/tun_uring/zero-copy все disproven; код near-optimal для 2-core TCP-in-TLS
+- [Phone-to-client mapping](reference_phone_mapping.md) — S21→spongebob2/ru, S25U→galaxy, ZFlip6→Polina/Polina malina(Knox)
+- [QUIC status](reference_quic_status.md) — QUIC полностью удалён в v0.19.4 (2026-04-15). Только H2/TLS.
+- [v0.19.4 shipped](project_v019_4_shipped.md) — релиз 2026-04-15: QUIC removed, DNS fix, io_uring guard, Android spawn error, 39 files, −1467 строк
+- [Мульти-агенты для крупных задач](feedback_multi_agents.md) — при >5 файлов/>3 зон запускать параллельных субагентов, не делать инлайн
+- [Play Market release plan](project_play_market.md) — чеклист для выхода в Google Play, аккаунт куплен 2026-04-16

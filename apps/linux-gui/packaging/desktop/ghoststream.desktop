@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=GhostStream
+GenericName=Anti-DPI VPN
+Comment=GhostStream VPN client — anti-DPI TLS mimicry tunnel
+Exec=/usr/bin/ghoststream-gui
+Icon=ghoststream
+Terminal=false
+Type=Application
+Categories=Network;VPN;
+Keywords=vpn;tunnel;tls;privacy;
+StartupNotify=true

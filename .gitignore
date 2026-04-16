@@ -33,3 +33,6 @@ api_ishostig.yaml
 # Android build artifacts
 android/app/build/
 android/.gradle/
+android/.kotlin/
+android/local.properties
+.gstack/

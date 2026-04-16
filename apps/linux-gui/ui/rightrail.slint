@@ -1,0 +1,137 @@
+import { Theme } from "theme.slint";
+
+export struct LogEntry { ts: string, level: string, msg: string, tag: string, kind: string }
+// kind: "ok" | "info" | "debug" | "warn"
+
+export component RightRail inherits Rectangle {
+    in property <[LogEntry]> logs;
+
+    background: @linear-gradient(180deg, transparent 0%, Theme.signal.with-alpha(0.016) 100%);
+    // left hairline
+    Rectangle { x: 0; y: 0; width: 1px; height: parent.height; background: Theme.hair; }
+
+    VerticalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 28px;
+        padding-bottom: 28px;
+        spacing: 24px;
+
+        // ── topology ─────────────────────────────────────────
+        VerticalLayout {
+            spacing: 0px;
+            Rectangle {
+                height: 28px;
+                Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.hair; }
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "TOPOLOGY";
+                        font-family: Theme.font_display;
+                        font-size: 10px;
+                        color: Theme.text_faint;
+                        letter-spacing: 2.2px;
+                        vertical-alignment: bottom;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            width: 5px; height: 5px;
+                            border-radius: 2.5px;
+                            background: Theme.signal;
+                            y: (parent.height - self.height) / 2;
+                        }
+                        Text {
+                            text: "LIVE";
+                            font-family: Theme.font_display;
+                            font-size: 10px;
+                            color: Theme.signal;
+                            letter-spacing: 1.6px;
+                            vertical-alignment: bottom;
+                        }
+                    }
+                }
+            }
+            Rectangle { height: 14px; }
+            // ascii topology lines
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "○ this.host";          font-family: Theme.font_display; font-size: 10.5px; color: Theme.text; letter-spacing: 0.4px; }
+                Text { text: "  kernel tun0 · 10.7.0.4"; font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_faint; letter-spacing: 0.4px; }
+                Text { text: "│";                    font-family: Theme.font_display; font-size: 10.5px; color: Theme.signal; }
+                Text { text: "│  8× TLS streams";    font-family: Theme.font_display; font-size: 10.5px; color: Theme.signal; }
+                Text { text: "↓";                    font-family: Theme.font_display; font-size: 10.5px; color: Theme.signal; }
+                Text { text: "◉ NL · exit-node";     font-family: Theme.font_display; font-size: 10.5px; color: Theme.text; letter-spacing: 0.4px; }
+                Text { text: "  89.110.109.128:8443"; font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_faint; }
+                Text { text: "│";                    font-family: Theme.font_display; font-size: 10.5px; color: Theme.signal; }
+                Text { text: "↓  SNAT";              font-family: Theme.font_display; font-size: 10.5px; color: Theme.signal; }
+                Text { text: "◉ public internet";    font-family: Theme.font_display; font-size: 10.5px; color: Theme.text; letter-spacing: 0.4px; }
+                Text { text: "  via ens3";           font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_faint; }
+            }
+        }
+
+        // ── logs tail ────────────────────────────────────────
+        VerticalLayout {
+            spacing: 0px;
+            vertical-stretch: 1;
+            Rectangle {
+                height: 28px;
+                Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.hair; }
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: "TAIL";
+                        font-family: Theme.font_display;
+                        font-size: 10px;
+                        color: Theme.text_faint;
+                        letter-spacing: 2.2px;
+                        vertical-alignment: bottom;
+                    }
+                    Text {
+                        text: "· debug";
+                        font-family: Theme.font_display;
+                        font-size: 10px;
+                        color: Theme.signal;
+                        letter-spacing: 1.6px;
+                        vertical-alignment: bottom;
+                    }
+                }
+            }
+            Rectangle { height: 12px; }
+            // log lines
+            VerticalLayout {
+                vertical-stretch: 1;
+                spacing: 3px;
+                for entry in logs : HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: entry.ts;
+                        font-family: Theme.font_mono;
+                        font-size: 9.5px;
+                        color: Theme.text_faint;
+                        width: 60px;
+                    }
+                    Text {
+                        text: entry.level;
+                        font-family: Theme.font_display;
+                        font-size: 9px;
+                        letter-spacing: 1.2px;
+                        width: 30px;
+                        color:
+                            entry.kind == "ok"    ? Theme.signal   :
+                            entry.kind == "warn"  ? Theme.warn     :
+                            entry.kind == "debug" ? Theme.debug     :
+                                                    Theme.text_dim;
+                    }
+                    Text {
+                        text: entry.msg + "  " + entry.tag;
+                        font-family: Theme.font_mono;
+                        font-size: 10.5px;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}

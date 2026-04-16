@@ -182,5 +182,6 @@
     <string name="add_profile_title">Add connection</string>
     <string name="add_profile_name_hint">Name (optional)</string>
     <string name="add_profile_conn_hint">Connection string (ghs://…)</string>
+    <string name="hint_add_profile">Swipe to Settings → add an endpoint to connect</string>
     <string name="version_fmt">v%1$s · %2$s</string>
 </resources>

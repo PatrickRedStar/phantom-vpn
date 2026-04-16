@@ -1,0 +1,230 @@
+import { Theme } from "theme.slint";
+
+export struct ProfileItem {
+    name: string,
+    host: string,
+    state: string,        // "Active" | "Standby"
+    is_active: bool,
+    ping_ms: int,         // 0 = offline
+    ping_text: string,    // pre-formatted ("34 ms" / "offline")
+    ping_class: string,   // "ok" | "mid" | "bad"
+    rx_label: string,     // "214.7 Mbit" or "—"
+    tx_label: string,
+}
+
+export component ProfileRow inherits Rectangle {
+    in property <ProfileItem> data;
+    callback clicked();
+
+    height: 92px;
+    background: data.is_active
+        ? @linear-gradient(90deg, Theme.signal.with-alpha(0.04) 0%, transparent 70%)
+        : (ta.has-hover ? Theme.bg_elev : transparent);
+
+    // dashed bottom separator (Slint border-style:dashed not supported reliably; render with dots)
+    Rectangle {
+        x: 0; y: parent.height - 1px; width: parent.width; height: 1px;
+        background: Theme.hair;
+        opacity: 0.6;
+    }
+
+    // active accent bar
+    Rectangle {
+        visible: data.is_active;
+        x: 0; y: parent.height * 0.2;
+        width: 2px;
+        height: parent.height * 0.6;
+        background: Theme.signal;
+        drop-shadow-color: Theme.signal_dim;
+        drop-shadow-blur: 8px;
+    }
+
+    VerticalLayout {
+        padding-left: 28px;
+        padding-right: 28px;
+        padding-top: 18px;
+        padding-bottom: 18px;
+        spacing: 6px;
+
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: data.name;
+                font-family: Theme.font_serif;
+                font-size: 19px;
+                color: Theme.text;
+            }
+            Text {
+                text: data.state;
+                font-family: Theme.font_display;
+                font-size: 9.5px;
+                color: Theme.text_faint;
+                letter-spacing: 1.2px;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: data.host;
+            font-family: Theme.font_mono;
+            font-size: 11px;
+            color: Theme.text_dim;
+        }
+
+        HorizontalLayout {
+            spacing: 14px;
+            // ping
+            HorizontalLayout {
+                spacing: 4px;
+                Rectangle {
+                    width: 5px; height: 5px;
+                    border-radius: 2.5px;
+                    y: (parent.height - self.height) / 2;
+                    background:
+                        data.ping_class == "ok" ? Theme.signal :
+                        data.ping_class == "mid" ? Theme.warn :
+                        Theme.error;
+                    drop-shadow-blur: data.ping_class == "ok" ? 5px : 0px;
+                    drop-shadow-color: Theme.signal_dim;
+                }
+                Text {
+                    text: data.ping_text;
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    vertical-alignment: center;
+                }
+            }
+            Text {
+                text: "↓ " + data.rx_label;
+                font-family: Theme.font_display;
+                font-size: 10px;
+                color: Theme.text_dim;
+                vertical-alignment: center;
+            }
+            Text {
+                text: "↑ " + data.tx_label;
+                font-family: Theme.font_display;
+                font-size: 10px;
+                color: Theme.text_dim;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component ProfilesRail inherits Rectangle {
+    in property <[ProfileItem]> profiles;
+    in property <int> count;
+    in property <bool> has_active: false;
+    callback profile_clicked(int);
+    callback add_clicked();
+    callback edit_clicked();
+    callback delete_clicked();
+
+    background: Theme.bg;
+    // right border
+    Rectangle {
+        x: parent.width - 1px; y: 0; width: 1px; height: parent.height;
+        background: Theme.hair;
+    }
+
+    VerticalLayout {
+        padding-top: 28px;
+        padding-bottom: 28px;
+        spacing: 0px;
+
+        // head
+        Rectangle {
+            height: 38px;
+            // bottom hair
+            Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.hair; }
+            HorizontalLayout {
+                padding-left: 28px;
+                padding-right: 28px;
+                padding-bottom: 18px;
+                alignment: space-between;
+                Text {
+                    text: "ENDPOINTS";
+                    color: Theme.text_faint;
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    letter-spacing: 1.4px;
+                    vertical-alignment: bottom;
+                }
+                Text {
+                    text: count < 10 ? "0" + count : "" + count;
+                    color: Theme.text;
+                    font-family: Theme.font_display;
+                    font-size: 11px;
+                    vertical-alignment: bottom;
+                }
+            }
+        }
+
+        // list
+        for p[idx] in profiles : ProfileRow {
+            data: p;
+            clicked => { root.profile_clicked(idx); }
+        }
+
+        // add
+        Rectangle {
+            height: 50px;
+            border-width: 1px;
+            border-color: Theme.hair_bold;
+            background: transparent;
+            // simulate dashed by inset
+            HorizontalLayout {
+                alignment: center;
+                Text {
+                    text: "+ ADD PROFILE  ·  PASTE GHS://…";
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: add_ta.has-hover ? Theme.text : Theme.text_faint;
+                    letter-spacing: 1.5px;
+                    vertical-alignment: center;
+                }
+            }
+            add_ta := TouchArea { clicked => { root.add_clicked(); } }
+            // outer margin via padding parent? Slint Rectangle has no margin; rely on parent layout
+        }
+
+        // edit / delete row (only when a profile is selected)
+        if root.has_active : HorizontalLayout {
+            padding-left: 28px;
+            padding-right: 28px;
+            padding-top: 8px;
+            spacing: 8px;
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 36px;
+                border-width: 1px;
+                border-color: Theme.hair_bold;
+                background: edit_ta.has-hover ? Theme.bg_elev : transparent;
+                HorizontalLayout { alignment: center;
+                    Text { text: "✎ EDIT"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 1.2px; vertical-alignment: center; }
+                }
+                edit_ta := TouchArea { clicked => { root.edit_clicked(); } }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 36px;
+                border-width: 1px;
+                border-color: Theme.error.with-alpha(0.25);
+                background: del_ta.has-hover ? Theme.error.with-alpha(0.125) : transparent;
+                HorizontalLayout { alignment: center;
+                    Text { text: "✕ DELETE"; font-family: Theme.font_display; font-size: 10px; color: Theme.error; letter-spacing: 1.2px; vertical-alignment: center; }
+                }
+                del_ta := TouchArea { clicked => { root.delete_clicked(); } }
+            }
+        }
+
+        // spacer
+        Rectangle { vertical-stretch: 1; }
+    }
+}

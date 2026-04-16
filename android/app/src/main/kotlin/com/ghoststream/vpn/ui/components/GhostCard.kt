@@ -12,6 +12,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ghoststream.vpn.ui.theme.C
@@ -27,8 +29,10 @@ fun GhostCard(
 ) {
     val signalColor = C.signal
     val signalDimColor = C.signalDim
+    val shape = RoundedCornerShape(6.dp)
     Box(
         modifier
+            .clip(shape)
             .background(
                 if (active)
                     Brush.horizontalGradient(
@@ -37,7 +41,7 @@ fun GhostCard(
                     )
                 else Brush.linearGradient(listOf(bg, bg)),
             )
-            .border(1.dp, border)
+            .border(1.dp, border, shape)
             .drawBehind {
                 if (active) {
                     // lime vertical strip on the left edge with glow

@@ -4,7 +4,14 @@ import android.app.Activity
 import android.net.VpnService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -132,24 +139,33 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     color = C.textFaint,
                 )
                 Spacer(Modifier.height(10.dp))
-                val (verb, tail) = when (vpnState) {
-                    is VpnState.Connected    -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
-                    is VpnState.Connecting   -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
-                    is VpnState.Error        -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
-                    is VpnState.Disconnecting-> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
-                    else                     -> stringResource(R.string.state_standby_verb) to stringResource(R.string.state_period)
+                AnimatedContent(
+                    targetState = vpnState,
+                    transitionSpec = {
+                        (fadeIn() + slideInVertically { it / 3 }) togetherWith
+                            (fadeOut() + slideOutVertically { -it / 3 })
+                    },
+                    label = "state_headline",
+                ) { state ->
+                    val (verb, tail) = when (state) {
+                        is VpnState.Connected     -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
+                        is VpnState.Connecting    -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
+                        is VpnState.Error         -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
+                        is VpnState.Disconnecting -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
+                        else                      -> stringResource(R.string.state_standby_verb) to stringResource(R.string.state_period)
+                    }
+                    val accent = when (state) {
+                        is VpnState.Connected -> C.signal
+                        is VpnState.Error     -> C.danger
+                        is VpnState.Connecting, is VpnState.Disconnecting -> C.warn
+                        else                  -> C.textDim
+                    }
+                    Text(
+                        text = serifAccent(verb, tail, accent),
+                        style = com.ghoststream.vpn.ui.theme.GsText.stateHeadline,
+                        color = C.bone,
+                    )
                 }
-                val accent = when (vpnState) {
-                    is VpnState.Connected -> C.signal
-                    is VpnState.Error     -> C.danger
-                    is VpnState.Connecting, is VpnState.Disconnecting -> C.warn
-                    else                  -> C.textDim
-                }
-                Text(
-                    text = serifAccent(verb, tail, accent),
-                    style = com.ghoststream.vpn.ui.theme.GsText.stateHeadline,
-                    color = C.bone,
-                )
             }
 
             // Timer row
@@ -168,6 +184,24 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     style = com.ghoststream.vpn.ui.theme.GsText.labelMonoSmall,
                     color = C.textFaint,
                 )
+            }
+
+            // Empty state hint — nudge to Settings
+            if (activeProfile == null && vpnState is VpnState.Disconnected) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 22.dp, vertical = 8.dp)
+                        .background(C.bgElev)
+                        .border(1.dp, C.hair)
+                        .padding(14.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.hint_add_profile),
+                        style = com.ghoststream.vpn.ui.theme.GsText.body,
+                        color = C.textDim,
+                    )
+                }
             }
 
             // Preflight warning

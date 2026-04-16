@@ -137,9 +137,51 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
 # ─────────────────────────────────────────────────────────────────────────────
+  build-linux-gui:
+    name: Linux GUI client (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            fontconfig libfontconfig-dev \
+            libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libxkbcommon-x11-dev \
+            libssl-dev pkg-config
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-gui
+
+      - name: Build GUI + helper
+        run: cargo build --release -p ghoststream-gui -p ghoststream-helper
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          cp target/release/ghoststream-gui    dist/
+          cp target/release/ghoststream-helper dist/
+          cp -r apps/linux-gui/packaging       dist/packaging
+          cp apps/linux-gui/assets/icons/ghoststream.png dist/ 2>/dev/null || true
+          cd dist && tar czf ../ghoststream-linux-gui-x86_64.tar.gz *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghoststream-linux-gui-x86_64
+          path: ghoststream-linux-gui-x86_64.tar.gz
+
+# ─────────────────────────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-server, build-android]
+    needs: [build-linux, build-server, build-android, build-linux-gui]
     runs-on: ubuntu-latest
     # Only create release when triggered by a version tag
     if: startsWith(github.ref, 'refs/tags/')
@@ -166,6 +208,7 @@ jobs:
             | Server x86_64 | `phantom-server` | VPN server daemon |
             | Keygen x86_64 | `phantom-keygen` | Server/client key generator |
             | Android (arm64) | `app-debug.apk` | GhostStream VPN app |
+            | Linux GUI x86_64 | `ghoststream-linux-gui-x86_64.tar.gz` | Slint GUI + privileged helper |
 
             ### Android install
             ```
@@ -183,5 +226,6 @@ jobs:
             artifacts/phantom-server/phantom-server
             artifacts/phantom-keygen/phantom-keygen
             artifacts/PhantomVPN-Android/app-debug.apk
+            artifacts/ghoststream-linux-gui-x86_64/ghoststream-linux-gui-x86_64.tar.gz
           draft: false
           prerelease: false

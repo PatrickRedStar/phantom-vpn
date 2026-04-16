@@ -1,0 +1,147 @@
+import { Theme } from "theme.slint";
+
+export component PulseDot inherits Rectangle {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: Theme.signal;
+    drop-shadow-blur: 8px;
+    drop-shadow-color: Theme.signal;
+    in property <bool> beat: false;
+    opacity: beat ? 0.25 : 1.0;
+    animate opacity { duration: 1600ms; iteration-count: -1; easing: ease-in-out; }
+}
+
+export component TickerCell inherits HorizontalLayout {
+    spacing: 6px;
+    in property <string> label;
+    in property <string> value;
+
+    Text {
+        text: root.label;
+        color: Theme.text_dim;
+        font-family: Theme.font_display;
+        font-size: 10.5px;
+        letter-spacing: 1px;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.value;
+        color: Theme.text;
+        font-family: Theme.font_display;
+        font-size: 10.5px;
+        letter-spacing: 1px;
+        vertical-alignment: center;
+    }
+}
+
+export component TopButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: 28px;
+    border-width: 1px;
+    background: transparent;
+    property <bool> hovered: ta.has-hover;
+    border-color: hovered ? Theme.hair_bold : Theme.hair;
+    animate border-color { duration: 100ms; easing: ease-in-out; }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.label;
+            color: hovered ? Theme.text : Theme.text_dim;
+            font-family: Theme.font_display;
+            font-size: 10px;
+            letter-spacing: 1.2px;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component TopBar inherits Rectangle {
+    in property <string> link_node: "NL2 . 89.110.109.128";
+    in property <string> rtt: "34 ms";
+    in property <string> cipher: "TLS_AES_256_GCM";
+    in property <string> mtu: "1350";
+    in property <string> sni: "tls.nl2.bikini-bottom.com";
+    in property <string> version_tag: "Linux station . 0.19.4";
+
+    callback profiles_clicked();
+    callback admin_clicked();
+    callback logs_clicked();
+    callback settings_clicked();
+
+    height: 62px;
+    background: Theme.bg;
+    // bottom border
+    Rectangle {
+        x: 0; y: parent.height - 1px; width: parent.width; height: 1px;
+        background: Theme.hair;
+    }
+
+    HorizontalLayout {
+        padding-left: 28px;
+        padding-right: 28px;
+        spacing: 32px;
+        alignment: space-between;
+
+        // brand
+        HorizontalLayout {
+            spacing: 14px;
+            alignment: start;
+            Text {
+                text: "Ghoststream";
+                font-family: Theme.font_serif;
+                font-size: 28px;
+                font-italic: true;
+                color: Theme.text;
+                vertical-alignment: center;
+                letter-spacing: -0.5px;
+            }
+            Rectangle {
+                border-width: 1px;
+                border-color: Theme.hair;
+                height: 22px;
+                vertical-stretch: 0;
+                y: (parent.height - self.height) / 2;
+                HorizontalLayout {
+                    padding-left: 7px; padding-right: 7px;
+                    Text {
+                        text: root.version_tag;
+                        font-family: Theme.font_display;
+                        font-size: 9.5px;
+                        color: Theme.text_dim;
+                        letter-spacing: 1.7px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ticker
+        HorizontalLayout {
+            spacing: 24px;
+            alignment: center;
+            HorizontalLayout {
+                spacing: 8px;
+                PulseDot { beat: true; y: (parent.height - self.height) / 2; }
+                TickerCell { label: "LINK"; value: root.link_node; }
+            }
+            TickerCell { label: "RTT"; value: root.rtt; }
+            TickerCell { label: "CIPHER"; value: root.cipher; }
+            TickerCell { label: "MTU"; value: root.mtu; }
+            TickerCell { label: "NODE"; value: root.sni; }
+        }
+
+        // controls
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            TopButton { label: "Profiles"; clicked => { root.profiles_clicked(); } }
+            TopButton { label: "Admin";    clicked => { root.admin_clicked(); } }
+            TopButton { label: "Logs";     clicked => { root.logs_clicked(); } }
+            TopButton { label: "·  ·  ·"; clicked => { root.settings_clicked(); } }
+        }
+    }
+}

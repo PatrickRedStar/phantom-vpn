@@ -48,7 +48,7 @@ val LightBackground     = GsLightBg
 val LightSurface        = GsLightBgElev
 val LightSurfaceVariant = GsLightBgElev2
 
-// Legacy accent aliases (still referenced by ConnectButton etc.)
+// Legacy accent aliases
 val AccentPurple      = GsSignal
 val AccentPurpleLight = GsSignal
 val AccentIndigo      = GsSignalDim

@@ -132,6 +132,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         insecure   = false,
                         certPath   = certFile.absolutePath,
                         keyPath    = keyFile.absolutePath,
+                        certPem    = parsed.cert,
+                        keyPem     = parsed.key,
                         tunAddr    = parsed.tun,
                     ),
                 )
@@ -247,6 +249,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                val certFile = java.io.File(profile.certPath)
+                val keyFile = java.io.File(profile.keyPath)
+                if (!certFile.exists() || !keyFile.exists()) return@launch
                 val outcome = AdminHttpClient.build(
                     certPemPath = profile.certPath,
                     keyPemPath = profile.keyPath,
@@ -522,23 +527,27 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private val _installedApps = MutableStateFlow<List<AppInfo>>(emptyList())
     val installedApps: StateFlow<List<AppInfo>> = _installedApps
+    init { loadInstalledApps() }
 
     fun loadInstalledApps() {
         if (_installedApps.value.isNotEmpty()) return
         viewModelScope.launch {
-            val pm = getApplication<Application>().packageManager
-            _installedApps.value = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-                .map { info ->
-                    val isSystemPartition = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-                    val isUpdated = (info.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-                    AppInfo(
-                        packageName = info.packageName,
-                        label = pm.getApplicationLabel(info).toString(),
-                        // Pure system partition app (never updated) — hide from picker
-                        isSystem = isSystemPartition && !isUpdated,
-                    )
-                }
-                .sortedWith(compareBy({ it.isSystem }, { it.label.lowercase() }))
+            _installedApps.value = withContext(Dispatchers.IO) {
+                val pm = getApplication<Application>().packageManager
+                pm.getInstalledApplications(0)
+                    .mapNotNull { info ->
+                        val isSystemPartition = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                        val isUpdated = (info.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                        // Skip pure system daemons early — no label lookup needed
+                        if (isSystemPartition && !isUpdated) return@mapNotNull null
+                        AppInfo(
+                            packageName = info.packageName,
+                            label = pm.getApplicationLabel(info).toString(),
+                            isSystem = false,
+                        )
+                    }
+                    .sortedBy { it.label.lowercase() }
+            }
         }
     }
 

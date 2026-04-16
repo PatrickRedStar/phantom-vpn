@@ -1,0 +1,149 @@
+import { Theme } from "theme.slint";
+import { LogEntry } from "rightrail.slint";
+
+export component LogsScreen inherits Rectangle {
+    in property <bool> is_open: false;
+    in property <[LogEntry]> entries;
+    in property <int> total_lines;
+
+    in-out property <string> level_filter: "ALL";        // ALL/TRACE/DEBUG/INFO/WARN/ERROR
+    in-out property <string> substring_filter: "";
+    in-out property <bool>   auto_scroll: true;
+
+    callback close_clicked();
+    callback copy_clicked();
+    callback level_cycle();
+    callback filter_edited(string);
+    callback clear_clicked();
+
+    visible: is_open;
+
+    Rectangle {
+        background: Theme.overlay;
+        TouchArea { clicked => { root.close_clicked(); } }
+    }
+
+    panel := Rectangle {
+        width: min(980px, parent.width - 40px);
+        height: min(720px, parent.height - 60px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg_elev;
+        border-width: 1px;
+        border-color: Theme.hair_bold;
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 22px;
+            spacing: 14px;
+
+            // header + controls
+            HorizontalLayout {
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 14px;
+                    Text { text: "LOGS"; font-family: Theme.font_display; font-size: 11px; color: Theme.signal; letter-spacing: 2.6px; vertical-alignment: center; }
+                    Text {
+                        text: root.total_lines + " lines";
+                        font-family: Theme.font_mono; font-size: 10.5px;
+                        color: Theme.text_faint;
+                        vertical-alignment: center;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    // level dropdown (click to cycle)
+                    Rectangle {
+                        width: 92px; height: 28px;
+                        border-width: 1px; border-color: Theme.hair_bold; background: transparent;
+                        HorizontalLayout { alignment: center;
+                            Text { text: "▾ " + root.level_filter; font-family: Theme.font_display; font-size: 10px; color: Theme.text; letter-spacing: 1.5px; vertical-alignment: center; }
+                        }
+                        TouchArea { clicked => { root.level_cycle(); } }
+                    }
+                    // substring filter input
+                    Rectangle {
+                        width: 200px; height: 28px;
+                        border-width: 1px; border-color: Theme.hair_bold; background: transparent;
+                        HorizontalLayout { padding-left: 10px; padding-right: 10px;
+                            TextInput {
+                                text <=> root.substring_filter;
+                                font-family: Theme.font_mono; font-size: 11px;
+                                color: Theme.text; single-line: true;
+                                edited => { root.filter_edited(self.text); }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: 70px; height: 28px;
+                        border-width: 1px; border-color: Theme.hair_bold;
+                        background: copy_ta.has-hover ? Theme.bg_elev_2 : transparent;
+                        HorizontalLayout { alignment: center; Text { text: "COPY"; font-family: Theme.font_display; font-size: 10px; color: copy_ta.has-hover ? Theme.text : Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; } }
+                        copy_ta := TouchArea { clicked => { root.copy_clicked(); } }
+                    }
+                    Rectangle {
+                        width: 70px; height: 28px;
+                        border-width: 1px; border-color: Theme.hair_bold;
+                        background: clear_ta.has-hover ? Theme.bg_elev_2 : transparent;
+                        HorizontalLayout { alignment: center; Text { text: "CLEAR"; font-family: Theme.font_display; font-size: 10px; color: clear_ta.has-hover ? Theme.text : Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; } }
+                        clear_ta := TouchArea { clicked => { root.clear_clicked(); } }
+                    }
+                    Rectangle {
+                        width: 30px; height: 28px;
+                        border-width: 1px; border-color: Theme.hair_bold;
+                        background: close_ta.has-hover ? Theme.bg_elev_2 : transparent;
+                        HorizontalLayout { alignment: center; Text { text: "⨯"; font-family: Theme.font_display; font-size: 14px; color: close_ta.has-hover ? Theme.text : Theme.text_dim; vertical-alignment: center; } }
+                        close_ta := TouchArea { clicked => { root.close_clicked(); } }
+                    }
+                }
+            }
+
+            // log area
+            Rectangle {
+                border-width: 1px; border-color: Theme.hair;
+                background: Theme.bg_elev_2;
+                vertical-stretch: 1;
+                Flickable {
+                    x: 1px; y: 1px;
+                    width: parent.width - 2px;
+                    height: parent.height - 2px;
+                    viewport-height: logs_col.preferred-height;
+                    logs_col := VerticalLayout {
+                        padding: 10px;
+                        spacing: 2px;
+                        for entry in root.entries : HorizontalLayout {
+                            spacing: 10px;
+                            Text {
+                                text: entry.ts;
+                                font-family: Theme.font_mono;
+                                font-size: 10.5px;
+                                color: Theme.text_faint;
+                                width: 70px;
+                            }
+                            Text {
+                                text: entry.level;
+                                font-family: Theme.font_display;
+                                font-size: 9.5px;
+                                letter-spacing: 1.3px;
+                                width: 36px;
+                                color:
+                                    entry.kind == "ok"    ? Theme.signal :
+                                    entry.kind == "warn"  ? Theme.warn :
+                                    entry.kind == "debug" ? Theme.debug :
+                                                            Theme.text_dim;
+                            }
+                            Text {
+                                text: entry.msg;
+                                font-family: Theme.font_mono;
+                                font-size: 11px;
+                                color: Theme.text;
+                                wrap: word-wrap;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

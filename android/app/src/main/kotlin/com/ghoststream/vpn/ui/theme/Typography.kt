@@ -83,23 +83,23 @@ object GsText {
     // Departure Mono — ALL CAPS labels, tickers, numeric strips.
     val labelMono = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 9.5.sp,
-        letterSpacing = 0.22.em,
+        fontSize = 10.5.sp,
+        letterSpacing = 0.18.em,
     )
     val labelMonoSmall = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 9.sp,
-        letterSpacing = 0.18.em,
+        fontSize = 10.sp,
+        letterSpacing = 0.15.em,
     )
     val labelMonoTiny = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 8.5.sp,
-        letterSpacing = 0.16.em,
+        fontSize = 9.5.sp,
+        letterSpacing = 0.14.em,
     )
     val hdrMeta = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 9.5.sp,
-        letterSpacing = 0.14.em,
+        fontSize = 10.5.sp,
+        letterSpacing = 0.12.em,
     )
     val ticker = TextStyle(
         fontFamily = DepartureMono,
@@ -108,18 +108,18 @@ object GsText {
     )
     val valueMono = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 10.sp,
+        fontSize = 11.sp,
         letterSpacing = 0.08.em,
     )
     val chipText = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 9.5.sp,
-        letterSpacing = 0.14.em,
+        fontSize = 10.5.sp,
+        letterSpacing = 0.12.em,
     )
     val navItem = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 9.sp,
-        letterSpacing = 0.16.em,
+        fontSize = 10.sp,
+        letterSpacing = 0.14.em,
     )
     val fabText = TextStyle(
         fontFamily = DepartureMono,
@@ -155,7 +155,7 @@ object GsText {
     )
     val logLevel = TextStyle(
         fontFamily = DepartureMono,
-        fontSize = 8.5.sp,
+        fontSize = 9.5.sp,
         letterSpacing = 0.12.em,
     )
     val logMsg = TextStyle(
@@ -172,8 +172,8 @@ val GsTypography = Typography(
     bodySmall   = TextStyle(fontFamily = JetBrainsMono, fontSize = 11.sp),
     titleLarge  = TextStyle(fontFamily = SpaceGrotesk, fontWeight = FontWeight.Bold, fontSize = 22.sp),
     titleMedium = TextStyle(fontFamily = SpaceGrotesk, fontWeight = FontWeight.Bold, fontSize = 17.sp),
-    titleSmall  = TextStyle(fontFamily = DepartureMono, fontSize = 10.sp, letterSpacing = 0.18.em),
-    labelLarge  = TextStyle(fontFamily = DepartureMono, fontSize = 10.sp, letterSpacing = 0.18.em),
-    labelMedium = TextStyle(fontFamily = DepartureMono, fontSize = 9.5.sp, letterSpacing = 0.16.em),
-    labelSmall  = TextStyle(fontFamily = DepartureMono, fontSize = 8.5.sp, letterSpacing = 0.14.em),
+    titleSmall  = TextStyle(fontFamily = DepartureMono, fontSize = 11.sp, letterSpacing = 0.15.em),
+    labelLarge  = TextStyle(fontFamily = DepartureMono, fontSize = 11.sp, letterSpacing = 0.15.em),
+    labelMedium = TextStyle(fontFamily = DepartureMono, fontSize = 10.5.sp, letterSpacing = 0.14.em),
+    labelSmall  = TextStyle(fontFamily = DepartureMono, fontSize = 9.5.sp, letterSpacing = 0.12.em),
 )

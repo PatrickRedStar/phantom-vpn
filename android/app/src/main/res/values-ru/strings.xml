@@ -173,5 +173,6 @@
     <string name="add_profile_title">Добавить подключение</string>
     <string name="add_profile_name_hint">Название (необязательно)</string>
     <string name="add_profile_conn_hint">Строка подключения (ghs://…)</string>
+    <string name="hint_add_profile">Свайпни в Настройки → добавь endpoint для подключения</string>
     <string name="version_fmt">v%1$s · %2$s</string>
 </resources>

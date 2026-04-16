@@ -1,0 +1,366 @@
+import { Theme } from "theme.slint";
+
+// Row data for the clients table.
+export struct AdminClientRow {
+    name: string,
+    tun_addr: string,
+    // one of "active" | "idle" | "disabled" | "expired"
+    status: string,
+    // "∞" for unlimited, "28d", "exp", "—"
+    expiry: string,
+    // "ok" | "warn" | "bad"
+    expiry_kind: string,
+    // bandwidth summary, e.g. "1.2 GB ↓  320 MB ↑"
+    traffic: string,
+    is_admin: bool,
+}
+
+export struct AdminServerStatus {
+    uptime: string,
+    sessions: string,
+    cpu: string,
+    server_ip: string,
+}
+
+// Inline pop-up menu state:
+//   selected_name != ""  → show for that row, show_menu becomes true.
+// The host sets `menu_selected_name` when the user clicks `•••`.
+
+export component AdminScreen inherits Rectangle {
+    in property <bool> is_open: false;
+    in property <string> title_text: "tls.nl2.bikini-bottom.com";
+    in property <string> status_line: "";     // rendered in red if not empty
+    in property <bool>   busy: false;
+    in property <AdminServerStatus> server_status;
+    in property <[AdminClientRow]> rows;
+
+    // Popup menu coordination (host-driven).
+    in-out property <string> menu_selected_name: "";
+
+    // Add-client dialog state.
+    in-out property <bool>   add_open: false;
+    in-out property <string> add_name: "";
+    in-out property <int>    add_expiry_days: 30; // 0 == unlimited
+
+    callback close_clicked();
+    callback refresh_clicked();
+    callback add_clicked();
+    callback add_submit();
+    callback add_cancel();
+    callback row_menu_clicked(string);               // name
+    callback row_action(string, string);             // (action, name)
+
+    visible: is_open;
+
+    Rectangle {
+        background: Theme.overlay;
+        TouchArea { clicked => { root.close_clicked(); } }
+    }
+
+    panel := Rectangle {
+        width: min(860px, parent.width - 64px);
+        height: min(640px, parent.height - 80px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg_elev;
+        border-width: 1px;
+        border-color: Theme.hair_bold;
+        TouchArea {} // swallow bg clicks
+
+        VerticalLayout {
+            padding: 28px;
+            spacing: 18px;
+
+            // header
+            HorizontalLayout {
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 14px;
+                    Text { text: "ADMIN"; font-family: Theme.font_display; font-size: 11px; color: Theme.signal; letter-spacing: 2.6px; vertical-alignment: center; }
+                    Text { text: "·"; color: Theme.text_faint; vertical-alignment: center; }
+                    Text { text: root.title_text; font-family: Theme.font_serif; font-italic: true; font-size: 20px; color: Theme.text; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        width: 90px; height: 28px;
+                        border-width: 1px; border-color: Theme.hair_bold; background: transparent;
+                        HorizontalLayout { alignment: center;
+                            Text { text: "↻ REFRESH"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; }
+                        }
+                        TouchArea { clicked => { root.refresh_clicked(); } }
+                    }
+                    Rectangle {
+                        width: 80px; height: 28px;
+                        border-width: 1px; border-color: Theme.hair_bold; background: transparent;
+                        HorizontalLayout { alignment: center;
+                            Text { text: "⨯ CLOSE"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; }
+                        }
+                        TouchArea { clicked => { root.close_clicked(); } }
+                    }
+                }
+            }
+
+            // server status strip
+            Rectangle {
+                border-width: 1px;
+                border-color: Theme.hair;
+                height: 58px;
+                HorizontalLayout {
+                    padding-left: 18px; padding-right: 18px;
+                    spacing: 32px;
+                    alignment: start;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: "UPTIME"; font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_faint; letter-spacing: 1.6px; }
+                        Text { text: root.server_status.uptime; font-family: Theme.font_display; font-size: 14px; color: Theme.text; letter-spacing: 0.6px; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: "ACTIVE SESSIONS"; font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_faint; letter-spacing: 1.6px; }
+                        Text { text: root.server_status.sessions; font-family: Theme.font_display; font-size: 14px; color: Theme.signal; letter-spacing: 0.6px; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: "CPU"; font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_faint; letter-spacing: 1.6px; }
+                        Text { text: root.server_status.cpu; font-family: Theme.font_display; font-size: 14px; color: Theme.text; letter-spacing: 0.6px; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: "SERVER"; font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_faint; letter-spacing: 1.6px; }
+                        Text { text: root.server_status.server_ip; font-family: Theme.font_display; font-size: 14px; color: Theme.text; letter-spacing: 0.6px; }
+                    }
+                }
+            }
+
+            // clients header + add button
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "CLIENTS"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 2.2px; vertical-alignment: center; }
+                Rectangle {
+                    width: 140px; height: 30px;
+                    background: Theme.signal;
+                    HorizontalLayout { alignment: center;
+                        Text { text: "+ ADD CLIENT"; font-family: Theme.font_display; font-size: 10px; color: Theme.bg; letter-spacing: 1.6px; vertical-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.add_clicked(); } }
+                }
+            }
+
+            // status line (errors / info)
+            if root.status_line != "" : Text {
+                text: root.status_line;
+                color: Theme.warn;
+                font-family: Theme.font_mono;
+                font-size: 10.5px;
+                wrap: word-wrap;
+            }
+
+            // clients list (scrollable)
+            Rectangle {
+                border-width: 1px;
+                border-color: Theme.hair;
+                vertical-stretch: 1;
+                background: Theme.bg_elev_2;
+
+                Flickable {
+                    x: 1px; y: 1px;
+                    width: parent.width - 2px;
+                    height: parent.height - 2px;
+                    viewport-height: rows_layout.preferred-height;
+                    rows_layout := VerticalLayout {
+                        spacing: 0px;
+                        for row[i] in root.rows : Rectangle {
+                            height: 44px;
+                            background: mod(i, 2) == 0 ? transparent : Theme.text.with-alpha(0.016);
+                            Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.hair; }
+                            HorizontalLayout {
+                                padding-left: 14px; padding-right: 14px;
+                                spacing: 14px;
+                                // status dot
+                                Rectangle {
+                                    width: 8px; height: 8px;
+                                    border-radius: 4px;
+                                    y: (parent.height - self.height) / 2;
+                                    background:
+                                        row.status == "active"   ? Theme.signal :
+                                        row.status == "idle"     ? Theme.hair_bold :
+                                        row.status == "disabled" ? Theme.text_faint :
+                                                                   Theme.warn;
+                                }
+                                // name
+                                Text {
+                                    text: row.name + (row.is_admin ? "  ★" : "");
+                                    font-family: Theme.font_serif; font-italic: true;
+                                    font-size: 17px;
+                                    color: Theme.text;
+                                    width: 200px;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+                                // tun
+                                Text {
+                                    text: row.tun_addr;
+                                    font-family: Theme.font_mono; font-size: 11px;
+                                    color: Theme.text_dim;
+                                    width: 120px;
+                                    vertical-alignment: center;
+                                }
+                                // expiry
+                                Text {
+                                    text: row.expiry;
+                                    font-family: Theme.font_display; font-size: 10.5px;
+                                    letter-spacing: 1.2px;
+                                    color:
+                                        row.expiry_kind == "ok"   ? Theme.text :
+                                        row.expiry_kind == "warn" ? Theme.warn :
+                                        row.expiry_kind == "bad"  ? Theme.warn :
+                                                                    Theme.text_faint;
+                                    width: 60px;
+                                    vertical-alignment: center;
+                                }
+                                // traffic
+                                Text {
+                                    text: row.traffic;
+                                    font-family: Theme.font_mono; font-size: 10.5px;
+                                    color: Theme.text_dim;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                }
+                                // action buttons (inline, no real popup menu in Slint 1.8)
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    Rectangle {
+                                        width: 64px; height: 26px;
+                                        border-width: 1px; border-color: Theme.hair_bold;
+                                        background: ext_ta.has-hover ? Theme.bg_elev : transparent;
+                                        y: (parent.height - self.height) / 2;
+                                        HorizontalLayout { alignment: center;
+                                            Text { text: "+30D"; font-family: Theme.font_display; font-size: 9.5px; color: ext_ta.has-hover ? Theme.text : Theme.text_dim; letter-spacing: 1.2px; vertical-alignment: center; }
+                                        }
+                                        ext_ta := TouchArea { clicked => { root.row_action("extend30", row.name); } }
+                                    }
+                                    Rectangle {
+                                        width: 64px; height: 26px;
+                                        border-width: 1px; border-color: Theme.hair_bold;
+                                        background: tog_ta.has-hover ? Theme.bg_elev : transparent;
+                                        y: (parent.height - self.height) / 2;
+                                        HorizontalLayout { alignment: center;
+                                            Text { text: row.status == "disabled" ? "ENABLE" : "DISABLE"; font-family: Theme.font_display; font-size: 9.5px; color: tog_ta.has-hover ? Theme.text : Theme.text_dim; letter-spacing: 1.2px; vertical-alignment: center; }
+                                        }
+                                        tog_ta := TouchArea { clicked => { root.row_action(row.status == "disabled" ? "enable" : "disable", row.name); } }
+                                    }
+                                    Rectangle {
+                                        width: 64px; height: 26px;
+                                        border-width: 1px; border-color: Theme.hair_bold;
+                                        background: cpy_ta.has-hover ? Theme.bg_elev : transparent;
+                                        y: (parent.height - self.height) / 2;
+                                        HorizontalLayout { alignment: center;
+                                            Text { text: "COPY"; font-family: Theme.font_display; font-size: 9.5px; color: cpy_ta.has-hover ? Theme.text : Theme.text_dim; letter-spacing: 1.2px; vertical-alignment: center; }
+                                        }
+                                        cpy_ta := TouchArea { clicked => { root.row_action("copy_conn", row.name); } }
+                                    }
+                                    Rectangle {
+                                        width: 48px; height: 26px;
+                                        border-width: 1px; border-color: Theme.warn;
+                                        background: del_ta.has-hover ? Theme.error_bg : transparent;
+                                        y: (parent.height - self.height) / 2;
+                                        HorizontalLayout { alignment: center;
+                                            Text { text: "DEL"; font-family: Theme.font_display; font-size: 9.5px; color: Theme.warn; letter-spacing: 1.2px; vertical-alignment: center; }
+                                        }
+                                        del_ta := TouchArea { clicked => { root.row_action("delete", row.name); } }
+                                    }
+                                }
+                            }
+                        }
+                        if root.rows.length == 0 && !root.busy : Rectangle {
+                            height: 80px;
+                            Text {
+                                text: "No clients yet.\nTap + ADD CLIENT to create one.";
+                                font-family: Theme.font_mono; font-size: 11px;
+                                color: Theme.text_faint;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.busy : Rectangle {
+                            height: 60px;
+                            Text { text: "loading…"; font-family: Theme.font_mono; font-size: 11px;
+                                   color: Theme.text_faint; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add-client inline dialog
+        if root.add_open : Rectangle {
+            x: 0; y: 0; width: parent.width; height: parent.height;
+            background: Theme.overlay;
+            TouchArea { clicked => { root.add_cancel(); } }
+
+            Rectangle {
+                width: 380px; height: 240px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: Theme.bg_elev;
+                border-width: 1px; border-color: Theme.hair_bold;
+                TouchArea {}
+                VerticalLayout {
+                    padding: 22px;
+                    spacing: 14px;
+                    Text { text: "ADD CLIENT"; font-family: Theme.font_display; font-size: 11px; color: Theme.text_faint; letter-spacing: 2.6px; }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "NAME"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 1.6px; }
+                        Rectangle {
+                            border-width: 1px; border-color: Theme.hair_bold;
+                            height: 32px;
+                            HorizontalLayout { padding-left: 10px; padding-right: 10px;
+                                TextInput {
+                                    text <=> root.add_name;
+                                    font-family: Theme.font_mono; font-size: 13px;
+                                    color: Theme.text; single-line: true;
+                                }
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "EXPIRY"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 1.6px; }
+                        HorizontalLayout { spacing: 6px;
+                            for preset in [ { label: "30d", d: 30 }, { label: "90d", d: 90 }, { label: "∞", d: 0 } ] :
+                                Rectangle {
+                                    width: 70px; height: 30px;
+                                    border-width: 1px;
+                                    border-color: root.add_expiry_days == preset.d ? Theme.signal : Theme.hair_bold;
+                                    background: root.add_expiry_days == preset.d ? Theme.signal.with-alpha(0.094) : transparent;
+                                    HorizontalLayout { alignment: center;
+                                        Text { text: preset.label; font-family: Theme.font_display; font-size: 10.5px; color: Theme.text; letter-spacing: 1.4px; vertical-alignment: center; }
+                                    }
+                                    TouchArea { clicked => { root.add_expiry_days = preset.d; } }
+                                }
+                        }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout { spacing: 8px; alignment: end;
+                        Rectangle {
+                            width: 90px; height: 32px;
+                            border-width: 1px; border-color: Theme.hair_bold; background: transparent;
+                            HorizontalLayout { alignment: center; Text { text: "CANCEL"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; } }
+                            TouchArea { clicked => { root.add_cancel(); } }
+                        }
+                        Rectangle {
+                            width: 110px; height: 32px;
+                            background: Theme.signal;
+                            opacity: root.add_name != "" ? 1.0 : 0.5;
+                            HorizontalLayout { alignment: center; Text { text: "▶ CREATE"; font-family: Theme.font_display; font-size: 10px; color: Theme.bg; letter-spacing: 1.5px; vertical-alignment: center; } }
+                            TouchArea { clicked => { if (root.add_name != "") { root.add_submit(); } } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

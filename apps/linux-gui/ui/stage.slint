@@ -1,0 +1,205 @@
+import { Theme } from "theme.slint";
+import { Oscilloscope } from "oscilloscope.slint";
+import { MuxPanel, SessionPanel, StreamBar, KvRow } from "mux.slint";
+
+export component CenterStage inherits Rectangle {
+    in property <string> state_label: "TUNNEL STATE";
+    // state_main should be the bare state word (no trailing punctuation); the
+    // trailing mark is composed here in two colors.
+    in property <string> state_main: "Dormant";
+    // UI sugar: "connected" | "connecting" | "disconnected" | "error".
+    in property <string> state_kind: "disconnected";
+    in property <string> session_timer: "00:00:00";
+    in property <string> rx_path;
+    in property <string> tx_path;
+    in property <string> rx_label;
+    in property <string> tx_label;
+    in property <[StreamBar]> streams;
+    in property <[KvRow]> session_rows;
+    in property <string> last_error: "";
+
+    callback connect_clicked();
+    callback disconnect_clicked();
+
+    background: Theme.bg;
+
+    // diagonal accent
+    Path {
+        x: parent.width - 140px; y: 0;
+        width: 140px; height: 140px;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        stroke: Theme.hair;
+        stroke-width: 1px;
+        opacity: 0.6;
+        MoveTo { x: 0; y: 100; }
+        LineTo { x: 100; y: 0; }
+    }
+
+    VerticalLayout {
+        padding-top: 40px;
+        padding-bottom: 32px;
+        padding-left: 48px;
+        padding-right: 48px;
+        spacing: 28px;
+
+        // ── state head ───────────────────────────────────────
+        Rectangle {
+            height: 110px;
+            HorizontalLayout {
+                alignment: space-between;
+                VerticalLayout {
+                    alignment: end;
+                    spacing: 10px;
+                    Text {
+                        text: state_label;
+                        font-family: Theme.font_display;
+                        font-size: 10px;
+                        color: Theme.text_faint;
+                        letter-spacing: 2.2px;
+                    }
+                    // Two-color state word: body in a signal color, trailing
+                    // punctuation in the default body color.
+                    HorizontalLayout {
+                        spacing: 0px;
+                        Text {
+                            text: state_main;
+                            font-family: Theme.font_serif;
+                            font-italic: true;
+                            font-size: 88px;
+                            color:
+                                state_kind == "connected"    ? Theme.signal :
+                                state_kind == "connecting"   ? Theme.text   :
+                                state_kind == "error"        ? Theme.warn   :
+                                                               Theme.text_dim;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text:
+                                state_kind == "connecting" ? "…"
+                                                           : ".";
+                            font-family: Theme.font_serif;
+                            font-italic: true;
+                            font-size: 88px;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Text {
+                        text: session_timer;
+                        font-family: Theme.font_display;
+                        font-size: 42px;
+                        color: Theme.text;
+                        letter-spacing: 1.7px;
+                        horizontal-alignment: right;
+                    }
+                    Text {
+                        text: "SESSION ELAPSED";
+                        font-family: Theme.font_display;
+                        font-size: 10px;
+                        color: Theme.text_faint;
+                        letter-spacing: 1.8px;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+
+        // ── connect / disconnect button row ──────────────────
+        Rectangle {
+            height: 52px;
+            HorizontalLayout {
+                spacing: 16px;
+                alignment: start;
+
+                btn := Rectangle {
+                    width: 360px; height: 48px;
+                    background:
+                        state_kind == "connected"  ? Theme.warn :
+                        state_kind == "connecting" ? Theme.hair_bold :
+                        state_kind == "error"      ? Theme.error :
+                                                     Theme.signal;
+                    opacity: state_kind == "connecting" ? 0.75 : 1.0;
+                    animate background { duration: 200ms; easing: ease-in-out; }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 10px;
+                        Text {
+                            text:
+                                state_kind == "connected"  ? "■  TERMINATE TUNNEL" :
+                                state_kind == "connecting" ? "◐  HANDSHAKING…" :
+                                state_kind == "error"      ? "⚠  RETRY" :
+                                                             "▶  INITIATE TUNNEL";
+                            color: state_kind == "connected" ? Theme.text : Theme.bg;
+                            font-family: Theme.font_display;
+                            font-size: 13px;
+                            letter-spacing: 2.2px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    TouchArea {
+                        clicked => {
+                            if (state_kind == "connected") {
+                                root.disconnect_clicked();
+                            } else if (state_kind == "connecting") {
+                                // no-op while handshake is in flight
+                            } else {
+                                root.connect_clicked();
+                            }
+                        }
+                    }
+                }
+
+                // error banner
+                if last_error != "" : Rectangle {
+                    horizontal-stretch: 1;
+                    height: 48px;
+                    border-width: 1px;
+                    border-color: Theme.error;
+                    background: Theme.error_bg;
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        Text {
+                            text: "⚠ " + last_error;
+                            font-family: Theme.font_mono;
+                            font-size: 11.5px;
+                            color: Theme.warn;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── oscilloscope ─────────────────────────────────────
+        Oscilloscope {
+            preferred-height: 180px;
+            rx_path: root.rx_path;
+            tx_path: root.tx_path;
+            rx_label: root.rx_label;
+            tx_label: root.tx_label;
+        }
+
+        // ── mux + session row ────────────────────────────────
+        HorizontalLayout {
+            spacing: 24px;
+            preferred-height: 200px;
+            MuxPanel {
+                horizontal-stretch: 1;
+                streams: root.streams;
+            }
+            SessionPanel {
+                horizontal-stretch: 1;
+                rows: root.session_rows;
+            }
+        }
+    }
+}

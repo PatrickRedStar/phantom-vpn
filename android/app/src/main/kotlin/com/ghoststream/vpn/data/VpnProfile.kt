@@ -8,6 +8,9 @@ data class VpnProfile(
     val insecure: Boolean = false,
     val certPath: String = "",
     val keyPath: String = "",
+    /** Inline PEM — survives app updates, reinstalls, cert file deletion. */
+    val certPem: String? = null,
+    val keyPem: String? = null,
     val tunAddr: String = "10.7.0.2/24",
     // Per-profile overrides (null = use global defaults)
     val dnsServers: List<String>? = null,

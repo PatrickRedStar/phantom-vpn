@@ -7,6 +7,9 @@ members = [
     "crates/client-android",
     "crates/client-openwrt",
     "crates/relay",
+    "crates/gui-ipc",
+    "apps/linux-gui",
+    "apps/linux-gui-helper",
 ]
 resolver = "2"
 

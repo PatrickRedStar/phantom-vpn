@@ -1,0 +1,284 @@
+import { Theme } from "theme.slint";
+import { TopBar } from "topbar.slint";
+import { ProfilesRail, ProfileItem } from "profiles.slint";
+import { CenterStage } from "stage.slint";
+import { RightRail, LogEntry } from "rightrail.slint";
+import { StreamBar, KvRow } from "mux.slint";
+import { ProfileEditor } from "profile_editor.slint";
+import { AdminScreen, AdminClientRow, AdminServerStatus } from "admin_screen.slint";
+import { LogsScreen } from "logs_screen.slint";
+import { SettingsScreen } from "settings_screen.slint";
+
+export { ProfileItem, StreamBar, KvRow, LogEntry, AdminClientRow, AdminServerStatus }
+
+export component MainWindow inherits Window {
+    title: "GhostStream — Linux Station";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 1100px;
+    min-height: 700px;
+    background: Theme.bg;
+    default-font-family: "JetBrains Mono";
+    default-font-size: 13px;
+
+    // ── data bindings ─────────────────────────────────────────
+    in property <[ProfileItem]> profiles;
+    in property <int> profile_count;
+
+    in property <string> link_node;
+    in property <string> rtt;
+    in property <string> cipher;
+    in property <string> mtu;
+    in property <string> sni;
+
+    in property <string> state_label;
+    in property <string> state_main;
+    in property <string> state_kind: "disconnected";
+    in property <string> session_timer;
+    in property <string> last_error: "";
+
+    in property <string> rx_path;
+    in property <string> tx_path;
+    in property <string> rx_label;
+    in property <string> tx_label;
+
+    in property <[StreamBar]> streams;
+    in property <[KvRow]> session_rows;
+
+    in property <[LogEntry]> logs;
+
+    in property <string> footer_build:    "v0.19.4";
+    in property <string> footer_rust:     "1.94";
+    in property <string> footer_uring:    "armed";
+    in property <string> footer_cpu:      "—";
+    in property <string> footer_rss:      "—";
+    in property <string> footer_syscalls: "—";
+    in property <string> footer_health:   "● IDLE";
+
+    // profile editor state
+    in-out property <bool>   editor_open: false;
+    in-out property <string> editor_name;
+    in-out property <string> editor_conn;
+    in property <string>      editor_parse_error: "";
+    in property <string>      editor_parse_ok:    "";
+    in-out property <string>  editor_admin_url:   "";
+    in-out property <string>  editor_admin_token: "";
+    in-out property <string>  editor_admin_fp:    "";
+
+    // Admin screen state
+    in-out property <bool>   admin_open: false;
+    in property <string>     admin_title: "";
+    in property <string>     admin_status_line: "";
+    in property <bool>       admin_busy: false;
+    in property <AdminServerStatus> admin_server_status;
+    in property <[AdminClientRow]>  admin_rows;
+    in-out property <bool>   admin_add_open: false;
+    in-out property <string> admin_add_name: "";
+    in-out property <int>    admin_add_days: 30;
+
+    // Logs screen state
+    in-out property <bool>   logs_open: false;
+    in property <[LogEntry]> logs_all;
+    in property <int>        logs_total_lines;
+    in-out property <string> logs_level_filter: "ALL";
+    in-out property <string> logs_substring_filter: "";
+
+    // Settings screen state
+    in-out property <bool> settings_open: false;
+    in-out property <bool> setting_dns_leak: true;
+    in-out property <bool> setting_ipv6_ks:  true;
+    in-out property <bool> setting_autorec:  true;
+    in-out property <bool> setting_autostart: false;
+    in-out property <bool> setting_start_min: false;
+    in property <string>    settings_autostart_status: "";
+
+    // ── callbacks ─────────────────────────────────────────────
+    callback profiles_clicked();
+    callback admin_clicked();
+    callback logs_clicked();
+    callback profile_selected(int);
+    callback add_profile_clicked();
+    callback edit_profile_clicked();
+    callback delete_profile_clicked();
+    callback connect_clicked();
+    callback disconnect_clicked();
+
+    callback editor_save();
+    callback editor_cancel();
+    callback editor_conn_edited(string);
+
+    // Settings / menu
+    callback settings_clicked();
+    callback quit_clicked();
+
+    // Admin
+    callback admin_refresh();
+    callback admin_close();
+    callback admin_add();
+    callback admin_add_submit();
+    callback admin_add_cancel();
+    callback admin_row_action(string, string); // (action, name)
+
+    // Logs
+    callback logs_close();
+    callback logs_copy();
+    callback logs_clear();
+    callback logs_level_cycle();
+    callback logs_filter_edited(string);
+
+    // Settings toggles
+    callback setting_toggle_dns();
+    callback setting_toggle_ipv6();
+    callback setting_toggle_reconnect();
+    callback setting_toggle_autostart();
+    callback setting_toggle_minimized();
+    callback setting_copy_debug();
+    callback setting_open_config_dir();
+    callback settings_close();
+
+    VerticalLayout {
+        spacing: 0px;
+
+        TopBar {
+            link_node: root.link_node;
+            rtt: root.rtt;
+            cipher: root.cipher;
+            mtu: root.mtu;
+            sni: root.sni;
+            profiles_clicked => { root.profiles_clicked(); }
+            admin_clicked => { root.admin_clicked(); }
+            logs_clicked => { root.logs_clicked(); }
+            settings_clicked => { root.settings_clicked(); }
+        }
+
+        HorizontalLayout {
+            spacing: 0px;
+            vertical-stretch: 1;
+
+            ProfilesRail {
+                width: 320px;
+                profiles: root.profiles;
+                count: root.profile_count;
+                has_active: root.profile_count > 0;
+                profile_clicked(i) => { root.profile_selected(i); }
+                add_clicked => { root.add_profile_clicked(); }
+                edit_clicked => { root.edit_profile_clicked(); }
+                delete_clicked => { root.delete_profile_clicked(); }
+            }
+
+            CenterStage {
+                horizontal-stretch: 1;
+                state_label: root.state_label;
+                state_main: root.state_main;
+                state_kind: root.state_kind;
+                last_error: root.last_error;
+                session_timer: root.session_timer;
+                rx_path: root.rx_path;
+                tx_path: root.tx_path;
+                rx_label: root.rx_label;
+                tx_label: root.tx_label;
+                streams: root.streams;
+                session_rows: root.session_rows;
+                connect_clicked => { root.connect_clicked(); }
+                disconnect_clicked => { root.disconnect_clicked(); }
+            }
+
+            RightRail {
+                width: 280px;
+                logs: root.logs;
+            }
+        }
+
+        Rectangle {
+            height: 36px;
+            background: Theme.bg;
+            Rectangle { x: 0; y: 0; width: parent.width; height: 1px; background: Theme.hair; }
+            HorizontalLayout {
+                padding-left: 28px;
+                padding-right: 28px;
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 22px;
+                    Text { text: "BUILD " + footer_build;         font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_dim; letter-spacing: 1.4px; vertical-alignment: center; }
+                    Text { text: "RUST " + footer_rust;           font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_dim; letter-spacing: 1.4px; vertical-alignment: center; }
+                    Text { text: "TUN_URING " + footer_uring;     font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_dim; letter-spacing: 1.4px; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    spacing: 22px;
+                    Text { text: "CPU " + footer_cpu;             font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_dim; letter-spacing: 1.4px; vertical-alignment: center; }
+                    Text { text: "RSS " + footer_rss;             font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_dim; letter-spacing: 1.4px; vertical-alignment: center; }
+                    Text { text: "SYSCALLS/S " + footer_syscalls; font-family: Theme.font_display; font-size: 9.5px; color: Theme.text_dim; letter-spacing: 1.4px; vertical-alignment: center; }
+                    Text { text: footer_health;                   font-family: Theme.font_display; font-size: 9.5px; color: Theme.signal; letter-spacing: 1.4px; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+
+    // Modal profile editor overlay
+    ProfileEditor {
+        width: root.width; height: root.height;
+        is_open: root.editor_open;
+        name_text <=> root.editor_name;
+        conn_text <=> root.editor_conn;
+        admin_url_text <=> root.editor_admin_url;
+        admin_token_text <=> root.editor_admin_token;
+        admin_fp_text <=> root.editor_admin_fp;
+        parse_error: root.editor_parse_error;
+        parse_ok_summary: root.editor_parse_ok;
+        save_clicked => { root.editor_save(); }
+        cancel_clicked => { root.editor_cancel(); }
+        conn_edited(t) => { root.editor_conn_edited(t); }
+    }
+
+    AdminScreen {
+        width: root.width; height: root.height;
+        is_open: root.admin_open;
+        title_text: root.admin_title;
+        status_line: root.admin_status_line;
+        busy: root.admin_busy;
+        server_status: root.admin_server_status;
+        rows: root.admin_rows;
+        add_open <=> root.admin_add_open;
+        add_name <=> root.admin_add_name;
+        add_expiry_days <=> root.admin_add_days;
+        close_clicked => { root.admin_close(); }
+        refresh_clicked => { root.admin_refresh(); }
+        add_clicked => { root.admin_add(); }
+        add_submit => { root.admin_add_submit(); }
+        add_cancel => { root.admin_add_cancel(); }
+        row_action(a, n) => { root.admin_row_action(a, n); }
+    }
+
+    LogsScreen {
+        width: root.width; height: root.height;
+        is_open: root.logs_open;
+        entries: root.logs_all;
+        total_lines: root.logs_total_lines;
+        level_filter <=> root.logs_level_filter;
+        substring_filter <=> root.logs_substring_filter;
+        close_clicked => { root.logs_close(); }
+        copy_clicked => { root.logs_copy(); }
+        clear_clicked => { root.logs_clear(); }
+        level_cycle => { root.logs_level_cycle(); }
+        filter_edited(t) => { root.logs_filter_edited(t); }
+    }
+
+    SettingsScreen {
+        width: root.width; height: root.height;
+        is_open: root.settings_open;
+        dns_leak_protection <=> root.setting_dns_leak;
+        ipv6_killswitch <=> root.setting_ipv6_ks;
+        auto_reconnect <=> root.setting_autorec;
+        autostart <=> root.setting_autostart;
+        start_minimized <=> root.setting_start_min;
+        autostart_status: root.settings_autostart_status;
+        close_clicked => { root.settings_close(); }
+        toggled_dns => { root.setting_toggle_dns(); }
+        toggled_ipv6 => { root.setting_toggle_ipv6(); }
+        toggled_reconnect => { root.setting_toggle_reconnect(); }
+        toggled_autostart => { root.setting_toggle_autostart(); }
+        toggled_minimized => { root.setting_toggle_minimized(); }
+        copy_debug_clicked => { root.setting_copy_debug(); }
+        open_config_dir_clicked => { root.setting_open_config_dir(); }
+    }
+}

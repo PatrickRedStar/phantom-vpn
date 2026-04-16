@@ -24,6 +24,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ghoststream.vpn.ui.theme.C
@@ -50,7 +52,7 @@ fun GhostChip(
             .clickable(onClick = onClick)
             .background(bg)
             .border(1.dp, border)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
         Text(
             text = text.uppercase(),
@@ -68,6 +70,7 @@ fun GhostFab(
     modifier: Modifier = Modifier,
     outline: Boolean = false,
 ) {
+    val haptic = LocalHapticFeedback.current
     val signalColor = C.signal
     val bgColor = C.bg
     val bg = if (outline) Color.Transparent else signalColor
@@ -76,7 +79,7 @@ fun GhostFab(
         modifier
             .fillMaxWidth()
             .height(48.dp)
-            .clickable(onClick = onClick)
+            .clickable(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() })
             .background(bg)
             .then(if (outline) Modifier.border(1.dp, signalColor) else Modifier)
             .drawBehind {
@@ -106,6 +109,7 @@ fun GhostToggle(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val haptic = LocalHapticFeedback.current
     val signalC = C.signal
     val signalDimC = C.signalDim
     val textDimC = C.textDim
@@ -120,8 +124,8 @@ fun GhostToggle(
     )
     Box(
         modifier
-            .size(width = 34.dp, height = 18.dp)
-            .clickable(onClick = onToggle)
+            .size(width = 40.dp, height = 22.dp)
+            .clickable(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onToggle() })
             .border(1.dp, if (checked) signalC else hairBoldC)
             .background(trackColor)
             .padding(2.dp),
@@ -129,7 +133,7 @@ fun GhostToggle(
         Box(
             Modifier
                 .align(if (checked) Alignment.CenterEnd else Alignment.CenterStart)
-                .size(12.dp)
+                .size(14.dp)
                 .background(knobColor)
                 .drawBehind {
                     if (checked) {
@@ -166,7 +170,7 @@ fun ThemeSwitch(
                 text = label,
                 color = if (active) C.signal else C.textFaint,
                 style = com.ghoststream.vpn.ui.theme.GsText.valueMono,
-                modifier = Modifier.clickable { onSelect(value) },
+                modifier = Modifier.clickable { onSelect(value) }.padding(horizontal = 8.dp, vertical = 8.dp),
             )
             if (idx < entries.size - 1) {
                 Text("·", color = C.textFaint, style = com.ghoststream.vpn.ui.theme.GsText.valueMono)
@@ -196,7 +200,7 @@ fun LangSwitch(
                 text = label,
                 color = if (active) C.signal else C.textFaint,
                 style = com.ghoststream.vpn.ui.theme.GsText.valueMono,
-                modifier = Modifier.clickable { onSelect(code) },
+                modifier = Modifier.clickable { onSelect(code) }.padding(horizontal = 8.dp, vertical = 8.dp),
             )
             if (idx < entries.size - 1) {
                 Text("·", color = C.textFaint, style = com.ghoststream.vpn.ui.theme.GsText.valueMono)

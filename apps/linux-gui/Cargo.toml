@@ -1,0 +1,32 @@
+[package]
+name = "ghoststream-gui"
+version = "0.1.0"
+edition = "2021"
+description = "GhostStream Linux desktop client (Slint UI)"
+
+[[bin]]
+name = "ghoststream-gui"
+path = "src/main.rs"
+
+[dependencies]
+slint = { version = "1.8", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+ghoststream-gui-ipc = { path = "../../crates/gui-ipc" }
+libc = "0.2"
+dirs = "5"
+phantom-client-common = { path = "../../crates/client-common" }
+ksni = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
+sha2 = "0.10"
+arboard = { version = "3", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+slint-build = "1.8"

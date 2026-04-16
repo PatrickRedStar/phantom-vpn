@@ -1,0 +1,254 @@
+import { Theme } from "theme.slint";
+
+// Profile editor dialog — modal overlay shown when user taps "+ ADD PROFILE"
+// or edits an existing profile. Rendered in-place inside MainWindow via
+// `visible` flag, so no real window chrome.
+//
+// The parser hint line reflects live validation from Rust (filled via
+// `parse_error`). When empty the hint slot shows a helpful placeholder.
+
+export component ProfileEditor inherits Rectangle {
+    in property <bool> is_open: false;
+    in-out property <string> name_text;
+    in-out property <string> conn_text;
+    in property <string> parse_error;
+    in property <string> parse_ok_summary; // e.g. "1.2.3.4:443 · sni tls.example · tun 10.7.0.4/24"
+
+    // Optional admin credentials — two-way so the host can seed when editing
+    // an existing profile and read back on save.
+    in-out property <string> admin_url_text;
+    in-out property <string> admin_token_text;
+    in-out property <string> admin_fp_text;
+
+    callback save_clicked();
+    callback cancel_clicked();
+    callback name_edited(string);
+    callback conn_edited(string);
+
+    visible: is_open;
+
+    // full-bleed backdrop
+    Rectangle {
+        background: Theme.overlay;
+        TouchArea { clicked => { root.cancel_clicked(); } }
+    }
+
+    // dialog panel
+    panel := Rectangle {
+        width: min(540px, parent.width - 64px);
+        height: min(560px, parent.height - 80px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg_elev;
+        border-width: 1px;
+        border-color: Theme.hair_bold;
+
+        // intercept clicks so the backdrop does not close when tapping inside
+        TouchArea { }
+
+        VerticalLayout {
+            padding: 32px;
+            spacing: 20px;
+
+            // header
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "ADD PROFILE";
+                    font-family: Theme.font_display;
+                    font-size: 11px;
+                    color: Theme.text_faint;
+                    letter-spacing: 2.6px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "⨯";
+                    font-family: Theme.font_display;
+                    font-size: 18px;
+                    color: Theme.text_dim;
+                    vertical-alignment: center;
+                    TouchArea { clicked => { root.cancel_clicked(); } }
+                }
+            }
+
+            Text {
+                text: "Paste a GhostStream connection link (ghs://…)";
+                font-family: Theme.font_serif;
+                font-italic: true;
+                font-size: 22px;
+                color: Theme.text;
+            }
+
+            // name field
+            VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "NAME";
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    letter-spacing: 1.6px;
+                }
+                Rectangle {
+                    border-width: 1px;
+                    border-color: Theme.hair_bold;
+                    height: 32px;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        name_input := TextInput {
+                            text <=> root.name_text;
+                            font-family: Theme.font_mono;
+                            font-size: 13px;
+                            color: Theme.text;
+                            single-line: true;
+                            edited => { root.name_edited(self.text); }
+                        }
+                    }
+                }
+            }
+
+            // conn string field
+            VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "CONNECTION STRING";
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    letter-spacing: 1.6px;
+                }
+                Rectangle {
+                    border-width: 1px;
+                    border-color: root.parse_error != "" ? #B24438 : Theme.hair_bold;
+                    vertical-stretch: 1;
+                    HorizontalLayout {
+                        padding: 10px;
+                        conn_input := TextInput {
+                            text <=> root.conn_text;
+                            font-family: Theme.font_mono;
+                            font-size: 11.5px;
+                            color: Theme.text;
+                            single-line: false;
+                            wrap: word-wrap;
+                            edited => { root.conn_edited(self.text); }
+                        }
+                    }
+                }
+                // inline validation line
+                Text {
+                    text: root.parse_error != ""
+                        ? "✖ " + root.parse_error
+                        : (root.parse_ok_summary != ""
+                            ? "✔ " + root.parse_ok_summary
+                            : "Hint: looks like ghs://<base64>@host:port?sni=...&tun=...&v=1");
+                    font-family: Theme.font_mono;
+                    font-size: 10.5px;
+                    color: root.parse_error != "" ? Theme.warn
+                         : root.parse_ok_summary != "" ? Theme.signal
+                         : Theme.text_faint;
+                    wrap: word-wrap;
+                }
+            }
+
+            // admin credentials (optional)
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: "ADMIN (OPTIONAL)";
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    letter-spacing: 1.6px;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        border-width: 1px; border-color: Theme.hair_bold;
+                        height: 28px; horizontal-stretch: 2;
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                            TextInput {
+                                text <=> root.admin_url_text;
+                                font-family: Theme.font_mono; font-size: 11px;
+                                color: Theme.text; single-line: true;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        border-width: 1px; border-color: Theme.hair_bold;
+                        height: 28px; horizontal-stretch: 1;
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                            TextInput {
+                                text <=> root.admin_token_text;
+                                font-family: Theme.font_mono; font-size: 11px;
+                                color: Theme.text; single-line: true;
+                            }
+                        }
+                    }
+                }
+                Text {
+                    text: "url · token · (cert fp below, optional)";
+                    font-family: Theme.font_mono;
+                    font-size: 9.5px;
+                    color: Theme.text_faint;
+                }
+                Rectangle {
+                    border-width: 1px; border-color: Theme.hair_bold;
+                    height: 26px;
+                    HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                        TextInput {
+                            text <=> root.admin_fp_text;
+                            font-family: Theme.font_mono; font-size: 10.5px;
+                            color: Theme.text_dim; single-line: true;
+                        }
+                    }
+                }
+            }
+
+            // buttons
+            HorizontalLayout {
+                spacing: 12px;
+                alignment: end;
+
+                // import from QR stub
+                Rectangle {
+                    width: 140px; height: 34px;
+                    border-width: 1px;
+                    border-color: Theme.hair_bold;
+                    background: transparent;
+                    HorizontalLayout { alignment: center;
+                        Text { text: "◻ FROM QR"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 1.5px; vertical-alignment: center; }
+                    }
+                    TouchArea { /* TODO: wire QR scan */ }
+                }
+
+                Rectangle {
+                    width: 110px; height: 34px;
+                    border-width: 1px;
+                    border-color: Theme.hair_bold;
+                    background: transparent;
+                    HorizontalLayout { alignment: center;
+                        Text { text: "CANCEL"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.cancel_clicked(); } }
+                }
+
+                save := Rectangle {
+                    width: 140px; height: 34px;
+                    background: root.parse_error == "" && root.conn_text != "" ? Theme.signal : Theme.signal_dim;
+                    opacity: root.parse_error == "" && root.conn_text != "" ? 1.0 : 0.55;
+                    HorizontalLayout { alignment: center;
+                        Text { text: "▶ SAVE PROFILE"; font-family: Theme.font_display; font-size: 10px; color: Theme.bg; letter-spacing: 1.5px; vertical-alignment: center; }
+                    }
+                    TouchArea {
+                        clicked => {
+                            if (root.parse_error == "" && root.conn_text != "") {
+                                root.save_clicked();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

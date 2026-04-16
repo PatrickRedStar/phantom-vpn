@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -423,32 +424,36 @@ private fun ClientCard(
                     color = C.textDim,
                     style = GsText.valueMono,
                     modifier = Modifier
-                        .padding(horizontal = 4.dp)
-                        .clickable { onSubscription() },
+                        .defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+                        .clickable { onSubscription() }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 )
                 Text(
                     text = "QR",
                     color = C.textDim,
                     style = GsText.labelMono,
                     modifier = Modifier
-                        .padding(horizontal = 6.dp)
-                        .clickable { onCopyConnString() },
+                        .defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+                        .clickable { onCopyConnString() }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 )
                 Text(
                     text = if (client.enabled) "ON" else "OFF",
                     color = if (client.enabled) C.signal else C.textFaint,
                     style = GsText.labelMono,
                     modifier = Modifier
-                        .padding(horizontal = 6.dp)
-                        .clickable { onToggle() },
+                        .defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+                        .clickable { onToggle() }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 )
                 Text(
                     text = "✕",
                     color = C.danger,
                     style = GsText.labelMono,
                     modifier = Modifier
-                        .padding(start = 6.dp)
-                        .clickable { onDelete() },
+                        .defaultMinSize(minWidth = 40.dp, minHeight = 40.dp)
+                        .clickable { onDelete() }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
                 )
             }
         }
