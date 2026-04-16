@@ -54,6 +54,12 @@ public final class ProfilesStore {
         return profiles.first
     }
 
+    /// Returns the profile with the given id, with PEM secrets hydrated from
+    /// the Keychain. Returns nil if no profile with that id exists.
+    public func load(id: String) -> VpnProfile? {
+        profiles.first(where: { $0.id == id })
+    }
+
     // MARK: - Mutations
 
     /// Appends a new profile. If no profile is active, activates it.
