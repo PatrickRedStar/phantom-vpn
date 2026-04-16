@@ -216,11 +216,11 @@ jobs:
             ```
 
             ### Server deployment
-            See `scripts/deploy.sh` or copy binaries to `/opt/phantom-vpn/` and install the
-            `phantom-server.service` systemd unit from `scripts/`.
+            See `server/scripts/deploy.sh` or copy binaries to `/opt/phantom-vpn/` and install the
+            `phantom-server.service` systemd unit from `server/scripts/`.
 
             ### Config
-            See [config examples](config/) in the repository.
+            See [config examples](server/config/) in the repository.
           files: |
             artifacts/phantom-client-linux/phantom-client-linux
             artifacts/phantom-server/phantom-server
