@@ -101,6 +101,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     insecure   = p.optBoolean("insecure", false),
                     certPath   = p.optString("certPath", ""),
                     keyPath    = p.optString("keyPath", ""),
+                    certPem    = p.optString("certPem").takeIf { it.isNotBlank() },
+                    keyPem     = p.optString("keyPem").takeIf { it.isNotBlank() },
                     tunAddr     = p.optString("tunAddr", "10.7.0.2/24"),
                     dnsServers  = p.optString("dnsServers").takeIf { it.isNotBlank() }
                         ?.split(",")?.filter { it.isNotBlank() },
@@ -117,7 +119,52 @@ class ProfilesStore private constructor(private val context: Context) {
                 )
             }
             _activeId.value = obj.optString("activeId").takeIf { it.isNotBlank() }
+
+            // Auto-migrate: read cert/key files into inline PEM if missing
+            var migrated = false
+            _profiles.value = _profiles.value.map { profile ->
+                if (profile.certPem == null && profile.certPath.isNotBlank()) {
+                    val certFile = File(profile.certPath)
+                    val keyFile = File(profile.keyPath)
+                    if (certFile.exists() && keyFile.exists()) {
+                        migrated = true
+                        profile.copy(
+                            certPem = certFile.readText(),
+                            keyPem = keyFile.readText(),
+                        )
+                    } else profile
+                } else profile
+            }
+            if (migrated) save()
         }
+    }
+
+    /**
+     * Ensure cert/key files exist on disk for the given profile.
+     * If files are missing but inline PEM is available, recreate them.
+     * Returns updated profile with correct certPath/keyPath, or null on failure.
+     */
+    fun ensureCertFiles(profile: VpnProfile): VpnProfile? {
+        val certFile = File(profile.certPath)
+        val keyFile = File(profile.keyPath)
+        if (certFile.exists() && keyFile.exists()) return profile
+
+        val certPem = profile.certPem ?: return null
+        val keyPem = profile.keyPem ?: return null
+
+        val profileDir = File(context.filesDir, "profiles/${profile.id}")
+        profileDir.mkdirs()
+        val newCert = File(profileDir, "client.crt")
+        val newKey = File(profileDir, "client.key")
+        newCert.writeText(certPem)
+        newKey.writeText(keyPem)
+
+        val updated = profile.copy(
+            certPath = newCert.absolutePath,
+            keyPath = newKey.absolutePath,
+        )
+        updateProfile(updated)
+        return updated
     }
 
     private fun save() {
@@ -132,6 +179,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     put("insecure", p.insecure)
                     put("certPath", p.certPath)
                     put("keyPath", p.keyPath)
+                    if (p.certPem != null) put("certPem", p.certPem)
+                    if (p.keyPem != null) put("keyPem", p.keyPem)
                     put("tunAddr", p.tunAddr)
                     if (p.dnsServers != null) put("dnsServers", p.dnsServers.joinToString(","))
                     if (p.splitRouting != null) put("splitRouting", p.splitRouting)

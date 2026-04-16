@@ -39,6 +39,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.sp
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsText
@@ -164,6 +166,7 @@ fun GhostBottomNav(
                     Column(
                         modifier = Modifier
                             .weight(1f)
+                            .semantics { contentDescription = entry.label }
                             .clickable(
                                 interactionSource = interactionSource,
                                 indication = null,

@@ -1,0 +1,151 @@
+import { Theme } from "theme.slint";
+
+export struct StreamBar { activity: float, label: string, alive: bool }
+
+export component MuxPanel inherits Rectangle {
+    in property <[StreamBar]> streams;
+    in property <string> meta_text: "8 / 8 UP";
+
+    border-width: 1px;
+    border-color: Theme.hair;
+    background: Theme.bg_elev;
+
+    VerticalLayout {
+        // head
+        Rectangle {
+            height: 38px;
+            Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.hair; }
+            HorizontalLayout {
+                padding-left: 18px; padding-right: 18px;
+                alignment: space-between;
+                Text {
+                    text: "STREAM MULTIPLEX";
+                    font-family: Theme.font_display;
+                    font-size: 10.5px;
+                    color: Theme.text_dim;
+                    letter-spacing: 2.3px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: meta_text;
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // body
+        Rectangle {
+            preferred-height: 150px;
+            HorizontalLayout {
+                padding: 20px;
+                padding-bottom: 35px;  // room for s0..s7 labels
+                spacing: 8px;
+                for s[i] in streams : Rectangle {
+                    horizontal-stretch: 1;
+                    background: transparent;
+                    // baseline
+                    Rectangle {
+                        x: 0; y: parent.height - 1px;
+                        width: parent.width; height: 1px;
+                        background: Theme.hair;
+                    }
+                    // fill bar
+                    Rectangle {
+                        x: 0;
+                        width: parent.width;
+                        height: parent.height * s.activity;
+                        y: parent.height - self.height;
+                        background: s.alive
+                            ? @linear-gradient(180deg, Theme.signal 0%, Theme.signal_dim 100%)
+                            : Theme.hair;
+                        drop-shadow-blur: s.alive ? 12px : 0px;
+                        drop-shadow-color: Theme.signal_dim;
+                        opacity: s.alive ? 1.0 : 0.4;
+                        animate height { duration: 450ms; easing: ease-out; }
+                    }
+                    // label
+                    Text {
+                        x: 0; y: parent.height + 4px;
+                        width: parent.width;
+                        text: s.label;
+                        horizontal-alignment: center;
+                        font-family: Theme.font_display;
+                        font-size: 9px;
+                        color: Theme.text_faint;
+                        letter-spacing: 0.6px;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Session info table
+export struct KvRow { key: string, value: string, accent: bool }
+
+export component SessionPanel inherits Rectangle {
+    in property <[KvRow]> rows;
+    in property <string> fingerprint_short: "mTLS . fp 7f:a3:…";
+
+    border-width: 1px;
+    border-color: Theme.hair;
+    background: Theme.bg_elev;
+
+    VerticalLayout {
+        Rectangle {
+            height: 38px;
+            Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.hair; }
+            HorizontalLayout {
+                padding-left: 18px; padding-right: 18px;
+                alignment: space-between;
+                Text {
+                    text: "SESSION";
+                    font-family: Theme.font_display;
+                    font-size: 10.5px;
+                    color: Theme.text_dim;
+                    letter-spacing: 2.3px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: fingerprint_short;
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        VerticalLayout {
+            padding: 20px;
+            spacing: 0px;
+            for r in rows : Rectangle {
+                height: 30px;
+                Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: Theme.hair; opacity: 0.5; }
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: r.key;
+                        font-family: Theme.font_display;
+                        font-size: 9.5px;
+                        color: Theme.text_faint;
+                        letter-spacing: 1.6px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: r.value;
+                        font-family: Theme.font_mono;
+                        font-size: 11.5px;
+                        color: r.accent ? Theme.signal : Theme.text;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+    }
+}

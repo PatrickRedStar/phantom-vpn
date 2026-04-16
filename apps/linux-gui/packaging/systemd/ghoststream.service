@@ -1,0 +1,12 @@
+[Unit]
+Description=GhostStream VPN GUI (user session)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/ghoststream-gui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

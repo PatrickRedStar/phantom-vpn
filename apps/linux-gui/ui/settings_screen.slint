@@ -1,0 +1,163 @@
+import { Theme } from "theme.slint";
+
+export component Toggle inherits Rectangle {
+    in property <bool> on: false;
+    in property <string> label;
+    in property <string> hint;
+    callback toggled();
+
+    width: 100%;
+    height: 52px;
+    border-width: 1px;
+    border-color: Theme.hair;
+    background: transparent;
+
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 16px;
+        spacing: 16px;
+        alignment: space-between;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text { text: root.label; font-family: Theme.font_mono; font-size: 13px; color: Theme.text; }
+            Text { text: root.hint;  font-family: Theme.font_mono; font-size: 10.5px; color: Theme.text_faint; }
+        }
+        Rectangle {
+            width: 52px; height: 26px;
+            y: (parent.height - self.height) / 2;
+            border-width: 1px;
+            border-color: root.on ? Theme.signal : Theme.hair_bold;
+            background: root.on ? Theme.signal.with-alpha(0.094) : transparent;
+            animate border-color, background { duration: 120ms; easing: ease-in-out; }
+            Rectangle {
+                width: 18px; height: 18px;
+                y: 3px;
+                x: root.on ? parent.width - self.width - 4px : 4px;
+                background: root.on ? Theme.signal : Theme.text_faint;
+                animate x { duration: 120ms; easing: ease-in-out; }
+            }
+            TouchArea { clicked => { root.toggled(); } }
+        }
+    }
+}
+
+export component SettingsScreen inherits Rectangle {
+    in property <bool> is_open: false;
+
+    in-out property <bool> dns_leak_protection: true;
+    in-out property <bool> ipv6_killswitch: true;
+    in-out property <bool> auto_reconnect: true;
+    in-out property <bool> autostart: false;
+    in-out property <bool> start_minimized: false;
+
+    in property <string> autostart_status: ""; // error text if enable/disable fails
+
+    callback close_clicked();
+    callback toggled_dns();
+    callback toggled_ipv6();
+    callback toggled_reconnect();
+    callback toggled_autostart();
+    callback toggled_minimized();
+    callback copy_debug_clicked();
+    callback open_config_dir_clicked();
+
+    visible: is_open;
+
+    Rectangle {
+        background: Theme.overlay;
+        TouchArea { clicked => { root.close_clicked(); } }
+    }
+
+    panel := Rectangle {
+        width: min(620px, parent.width - 40px);
+        height: min(620px, parent.height - 60px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.bg_elev;
+        border-width: 1px;
+        border-color: Theme.hair_bold;
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 26px;
+            spacing: 18px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "SETTINGS"; font-family: Theme.font_display; font-size: 11px; color: Theme.signal; letter-spacing: 2.6px; vertical-alignment: center; }
+                Rectangle {
+                    width: 30px; height: 28px;
+                    border-width: 1px; border-color: Theme.hair_bold;
+                    background: close_ta.has-hover ? Theme.bg_elev_2 : transparent;
+                    HorizontalLayout { alignment: center; Text { text: "⨯"; font-family: Theme.font_display; font-size: 14px; color: close_ta.has-hover ? Theme.text : Theme.text_dim; vertical-alignment: center; } }
+                    close_ta := TouchArea { clicked => { root.close_clicked(); } }
+                }
+            }
+
+            // ─── TUNNEL ──────────────────────────────────────────
+            Text { text: "TUNNEL"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 2.2px; }
+            Toggle {
+                on: root.dns_leak_protection;
+                label: "DNS leak protection";
+                hint: "Force all DNS queries through the VPN tunnel";
+                toggled => { root.toggled_dns(); }
+            }
+            Toggle {
+                on: root.ipv6_killswitch;
+                label: "IPv6 kill switch";
+                hint: "Block IPv6 traffic when connected (avoids v6 leaks)";
+                toggled => { root.toggled_ipv6(); }
+            }
+            Toggle {
+                on: root.auto_reconnect;
+                label: "Auto-reconnect";
+                hint: "Retry on tunnel drop with exponential backoff";
+                toggled => { root.toggled_reconnect(); }
+            }
+
+            // ─── STARTUP ─────────────────────────────────────────
+            Text { text: "STARTUP"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 2.2px; }
+            Toggle {
+                on: root.autostart;
+                label: "Launch on login";
+                hint: "systemctl --user enable ghoststream.service";
+                toggled => { root.toggled_autostart(); }
+            }
+            if root.autostart_status != "" : Text {
+                text: root.autostart_status;
+                color: Theme.warn;
+                font-family: Theme.font_mono;
+                font-size: 10.5px;
+                wrap: word-wrap;
+            }
+            Toggle {
+                on: root.start_minimized;
+                label: "Start minimised to tray";
+                hint: "Hide the window on launch; accessible from the system tray";
+                toggled => { root.toggled_minimized(); }
+            }
+
+            // ─── DIAGNOSTICS ─────────────────────────────────────
+            Text { text: "DIAGNOSTICS"; font-family: Theme.font_display; font-size: 10px; color: Theme.text_faint; letter-spacing: 2.2px; }
+            HorizontalLayout {
+                spacing: 10px;
+                Rectangle {
+                    width: 200px; height: 34px;
+                    border-width: 1px; border-color: Theme.hair_bold;
+                    background: debug_ta.has-hover ? Theme.bg_elev_2 : transparent;
+                    HorizontalLayout { alignment: center; Text { text: "⎘ COPY DEBUG REPORT"; font-family: Theme.font_display; font-size: 10px; color: debug_ta.has-hover ? Theme.text : Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; } }
+                    debug_ta := TouchArea { clicked => { root.copy_debug_clicked(); } }
+                }
+                Rectangle {
+                    width: 180px; height: 34px;
+                    border-width: 1px; border-color: Theme.hair_bold;
+                    background: config_ta.has-hover ? Theme.bg_elev_2 : transparent;
+                    HorizontalLayout { alignment: center; Text { text: "⊕ OPEN CONFIG DIR"; font-family: Theme.font_display; font-size: 10px; color: config_ta.has-hover ? Theme.text : Theme.text_dim; letter-spacing: 1.5px; vertical-alignment: center; } }
+                    config_ta := TouchArea { clicked => { root.open_config_dir_clicked(); } }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}

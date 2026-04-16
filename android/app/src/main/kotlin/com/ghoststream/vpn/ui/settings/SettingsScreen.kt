@@ -465,14 +465,21 @@ fun SettingsScreen(
                     shape = GhostTextFieldShape,
                 )
                 Spacer(Modifier.height(8.dp))
-                val filtered = installedApps
-                    .filter { !it.isSystem }
-                    .filter { searchQuery.isBlank() || it.label.contains(searchQuery, true) || it.packageName.contains(searchQuery, true) }
-                    .sortedByDescending { it.packageName in config.perAppList }
+                val perAppSet = remember(config.perAppList) { config.perAppList.toSet() }
+                val filtered = remember(installedApps, searchQuery, perAppSet) {
+                    installedApps
+                        .filter { !it.isSystem }
+                        .filter { searchQuery.isBlank() || it.label.contains(searchQuery, true) || it.packageName.contains(searchQuery, true) }
+                        .sortedByDescending { it.packageName in perAppSet }
+                }
+                val pm = context.packageManager
                 androidx.compose.foundation.lazy.LazyColumn {
-                    items(filtered.size) { idx ->
+                    items(
+                        count = filtered.size,
+                        key = { filtered[it].packageName },
+                    ) { idx ->
                         val app = filtered[idx]
-                        val selected = app.packageName in config.perAppList
+                        val selected = app.packageName in perAppSet
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -480,23 +487,14 @@ fun SettingsScreen(
                                 .padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            GhostToggle(
-                                checked = selected,
-                                onToggle = { viewModel.togglePerApp(app.packageName) },
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            // App icon
-                            val pm = context.packageManager
+                            // App icon (scaled to 32×32)
                             val iconBitmap = remember(app.packageName) {
                                 runCatching {
                                     val d = pm.getApplicationIcon(app.packageName)
-                                    val bmp = android.graphics.Bitmap.createBitmap(
-                                        d.intrinsicWidth.coerceAtLeast(1),
-                                        d.intrinsicHeight.coerceAtLeast(1),
-                                        android.graphics.Bitmap.Config.ARGB_8888,
-                                    )
+                                    val sz = 32
+                                    val bmp = android.graphics.Bitmap.createBitmap(sz, sz, android.graphics.Bitmap.Config.ARGB_8888)
                                     val canvas = android.graphics.Canvas(bmp)
-                                    d.setBounds(0, 0, canvas.width, canvas.height)
+                                    d.setBounds(0, 0, sz, sz)
                                     d.draw(canvas)
                                     bmp.asImageBitmap()
                                 }.getOrNull()
@@ -513,6 +511,11 @@ fun SettingsScreen(
                                 Text(app.label, style = GsText.kvValue, color = C.bone)
                                 Text(app.packageName, style = GsText.host, color = C.textFaint)
                             }
+                            Spacer(Modifier.width(10.dp))
+                            GhostToggle(
+                                checked = selected,
+                                onToggle = { viewModel.togglePerApp(app.packageName) },
+                            )
                         }
                     }
                 }

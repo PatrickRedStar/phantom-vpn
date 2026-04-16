@@ -1,6 +1,5 @@
 package com.ghoststream.vpn.navigation
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -36,7 +35,6 @@ import com.ghoststream.vpn.ui.settings.SettingsViewModel
 import com.ghoststream.vpn.ui.theme.C
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
@@ -91,7 +89,7 @@ fun AppNavigation() {
             modifier = Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.statusBars),
-            beyondBoundsPageCount = 2,
+            beyondViewportPageCount = 2,
             userScrollEnabled = isOnTabRoute,
         ) { page ->
             when (page) {

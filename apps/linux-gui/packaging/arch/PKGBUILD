@@ -1,0 +1,50 @@
+# Maintainer: GhostStream team
+pkgname=ghoststream
+pkgver=0.19.4
+pkgrel=1
+pkgdesc="GhostStream — anti-DPI VPN client (Slint GUI + privileged helper)"
+arch=('x86_64')
+url="https://github.com/"
+license=('GPL3')
+depends=('fontconfig' 'libxkbcommon' 'polkit' 'iproute2' 'iptables')
+makedepends=('rust' 'cargo')
+# PKGBUILD lives inside the repo (apps/linux-gui/packaging/arch/). We build
+# against the workspace that sits four directories up.
+options=('!strip' '!debug')
+
+_srcroot() { realpath "$startdir/../../../.." ; }
+
+build() {
+    cd "$(_srcroot)"
+    # makepkg injects LDFLAGS="-Wl,--as-needed ..." + LTOFLAGS="-flto=auto"
+    # into the build environment. With `--as-needed`, the linker drops
+    # ring's C/asm static archive (which appears before the rlib referencing
+    # its symbols) and we get hundreds of `undefined reference to
+    # ring_core_*` link errors. Unset both so cargo+rustc use their own
+    # sensible defaults.
+    unset LDFLAGS
+    unset LTOFLAGS
+    unset CFLAGS
+    unset CXXFLAGS
+    # NB: no --locked. Cargo.lock is committed but may need a refresh when
+    # new dependencies are added in this workspace; makepkg's sandbox is
+    # online-capable so let cargo resolve if needed.
+    cargo build --release \
+        -p ghoststream-gui \
+        -p ghoststream-helper
+}
+
+package() {
+    cd "$(_srcroot)"
+    install -Dm755 target/release/ghoststream-gui     "$pkgdir/usr/bin/ghoststream-gui"
+    install -Dm755 target/release/ghoststream-helper  "$pkgdir/usr/bin/ghoststream-helper"
+
+    install -Dm644 apps/linux-gui/packaging/desktop/ghoststream.desktop \
+        "$pkgdir/usr/share/applications/ghoststream.desktop"
+    install -Dm644 apps/linux-gui/packaging/polkit/com.ghoststream.helper.policy \
+        "$pkgdir/usr/share/polkit-1/actions/com.ghoststream.helper.policy"
+    install -Dm644 apps/linux-gui/assets/icons/ghoststream.png \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/ghoststream.png"
+    install -Dm644 apps/linux-gui/packaging/systemd/ghoststream.service \
+        "$pkgdir/usr/lib/systemd/user/ghoststream.service"
+}

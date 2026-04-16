@@ -190,11 +190,24 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun dismissPreflightWarning() { _preflightWarning.value = null }
 
     fun startVpn() {
-        val cfg = config.value
+        var cfg = config.value
         if (cfg.serverAddr.isBlank()) return
 
-        val profile = profilesStore.getActiveProfile()
+        var profile = profilesStore.getActiveProfile()
         if (profile != null) {
+            // Restore cert files from inline PEM if they were deleted (e.g. app update)
+            val certExists = java.io.File(profile.certPath).exists()
+            val keyExists = java.io.File(profile.keyPath).exists()
+            if (!certExists || !keyExists) {
+                val restored = profilesStore.ensureCertFiles(profile)
+                if (restored == null) {
+                    _preflightWarning.value = "Сертификаты профиля утеряны. Импортируйте строку подключения заново."
+                    VpnStateManager.update(VpnState.Error("Сертификаты не найдены"))
+                    return
+                }
+                profile = restored
+                cfg = cfg.copy(certPath = restored.certPath, keyPath = restored.keyPath)
+            }
             val cachedExp = profile.cachedExpiresAt
             if (cachedExp != null && cachedExp > 0) {
                 val remaining = cachedExp - (System.currentTimeMillis() / 1000)

@@ -444,12 +444,17 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         buf.iter()
             .filter(|e| (e.seq as i64) > since_seq)
             .map(|e| {
-                let secs = e.ts_secs % 86400;
+                let (h, m, s) = {
+                    let epoch = e.ts_secs as libc::time_t;
+                    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+                    unsafe { libc::localtime_r(&epoch, &mut tm) };
+                    (tm.tm_hour as u64, tm.tm_min as u64, tm.tm_sec as u64)
+                };
                 let escaped_msg = serde_json::to_string(&e.msg).unwrap_or_else(|_| "\"\"".to_string());
                 format!(
                     r#"{{"seq":{},"ts":"{:02}:{:02}:{:02}","level":"{}","msg":{}}}"#,
                     e.seq,
-                    secs / 3600, (secs % 3600) / 60, secs % 60,
+                    h, m, s,
                     e.level,
                     escaped_msg,
                 )

@@ -78,14 +78,18 @@ class AdminViewModel : ViewModel() {
         profilesStore = store
         profileId = profile.id
         baseUrl = "https://${gatewayOf(profile.tunAddr)}:8080"
-        val outcome = AdminHttpClient.build(
-            certPemPath = profile.certPath,
-            keyPemPath = profile.keyPath,
-            pinnedFp = profile.cachedAdminServerCertFp,
-        )
-        http = outcome.client
-        fpRef = outcome.serverCertFpRef
-        refresh()
+        try {
+            val outcome = AdminHttpClient.build(
+                certPemPath = profile.certPath,
+                keyPemPath = profile.keyPath,
+                pinnedFp = profile.cachedAdminServerCertFp,
+            )
+            http = outcome.client
+            fpRef = outcome.serverCertFpRef
+            refresh()
+        } catch (e: Exception) {
+            _error.value = "Ошибка инициализации mTLS: ${e.message}"
+        }
     }
 
     private fun gatewayOf(tunCidr: String): String {
