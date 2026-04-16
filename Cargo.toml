@@ -1,16 +1,19 @@
 [workspace]
 members = [
+    # Shared libraries
     "crates/core",
-    "crates/server",
     "crates/client-common",
-    "crates/client-linux",
     "crates/client-android",
     "crates/client-apple",
-    "crates/client-openwrt",
-    "crates/relay",
     "crates/gui-ipc",
-    "apps/linux-gui",
-    "apps/linux-gui-helper",
+    # Server
+    "server/server",
+    "server/relay",
+    # Apps
+    "apps/linux/cli",
+    "apps/linux/gui",
+    "apps/linux/helper",
+    "apps/openwrt/client",
 ]
 resolver = "2"
 

@@ -85,7 +85,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
 
-val cargoWorkspaceDir = file("${rootProject.rootDir}/..")
+val cargoWorkspaceDir = file("${rootProject.rootDir}/../..")
 
 tasks.register<Exec>("buildRustAndroid") {
     description = "Build Rust JNI library for Android arm64-v8a"

@@ -8,8 +8,8 @@ name = "ghoststream"
 path = "src/main.rs"
 
 [dependencies]
-phantom-core          = { path = "../core", default-features = false }
-phantom-client-common = { path = "../client-common" }
+phantom-core          = { path = "../../../crates/core", default-features = false }
+phantom-client-common = { path = "../../../crates/client-common" }
 tokio                 = { version = "1", features = ["full"] }
 tracing               = "0.1"
 tracing-subscriber    = { version = "0.3", features = ["env-filter"] }
