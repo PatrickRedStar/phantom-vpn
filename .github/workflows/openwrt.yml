@@ -114,7 +114,7 @@ jobs:
           cp apps/openwrt/proto/ghoststream.sh release-files/
           cp apps/openwrt/luci/htdocs/luci-static/resources/protocol/ghoststream.js release-files/
           cp apps/openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json release-files/
-          cp ghoststream-install.sh release-files/
+          cp apps/openwrt/ghoststream-install.sh release-files/
 
       - name: Create/Update Release
         uses: softprops/action-gh-release@v2

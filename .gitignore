@@ -7,6 +7,7 @@
 
 # Rust build artifacts
 target/
+.cargo/
 
 # Python artifacts
 __pycache__/
