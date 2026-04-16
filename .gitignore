@@ -17,8 +17,8 @@ __pycache__/
 .env.*
 
 # Runtime/local client configs (keep template instead)
-config/client.toml
-config/clients.json
+server/config/client.toml
+server/config/clients.json
 
 # Optional local overrides
 *.local.toml
