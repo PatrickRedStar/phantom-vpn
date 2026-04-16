@@ -20,6 +20,7 @@ libc        = "0.2"
 nix         = { version = "0.29", features = ["user", "fs"] }
 rustls      = { version = "0.23", default-features = false, features = ["ring"] }
 
-client_common   = { package = "phantom-client-common", path = "../../../crates/client-common" }
-phantom_core    = { package = "phantom-core",           path = "../../../crates/core" }
+client_common       = { package = "phantom-client-common", path = "../../../crates/client-common" }
+phantom_core        = { package = "phantom-core",           path = "../../../crates/core" }
 ghoststream-gui-ipc = { path = "../../../crates/gui-ipc" }
+client_core_runtime = { package = "client-core-runtime",    path = "../../../crates/client-core-runtime" }

@@ -12,14 +12,9 @@ mod linux {
     use anyhow::Context;
     use clap::Parser;
     use tokio::signal;
-    use tokio::sync::watch;
 
-    use bytes::Bytes;
     use client_common::helpers::{self, Args};
-    use client_common::{tls_connect, tls_rx_loop, tls_tx_loop, write_handshake};
-    use phantom_core::config::ClientConfig;
-    use phantom_core::wire::{flow_stream_idx, n_data_streams};
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use client_core_runtime::{ConnectProfile, TunIo, TunnelSettings};
 
     const TUNSETIFF:  libc::c_ulong = 0x400454CA;
     const IFF_TUN:    libc::c_short = 0x0001;
@@ -219,19 +214,6 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TunnelExit {
-    Shutdown,
-    TunnelDied,
-}
-
-async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
-    if *shutdown_rx.borrow() {
-        return;
-    }
-    let _ = shutdown_rx.changed().await;
-}
-
 // ─── Main ────────────────────────────────────────────────────────────────────
 
     #[tokio::main]
@@ -245,244 +227,122 @@ async fn wait_for_shutdown(shutdown_rx: &mut watch::Receiver<bool>) {
         helpers::init_logging(args.verbose);
         tracing::info!("PhantomVPN Linux Client starting...");
 
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        // Load config: --conn-string overrides TOML config file
+        let cfg = if let Some(cs_cfg) = helpers::load_conn_string(&args)? {
+            tracing::info!("Config loaded from connection string");
+            cs_cfg
+        } else {
+            helpers::load_config(&args.config)?
+        };
 
-        // Register signals early
-        tokio::spawn(async move {
-            let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
-            let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
-            tokio::select! {
-                _ = sigint.recv() => { tracing::info!("Received SIGINT. Initiating shutdown..."); }
-                _ = sigterm.recv() => { tracing::info!("Received SIGTERM. Initiating shutdown..."); }
-            }
-            let _ = shutdown_tx.send(true);
-        });
+        let raw_addr = if let Some(ref sa) = args.server {
+            sa.clone()
+        } else {
+            cfg.network.server_addr.clone()
+        };
+        let raw_addr = client_common::with_default_port(&raw_addr, 443);
+        let server_addr: SocketAddr = if let Ok(addr) = raw_addr.parse() {
+            addr
+        } else {
+            tracing::info!("Resolving DNS for {}", raw_addr);
+            tokio::net::lookup_host(&raw_addr).await
+                .context("DNS lookup failed")?
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", raw_addr))?
+        };
+        tracing::info!("Server address: {}", server_addr);
 
-    // Load config: --conn-string overrides TOML config file
-    let cfg = if let Some(cs_cfg) = helpers::load_conn_string(&args)? {
-        tracing::info!("Config loaded from connection string");
-        cs_cfg
-    } else {
-        helpers::load_config(&args.config)?
-    };
+        let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
+        let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
+        let tun_mtu  = cfg.network.tun_mtu.unwrap_or(1350);
 
-    let raw_addr = if let Some(ref sa) = args.server {
-        sa.clone()
-    } else {
-        cfg.network.server_addr.clone()
-    };
-    // Defensive: tolerate bare hostnames in server_addr (user-editable in
-    // UI / conn string). `lookup_host` rejects them as "invalid socket
-    // address". See client_common::with_default_port.
-    let raw_addr = client_common::with_default_port(&raw_addr, 443);
-    let server_addr: SocketAddr = if let Ok(addr) = raw_addr.parse() {
-        addr
-    } else {
-        tracing::info!("Resolving DNS for {}", raw_addr);
-        tokio::net::lookup_host(&raw_addr).await
-            .context("DNS lookup failed")?
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", raw_addr))?
-    };
-    tracing::info!("Server address: {}", server_addr);
+        tracing::info!("Creating TUN interface {}...", tun_name);
+        let tun_file = create_tun(tun_name, tun_addr, tun_mtu)?;
+        let tun_fd = tun_file.as_raw_fd();
+        std::mem::forget(tun_file);
 
-    // Load mTLS client identity (cert + key) — inline PEM or file path
-    let client_identity = helpers::load_tls_identity(&cfg)?;
-
-    // Load server CA cert — inline PEM or file path
-    let server_ca = helpers::load_server_ca(&cfg)?;
-
-    let skip_verify = cfg.network.insecure;
-    if !skip_verify && server_ca.is_none() {
-        anyhow::bail!("No CA certificate provided and insecure=false. Set insecure=true or provide ca_cert_path.");
-    }
-
-    tracing::info!("Using transport: h2");
-
-    let exit = run_tls_tunnel(cfg, server_addr, skip_verify, server_ca, client_identity, shutdown_rx).await?;
-
-    match exit {
-        TunnelExit::Shutdown => tracing::info!("Client shutdown complete."),
-        TunnelExit::TunnelDied => tracing::warn!("Tunnel exited without shutdown signal."),
-    }
-
-    Ok(())
-}
-
-/// Raw TLS tunnel implementation
-async fn run_tls_tunnel(
-    cfg: ClientConfig,
-    server_addr: SocketAddr,
-    skip_verify: bool,
-    server_ca: Option<Vec<CertificateDer<'static>>>,
-    client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    mut shutdown_rx: watch::Receiver<bool>,
-) -> anyhow::Result<TunnelExit> {
-    if *shutdown_rx.borrow() {
-        return Ok(TunnelExit::Shutdown);
-    }
-
-    let client_config = phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
-        .context("Failed to build TLS client config")?;
-    let n_streams = n_data_streams();
-
-    let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom").to_string();
-
-    // Open N parallel TLS streams; each sends a 2-byte handshake [stream_idx, max_streams].
-    let mut tls_writers = Vec::with_capacity(n_streams);
-    let mut tls_readers = Vec::with_capacity(n_streams);
-    for idx in 0..n_streams {
-        let (r, mut w) = tls_connect(server_addr, server_name.clone(), client_config.clone())
-            .await
-            .with_context(|| format!("stream {}: TLS connect failed", idx))?;
-        write_handshake(&mut w, idx as u8, n_streams as u8)
-            .await
-            .with_context(|| format!("stream {}: write_handshake failed", idx))?;
-        tracing::info!("Stream {}: connected", idx);
-        tls_readers.push(r);
-        tls_writers.push(w);
-    }
-
-    tracing::info!("All {} TLS streams up", n_streams);
-
-    // ─── TUN interface ───────────────────────────────────────────────────
-    let tun_name = cfg.network.tun_name.as_deref().unwrap_or("tun0");
-    let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
-    let tun_mtu  = cfg.network.tun_mtu.unwrap_or(1350);
-
-    tracing::info!("Creating TUN interface {}...", tun_name);
-    let tun_file = create_tun(tun_name, tun_addr, tun_mtu)?;
-    let tun_fd = tun_file.as_raw_fd();
-    std::mem::forget(tun_file);
-
-    // Default route
-    let _cleanup_guard = if cfg.network.default_gw.is_some() {
-        match add_default_route(tun_name, &server_addr) {
-            Ok(guard) => Some(guard),
-            Err(e) => {
-                tracing::warn!("Route setup failed: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // ─── io_uring TUN I/O ────────────────────────────────────────────────
-    // tun_uring speaks `Bytes`, so we pipe straight through with no copies.
-    let (mut tun_pkt_rx, tun_pkt_tx) =
-        phantom_core::tun_uring::spawn(tun_fd, 4096)
-            .context("Failed to start io_uring TUN handler")?;
-    tracing::info!("io_uring TUN handler started");
-
-    // Per-stream TX channels.
-    let mut tx_senders: Vec<tokio::sync::mpsc::Sender<Bytes>> = Vec::with_capacity(n_streams);
-    let mut tx_receivers: Vec<tokio::sync::mpsc::Receiver<Bytes>> = Vec::with_capacity(n_streams);
-    for _ in 0..n_streams {
-        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(2048);
-        tx_senders.push(tx);
-        tx_receivers.push(rx);
-    }
-
-    // Single sink for RX: all N rx loops push Bytes here; a forwarder task
-    // converts them back to Vec<u8> for the io_uring TUN writer.
-    let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
-
-    // Dispatcher: tun_uring reader → per-stream channel via flow hash.
-    //
-    // IMPORTANT: `try_send` — not `send().await`. Per-stream pinning means a
-    // single slow TLS stream would cross-stall every flow (HoL blocking across
-    // independent streams). Matches server's `tun_dispatch_loop` — drop-on-full
-    // and let TCP retransmit sort the slow stream out.
-    let tx_senders_clone = tx_senders.clone();
-    let n_streams_dispatch = n_streams;
-    tokio::spawn(async move {
-        let mut drop_full: u64 = 0;
-        let mut drop_closed: u64 = 0;
-        while let Some(pkt) = tun_pkt_rx.recv().await {
-            let idx = flow_stream_idx(&pkt, n_streams_dispatch);
-            match tx_senders_clone[idx].try_send(pkt) {
-                Ok(()) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    drop_full += 1;
-                    if drop_full == 1 || drop_full % 1024 == 0 {
-                        tracing::warn!(
-                            "dispatcher: stream {} full (dropped_full={})",
-                            idx, drop_full
-                        );
-                    }
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    drop_closed += 1;
-                    tracing::warn!(
-                        "dispatcher: stream {} closed (dropped_closed={}), exiting",
-                        idx, drop_closed
-                    );
-                    return;
+        // Default route
+        let _cleanup_guard = if cfg.network.default_gw.is_some() {
+            match add_default_route(tun_name, &server_addr) {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    tracing::warn!("Route setup failed: {}", e);
+                    None
                 }
             }
-        }
-    });
-    drop(tx_senders);
+        } else {
+            None
+        };
 
-    // RX forwarder: Bytes sink → tun_uring writer.
-    let tun_write_tx = tun_pkt_tx.clone();
-    tokio::spawn(async move {
-        while let Some(pkt) = rx_sink_rx.recv().await {
-            if tun_write_tx.send(pkt).await.is_err() {
-                return;
+        // Build ConnectProfile from the parsed ClientConfig.
+        // Reconstruct conn_string from args (it was already loaded from args/file).
+        let conn_string = if let Some(ref cs) = args.conn_string {
+            cs.clone()
+        } else if let Some(ref csf) = args.conn_string_file {
+            std::fs::read_to_string(csf)
+                .context("read conn_string_file")?
+                .trim()
+                .to_string()
+        } else {
+            // Config was loaded from TOML — reconstruct a minimal conn_string or
+            // pass the raw server_addr. Since parse_conn_string is required by the
+            // runtime, build a ghs:// URL here if possible. For TOML configs that
+            // pre-date conn_string, fall back to passing cfg directly via a
+            // helper that builds the profile from ClientConfig fields.
+            anyhow::bail!(
+                "TOML-file configs are not yet supported with client-core-runtime; \
+                 use --conn-string or --conn-string-file"
+            )
+        };
+
+        let settings = TunnelSettings {
+            auto_reconnect: false, // CLI: single attempt, user retries manually
+            ..TunnelSettings::default()
+        };
+
+        let profile = ConnectProfile {
+            name: "cli".to_string(),
+            conn_string,
+            settings,
+        };
+
+        let (status_tx, _status_rx) = tokio::sync::watch::channel(
+            client_core_runtime::StatusFrame::default()
+        );
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
+
+        tracing::info!("Starting tunnel via client-core-runtime...");
+        let (handles, join_handle) = client_core_runtime::run(
+            profile,
+            TunIo::Uring(tun_fd),
+            status_tx,
+            log_tx,
+        ).await.context("client_core_runtime::run")?;
+
+        // Wait for SIGINT/SIGTERM to cancel, or for the tunnel to die.
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
+        tokio::pin!(join_handle);
+        tokio::select! {
+            _ = sigint.recv() => {
+                tracing::info!("Received SIGINT. Initiating shutdown...");
+                handles.cancel.notify_waiters();
+                let _ = join_handle.await;
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM. Initiating shutdown...");
+                handles.cancel.notify_waiters();
+                let _ = join_handle.await;
+            }
+            res = &mut join_handle => {
+                tracing::warn!("Tunnel exited: {:?}", res);
             }
         }
-    });
-    drop(tun_pkt_tx);
 
-    // N TX + N RX tasks.
-    let mut tx_handles = Vec::with_capacity(n_streams);
-    let mut rx_handles = Vec::with_capacity(n_streams);
-    for (idx, (w, rxc)) in tls_writers.into_iter().zip(tx_receivers.into_iter()).enumerate() {
-        tx_handles.push(tokio::spawn(async move {
-            let res = tls_tx_loop(w, rxc).await;
-            tracing::warn!("stream {}: tx loop ended: {:?}", idx, res);
-            res
-        }));
+        drop(_cleanup_guard);
+        tracing::info!("Client shutdown complete.");
+        Ok(())
     }
-    for (idx, r) in tls_readers.into_iter().enumerate() {
-        let sink = rx_sink_tx.clone();
-        rx_handles.push(tokio::spawn(async move {
-            let res = tls_rx_loop(r, sink).await;
-            tracing::warn!("stream {}: rx loop ended: {:?}", idx, res);
-            res
-        }));
-    }
-    drop(rx_sink_tx);
-
-    tracing::info!("Tunnel active. Press Ctrl-C to exit.");
-
-    tokio::select! {
-        _ = wait_for_shutdown(&mut shutdown_rx) => {
-            tracing::info!("Shutdown signal received.");
-            for h in tx_handles { h.abort(); }
-            for h in rx_handles { h.abort(); }
-            drop(_cleanup_guard);
-            return Ok(TunnelExit::Shutdown);
-        }
-        _ = async {
-            for h in &mut tx_handles { let _ = h.await; }
-        } => {
-            tracing::warn!("All TX loops exited.");
-        }
-        _ = async {
-            for h in &mut rx_handles { let _ = h.await; }
-        } => {
-            tracing::warn!("All RX loops exited.");
-        }
-    }
-
-    drop(_cleanup_guard);
-    tracing::info!("Tunnel died, exiting for restart.");
-
-    Ok(TunnelExit::TunnelDied)
-}
 
 }
 
