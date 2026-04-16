@@ -40,3 +40,4 @@ apps/android/local.properties
 .idea/
 .codex/
 .gstack/
+.worktrees/
