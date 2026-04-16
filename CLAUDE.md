@@ -63,7 +63,7 @@ ghoststream/
 
 > **Claude Code запущен прямо на сервере vdsina (89.110.109.128).**
 > `cargo` установлен локально — сборка server/linux/android выполняется напрямую.
-> APK собирается тоже на сервере через `gradlew` (JDK 17: `/usr/lib/jvm/java-17-openjdk`).
+> APK собирается на домашнем ПК через SSH тунель (см. memory/reference_apk_build.md).
 > SSH ключ для всех удалённых хостов: `~/.ssh/bot` (алиасы в `~/.ssh/config`).
 
 ### Хосты
@@ -154,7 +154,8 @@ buildConfigField("String", "GIT_TAG", "\"vX.Y.Z\"")
 | v0.19.2 | 51 |
 | v0.19.3 | 52 |
 | v0.19.4 | 53 |
-| **v0.20.0** | **54** ← текущий |
+| v0.20.0 | 54 |
+| **v0.21.0** | **55** ← текущий |
 
 После обновления `build.gradle.kts`:
 ```bash
