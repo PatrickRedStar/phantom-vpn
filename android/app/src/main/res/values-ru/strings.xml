@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ghoststream</string>
+
+    <string name="brand_stream">Ghoststream</string>
+    <string name="brand_tail">Журнал</string>
+    <string name="brand_settings">Настройки</string>
+    <string name="brand_control">Контроль</string>
+    <string name="brand_intake">Приём</string>
+
+    <string name="nav_stream">Поток</string>
+    <string name="nav_logs">Журнал</string>
+    <string name="nav_admin">Админ</string>
+    <string name="nav_settings">Настройки</string>
+
+    <string name="lbl_tunnel_state">Состояние туннеля</string>
+    <string name="state_transmitting_verb">Передача</string>
+    <string name="state_standby_verb">Покой</string>
+    <string name="state_tuning_verb">Настройка</string>
+    <string name="state_lost_verb">Сигнал</string>
+    <string name="state_signal_word">потерян</string>
+    <string name="state_period">.</string>
+    <string name="state_ellipsis">…</string>
+    <string name="lbl_session">Сессия</string>
+    <string name="lbl_stream_multiplex">Мультиплекс потоков</string>
+    <string name="lbl_streams_up">%1$d / %2$d up</string>
+    <string name="kv_identity">Личность</string>
+    <string name="kv_assigned">Выдан</string>
+    <string name="kv_subscription">Подписка</string>
+    <string name="kv_value_dash">—</string>
+    <string name="kv_value_perpetual">бессрочно</string>
+    <string name="kv_value_expired">истекла</string>
+    <string name="action_disconnect">Отключить</string>
+    <string name="action_connect">Подключить</string>
+    <string name="action_retry">Повторить</string>
+    <string name="unit_mbps">Мб/с</string>
+    <string name="scope_window">60с</string>
+    <string name="hdr_meta_live">онлайн</string>
+    <string name="hdr_meta_lines">%1$s строк</string>
+
+    <string name="chip_all">Все</string>
+    <string name="chip_trace">Trace</string>
+    <string name="chip_debug">Debug</string>
+    <string name="chip_info">Info</string>
+    <string name="chip_warn">Warn</string>
+    <string name="chip_error">Error</string>
+    <string name="chip_share">Отправить</string>
+    <string name="action_copy_all">Скопировать</string>
+    <string name="action_clear">Очистить</string>
+
+    <string name="set_endpoints">Эндпоинты</string>
+    <string name="set_routing">Маршрутизация</string>
+    <string name="set_appearance">Внешний вид</string>
+    <string name="set_diagnostic">Диагностика</string>
+    <string name="set_misc">О приложении</string>
+
+    <string name="row_dns">DNS</string>
+    <string name="row_split_tunnel">Раздельный туннель</string>
+    <string name="row_per_app">По приложениям</string>
+    <string name="row_always_on">Всегда включён</string>
+    <string name="row_language">Язык</string>
+    <string name="row_theme">Тема</string>
+    <string name="row_log_level">Уровень логов</string>
+    <string name="row_share_debug">Отладочный отчёт</string>
+    <string name="row_insecure">Не проверять сертификат</string>
+
+    <string name="sub_dns_custom">Свои</string>
+    <string name="sub_split_bypass">В обход: %1$d CIDR</string>
+    <string name="sub_per_app_excluded">%1$d прил. исключено</string>
+    <string name="sub_always_on">Подключаться при загрузке</string>
+    <string name="sub_interface_locale">Язык интерфейса</string>
+    <string name="sub_theme_descr">Phosphor · тёплый чёрный</string>
+    <string name="sub_log_level_descr">Кольцевой буфер · 10 МБ</string>
+    <string name="sub_debug_descr">конфиг + последние 500 строк</string>
+
+    <string name="value_custom">Свои</string>
+    <string name="value_system">Системная</string>
+    <string name="value_export">▸ Экспорт</string>
+    <string name="value_edit">Изменить</string>
+    <string name="edit_profile_title">Редактировать профиль</string>
+    <string name="edit_profile_name_hint">Отображаемое имя</string>
+    <string name="confirm_delete">Удалить этот профиль? Отменить нельзя.</string>
+
+    <!-- Per-app picker -->
+    <string name="perapp_mode_exclude">Исключить</string>
+    <string name="perapp_mode_only">Только VPN</string>
+    <string name="perapp_search_hint">Поиск приложений…</string>
+
+    <!-- DNS picker -->
+    <string name="dns_custom_hint">Свои DNS (через запятую)</string>
+
+    <!-- Split-tunnel -->
+    <string name="split_title">Раздельный туннель</string>
+    <string name="split_mode_all">Всё через VPN</string>
+    <string name="split_mode_bypass">Обход списков</string>
+    <string name="split_download_all">Скачать все</string>
+    <string name="split_cidrs">%1$d CIDR</string>
+    <string name="split_download">Скачать</string>
+    <string name="split_downloaded">Загружен</string>
+    <string name="split_preview">Просмотр</string>
+
+    <string name="tag_active">Активен</string>
+    <string name="tag_standby">Ожидает</string>
+    <string name="tag_admin">Админ</string>
+    <string name="tag_live">онлайн</string>
+    <string name="tag_idle">простой</string>
+    <string name="tag_off">выкл</string>
+    <string name="tag_exp_days_left">%1$d дн.</string>
+
+    <string name="profile_add_cta">+ Сканировать QR · Вставить ghs://…</string>
+    <string name="action_ping_all">Ping всех</string>
+    <string name="action_paste">Вставить</string>
+    <string name="action_qr">QR</string>
+    <string name="action_save">Сохранить</string>
+    <string name="action_cancel">Отмена</string>
+    <string name="action_close">Закрыть</string>
+    <string name="action_delete">Удалить</string>
+    <string name="action_rename">Переименовать</string>
+    <string name="action_make_active">Сделать активным</string>
+    <string name="action_admin_panel">Админ-панель</string>
+    <string name="action_share_to_tv">Отправить на TV</string>
+    <string name="action_get_from_phone">Получить с телефона</string>
+    <string name="action_add">Добавить</string>
+
+    <string name="admin_uptime">Аптайм</string>
+    <string name="admin_sessions">Сессии</string>
+    <string name="admin_egress">Egress</string>
+    <string name="admin_clients_count">Клиенты · %1$d</string>
+    <string name="admin_new_client">+ Новый клиент</string>
+    <string name="admin_mtls_you">mTLS · вы</string>
+    <string name="admin_error_banner">Admin API доступен только через VPN-туннель. Подключитесь и повторите.</string>
+    <string name="admin_delete_title">Удалить клиента</string>
+    <string name="admin_delete_msg">Удалить «%1$s»? Отменить нельзя.</string>
+    <string name="admin_disable_title">Отключить клиента?</string>
+    <string name="admin_enable_title">Включить клиента?</string>
+    <string name="admin_will_disable">«%1$s» будет отключён.</string>
+    <string name="admin_will_enable">«%1$s» будет включён.</string>
+    <string name="admin_action_disable">Отключить</string>
+    <string name="admin_action_enable">Включить</string>
+    <string name="admin_add_title">Новый клиент</string>
+    <string name="admin_add_name_hint">Имя (a-z, 0-9, -)</string>
+    <string name="admin_add_days_hint">Дней подписки (пусто = бессрочно)</string>
+    <string name="admin_action_create">Создать</string>
+    <string name="admin_traffic_title">Трафик за последний час</string>
+    <string name="admin_no_data">Нет данных</string>
+    <string name="admin_recent_dest">Последние адреса · %1$d</string>
+    <string name="admin_sub_title">Подписка · %1$s</string>
+    <string name="admin_sub_expired">Истекла</string>
+    <string name="admin_sub_today">Истекает сегодня</string>
+    <string name="admin_sub_active">Активна · %1$d дн.</string>
+    <string name="admin_sub_perpetual">Бессрочно</string>
+    <string name="admin_sub_days_hint">Дней</string>
+    <string name="admin_sub_set">Задать</string>
+    <string name="admin_sub_revoke">Отозвать</string>
+    <string name="admin_conn_title">Строка подключения</string>
+    <string name="admin_action_copy">Скопировать</string>
+    <string name="admin_retry">▸ повторить</string>
+
+    <string name="qr_hint_main">Наведи на код.</string>
+    <string name="qr_hint_sub">ghs:// строка подключения</string>
+    <string name="qr_paste_cta">Или вставить из буфера · </string>
+    <string name="qr_paste_tap">нажми</string>
+    <string name="qr_close">✕ закрыть</string>
+    <string name="qr_permission">Разреши доступ к камере</string>
+
+    <string name="connect_state_disconnected">Отключён</string>
+    <string name="connect_state_connecting">Подключение…</string>
+    <string name="connect_state_connected">Подключён</string>
+    <string name="connect_state_error">Ошибка: %1$s</string>
+    <string name="connect_state_disconnecting">Отключение…</string>
+
+    <string name="no_profiles">Нет профилей. Добавьте подключение.</string>
+    <string name="add_profile_title">Добавить подключение</string>
+    <string name="add_profile_name_hint">Название (необязательно)</string>
+    <string name="add_profile_conn_hint">Строка подключения (ghs://…)</string>
+    <string name="version_fmt">v%1$s · %2$s</string>
+</resources>

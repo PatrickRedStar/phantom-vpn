@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ghoststream</string>
+
+    <!-- Brand / sections -->
+    <string name="brand_stream">Ghoststream</string>
+    <string name="brand_tail">Tail</string>
+    <string name="brand_settings">Settings</string>
+    <string name="brand_control">Control</string>
+    <string name="brand_intake">Intake</string>
+
+    <!-- Nav -->
+    <string name="nav_stream">Stream</string>
+    <string name="nav_logs">Logs</string>
+    <string name="nav_admin">Admin</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Dashboard -->
+    <string name="lbl_tunnel_state">Tunnel state</string>
+    <string name="state_transmitting_verb">Transmitting</string>
+    <string name="state_standby_verb">Standby</string>
+    <string name="state_tuning_verb">Tuning</string>
+    <string name="state_lost_verb">Lost</string>
+    <string name="state_signal_word">signal</string>
+    <string name="state_period">.</string>
+    <string name="state_ellipsis">…</string>
+    <string name="lbl_session">Session</string>
+    <string name="lbl_stream_multiplex">Stream multiplex</string>
+    <string name="lbl_streams_up">%1$d / %2$d up</string>
+    <string name="kv_identity">Identity</string>
+    <string name="kv_assigned">Assigned</string>
+    <string name="kv_subscription">Subscription</string>
+    <string name="kv_value_dash">—</string>
+    <string name="kv_value_perpetual">perpetual</string>
+    <string name="kv_value_expired">expired</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_retry">Retry</string>
+    <string name="unit_mbps">Mb/s</string>
+    <string name="scope_window">60s</string>
+    <string name="hdr_meta_live">live</string>
+    <string name="hdr_meta_lines">%1$s lines</string>
+
+    <!-- Logs -->
+    <string name="chip_all">All</string>
+    <string name="chip_trace">Trace</string>
+    <string name="chip_debug">Debug</string>
+    <string name="chip_info">Info</string>
+    <string name="chip_warn">Warn</string>
+    <string name="chip_error">Error</string>
+    <string name="chip_share">Share</string>
+    <string name="action_copy_all">Copy all</string>
+    <string name="action_clear">Clear</string>
+
+    <!-- Settings -->
+    <string name="set_endpoints">Endpoints</string>
+    <string name="set_routing">Routing</string>
+    <string name="set_appearance">Appearance</string>
+    <string name="set_diagnostic">Diagnostic</string>
+    <string name="set_misc">About</string>
+
+    <string name="row_dns">DNS</string>
+    <string name="row_split_tunnel">Split-tunnel</string>
+    <string name="row_per_app">Per-app</string>
+    <string name="row_always_on">Always-on</string>
+    <string name="row_language">Language</string>
+    <string name="row_theme">Theme</string>
+    <string name="row_log_level">Log level</string>
+    <string name="row_share_debug">Share debug report</string>
+    <string name="row_insecure">Skip server cert check</string>
+
+    <string name="sub_dns_custom">Custom</string>
+    <string name="sub_split_bypass">Bypass %1$d CIDRs</string>
+    <string name="sub_per_app_excluded">%1$d apps excluded</string>
+    <string name="sub_always_on">Reconnect on boot</string>
+    <string name="sub_interface_locale">Interface locale</string>
+    <string name="sub_theme_descr">Phosphor · warm black</string>
+    <string name="sub_log_level_descr">Ring buffer · 10 MB</string>
+    <string name="sub_debug_descr">config + last 500 log lines</string>
+
+    <string name="value_custom">Custom</string>
+    <string name="value_system">System</string>
+    <string name="value_export">▸ Export</string>
+    <string name="value_edit">Edit</string>
+    <string name="edit_profile_title">Edit profile</string>
+    <string name="edit_profile_name_hint">Display name</string>
+    <string name="confirm_delete">Delete this profile? This cannot be undone.</string>
+
+    <!-- Per-app picker -->
+    <string name="perapp_mode_exclude">Exclude</string>
+    <string name="perapp_mode_only">Only VPN</string>
+    <string name="perapp_search_hint">Search apps…</string>
+
+    <!-- DNS picker -->
+    <string name="dns_custom_hint">Custom DNS (comma-separated)</string>
+
+    <!-- Split-tunnel -->
+    <string name="split_title">Split-tunnel</string>
+    <string name="split_mode_all">All via VPN</string>
+    <string name="split_mode_bypass">Bypass lists</string>
+    <string name="split_download_all">Download all</string>
+    <string name="split_cidrs">%1$d CIDRs</string>
+    <string name="split_download">Download</string>
+    <string name="split_downloaded">Downloaded</string>
+    <string name="split_preview">Preview</string>
+
+    <string name="tag_active">Active</string>
+    <string name="tag_standby">Standby</string>
+    <string name="tag_admin">Admin</string>
+    <string name="tag_live">live</string>
+    <string name="tag_idle">idle</string>
+    <string name="tag_off">off</string>
+    <string name="tag_exp_days_left">%1$d d left</string>
+
+    <string name="profile_add_cta">+ Scan QR · Paste ghs://…</string>
+    <string name="action_ping_all">Ping all</string>
+    <string name="action_paste">Paste</string>
+    <string name="action_qr">QR</string>
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_close">Close</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_rename">Rename</string>
+    <string name="action_make_active">Make active</string>
+    <string name="action_admin_panel">Admin panel</string>
+    <string name="action_share_to_tv">Send to TV</string>
+    <string name="action_get_from_phone">Get from phone</string>
+    <string name="action_add">Add</string>
+
+    <!-- Admin -->
+    <string name="admin_uptime">Uptime</string>
+    <string name="admin_sessions">Sessions</string>
+    <string name="admin_egress">Egress</string>
+    <string name="admin_clients_count">Clients · %1$d</string>
+    <string name="admin_new_client">+ New client</string>
+    <string name="admin_mtls_you">mTLS · you</string>
+    <string name="admin_error_banner">Admin API is available only through the VPN tunnel. Connect and retry.</string>
+    <string name="admin_delete_title">Delete client</string>
+    <string name="admin_delete_msg">Delete «%1$s»? This cannot be undone.</string>
+    <string name="admin_disable_title">Disable client?</string>
+    <string name="admin_enable_title">Enable client?</string>
+    <string name="admin_will_disable">«%1$s» will be disabled.</string>
+    <string name="admin_will_enable">«%1$s» will be enabled.</string>
+    <string name="admin_action_disable">Disable</string>
+    <string name="admin_action_enable">Enable</string>
+    <string name="admin_add_title">New client</string>
+    <string name="admin_add_name_hint">Name (a-z, 0-9, -)</string>
+    <string name="admin_add_days_hint">Subscription days (empty = perpetual)</string>
+    <string name="admin_action_create">Create</string>
+    <string name="admin_traffic_title">Traffic — last hour</string>
+    <string name="admin_no_data">No data</string>
+    <string name="admin_recent_dest">Recent destinations · %1$d</string>
+    <string name="admin_sub_title">Subscription · %1$s</string>
+    <string name="admin_sub_expired">Expired</string>
+    <string name="admin_sub_today">Expires today</string>
+    <string name="admin_sub_active">Active · %1$d d left</string>
+    <string name="admin_sub_perpetual">Perpetual</string>
+    <string name="admin_sub_days_hint">Days</string>
+    <string name="admin_sub_set">Set</string>
+    <string name="admin_sub_revoke">Revoke</string>
+    <string name="admin_conn_title">Connection string</string>
+    <string name="admin_action_copy">Copy</string>
+    <string name="admin_retry">▸ retry</string>
+
+    <!-- QR Intake -->
+    <string name="qr_hint_main">Aim at the code.</string>
+    <string name="qr_hint_sub">ghs:// connection string</string>
+    <string name="qr_paste_cta">Or paste from clipboard · </string>
+    <string name="qr_paste_tap">tap</string>
+    <string name="qr_close">✕ close</string>
+    <string name="qr_permission">Allow camera access</string>
+
+    <!-- Connect state labels -->
+    <string name="connect_state_disconnected">Disconnected</string>
+    <string name="connect_state_connecting">Connecting…</string>
+    <string name="connect_state_connected">Connected</string>
+    <string name="connect_state_error">Error: %1$s</string>
+    <string name="connect_state_disconnecting">Disconnecting…</string>
+
+    <!-- Misc -->
+    <string name="no_profiles">No profiles. Add a connection.</string>
+    <string name="add_profile_title">Add connection</string>
+    <string name="add_profile_name_hint">Name (optional)</string>
+    <string name="add_profile_conn_hint">Connection string (ghs://…)</string>
+    <string name="version_fmt">v%1$s · %2$s</string>
+</resources>

@@ -1,34 +1,31 @@
 package com.ghoststream.vpn
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import androidx.core.view.WindowCompat
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.navigation.AppNavigation
 import com.ghoststream.vpn.ui.theme.GhostStreamTheme
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Apply language override before inflating any views.
+        val prefs = PreferencesStore(this)
+        val lang = runCatching { runBlocking { prefs.languageOverride.first() } }.getOrNull()
+        val locales = if (lang.isNullOrBlank()) LocaleListCompat.getEmptyLocaleList()
+                      else LocaleListCompat.forLanguageTags(lang)
+        AppCompatDelegate.setApplicationLocales(locales)
+
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
         setContent {
-            val preferencesStore = remember { PreferencesStore(this@MainActivity) }
-            val theme by preferencesStore.theme
-                .collectAsStateWithLifecycle(initialValue = "system")
-
-            GhostStreamTheme(
-                darkTheme = when (theme) {
-                    "dark"  -> true
-                    "light" -> false
-                    else    -> isSystemInDarkTheme()
-                },
-            ) {
+            GhostStreamTheme {
                 AppNavigation()
             }
         }

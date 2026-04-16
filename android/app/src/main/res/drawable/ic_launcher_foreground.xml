@@ -4,19 +4,34 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Shield -->
+
+    <!-- Ghost circle (phosphor lime ring) -->
     <path
-        android:fillColor="#7C4DFF"
-        android:pathData="M54,22L27,34v18c0,16.65 11.52,32.22 27,36 15.48,-3.78 27,-19.35 27,-36V34L54,22z"/>
-    <!-- Inner shield highlight -->
+        android:fillColor="#C4FF3E"
+        android:pathData="M54,26 C38.54,26 26,38.54 26,54 C26,69.46 38.54,82 54,82 C69.46,82 82,69.46 82,54 C82,38.54 69.46,26 54,26z M54,32 C66.15,32 76,41.85 76,54 C76,66.15 66.15,76 54,76 C41.85,76 32,66.15 32,54 C32,41.85 41.85,32 54,32z"/>
+
+    <!-- Stream wave (3 flowing lines inside circle) -->
     <path
-        android:fillColor="#B388FF"
-        android:fillAlpha="0.3"
-        android:pathData="M54,28L33,37.5v14.5c0,13.32 9.22,25.78 21,28.8V28z"/>
-    <!-- Stream wave -->
-    <path
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="2.5"
+        android:strokeColor="#C4FF3E"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
         android:fillColor="@android:color/transparent"
-        android:pathData="M42,54 C46,46 50,46 54,54 C58,62 62,62 66,54"/>
+        android:pathData="M40,48 C44,42 50,42 54,48 C58,54 64,54 68,48"/>
+    <path
+        android:strokeColor="#C4FF3E"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M40,55 C44,49 50,49 54,55 C58,61 64,61 68,55"/>
+    <path
+        android:strokeColor="#C4FF3E"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent"
+        android:pathData="M40,62 C44,56 50,56 54,62 C58,68 64,68 68,62"/>
+
+    <!-- Ghost dot (top-left signal indicator) -->
+    <path
+        android:fillColor="#C4FF3E"
+        android:pathData="M37,37 m-3,0 a3,3 0,1 1,6 0 a3,3 0,1 1,-6 0"/>
 </vector>

@@ -71,6 +71,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val theme: StateFlow<String> = preferencesStore.theme
         .stateIn(viewModelScope, SharingStarted.Eagerly, "system")
 
+    val languageOverride: StateFlow<String?> = preferencesStore.languageOverride
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun setLanguageOverride(code: String?) {
+        viewModelScope.launch { preferencesStore.setLanguageOverride(code) }
+    }
+
     val autoStartOnBoot: StateFlow<Boolean> = preferencesStore.autoStartOnBoot
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
