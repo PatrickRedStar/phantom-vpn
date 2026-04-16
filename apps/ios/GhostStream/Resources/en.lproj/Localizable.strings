@@ -1,0 +1,65 @@
+/* GhostStream iOS — English placeholder */
+
+// Dashboard
+"dashboard.title" = "GhostStream";
+"dashboard.connect" = "Connect";
+"dashboard.disconnect" = "Disconnect";
+"dashboard.streams" = "%d/%d STREAMS";
+"dashboard.rate.rx" = "↓ %@/s";
+"dashboard.rate.tx" = "↑ %@/s";
+"dashboard.reconnect.banner" = "Attempt %d/8, next in %ds";
+"dashboard.subscription.expires" = "Subscription until %@";
+"dashboard.subscription.expired" = "Subscription expired";
+"dashboard.subscription.unlimited" = "Unlimited subscription";
+
+// Logs
+"logs.title" = "Logs";
+"logs.filter.all" = "ALL";
+"logs.filter.debug" = "DEBUG";
+"logs.filter.info" = "INFO";
+"logs.filter.warn" = "WARN";
+"logs.filter.error" = "ERROR";
+"logs.share" = "Share";
+"logs.copy" = "Copy";
+"logs.copy.all" = "Copy All";
+
+// Settings
+"settings.title" = "Settings";
+"settings.profiles" = "Profiles";
+"settings.add.profile" = "Add Profile";
+"settings.scan.qr" = "Scan QR";
+"settings.dns" = "DNS";
+"settings.split.routing" = "Split Routing";
+"settings.language" = "Language";
+"settings.theme" = "Theme";
+"settings.auto.start" = "Auto-start";
+"settings.debug.share" = "Send Report";
+"settings.theme.dark" = "Dark";
+"settings.theme.light" = "Light";
+"settings.theme.system" = "System";
+"settings.language.ru" = "Русский";
+"settings.language.en" = "English";
+"settings.language.system" = "System";
+"settings.ping.ms" = "%d ms";
+"settings.ping.timeout" = "Timeout";
+
+// Admin
+"admin.title" = "Admin Panel";
+"admin.clients" = "Clients";
+"admin.create.client" = "Add Client";
+"admin.subscription.extend30" = "+30 days";
+"admin.subscription.extend90" = "+90 days";
+"admin.subscription.extend365" = "+365 days";
+"admin.subscription.perpetual" = "Perpetual";
+"admin.subscription.revoke" = "Revoke";
+"admin.ed25519.error" = "Admin cert uses Ed25519 — not supported by iOS Security framework. Regenerate via phantom-keygen --key-type ecdsa";
+
+// General
+"error.connect.vpn.first" = "Connect via VPN to access Admin API";
+"general.cancel" = "Cancel";
+"general.save" = "Save";
+"general.delete" = "Delete";
+"general.confirm" = "Confirm";
+"general.ok" = "OK";
+"general.edit" = "Edit";
+"general.admin.panel" = "Admin Panel";

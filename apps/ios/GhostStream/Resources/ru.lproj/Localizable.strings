@@ -1,0 +1,65 @@
+/* GhostStream iOS — Russian baseline */
+
+// Dashboard
+"dashboard.title" = "GhostStream";
+"dashboard.connect" = "Подключить";
+"dashboard.disconnect" = "Отключить";
+"dashboard.streams" = "%d/%d СТРИМОВ";
+"dashboard.rate.rx" = "↓ %@/с";
+"dashboard.rate.tx" = "↑ %@/с";
+"dashboard.reconnect.banner" = "Попытка %d/8, следующая через %dс";
+"dashboard.subscription.expires" = "Подписка до %@";
+"dashboard.subscription.expired" = "Подписка истекла";
+"dashboard.subscription.unlimited" = "Подписка бессрочна";
+
+// Logs
+"logs.title" = "Логи";
+"logs.filter.all" = "ВСЕ";
+"logs.filter.debug" = "DEBUG";
+"logs.filter.info" = "INFO";
+"logs.filter.warn" = "WARN";
+"logs.filter.error" = "ERROR";
+"logs.share" = "Поделиться";
+"logs.copy" = "Копировать";
+"logs.copy.all" = "Копировать всё";
+
+// Settings
+"settings.title" = "Настройки";
+"settings.profiles" = "Профили";
+"settings.add.profile" = "Добавить профиль";
+"settings.scan.qr" = "Сканировать QR";
+"settings.dns" = "DNS";
+"settings.split.routing" = "Раздельная маршрутизация";
+"settings.language" = "Язык";
+"settings.theme" = "Тема";
+"settings.auto.start" = "Автозапуск";
+"settings.debug.share" = "Отправить отчёт";
+"settings.theme.dark" = "Тёмная";
+"settings.theme.light" = "Светлая";
+"settings.theme.system" = "Системная";
+"settings.language.ru" = "Русский";
+"settings.language.en" = "English";
+"settings.language.system" = "Системный";
+"settings.ping.ms" = "%d мс";
+"settings.ping.timeout" = "Таймаут";
+
+// Admin
+"admin.title" = "Администрирование";
+"admin.clients" = "Клиенты";
+"admin.create.client" = "Добавить клиента";
+"admin.subscription.extend30" = "+30 дней";
+"admin.subscription.extend90" = "+90 дней";
+"admin.subscription.extend365" = "+365 дней";
+"admin.subscription.perpetual" = "Бессрочно";
+"admin.subscription.revoke" = "Отозвать";
+"admin.ed25519.error" = "Admin cert использует Ed25519 — iOS не поддерживает. Пересоздайте через phantom-keygen --key-type ecdsa";
+
+// General
+"error.connect.vpn.first" = "Подключитесь через VPN для доступа к Admin API";
+"general.cancel" = "Отмена";
+"general.save" = "Сохранить";
+"general.delete" = "Удалить";
+"general.confirm" = "Подтвердить";
+"general.ok" = "ОК";
+"general.edit" = "Редактировать";
+"general.admin.panel" = "Панель администратора";
