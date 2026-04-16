@@ -33,6 +33,33 @@ targets:
         optional: true
     info:
       path: GhostStream/Info.plist
+      properties:
+        CFBundleDisplayName: GhostStream
+        LSRequiresIPhoneOS: true
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIViewControllerBasedStatusBarAppearance: true
+        NSCameraUsageDescription: GhostStream uses the camera to scan QR codes containing VPN connection strings.
+        UIAppFonts:
+          - space_grotesk.ttf
+          - space_grotesk_bold.ttf
+          - departure_mono.otf
+          - jetbrains_mono.ttf
+          - jetbrains_mono_medium.ttf
+          - instrument_serif.ttf
+          - instrument_serif_italic.ttf
     entitlements:
       path: GhostStream/GhostStream.entitlements
     settings:
@@ -65,6 +92,11 @@ targets:
           - "**/.gitkeep"
     info:
       path: PacketTunnelProvider/Info.plist
+      properties:
+        CFBundlePackageType: XPC!
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
     entitlements:
       path: PacketTunnelProvider/PacketTunnelProvider.entitlements
     settings:
