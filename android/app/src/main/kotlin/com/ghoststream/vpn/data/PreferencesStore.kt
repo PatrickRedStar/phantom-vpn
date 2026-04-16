@@ -31,6 +31,18 @@ class PreferencesStore(private val context: Context) {
         private val AUTO_START_ON_BOOT = booleanPreferencesKey("auto_start_on_boot")
         private val WAS_RUNNING        = booleanPreferencesKey("was_running")
         private val LAST_TUNNEL_PARAMS = stringPreferencesKey("last_tunnel_params")
+        private val LANGUAGE_OVERRIDE  = stringPreferencesKey("language_override")
+    }
+
+    /** "ru" | "en" | null (follow system) */
+    val languageOverride: Flow<String?> = context.dataStore.data.map { prefs ->
+        prefs[LANGUAGE_OVERRIDE]?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun setLanguageOverride(code: String?) {
+        context.dataStore.edit {
+            if (code.isNullOrBlank()) it.remove(LANGUAGE_OVERRIDE) else it[LANGUAGE_OVERRIDE] = code
+        }
     }
 
     val autoStartOnBoot: Flow<Boolean> = context.dataStore.data.map { it[AUTO_START_ON_BOOT] ?: false }

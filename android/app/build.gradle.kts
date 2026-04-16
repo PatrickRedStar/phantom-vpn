@@ -11,9 +11,9 @@ android {
         applicationId = "com.ghoststream.vpn"
         minSdk = 26
         targetSdk = 34
-        versionCode = 53
-        versionName = "0.19.4"
-        buildConfigField("String", "GIT_TAG", "\"v0.19.4\"")
+        versionCode = 54
+        versionName = "0.20.0"
+        buildConfigField("String", "GIT_TAG", "\"v0.20.0\"")
     }
 
     buildFeatures {
@@ -72,6 +72,8 @@ dependencies {
 
     // Core
     implementation("androidx.core:core-ktx:1.12.0")
+    // AppCompat — required for AppCompatDelegate.setApplicationLocales()
+    implementation("androidx.appcompat:appcompat:1.6.1")
 
     // CameraX + ML Kit for QR scanning
     implementation("androidx.camera:camera-camera2:1.3.1")
