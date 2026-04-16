@@ -4055,6 +4055,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "phantom-client-apple"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "libc",
+ "once_cell",
+ "parking_lot",
+ "phantom-client-common",
+ "phantom-core",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "phantom-client-common"
 version = "0.1.0"
 dependencies = [
