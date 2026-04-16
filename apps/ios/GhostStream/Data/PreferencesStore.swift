@@ -135,9 +135,10 @@ public final class PreferencesStore {
         }
     }
 
-    /// One of "system", "dark", "light".
+    /// One of "system", "dark", "light". Default is `"dark"` — GhostStream's
+    /// retro "cathode" aesthetic is designed around the warm-black palette.
     public var theme: String {
-        get { defaults.string(forKey: Key.theme) ?? "system" }
+        get { defaults.string(forKey: Key.theme) ?? "dark" }
         set { defaults.set(newValue, forKey: Key.theme) }
     }
 }
