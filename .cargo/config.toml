@@ -1,6 +1,0 @@
-[target.aarch64-linux-android]
-linker = "/home/spongebob/Android/Sdk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-ar = "/home/spongebob/Android/Sdk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-
-[target.x86_64-unknown-linux-musl]
-linker = "/home/spongebob/sdk/x86_64-linux-musl-cross/bin/x86_64-linux-musl-gcc"
