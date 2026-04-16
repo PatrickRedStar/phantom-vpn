@@ -18,13 +18,11 @@ val GsSignalDim = Color(0xFF4A6010)
 val GsWarn      = Color(0xFFFF7A3D) // cathode orange
 val GsDanger    = Color(0xFFFF4A3D)
 
-// Back-compat aliases (referenced across existing screens / dialogs)
+// Named aliases used in code
 val GreenConnected = GsSignal
 val RedError       = GsDanger
 val YellowWarning  = GsWarn
 val BlueDebug      = Color(0xFF6C8BA8) // DEBUG log rows
-val TextPrimary    = GsBone
-val TextSecondary  = GsTextDim
 
 // ── Light "Daylight" palette (paper + ink + moss-green) ────────────────────
 val GsLightBg        = Color(0xFFF1ECDC) // warm paper
@@ -39,19 +37,6 @@ val GsLightSignal    = Color(0xFF4A6010) // moss green accent
 val GsLightSignalDim = Color(0xFF7A9B30)
 val GsLightWarn      = Color(0xFFD4600A)
 val GsLightDanger    = Color(0xFFCC3322)
-
-// Back-compat legacy aliases
-val DarkBackground     = GsBg
-val DarkSurface        = GsBgElev
-val DarkSurfaceVariant = GsBgElev2
-val LightBackground     = GsLightBg
-val LightSurface        = GsLightBgElev
-val LightSurfaceVariant = GsLightBgElev2
-
-// Legacy accent aliases
-val AccentPurple      = GsSignal
-val AccentPurpleLight = GsSignal
-val AccentIndigo      = GsSignalDim
 
 // ── Theme-aware color provider ──────────────────────────────────────────────
 data class GsColorSet(

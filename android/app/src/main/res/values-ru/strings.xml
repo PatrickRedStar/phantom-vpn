@@ -28,13 +28,9 @@
     <string name="kv_assigned">Выдан</string>
     <string name="kv_subscription">Подписка</string>
     <string name="kv_value_dash">—</string>
-    <string name="kv_value_perpetual">бессрочно</string>
-    <string name="kv_value_expired">истекла</string>
     <string name="action_disconnect">Отключить</string>
     <string name="action_connect">Подключить</string>
     <string name="action_retry">Повторить</string>
-    <string name="unit_mbps">Мб/с</string>
-    <string name="scope_window">60с</string>
     <string name="hdr_meta_live">онлайн</string>
     <string name="hdr_meta_lines">%1$s строк</string>
 
@@ -45,9 +41,6 @@
     <string name="chip_warn">Warn</string>
     <string name="chip_error">Error</string>
     <string name="chip_share">Отправить</string>
-    <string name="action_copy_all">Скопировать</string>
-    <string name="action_clear">Очистить</string>
-
     <string name="set_endpoints">Эндпоинты</string>
     <string name="set_routing">Маршрутизация</string>
     <string name="set_appearance">Внешний вид</string>
@@ -60,7 +53,6 @@
     <string name="row_always_on">Всегда включён</string>
     <string name="row_language">Язык</string>
     <string name="row_theme">Тема</string>
-    <string name="row_log_level">Уровень логов</string>
     <string name="row_share_debug">Отладочный отчёт</string>
     <string name="row_insecure">Не проверять сертификат</string>
 
@@ -70,11 +62,9 @@
     <string name="sub_always_on">Подключаться при загрузке</string>
     <string name="sub_interface_locale">Язык интерфейса</string>
     <string name="sub_theme_descr">Phosphor · тёплый чёрный</string>
-    <string name="sub_log_level_descr">Кольцевой буфер · 10 МБ</string>
     <string name="sub_debug_descr">конфиг + последние 500 строк</string>
 
     <string name="value_custom">Свои</string>
-    <string name="value_system">Системная</string>
     <string name="value_export">▸ Экспорт</string>
     <string name="value_edit">Изменить</string>
     <string name="edit_profile_title">Редактировать профиль</string>
@@ -94,10 +84,8 @@
     <string name="split_mode_all">Всё через VPN</string>
     <string name="split_mode_bypass">Обход списков</string>
     <string name="split_download_all">Скачать все</string>
-    <string name="split_cidrs">%1$d CIDR</string>
     <string name="split_download">Скачать</string>
     <string name="split_downloaded">Загружен</string>
-    <string name="split_preview">Просмотр</string>
 
     <string name="tag_active">Активен</string>
     <string name="tag_standby">Ожидает</string>
@@ -108,15 +96,12 @@
     <string name="tag_exp_days_left">%1$d дн.</string>
 
     <string name="profile_add_cta">+ Сканировать QR · Вставить ghs://…</string>
-    <string name="action_ping_all">Ping всех</string>
     <string name="action_paste">Вставить</string>
     <string name="action_qr">QR</string>
     <string name="action_save">Сохранить</string>
     <string name="action_cancel">Отмена</string>
     <string name="action_close">Закрыть</string>
     <string name="action_delete">Удалить</string>
-    <string name="action_rename">Переименовать</string>
-    <string name="action_make_active">Сделать активным</string>
     <string name="action_admin_panel">Админ-панель</string>
     <string name="action_share_to_tv">Отправить на TV</string>
     <string name="action_get_from_phone">Получить с телефона</string>
@@ -162,12 +147,6 @@
     <string name="qr_paste_tap">нажми</string>
     <string name="qr_close">✕ закрыть</string>
     <string name="qr_permission">Разреши доступ к камере</string>
-
-    <string name="connect_state_disconnected">Отключён</string>
-    <string name="connect_state_connecting">Подключение…</string>
-    <string name="connect_state_connected">Подключён</string>
-    <string name="connect_state_error">Ошибка: %1$s</string>
-    <string name="connect_state_disconnecting">Отключение…</string>
 
     <string name="no_profiles">Нет профилей. Добавьте подключение.</string>
     <string name="add_profile_title">Добавить подключение</string>
