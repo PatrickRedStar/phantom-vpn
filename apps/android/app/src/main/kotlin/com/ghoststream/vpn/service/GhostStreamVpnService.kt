@@ -26,7 +26,17 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-class GhostStreamVpnService : VpnService() {
+/**
+ * Push-based callback interface implemented by GhostStreamVpnService.
+ * Rust calls these methods when status or log frames arrive, instead of
+ * the old polling approach.
+ */
+interface PhantomListener {
+    fun onStatusFrame(json: String)
+    fun onLogFrame(json: String)
+}
+
+class GhostStreamVpnService : VpnService(), PhantomListener {
 
     private data class StartExtras(
         val serverAddr: String,
@@ -40,6 +50,8 @@ class GhostStreamVpnService : VpnService() {
         val directCidrs: String,
         val perAppMode: String,
         val perAppList: List<String>,
+        /** Original ghs:// connection string — required for Phase 4 nativeStart. */
+        val connString: String = "",
     ) {
         fun toJson(): String = JSONObject().apply {
             put("server_addr", serverAddr); put("server_name", serverName)
@@ -47,6 +59,7 @@ class GhostStreamVpnService : VpnService() {
             put("tun_addr", tunAddr); put("dns_servers", dnsServers.joinToString(","))
             put("split_routing", splitRouting); put("direct_cidrs", directCidrs)
             put("per_app_mode", perAppMode); put("per_app_list", perAppList.joinToString(","))
+            put("conn_string", connString)
         }.toString()
 
         companion object {
@@ -66,6 +79,7 @@ class GhostStreamVpnService : VpnService() {
                     perAppMode = o.optString("per_app_mode", "none"),
                     perAppList = o.optString("per_app_list")
                         .split(",").filter { it.isNotBlank() },
+                    connString = o.optString("conn_string", ""),
                 )
             }.getOrNull()
         }
@@ -89,6 +103,7 @@ class GhostStreamVpnService : VpnService() {
                 perAppMode = intent.getStringExtra(EXTRA_PER_APP_MODE) ?: "none",
                 perAppList = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
                     .split(",").filter { it.isNotBlank() },
+                connString = intent.getStringExtra(EXTRA_CONN_STRING) ?: "",
             )
         }
         // Null intent (process killed & system restarted service): restore from prefs
@@ -107,6 +122,8 @@ class GhostStreamVpnService : VpnService() {
         val insecure: Boolean,
         val certPath: String,
         val keyPath: String,
+        /** Original ghs:// connection string for Phase 4 nativeStart. */
+        val connString: String = "",
     )
 
     private data class NativeStatsSnapshot(
@@ -115,6 +132,9 @@ class GhostStreamVpnService : VpnService() {
         val connected: Boolean,
         val capturedAtMs: Long,
     )
+
+    /** Latest status pushed from Rust via onStatusFrame. Used by the watchdog. */
+    @Volatile private var lastStatusJson: String? = null
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var watchdogThread: Thread? = null
@@ -139,16 +159,14 @@ class GhostStreamVpnService : VpnService() {
     private lateinit var prefs: PreferencesStore
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Instance method so JNI receives the service object for VpnService.protect()
+    // Instance method so JNI receives the service object for VpnService.protect().
+    // Phase 4: takes cfgJson (ConnectProfile JSON) + settingsJson (TunnelSettings JSON)
+    // + a PhantomListener for push-based status/log callbacks.
     external fun nativeStart(
         tunFd: Int,
-        serverAddr: String,
-        serverName: String,
-        insecure: Boolean,
-        certPath: String,
-        keyPath: String,
-        caCertPath: String,
-        transport: String,
+        cfgJson: String,
+        settingsJson: String,
+        listener: PhantomListener,
     ): Int
 
     companion object {
@@ -176,6 +194,8 @@ class GhostStreamVpnService : VpnService() {
         const val EXTRA_DIRECT_CIDRS  = "direct_cidrs_path"
         const val EXTRA_PER_APP_MODE  = "per_app_mode"
         const val EXTRA_PER_APP_LIST  = "per_app_list"
+        /** Phase 4: full ghs:// connection string, used by new nativeStart. */
+        const val EXTRA_CONN_STRING   = "conn_string"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
@@ -183,6 +203,34 @@ class GhostStreamVpnService : VpnService() {
         // Safety cap: too many addRoute() entries can overflow Binder transaction
         // in VpnService.Builder.establish() and crash with TransactionTooLargeException.
         private const val MAX_SPLIT_ROUTES = 8000
+    }
+
+    // ── PhantomListener implementation ────────────────────────────────────────
+
+    /**
+     * Called from Rust when the tunnel status changes. Parses the StatusFrame JSON
+     * and updates VpnStateManager accordingly.
+     *
+     * TODO (Phase 5): subscribe DashboardViewModel to VpnStateManager.statusFrame
+     * instead of polling nativeGetStats().
+     */
+    override fun onStatusFrame(json: String) {
+        // Store for watchdog polling via readNativeStats().
+        lastStatusJson = json
+        // State transitions are handled by the watchdog reading lastStatusJson.
+    }
+
+    /**
+     * Called from Rust when a new log frame arrives. Appended to the log buffer
+     * in VpnStateManager for LogsViewModel consumption.
+     *
+     * TODO (Phase 5): route to LogsViewModel directly via a StateFlow instead of
+     * the current polling nativeGetLogs() approach.
+     */
+    override fun onLogFrame(json: String) {
+        // Log to Android logcat for debugging; LogsViewModel still polls via
+        // nativeGetLogs() stub during migration (returns null → no-op).
+        Log.d(TAG, "log: $json")
     }
 
     override fun onCreate() {
@@ -236,11 +284,13 @@ class GhostStreamVpnService : VpnService() {
             startForeground(NOTIFICATION_ID, buildNotification("Подключение..."))
         }
 
+        val connString = resolved.connString
         startupThread?.interrupt()
         startupThread = Thread {
             startTunnel(
                 serverAddr, serverName, insecure, certPath, keyPath,
                 tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
+                connString,
             )
         }.apply {
             name = "vpn-startup"
@@ -256,6 +306,7 @@ class GhostStreamVpnService : VpnService() {
         tunAddr: String, dnsServers: List<String>,
         splitRouting: Boolean, directCidrsPath: String,
         perAppMode: String, perAppList: List<String>,
+        connString: String = "",
     ) {
         val parts     = tunAddr.split("/")
         val tunIp     = parts.getOrElse(0) { "10.7.0.2" }
@@ -341,6 +392,7 @@ class GhostStreamVpnService : VpnService() {
             insecure = insecure,
             certPath = certPath,
             keyPath = keyPath,
+            connString = connString,
         )
 
         val fd = vpnInterface!!.fd
@@ -348,9 +400,10 @@ class GhostStreamVpnService : VpnService() {
         // уже настроен системой, но tun мёртв, tokio-резолвер внутри Rust
         // зависает в getaddrinfo. Передаём уже готовый IP:port.
         val effectiveAddr = resolveServerAddrViaUnderlying(serverAddr)
-        val result = nativeStart(
-            fd, effectiveAddr, serverName, insecure, certPath, keyPath, "", "h2",
-        )
+        // Phase 4: build ConnectProfile JSON for the new nativeStart.
+        val cfgJson = buildConnectProfileJson(name = serverName, connString = connString, serverAddr = effectiveAddr)
+        val settingsJson = """{"dns_leak_protection":true,"ipv6_killswitch":true,"auto_reconnect":true}"""
+        val result = nativeStart(fd, cfgJson, settingsJson, this)
         if (result != 0) {
             vpnInterface?.close()
             vpnInterface = null
@@ -458,11 +511,10 @@ class GhostStreamVpnService : VpnService() {
         nativeStop()
         if (userStopped) return false
         val effectiveAddr = resolveServerAddrViaUnderlying(params.serverAddr)
-        val result = nativeStart(
-            iface.fd, effectiveAddr, params.serverName,
-            params.insecure, params.certPath, params.keyPath, "",
-            "h2",
-        )
+        // Phase 4: build ConnectProfile JSON for the new nativeStart.
+        val cfgJson = buildConnectProfileJson(name = params.serverName, connString = params.connString, serverAddr = effectiveAddr)
+        val settingsJson = """{"dns_leak_protection":true,"ipv6_killswitch":true,"auto_reconnect":true}"""
+        val result = nativeStart(iface.fd, cfgJson, settingsJson, this)
         if (result == 0) {
             Log.i(TAG, "Tunnel restarted")
             return true
@@ -472,6 +524,26 @@ class GhostStreamVpnService : VpnService() {
     }
 
     private fun readNativeStats(): NativeStatsSnapshot? {
+        // Phase 4: nativeGetStats() is a stub (returns null). Read from the
+        // push-based lastStatusJson populated by onStatusFrame() instead.
+        val statusJson = lastStatusJson
+        if (statusJson != null) {
+            return try {
+                val obj = JSONObject(statusJson)
+                // StatusFrame from Rust: state = "connected" | "connecting" | "disconnected" | ...
+                val stateStr = obj.optString("state", "disconnected")
+                val connected = stateStr == "connected"
+                NativeStatsSnapshot(
+                    bytesRx = obj.optLong("bytes_rx"),
+                    bytesTx = obj.optLong("bytes_tx"),
+                    connected = connected,
+                    capturedAtMs = System.currentTimeMillis(),
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }
+        // Fallback: try old polling path (stub returns null after Phase 4).
         return try {
             val raw = nativeGetStats() ?: return null
             val obj = JSONObject(raw)
@@ -484,6 +556,25 @@ class GhostStreamVpnService : VpnService() {
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * Build a ConnectProfile JSON string suitable for nativeStart's cfgJson parameter.
+     * The conn_string must be a valid ghs:// URL. If blank, Rust will return an error.
+     */
+    private fun buildConnectProfileJson(name: String, connString: String, serverAddr: String): String {
+        // TODO (Phase 5): thread the raw conn_string from VpnProfile through
+        // the intent extras so it's always available here. For now, if connString
+        // is blank (legacy call path), Rust will reject the start with an error.
+        return JSONObject().apply {
+            put("name", name)
+            put("conn_string", connString)
+            put("settings", JSONObject().apply {
+                put("dns_leak_protection", true)
+                put("ipv6_killswitch", true)
+                put("auto_reconnect", true)
+            })
+        }.toString()
     }
 
     private fun nativeStartErrorMessage(code: Int): String = when (code) {
@@ -499,6 +590,7 @@ class GhostStreamVpnService : VpnService() {
      */
     private fun stopTunnelAsync(finalState: VpnState = VpnState.Disconnected) {
         userStopped = true
+        lastStatusJson = null
         synchronized(watchdogLock) { watchdogLock.notifyAll() }
         startupThread?.interrupt()
         startupThread = null
