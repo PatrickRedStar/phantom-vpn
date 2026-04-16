@@ -29,6 +29,7 @@ struct DashboardView: View {
                     header
                     stateSection
                     timerRow
+                    reconnectBanner
                     emptyHint
                     preflightBanner
                     VpnConnectFab(
@@ -105,6 +106,32 @@ struct DashboardView: View {
             Text("SESSION")
                 .gsFont(.labelMonoSmall)
                 .foregroundStyle(C.textFaint)
+        }
+    }
+
+    /// Reconnect banner — visible when `statusFrame.state == .reconnecting`.
+    @ViewBuilder
+    private var reconnectBanner: some View {
+        if stateMgr.statusFrame.state == .reconnecting {
+            let attempt = stateMgr.statusFrame.reconnectAttempt.map { Int($0) } ?? 0
+            let nextDelay = stateMgr.statusFrame.reconnectNextDelaySecs.map { Int($0) } ?? 0
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("RECONNECTING")
+                        .gsFont(.labelMono)
+                        .foregroundStyle(C.warn)
+                    Text("Попытка \(attempt) · след. через \(nextDelay)с")
+                        .gsFont(.kvValue)
+                        .foregroundStyle(C.textDim)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(12)
+            .background(C.warn.opacity(0.10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(C.warn.opacity(0.4), lineWidth: 1)
+            )
         }
     }
 
@@ -187,10 +214,17 @@ struct DashboardView: View {
     }
 
     private var statsRow: some View {
-        let rxMbps = formatMbps(rateBps: vm.rxSamples.last ?? 0)
-        let txMbps = formatMbps(rateBps: vm.txSamples.last ?? 0)
-        let rxTotal = formatBytesShort(vm.latest?.bytesRx ?? 0)
-        let txTotal = formatBytesShort(vm.latest?.bytesTx ?? 0)
+        // Prefer live rates from statusFrame (pushed by the extension every
+        // ~1s); fall back to the VM's computed delta when the frame is stale.
+        let sf = stateMgr.statusFrame
+        let rxMbps = sf.rateRxBps > 0
+            ? formatMbps(rateBps: sf.rateRxBps)
+            : formatMbps(rateBps: vm.rxSamples.last ?? 0)
+        let txMbps = sf.rateTxBps > 0
+            ? formatMbps(rateBps: sf.rateTxBps)
+            : formatMbps(rateBps: vm.txSamples.last ?? 0)
+        let rxTotal = formatBytesShort(Int64(sf.bytesRx > 0 ? sf.bytesRx : UInt64(vm.latest?.bytesRx ?? 0)))
+        let txTotal = formatBytesShort(Int64(sf.bytesTx > 0 ? sf.bytesTx : UInt64(vm.latest?.bytesTx ?? 0)))
         return HStack(spacing: 10) {
             StatCard(title: "RX", value: rxMbps, unit: "Mbps")
             StatCard(title: "TX", value: txMbps, unit: "Mbps")
@@ -200,19 +234,37 @@ struct DashboardView: View {
     }
 
     private var muxCard: some View {
-        GhostCard {
+        let sf = stateMgr.statusFrame
+        // Use real stream counts when available; fall back to defaults.
+        let nStreams = sf.nStreams > 0 ? Int(sf.nStreams) : 8
+        let streamsUp = Int(sf.streamsUp)
+        let streamCountText = isConnected
+            ? "\(streamsUp)/\(nStreams) STREAMS"
+            : "—/— STREAMS"
+        let streamCountColor: Color = isConnected
+            ? (streamsUp == nStreams ? C.signal : C.warn)
+            : C.textFaint
+        // Pass real activity levels when connected; nil → synthetic shimmer.
+        let activityLevels: [Float]? = isConnected && !sf.streamActivity.isEmpty
+            ? Array(sf.streamActivity.prefix(nStreams))
+            : nil
+        return GhostCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("STREAM MULTIPLEX")
                         .gsFont(.hdrMeta)
                         .foregroundStyle(C.textDim)
                     Spacer()
-                    Text("8/8 STREAMS")
+                    Text(streamCountText)
                         .gsFont(.hdrMeta)
-                        .foregroundStyle(C.signal)
+                        .foregroundStyle(streamCountColor)
                 }
                 Divider().background(C.hair).frame(height: 1)
-                MuxBars(active: isConnected, barCount: 8)
+                MuxBars(
+                    active: isConnected,
+                    barCount: nStreams,
+                    activityLevels: activityLevels
+                )
             }
         }
     }
@@ -281,12 +333,14 @@ struct DashboardView: View {
     }
 
     private var rxValueText: String {
-        let bps = vm.rxSamples.last ?? 0
+        let sf = stateMgr.statusFrame
+        let bps = sf.rateRxBps > 0 ? sf.rateRxBps : (vm.rxSamples.last ?? 0)
         return "RX \(formatMbps(rateBps: bps))"
     }
 
     private var txValueText: String {
-        let bps = vm.txSamples.last ?? 0
+        let sf = stateMgr.statusFrame
+        let bps = sf.rateTxBps > 0 ? sf.rateTxBps : (vm.txSamples.last ?? 0)
         return "TX \(formatMbps(rateBps: bps))"
     }
 
