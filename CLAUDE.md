@@ -29,9 +29,11 @@ ghoststream/
 │   ├── client-android/         # Android JNI → libphantom_android.so
 │   ├── client-apple/           # iOS FFI → PhantomCore.xcframework
 │   └── gui-ipc/                # IPC протокол между GUI и helper
-├── server/                     # Серверные бинари
+├── server/                     # Серверные бинари + конфиги + скрипты
 │   ├── server/                 # phantom-server + phantom-keygen
-│   └── relay/                  # phantom-relay (RU SNI-passthrough relay)
+│   ├── relay/                  # phantom-relay (RU SNI-passthrough relay)
+│   ├── config/                 # Примеры конфигов (server.example.toml, client.example.toml)
+│   └── scripts/                # Деплой-скрипты (deploy.sh, setup-server.sh, keys.py…)
 ├── apps/                       # Клиентские приложения
 │   ├── android/                # Android (Kotlin + Compose)
 │   │   └── app/src/main/
@@ -56,11 +58,6 @@ ghoststream/
 │       ├── client/             # phantom-client-openwrt (MIPS/ARM binary)
 │       ├── proto/              # ghoststream.sh (netifd protocol)
 │       └── luci/               # LuCI web UI
-├── config/
-│   ├── server.example.toml
-│   └── client.example.toml
-├── scripts/
-│   └── deploy.sh
 └── .github/workflows/
     ├── release.yml             # CI: Linux + Android APK + server → GitHub Release
     └── openwrt.yml             # CI: OpenWrt cross-compile
@@ -285,7 +282,7 @@ root store (LE cert). Админство — динамическое, из `is_
 
 ## Конфигурация
 
-### Сервер (`config/server.toml`)
+### Сервер (`server/config/server.example.toml`)
 
 ```toml
 listen_addr   = "89.110.109.128:8443"
@@ -560,7 +557,7 @@ ssh -i ~/.ssh/bot root@193.187.95.128
 | **Dev-Android** | `android/`, `crates/client-android/` |
 | **Dev-Linux** | `crates/client-linux/` |
 | **general-purpose** | `crates/core/`, `crates/client-common/` (по желанию разбить) |
-| **general-purpose (docs)** | `*.md`, `config/`, `scripts/` |
+| **general-purpose (docs)** | `*.md`, `server/config/`, `server/scripts/` |
 
 ### Правила
 
