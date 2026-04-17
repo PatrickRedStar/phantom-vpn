@@ -1,0 +1,6 @@
+/* PhantomKit — ConnState UI words (Russian) */
+"connstate.dormant" = "ДРЕМА";
+"connstate.handshaking" = "КОНТАКТ";
+"connstate.regrouping" = "ПЕРЕСБОР";
+"connstate.transmitting" = "ПЕРЕДАЮ";
+"connstate.severed" = "ОБРЫВ";

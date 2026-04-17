@@ -3,6 +3,7 @@ members = [
     # Shared libraries
     "crates/core",
     "crates/client-common",
+    "crates/client-core-runtime",
     "crates/client-android",
     "crates/client-apple",
     "crates/gui-ipc",

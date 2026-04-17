@@ -1,0 +1,6 @@
+/* PhantomKit — ConnState UI words (English) */
+"connstate.dormant" = "Dormant";
+"connstate.handshaking" = "Handshaking";
+"connstate.regrouping" = "Regrouping";
+"connstate.transmitting" = "Transmitting";
+"connstate.severed" = "Severed";
