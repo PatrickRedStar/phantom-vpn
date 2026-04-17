@@ -917,6 +917,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "ghoststream-gui-ipc",
+ "libc",
  "once_cell",
  "parking_lot",
  "phantom-client-common",
