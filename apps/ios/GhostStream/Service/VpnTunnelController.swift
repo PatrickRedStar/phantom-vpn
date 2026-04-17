@@ -31,7 +31,9 @@ public final class VpnTunnelController: ObservableObject {
     @Published public private(set) var manager: NETunnelProviderManager?
     @Published public var lastError: String?
 
-    private let providerBundleId = "com.ghoststream.vpn.PacketTunnel"
+    private var providerBundleId: String {
+        "\(Bundle.main.bundleIdentifier!).PacketTunnelProvider"
+    }
     private let log = Logger(subsystem: "com.ghoststream.vpn", category: "VpnTunnelController")
 
     public init() {}
@@ -56,8 +58,13 @@ public final class VpnTunnelController: ObservableObject {
     /// tunnel. Re-saves and reloads preferences so the system picks up
     /// the new `providerConfiguration`.
     ///
-    /// - Throws: `VpnTunnelError.encoding` if profile JSON serialisation
-    ///   fails, `VpnTunnelError.saveFailed` on save error, or
+    /// Phase 8: passes only `profileId` in providerConfiguration instead of
+    /// the full profile JSON blob. The extension resolves the profile from
+    /// shared App Group UserDefaults and hydrates PEM secrets from the
+    /// shared Keychain access group. This avoids embedding secrets in the
+    /// NE configuration dictionary.
+    ///
+    /// - Throws: `VpnTunnelError.saveFailed` on save error, or
     ///   `VpnTunnelError.startFailed` if the connection won't start.
     public func installAndStart(profile: VpnProfile, preferences: PreferencesStore) async throws {
         if manager == nil { try await loadFromPreferences() }
@@ -67,28 +74,10 @@ public final class VpnTunnelController: ObservableObject {
         proto.serverAddress = profile.serverAddr
         proto.providerBundleIdentifier = providerBundleId
 
-        let encoder = JSONEncoder()
-        let profileData: Data
-        do {
-            profileData = try encoder.encode(profile)
-        } catch {
-            throw VpnTunnelError.encoding
-        }
-
-        let prefsDto = PrefsDTO(
-            dnsServers: preferences.dnsServers,
-            splitRouting: preferences.splitRouting
-        )
-        let prefsData: Data
-        do {
-            prefsData = try encoder.encode(prefsDto)
-        } catch {
-            throw VpnTunnelError.encoding
-        }
-
+        // Phase 8: pass only the profile id; extension loads the full
+        // profile + PEM secrets itself from shared storage.
         proto.providerConfiguration = [
-            "profile": profileData,
-            "prefs": prefsData,
+            "profileId": profile.id,
         ]
 
         manager.protocolConfiguration = proto
@@ -123,12 +112,4 @@ public final class VpnTunnelController: ObservableObject {
         self.manager = nil
     }
 
-    // MARK: - DTOs
-
-    /// Small subset of `PreferencesStore` shipped into the extension via
-    /// `providerConfiguration`.
-    private struct PrefsDTO: Encodable {
-        var dnsServers: [String]?
-        var splitRouting: Bool?
-    }
 }

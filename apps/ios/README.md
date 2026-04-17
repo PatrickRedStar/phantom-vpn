@@ -1,126 +1,74 @@
 # GhostStream iOS
 
-iOS-клиент GhostStream / PhantomVPN. SwiftUI + NetworkExtension
-(`NEPacketTunnelProvider`) + общее Rust-ядро (`crates/client-apple`, собирается
-в `PhantomCore.xcframework`).
+SwiftUI + NEPacketTunnelProvider client. Requires Xcode 15+ and iOS 17+ target device.
 
-## Структура
+## Architecture
 
 ```
 apps/ios/
-├── project.yml                  # XcodeGen spec — два таргета: App + Extension
-├── GhostStream/                 # SwiftUI приложение
-│   ├── App/                     # @main, root view
-│   ├── Theme/                   # Colors, Typography, Fonts/ (уже внутри)
-│   ├── Data/                    # ProfilesStore, PreferencesStore, модели
-│   ├── Service/                 # VpnStateManager, NEVPNManager wrapper
-│   ├── Network/                 # AdminHttpClient (mTLS, TOFU)
-│   ├── Rust/                    # PhantomBridge.swift — Swift-обёртка FFI
-│   ├── UI/                      # Dashboard, Logs, Settings, Admin, Components
-│   ├── Assets.xcassets/         # AccentColor (#C4FF3E), AppIcon
-│   ├── Info.plist
-│   └── GhostStream.entitlements
-├── PacketTunnelProvider/        # App Extension (NEPacketTunnelProvider)
-│   ├── PacketTunnelProvider.swift
-│   ├── SharedState.swift
-│   ├── PhantomBridge.swift      # дубликат FFI-обёртки для extension
-│   ├── Info.plist
-│   └── PacketTunnelProvider.entitlements
-└── Frameworks/                  # PhantomCore.xcframework (собирается скриптом)
+├── GhostStream/           # Host app (SwiftUI)
+│   ├── App/               # AppNavigation, GhostStreamApp
+│   ├── UI/                # Dashboard, Logs, Settings, Admin screens
+│   ├── Service/           # VpnStateManager, VpnTunnelController
+│   └── Data/              # VpnProfile, ProfilesStore, PreferencesStore
+├── PacketTunnelProvider/  # NE extension — runs in separate process
+└── Packages/PhantomKit/   # Shared Swift package (both targets import this)
+    └── Sources/PhantomKit/
+        ├── FFI/           # PhantomBridge (actor) + C function declarations
+        ├── Models/        # StatusFrame, ConnState, LogFrame, VpnProfile…
+        ├── Storage/       # ProfilesStore, PreferencesStore, Keychain
+        └── Bridge/        # TunnelIpcBridge (sendProviderMessage wrapper)
 ```
 
-## Предварительные требования
-
-1. **macOS + Xcode 15+** (полный Xcode, не только Command Line Tools).
-   ```bash
-   # проверить:
-   xcodebuild -version
-   # если выдаёт "requires Xcode" — установить Xcode из App Store,
-   # потом: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-   ```
-
-2. **Rust + iOS targets**:
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   source "$HOME/.cargo/env"
-   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-   ```
-
-3. **XcodeGen + cbindgen**:
-   ```bash
-   brew install xcodegen
-   cargo install cbindgen
-   ```
-
-4. **Apple Developer Account** — нужен только для запуска на реальном iPhone.
-   Для симулятора достаточно бесплатного Apple ID в Xcode.
-
-## Сборка
+## Building
 
 ```bash
-# 1. Собрать Rust xcframework (device + simulator архитектуры)
-cd crates/client-apple
-./build-xcframework.sh
-# → apps/ios/Frameworks/PhantomCore.xcframework
+# Build Rust xcframework first
+bash crates/client-apple/build-xcframework.sh
 
-# 2. Сгенерировать Xcode-проект
-cd ../../apps/ios
-xcodegen generate
+# Generate Xcode project
+cd apps/ios && xcodegen generate
 
-# 3. Открыть в Xcode
-open GhostStream.xcodeproj
+# Build + install (requires device UDID)
+xcodebuild -project GhostStream.xcodeproj -scheme GhostStream \
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates build
 ```
 
-В Xcode:
-1. Target **GhostStream** → Signing & Capabilities → выбрать Team (Apple ID подойдёт).
-2. Target **PacketTunnelProvider** → то же самое (Team должен совпадать).
-3. Bundle ID при необходимости поменять на уникальный (`com.твоёимя.vpn`)
-   — тогда App Group тоже надо переименовать в entitlements обоих таргетов.
+## Adding a new screen
 
-## Симулятор vs реальный iPhone
+1. Create `apps/ios/GhostStream/UI/MyFeature/MyFeatureView.swift`
+2. Create `apps/ios/GhostStream/UI/MyFeature/MyFeatureViewModel.swift`
+3. Add a `NavigationLink` in `AppNavigation.swift`
+4. Add localization keys to `Resources/ru.lproj/Localizable.strings` and `en.lproj/`
 
-| Что работает | Симулятор | iPhone |
-|---|---|---|
-| UI (Dashboard/Logs/Settings/Admin) | ✅ | ✅ |
-| Импорт профиля / QR | ✅ | ✅ |
-| Подключение VPN | ❌ (NetworkExtension недоступен) | ✅ |
-| Admin API (mTLS) | ⚠️ можно тестить с эмулятором сервера | ✅ через туннель |
+## Font probing
 
-**Важно:** iOS Simulator **не загружает** NetworkExtension-расширения. Все
-UI-экраны можно смотреть в симуляторе, но чтобы реально включить туннель —
-нужен физический iPhone с настроенным Team.
+Typography.swift probes `UIFont.fontNames(forFamilyName:)` at startup to resolve the
+correct PostScript names. If you add a new custom font: add the family name to the probe
+list and hard-code the verified PostScript name. Never guess PostScript names from file
+names.
 
-## App Groups
+## Known limitations
 
-Оба таргета используют `group.com.ghoststream.vpn` для обмена конфигом и
-статусом между main app и PacketTunnelProvider (через
-`UserDefaults(suiteName:)` + Darwin notifications). Apple Developer портал
-выдаёт App Group автоматически при первой сборке на устройстве.
+### Ed25519 admin certs
 
-## Шрифты
-
-Все 7 TTF/OTF уже в `GhostStream/Theme/Fonts/` (Space Grotesk, Departure Mono,
-JetBrains Mono, Instrument Serif) и зарегистрированы в `Info.plist → UIAppFonts`.
-PostScript имена в `Theme/Typography.swift` помечены `// TODO verify` — их
-нужно проверить один раз после первого запуска через:
-```swift
-UIFont.familyNames.flatMap { UIFont.fontNames(forFamilyName: $0) }
+iOS Security framework rejects Ed25519 private keys for TLS client authentication.
+If the Admin panel shows a certificate error, regenerate the connection string using ECDSA:
+```bash
+phantom-keygen new-client --name <n> --key-type ecdsa
 ```
+Ed25519 keys are only usable for non-mTLS connections.
 
-## Связь с Rust
+### Per-app routing
 
-10 C-функций из `crates/client-apple/src/lib.rs` вызываются из Swift через
-`@_silgen_name` inline-декларации в `GhostStream/Rust/PhantomBridge.swift` —
-без отдельного bridging header, чтобы упростить линковку через XCFramework.
+Apple requires a special MDM entitlement (`com.apple.developer.networking.networkextension` 
+with `per-app-vpn`) that is not available without enterprise enrollment. Per-app routing
+is therefore not supported on iOS.
 
-## Известные ограничения iOS
+## App Group
 
-- **Per-app routing** — Apple не даёт сторонним приложениям (нужен MDM
-  entitlement). Поля в профиле (`perAppMode`, `perAppList`) сохраняются для
-  совместимости, но игнорируются. Секция в Settings скрыта.
-- **Ed25519 client cert для admin mTLS** — iOS `URLSession` не принимает
-  Ed25519 в `SecIdentity`. Если сервер выдал клиенту Ed25519-сертификат —
-  перевыпустить через `phantom-keygen` с флагом ECDSA P-256.
-- **Sleep/wake** — система может усыплять PacketTunnelProvider. Heartbeats
-  TLS из `client-common` поддерживают соединение; дополнительно `sleep()` /
-  `wake()` в extension корректно останавливают/возобновляют polling.
+All shared state flows through App Group `group.com.ghoststream.vpn`:
+- `files/profiles.json` — profile list (ProfilesStore)
+- `UserDefaults(suiteName:)` — preferences (PreferencesStore)
+- `snapshot.json` — last known StatusFrame (written by extension, read by host)
+- Keychain — PEM keys (kSecAttrAccessibleAfterFirstUnlock + shared access group)

@@ -10,13 +10,12 @@ crate-type = ["cdylib"]
 [dependencies]
 phantom-core          = { path = "../core" }
 phantom-client-common = { path = "../client-common" }
+client-core-runtime   = { path = "../client-core-runtime" }
+ghoststream-gui-ipc   = { path = "../gui-ipc" }
 tokio                 = { version = "1", features = ["full"] }
 anyhow                = "1"
 libc                  = "0.2"
-rustls                = { version = "0.23", features = ["ring", "std"] }
 jni                   = { version = "0.21", features = ["invocation"] }
-log                   = "0.4"
-tokio-rustls          = "0.26"
-socket2               = "0.5"
 bytes                 = "1"
+serde                 = { version = "1", features = ["derive"] }
 serde_json            = "1"

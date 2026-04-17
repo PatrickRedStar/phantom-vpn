@@ -8,8 +8,9 @@ name = "phantom-client-linux"
 path = "src/main.rs"
 
 [dependencies]
-phantom-core         = { path = "../../../crates/core" }
+phantom-core          = { path = "../../../crates/core" }
 phantom-client-common = { path = "../../../crates/client-common" }
+client-core-runtime   = { path = "../../../crates/client-core-runtime" }
 tokio                = { version = "1", features = ["full"] }
 tracing              = "0.1"
 tracing-subscriber   = { version = "0.3", features = ["env-filter"] }
