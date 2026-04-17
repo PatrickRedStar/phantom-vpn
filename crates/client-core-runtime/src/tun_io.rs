@@ -18,8 +18,9 @@ pub trait PacketIo: Send + Sync {
 pub enum TunIo {
     /// Linux with io_uring. Uses `phantom_core::tun_uring::spawn(fd, 4096)`.
     /// Suitable for Linux helper + CLI.
+    #[cfg(target_os = "linux")]
     Uring(RawFd),
-    /// Linux without io_uring (or Android). Uses `phantom_core::tun_simple::spawn(fd, 4096)`.
+    /// Blocking-thread TUN I/O using libc read/write. Works on Android and Linux.
     /// Suitable for Android JNI where io_uring is unavailable.
     BlockingThreads(RawFd),
     /// iOS NEPacketTunnelProvider: inbound packets are pushed by the caller via
