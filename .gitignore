@@ -41,3 +41,4 @@ apps/android/local.properties
 .codex/
 .gstack/
 .worktrees/
+.gitnexus
