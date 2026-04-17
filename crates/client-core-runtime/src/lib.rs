@@ -98,6 +98,7 @@ pub async fn run(
     // For Callback mode we also build an inbound mpsc channel.
     let (tun_factory, inbound_tx): (supervise::TunFactory, tokio::sync::mpsc::Sender<Bytes>) =
         match tun {
+            #[cfg(target_os = "linux")]
             TunIo::Uring(fd) => {
                 // io_uring-based TUN — Linux helper / CLI.
                 let factory: supervise::TunFactory = Arc::new(move || {
@@ -107,9 +108,32 @@ pub async fn run(
                 (factory, dummy_tx)
             }
             TunIo::BlockingThreads(fd) => {
-                // Simple blocking-threads TUN — Android JNI.
+                // Inline blocking-thread TUN I/O — works on Android and Linux.
+                // We dup() the fd so it's owned independently of the JNI layer.
+                let raw_fd = unsafe { libc::dup(fd) };
+                anyhow::ensure!(raw_fd >= 0, "dup(tun_fd) failed: {}", std::io::Error::last_os_error());
                 let factory: supervise::TunFactory = Arc::new(move || {
-                    phantom_core::tun_simple::spawn(fd, 4096)
+                    let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
+                    let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
+                    let tun_fd = raw_fd;
+                    // Reader thread: blocking libc::read → async channel
+                    std::thread::spawn(move || {
+                        let mut buf = vec![0u8; 4096];
+                        loop {
+                            let n = unsafe { libc::read(tun_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+                            if n <= 0 { break; }
+                            let pkt = Bytes::copy_from_slice(&buf[..n as usize]);
+                            if read_tx.blocking_send(pkt).is_err() { break; }
+                        }
+                    });
+                    // Writer task: async channel → blocking libc::write
+                    tokio::spawn(async move {
+                        while let Some(pkt) = write_rx.recv().await {
+                            let ret = unsafe { libc::write(tun_fd, pkt.as_ptr() as *const libc::c_void, pkt.len()) };
+                            if ret < 0 { break; }
+                        }
+                    });
+                    Ok((read_rx, write_tx))
                 });
                 let (dummy_tx, _) = tokio::sync::mpsc::channel::<Bytes>(1);
                 (factory, dummy_tx)
