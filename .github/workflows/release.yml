@@ -1,7 +1,5 @@
 name: Build & Release
 
-# Trigger: push a version tag (v1.0, v1.2.3, etc.)
-# Or run manually via Actions → Run workflow
 on:
   push:
     tags:
@@ -9,7 +7,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write   # needed to create GitHub Release
+  contents: write
 
 jobs:
 
@@ -110,7 +108,6 @@ jobs:
 
       - name: Build Rust .so for arm64-v8a
         run: |
-          # ANDROID_NDK_ROOT is a shell env var set by the runner, not a GH Actions context var
           export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
           cargo ndk -t arm64-v8a --platform 26 \
             build --release -p phantom-client-android
@@ -174,20 +171,92 @@ jobs:
           path: ghoststream-linux-gui-x86_64.tar.gz
 
 # ─────────────────────────────────────────────────────────────────────────────
+  build-openwrt:
+    name: OpenWrt client (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: mipsel-unknown-linux-musl
+            name: openwrt-mipsel
+            toolchain: nightly
+            build_std: true
+            use_zigbuild: false
+          - target: aarch64-unknown-linux-musl
+            name: openwrt-aarch64
+            toolchain: stable
+            build_std: false
+            use_zigbuild: true
+          - target: armv7-unknown-linux-musleabihf
+            name: openwrt-armv7
+            toolchain: stable
+            build_std: false
+            use_zigbuild: true
+          - target: x86_64-unknown-linux-musl
+            name: openwrt-x86_64
+            toolchain: stable
+            build_std: false
+            use_zigbuild: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ !matrix.build_std && matrix.target || '' }}
+          components: ${{ matrix.build_std && 'rust-src' || '' }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: openwrt-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: openwrt-${{ matrix.target }}-cargo-
+
+      - name: Install cargo-zigbuild
+        if: matrix.use_zigbuild
+        run: pip3 install ziglang && cargo install cargo-zigbuild
+
+      - name: Install cross
+        if: ${{ !matrix.use_zigbuild }}
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build with zigbuild
+        if: matrix.use_zigbuild
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p phantom-client-openwrt
+
+      - name: Build with cross (mipsel)
+        if: ${{ !matrix.use_zigbuild }}
+        env:
+          CROSS_CONTAINER_ENGINE: docker
+        run: |
+          cross build --release --target ${{ matrix.target }} -p phantom-client-openwrt \
+            -Z build-std=std,panic_abort
+
+      - name: Rename artifact
+        run: cp target/${{ matrix.target }}/release/ghoststream ${{ matrix.name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+
+# ─────────────────────────────────────────────────────────────────────────────
   release:
     name: Create GitHub Release
-    needs: [build-linux, build-server, build-android, build-linux-gui]
+    needs: [build-linux, build-server, build-android, build-linux-gui, build-openwrt]
     runs-on: ubuntu-latest
-    # Only create release when triggered by a version tag
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
-
-      - name: List artifacts
-        run: find artifacts/ -type f | sort
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -197,30 +266,37 @@ jobs:
             ## PhantomVPN ${{ github.ref_name }}
 
             ### Downloads
-            | Platform | File | Notes |
-            |----------|------|-------|
-            | Linux client x86_64 | `phantom-client-linux` | CLI VPN client |
-            | Server x86_64 | `phantom-server` | VPN server daemon |
-            | Keygen x86_64 | `phantom-keygen` | Server/client key generator |
-            | Android (arm64) | `app-debug.apk` | GhostStream VPN app |
-            | Linux GUI x86_64 | `ghoststream-linux-gui-x86_64.tar.gz` | Slint GUI + privileged helper |
+            | Platform | File |
+            |----------|------|
+            | Linux client x86_64 | `phantom-client-linux` |
+            | Server x86_64 | `phantom-server` |
+            | Keygen x86_64 | `phantom-keygen` |
+            | Android (arm64) | `app-debug.apk` |
+            | Linux GUI x86_64 | `ghoststream-linux-gui-x86_64.tar.gz` |
+            | OpenWrt aarch64 | `openwrt-aarch64` |
+            | OpenWrt armv7 | `openwrt-armv7` |
+            | OpenWrt x86_64 | `openwrt-x86_64` |
+            | OpenWrt mipsel | `openwrt-mipsel` |
+
+            ### OpenWrt install
+            ```sh
+            wget -O /tmp/ghoststream https://github.com/${{ github.repository }}/releases/latest/download/openwrt-$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/aarch64/;s/armv7l/armv7/')
+            chmod +x /tmp/ghoststream && /tmp/ghoststream
+            ```
 
             ### Android install
-            ```
+            ```sh
             adb install app-debug.apk
             ```
-
-            ### Server deployment
-            See `server/scripts/deploy.sh` or copy binaries to `/opt/phantom-vpn/` and install the
-            `phantom-server.service` systemd unit from `server/scripts/`.
-
-            ### Config
-            See [config examples](server/config/) in the repository.
           files: |
             artifacts/phantom-client-linux/phantom-client-linux
             artifacts/phantom-server/phantom-server
             artifacts/phantom-keygen/phantom-keygen
             artifacts/PhantomVPN-Android/app-debug.apk
             artifacts/ghoststream-linux-gui-x86_64/ghoststream-linux-gui-x86_64.tar.gz
+            artifacts/openwrt-aarch64/openwrt-aarch64
+            artifacts/openwrt-armv7/openwrt-armv7
+            artifacts/openwrt-x86_64/openwrt-x86_64
+            artifacts/openwrt-mipsel/openwrt-mipsel
           draft: false
           prerelease: false
