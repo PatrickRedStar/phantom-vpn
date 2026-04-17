@@ -121,11 +121,6 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
-
-      - name: Generate Gradle wrapper
-        run: cd apps/android && gradle wrapper --gradle-version 8.7
 
       - name: Build debug APK
         run: cd apps/android && ./gradlew assembleDebug --no-daemon
@@ -150,7 +145,7 @@ jobs:
             fontconfig libfontconfig-dev \
             libxkbcommon-dev libwayland-dev \
             libxcb1-dev libxkbcommon-x11-dev \
-            libssl-dev pkg-config
+            libssl-dev pkg-config libdbus-1-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
