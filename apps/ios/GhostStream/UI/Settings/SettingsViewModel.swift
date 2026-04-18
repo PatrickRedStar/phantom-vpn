@@ -9,6 +9,7 @@
 import Foundation
 import Network
 import Observation
+import PhantomKit
 import os.log
 
 /// Errors raised by `SettingsViewModel.importFromString`.
@@ -150,7 +151,7 @@ public final class SettingsViewModel {
 
     /// Sets the theme override (`.system` / `.dark` / `.light`).
     func setTheme(_ override: ThemeOverride) {
-        ThemeOverride.set(override)
+        preferencesStore.theme = override.rawValue
     }
 
     /// Overrides app language. `nil` → follow system.

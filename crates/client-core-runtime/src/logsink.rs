@@ -12,12 +12,16 @@ use tracing::field::{Field, Visit};
 use tracing::Event;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Layer};
+use tracing_subscriber::{reload, EnvFilter, Layer};
 
 const CHANNEL_CAP: usize = 256;
 
 type Subs = Mutex<Vec<mpsc::Sender<LogFrame>>>;
 static SUBS: OnceLock<Subs> = OnceLock::new();
+
+/// Handle for runtime log-level changes via `set_level()`.
+static FILTER_HANDLE: OnceLock<reload::Handle<EnvFilter, tracing_subscriber::Registry>> =
+    OnceLock::new();
 
 fn subs() -> &'static Subs {
     SUBS.get_or_init(|| Mutex::new(Vec::new()))
@@ -50,6 +54,13 @@ pub fn subscribe() -> LogReceiver {
 pub fn add_sender(tx: mpsc::Sender<LogFrame>) {
     let mut g = subs().lock().unwrap();
     g.push(tx);
+}
+
+/// Remove all registered senders. Called before a new tunnel session
+/// to prevent stale senders from the previous session duplicating log lines.
+pub fn clear_senders() {
+    let mut g = subs().lock().unwrap();
+    g.clear();
 }
 
 // ── BroadcastLayer ──────────────────────────────────────────────────────────
@@ -90,7 +101,7 @@ where
             tracing::Level::WARN  => "WRN",
             tracing::Level::INFO  => "INF",
             tracing::Level::DEBUG => "DBG",
-            tracing::Level::TRACE => "DBG",
+            tracing::Level::TRACE => "TRC",
         };
 
         let mut msg = String::new();
@@ -116,17 +127,37 @@ where
 /// Logs go to stderr + all registered senders.
 pub fn install() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("info,client_core_runtime=debug,phantom_core=info,client_common=info")
+        EnvFilter::new("info,client_core_runtime=debug,phantom_core=info,client_common=info,jni=warn,rustls=warn,h2=warn,hyper=warn")
     });
+
+    let (filter_layer, handle) = reload::Layer::new(filter);
 
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .compact();
 
-    tracing_subscriber::registry()
-        .with(filter)
+    let ok = tracing_subscriber::registry()
+        .with(filter_layer)
         .with(stderr_layer)
         .with(BroadcastLayer)
         .try_init()
-        .ok();
+        .is_ok();
+
+    if ok {
+        let _ = FILTER_HANDLE.set(handle);
+    }
+}
+
+/// Change the tracing log level at runtime. Called from `nativeSetLogLevel`.
+/// `level` is one of: "trace", "debug", "info", "warn", "error".
+///
+/// Always suppresses noisy internal crates (`jni`, `rustls`) to avoid a
+/// feedback loop: jni's `attach_current_thread()` emits DEBUG logs which
+/// BroadcastLayer sends back through JNI, triggering another attach, etc.
+pub fn set_level(level: &str) {
+    if let Some(handle) = FILTER_HANDLE.get() {
+        let filter_str = format!("{},jni=warn,rustls=warn,h2=warn,hyper=warn", level);
+        let new_filter = EnvFilter::new(filter_str);
+        let _ = handle.reload(new_filter);
+    }
 }

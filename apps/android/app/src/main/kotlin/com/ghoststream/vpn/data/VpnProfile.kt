@@ -25,4 +25,7 @@ data class VpnProfile(
     val cachedIsAdmin: Boolean? = null,
     // SHA-256 (hex) of the admin-server cert pinned after first mTLS handshake
     val cachedAdminServerCertFp: String? = null,
+    // Relay: when enabled, TCP connects to relayAddr instead of serverAddr (SNI passthrough)
+    val relayEnabled: Boolean = false,
+    val relayAddr: String? = null,
 )

@@ -35,8 +35,25 @@ public final class PreferencesStore {
         static let theme             = "theme"
     }
 
+    /// Stored property so `@Observable` can track changes and trigger SwiftUI
+    /// re-renders. Synced to UserDefaults in `didSet`.
+    public var theme: String = "dark" {
+        didSet { defaults.set(theme, forKey: Key.theme) }
+    }
+
+    /// Stored property so `@Observable` can track changes.
+    public var languageOverride: String? = nil {
+        didSet {
+            if let v = languageOverride { defaults.set(v, forKey: Key.languageOverride) }
+            else { defaults.removeObject(forKey: Key.languageOverride) }
+        }
+    }
+
     private init() {
         self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
+        // Hydrate stored properties from UserDefaults
+        self.theme = defaults.string(forKey: Key.theme) ?? "dark"
+        self.languageOverride = defaults.string(forKey: Key.languageOverride)
     }
 
     // MARK: - DNS
@@ -126,19 +143,6 @@ public final class PreferencesStore {
 
     // MARK: - Locale / theme
 
-    /// Override for the app's locale (e.g. "en", "ru"). nil = system.
-    public var languageOverride: String? {
-        get { defaults.string(forKey: Key.languageOverride) }
-        set {
-            if let v = newValue { defaults.set(v, forKey: Key.languageOverride) }
-            else { defaults.removeObject(forKey: Key.languageOverride) }
-        }
-    }
-
-    /// One of "system", "dark", "light". Default is `"dark"` — GhostStream's
-    /// retro "cathode" aesthetic is designed around the warm-black palette.
-    public var theme: String {
-        get { defaults.string(forKey: Key.theme) ?? "dark" }
-        set { defaults.set(newValue, forKey: Key.theme) }
-    }
+    // `theme` and `languageOverride` are stored properties declared near
+    // init() so `@Observable` can track them for SwiftUI reactivity.
 }

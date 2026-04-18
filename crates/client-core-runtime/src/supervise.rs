@@ -7,17 +7,18 @@
 use anyhow::Context;
 use bytes::Bytes;
 use std::net::SocketAddr;
+use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use client_common::helpers;
-use client_common::{tls_connect, tls_rx_loop, tls_tx_loop, write_handshake};
+use client_common::{tls_connect, tls_connect_with_tcp, tls_rx_loop, tls_tx_loop, write_handshake};
 use ghoststream_gui_ipc::{ConnState, ConnectProfile, StatusFrame, TunnelSettings};
 use phantom_core::wire::{flow_stream_idx, n_data_streams};
 use tokio::sync::{watch, Mutex};
 
 use crate::telemetry::{spawn_telem_task, Telemetry};
-use crate::{BACKOFF_SECS, MAX_ATTEMPTS};
+use crate::{ProtectSocket, BACKOFF_SECS, MAX_ATTEMPTS};
 
 /// Callback invoked by `supervise()` each attempt to create fresh TUN I/O
 /// channels. Returns `(packet_reader, packet_writer)` — the same pair that
@@ -43,6 +44,7 @@ pub async fn supervise(
     status_tx: watch::Sender<StatusFrame>,
     cancel: Arc<tokio::sync::Notify>,
     shared_telem: Arc<Mutex<Option<Arc<Telemetry>>>>,
+    protect_socket: Option<ProtectSocket>,
 ) {
     let mut attempt: u32 = 0;
 
@@ -153,6 +155,8 @@ pub async fn supervise(
             status_tx.clone(),
             telemetry.clone(),
             tun_channels,
+            protect_socket.clone(),
+            cancel.clone(),
         )
         .await;
 
@@ -274,6 +278,8 @@ async fn drive_tunnel(
         tokio::sync::mpsc::Receiver<Bytes>,
         tokio::sync::mpsc::Sender<Bytes>,
     ),
+    protect_socket: Option<ProtectSocket>,
+    cancel: Arc<tokio::sync::Notify>,
 ) -> anyhow::Result<()> {
     let client_tls =
         phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
@@ -290,9 +296,32 @@ async fn drive_tunnel(
     let mut tls_writers = Vec::with_capacity(n_streams);
     let mut tls_readers = Vec::with_capacity(n_streams);
     for idx in 0..n_streams {
-        let (r, mut w) = tls_connect(server_addr, server_name.clone(), client_tls.clone())
-            .await
-            .with_context(|| format!("stream {} tls connect", idx))?;
+        let (r, mut w) = if let Some(ref protect) = protect_socket {
+            // Android: create socket, protect it from VPN routing, then connect.
+            let socket = if server_addr.is_ipv4() {
+                tokio::net::TcpSocket::new_v4()
+            } else {
+                tokio::net::TcpSocket::new_v6()
+            }.with_context(|| format!("stream {} socket create", idx))?;
+
+            let fd = socket.as_raw_fd();
+            if !protect(fd) {
+                anyhow::bail!("stream {} VpnService.protect() failed", idx);
+            }
+
+            let tcp = socket.connect(server_addr)
+                .await
+                .with_context(|| format!("stream {} tcp connect", idx))?;
+
+            tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
+                .await
+                .with_context(|| format!("stream {} tls connect", idx))?
+        } else {
+            // Linux/iOS: no socket protection needed.
+            tls_connect(server_addr, server_name.clone(), client_tls.clone())
+                .await
+                .with_context(|| format!("stream {} tls connect", idx))?
+        };
         write_handshake(&mut w, idx as u8, n_streams as u8)
             .await
             .with_context(|| format!("stream {} handshake", idx))?;
@@ -411,6 +440,10 @@ async fn drive_tunnel(
     };
 
     tokio::select! {
+        _ = cancel.notified() => {
+            tracing::info!(target: "client_core_runtime", "explicit disconnect (cancel notified)");
+            telemetry.shutdown.store(true, Ordering::SeqCst);
+        }
         _ = shutdown_poll => {
             tracing::info!(target: "client_core_runtime", "shutdown flag set");
         }

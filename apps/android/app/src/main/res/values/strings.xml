@@ -44,6 +44,7 @@
     <string name="chip_info">Info</string>
     <string name="chip_warn">Warn</string>
     <string name="chip_error">Error</string>
+    <string name="chip_clear">Clear</string>
     <string name="chip_share">Share</string>
     <!-- Settings -->
     <string name="set_endpoints">Endpoints</string>
@@ -74,6 +75,9 @@
     <string name="value_edit">Edit</string>
     <string name="edit_profile_title">Edit profile</string>
     <string name="edit_profile_name_hint">Display name</string>
+    <string name="edit_relay_label">Relay</string>
+    <string name="edit_relay_hint">Relay host:port</string>
+    <string name="edit_relay_sub">Route traffic through relay (SNI passthrough)</string>
     <string name="confirm_delete">Delete this profile? This cannot be undone.</string>
 
     <!-- Per-app picker -->
@@ -91,6 +95,10 @@
     <string name="split_download_all">Download all</string>
     <string name="split_download">Download</string>
     <string name="split_downloaded">Downloaded</string>
+
+    <string name="kv_route">Route</string>
+    <string name="kv_route_relay">Relay</string>
+    <string name="kv_route_direct">Direct</string>
 
     <string name="tag_active">Active</string>
     <string name="tag_standby">Standby</string>

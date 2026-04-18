@@ -54,6 +54,12 @@ public final class ProfilesStore {
         return profiles.first
     }
 
+    /// Returns the profile with the given id, with PEM secrets hydrated from
+    /// the Keychain. Returns nil if no profile with that id exists.
+    public func load(id: String) -> VpnProfile? {
+        profiles.first(where: { $0.id == id })
+    }
+
     // MARK: - Mutations
 
     /// Appends a new profile. If no profile is active, activates it.
@@ -85,6 +91,27 @@ public final class ProfilesStore {
         guard profiles.contains(where: { $0.id == id }) else { return }
         activeId = id
         save()
+    }
+
+    /// Parses a `ghs://` conn string via the Rust bridge and inserts the
+    /// resulting profile. Returns the newly-added profile.
+    /// - Throws: `ConnStringError.invalid` on parse failure.
+    @discardableResult
+    public func importFromConnString(_ input: String) throws -> VpnProfile {
+        guard let parsed = PhantomBridge.parseConnString(input) else {
+            throw ConnStringError.invalid
+        }
+        let profile = VpnProfile(
+            serverAddr: parsed.serverAddr,
+            serverName: parsed.serverName,
+            insecure: false,
+            certPem: parsed.certPem,
+            keyPem: parsed.keyPem,
+            tunAddr: parsed.tunAddr,
+            connString: input
+        )
+        add(profile)
+        return profile
     }
 
     /// Errors from `importFromConnString`.

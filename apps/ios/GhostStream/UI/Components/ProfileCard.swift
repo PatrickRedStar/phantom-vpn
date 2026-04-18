@@ -6,6 +6,7 @@
 //  Shows name, server address, ping indicator and subscription expiry.
 //
 
+import PhantomKit
 import SwiftUI
 
 /// Card representation of a `VpnProfile` used inside the Settings list.

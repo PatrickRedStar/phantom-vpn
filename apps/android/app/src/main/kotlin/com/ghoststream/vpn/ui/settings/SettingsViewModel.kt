@@ -157,6 +157,17 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         profilesStore.updateProfile(profile.copy(name = name.trim().ifEmpty { profile.name }))
     }
 
+    fun updateProfileFields(id: String, name: String, relayEnabled: Boolean, relayAddr: String?) {
+        val profile = profilesStore.profiles.value.find { it.id == id } ?: return
+        profilesStore.updateProfile(
+            profile.copy(
+                name = name.trim().ifEmpty { profile.name },
+                relayEnabled = relayEnabled,
+                relayAddr = relayAddr,
+            ),
+        )
+    }
+
     fun updateProfileEndpoint(id: String, serverAddr: String, serverName: String) {
         val profile = profilesStore.profiles.value.find { it.id == id } ?: return
         val addr = serverAddr.trim()

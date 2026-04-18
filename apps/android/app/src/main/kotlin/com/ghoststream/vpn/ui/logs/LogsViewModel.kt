@@ -47,6 +47,9 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     private val tsFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     init {
+        // Ensure Rust sends all log levels — filtering is UI-only.
+        try { GhostStreamVpnService.nativeSetLogLevel("trace") } catch (_: Exception) {}
+
         // Collect push-based log frames from Rust via VpnStateManager.
         viewModelScope.launch {
             VpnStateManager.logFrames.collect { frame ->
@@ -87,17 +90,6 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     fun setFilter(level: String) {
         _filter.value = level
         applyFilter()
-        val rustLevel = when (level) {
-            "TRACE" -> "trace"
-            "DEBUG" -> "debug"
-            "INFO"  -> "info"
-            "WARN"  -> "warn"
-            "ERROR" -> "error"
-            else    -> "trace"  // ALL → show everything
-        }
-        try {
-            GhostStreamVpnService.nativeSetLogLevel(rustLevel)
-        } catch (_: Exception) {}
     }
 
     fun clearLogs() {

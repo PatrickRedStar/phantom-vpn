@@ -4,6 +4,7 @@
 
 import Foundation
 import NetworkExtension
+import PhantomKit
 import os.log
 
 /// Errors raised by `VpnTunnelController`.

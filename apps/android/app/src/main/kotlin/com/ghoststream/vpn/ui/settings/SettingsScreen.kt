@@ -532,6 +532,8 @@ fun SettingsScreen(
     // ── Edit Profile Dialog ────────────────────────────────────────────────
     if (editingProfile != null) {
         var showDeleteConfirm by remember { mutableStateOf(false) }
+        var relayEnabled by remember(editingProfile) { mutableStateOf(editingProfile!!.relayEnabled) }
+        var relayAddr by remember(editingProfile) { mutableStateOf(editingProfile!!.relayAddr ?: "") }
         GhostDialog(
             onDismissRequest = { editingProfile = null },
             title = stringResource(R.string.edit_profile_title),
@@ -563,6 +565,46 @@ fun SettingsScreen(
                     style = GsText.host,
                     color = C.textFaint,
                 )
+                // ── Relay ────────────────────────────────────────────
+                Spacer(Modifier.height(12.dp))
+                DashedHairline()
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stringResource(R.string.edit_relay_label),
+                            style = GsText.profileName,
+                            color = C.bone,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            stringResource(R.string.edit_relay_sub),
+                            style = GsText.host,
+                            color = C.textDim,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    GhostToggle(
+                        checked = relayEnabled,
+                        onToggle = { relayEnabled = !relayEnabled },
+                    )
+                }
+                if (relayEnabled) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = relayAddr,
+                        onValueChange = { relayAddr = it },
+                        label = { Text(stringResource(R.string.edit_relay_hint)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = TextStyle(fontFamily = com.ghoststream.vpn.ui.theme.JetBrainsMono, fontSize = 11.sp),
+                        colors = ghostTextFieldColors(),
+                        shape = GhostTextFieldShape,
+                    )
+                }
                 if (editingProfile!!.cachedIsAdmin == true) {
                     Spacer(Modifier.height(12.dp))
                     GhostFab(
@@ -596,7 +638,12 @@ fun SettingsScreen(
             },
             confirmButton = {
                 GhostDialogButton(stringResource(R.string.action_save), onClick = {
-                    viewModel.renameProfile(editingProfile!!.id, editName)
+                    viewModel.updateProfileFields(
+                        editingProfile!!.id,
+                        name = editName,
+                        relayEnabled = relayEnabled,
+                        relayAddr = relayAddr.trim().ifBlank { null },
+                    )
                     editingProfile = null
                 })
             },

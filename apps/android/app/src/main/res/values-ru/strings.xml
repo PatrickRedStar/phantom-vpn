@@ -40,6 +40,7 @@
     <string name="chip_info">Info</string>
     <string name="chip_warn">Warn</string>
     <string name="chip_error">Error</string>
+    <string name="chip_clear">Очистить</string>
     <string name="chip_share">Отправить</string>
     <string name="set_endpoints">Эндпоинты</string>
     <string name="set_routing">Маршрутизация</string>
@@ -69,6 +70,9 @@
     <string name="value_edit">Изменить</string>
     <string name="edit_profile_title">Редактировать профиль</string>
     <string name="edit_profile_name_hint">Отображаемое имя</string>
+    <string name="edit_relay_label">Relay</string>
+    <string name="edit_relay_hint">Relay хост:порт</string>
+    <string name="edit_relay_sub">Направлять трафик через relay (SNI passthrough)</string>
     <string name="confirm_delete">Удалить этот профиль? Отменить нельзя.</string>
 
     <!-- Per-app picker -->
@@ -86,6 +90,10 @@
     <string name="split_download_all">Скачать все</string>
     <string name="split_download">Скачать</string>
     <string name="split_downloaded">Загружен</string>
+
+    <string name="kv_route">Маршрут</string>
+    <string name="kv_route_relay">Relay</string>
+    <string name="kv_route_direct">Напрямую</string>
 
     <string name="tag_active">Активен</string>
     <string name="tag_standby">Ожидает</string>

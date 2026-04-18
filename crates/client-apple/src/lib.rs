@@ -174,7 +174,7 @@ pub extern "C" fn phantom_runtime_start(
         let (log_tx, mut log_rx) = mpsc::channel::<client_core_runtime::LogFrame>(256);
 
         // Start the runtime (blocking until run() returns).
-        let (handles, join) = match rt.block_on(client_core_runtime::run(cfg, tun, status_tx, log_tx)) {
+        let (handles, join) = match rt.block_on(client_core_runtime::run(cfg, tun, status_tx, log_tx, None)) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("phantom_runtime_start: run() failed: {}", e);

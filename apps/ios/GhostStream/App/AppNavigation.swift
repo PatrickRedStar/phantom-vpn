@@ -7,6 +7,7 @@
 //  don't leak between tabs. Admin is NOT a tab — it's pushed from Settings.
 //
 
+import PhantomKit
 import SwiftUI
 
 /// Tab identifier for the bottom nav.
