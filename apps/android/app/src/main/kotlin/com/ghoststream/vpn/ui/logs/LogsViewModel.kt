@@ -10,12 +10,14 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.service.GhostStreamVpnService
-import kotlinx.coroutines.delay
+import com.ghoststream.vpn.service.VpnStateManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import org.json.JSONArray
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class LogEntry(
     val seq: Long,
@@ -35,47 +37,39 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs
 
-    private val _filter = MutableStateFlow("INFO")
+    private val _filter = MutableStateFlow("ALL")
     val filter: StateFlow<String> = _filter
 
     private val _autoScroll = MutableStateFlow(true)
     val autoScroll: StateFlow<Boolean> = _autoScroll
 
-    private var lastSeq = -1L
+    private var nextSeq = 0L
+    private val tsFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     init {
+        // Collect push-based log frames from Rust via VpnStateManager.
         viewModelScope.launch {
-            while (true) {
-                fetchNewLogs()
-                delay(500)
-            }
-        }
-    }
-
-    private fun fetchNewLogs() {
-        try {
-            val json = GhostStreamVpnService.nativeGetLogs(lastSeq) ?: return
-            if (json == "[]") return
-            val arr = JSONArray(json)
-            var changed = false
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val seq = obj.optLong("seq", -1)
-                if (seq <= lastSeq) continue
+            VpnStateManager.logFrames.collect { frame ->
+                val levelNorm = when (frame.level) {
+                    "ERR" -> "ERROR"
+                    "WRN" -> "WARN"
+                    "INF" -> "INFO"
+                    "DBG" -> "DEBUG"
+                    "TRC" -> "TRACE"
+                    else -> frame.level
+                }
                 allLogs.add(
                     LogEntry(
-                        seq = seq,
-                        timestamp = obj.optString("ts", ""),
-                        level = obj.optString("level", "INFO"),
-                        message = obj.optString("msg", ""),
+                        seq = nextSeq++,
+                        timestamp = tsFormat.format(Date(frame.tsUnixMs)),
+                        level = levelNorm,
+                        message = frame.msg,
                     ),
                 )
-                if (seq > lastSeq) lastSeq = seq
-                changed = true
+                while (allLogs.size > 50000) allLogs.removeAt(0)
+                applyFilter()
             }
-            while (allLogs.size > 50000) allLogs.removeAt(0)
-            if (changed) applyFilter()
-        } catch (_: Exception) {}
+        }
     }
 
     private fun applyFilter() {

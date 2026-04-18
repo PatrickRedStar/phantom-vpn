@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.data.AdminHttpClient
+import com.ghoststream.vpn.data.ConnStringParser
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
@@ -14,6 +15,7 @@ import okhttp3.Request
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.service.VpnStateManager
+import com.ghoststream.vpn.service.StatusFrameData
 import com.ghoststream.vpn.util.FormatUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -61,6 +63,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _timerText = MutableStateFlow("00:00:00")
     val timerText: StateFlow<String> = _timerText
 
+    /** Push-based status frame from Rust via VpnStateManager. */
+    val statusFrame: StateFlow<StatusFrameData> = VpnStateManager.statusFrame
+
     private val _stats = MutableStateFlow(VpnStats())
     val stats: StateFlow<VpnStats> = _stats
 
@@ -76,7 +81,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 when (state) {
                     is VpnState.Connected -> {
                         startTimer(state.since)
-                        startStatsPolling(state.since)
                         fetchSubscriptionInfo()
                     }
                     else -> {
@@ -99,26 +103,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun startStatsPolling(since: Instant) {
-        viewModelScope.launch {
-            while (vpnState.value is VpnState.Connected) {
-                try {
-                    val json = GhostStreamVpnService.nativeGetStats() ?: "{}"
-                    val obj = JSONObject(json)
-                    val elapsed = Duration.between(since, Instant.now()).seconds
-                    _stats.value = VpnStats(
-                        bytesRx     = obj.optLong("bytes_rx"),
-                        bytesTx     = obj.optLong("bytes_tx"),
-                        pktsRx      = obj.optLong("pkts_rx"),
-                        pktsTx      = obj.optLong("pkts_tx"),
-                        connected   = obj.optBoolean("connected"),
-                        elapsedSecs = elapsed,
-                    )
-                } catch (_: Exception) {}
-                delay(1000)
-            }
-        }
-    }
+    // Stats are now push-based via VpnStateManager.statusFrame (Phase 4).
+    // The old nativeGetStats() polling was removed — it returned null after Phase 4.
 
     private fun fetchSubscriptionInfo() {
         val profile = profilesStore.getActiveProfile() ?: return
@@ -245,6 +231,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 ""
             }
 
+            // Build ghs:// conn_string required by Phase 4 nativeStart
+            val connString = if (profile != null) {
+                withContext(Dispatchers.IO) { ConnStringParser.build(profile!!) ?: "" }
+            } else ""
+
             val ctx = getApplication<Application>()
             val intent = Intent(ctx, GhostStreamVpnService::class.java).apply {
                 action = GhostStreamVpnService.ACTION_START
@@ -260,6 +251,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 putExtra(GhostStreamVpnService.EXTRA_DIRECT_CIDRS, directCidrsPath)
                 putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
                 putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
+                putExtra(GhostStreamVpnService.EXTRA_CONN_STRING, connString)
             }
             ctx.startForegroundService(intent)
         }

@@ -58,6 +58,7 @@ import androidx.compose.runtime.LaunchedEffect as LE
 fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
+    val statusFrame by viewModel.statusFrame.collectAsStateWithLifecycle()
     val timerText by viewModel.timerText.collectAsStateWithLifecycle()
     val subscriptionText by viewModel.subscriptionText.collectAsStateWithLifecycle()
     val preflightWarning by viewModel.preflightWarning.collectAsStateWithLifecycle()
@@ -82,21 +83,21 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         else -> "${scopeWindowSecs}s"
     }
 
-    // Rolling RX/TX sparkline (delta per second)
+    // Rolling RX/TX sparkline (delta per second) — fed by push-based statusFrame
     val rxBuffer = remember { mutableStateListOf<Float>() }
     val txBuffer = remember { mutableStateListOf<Float>() }
     var lastRx by remember { mutableStateOf(0L) }
     var lastTx by remember { mutableStateOf(0L) }
-    LE(stats.bytesRx, stats.bytesTx, vpnState) {
+    LE(statusFrame.bytesRx, statusFrame.bytesTx, vpnState) {
         if (vpnState is VpnState.Connected) {
-            val dRx = (stats.bytesRx - lastRx).coerceAtLeast(0)
-            val dTx = (stats.bytesTx - lastTx).coerceAtLeast(0)
+            val dRx = (statusFrame.bytesRx - lastRx).coerceAtLeast(0)
+            val dTx = (statusFrame.bytesTx - lastTx).coerceAtLeast(0)
             rxBuffer.add(dRx.toFloat())
             txBuffer.add(dTx.toFloat())
             while (rxBuffer.size > scopeWindowSecs) rxBuffer.removeAt(0)
             while (txBuffer.size > scopeWindowSecs) txBuffer.removeAt(0)
-            lastRx = stats.bytesRx
-            lastTx = stats.bytesTx
+            lastRx = statusFrame.bytesRx
+            lastTx = statusFrame.bytesTx
         } else {
             rxBuffer.clear(); txBuffer.clear(); lastRx = 0; lastTx = 0
         }

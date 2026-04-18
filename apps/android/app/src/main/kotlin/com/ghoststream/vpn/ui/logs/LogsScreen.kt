@@ -141,11 +141,23 @@ private fun LogEntryRow(entry: LogEntry) {
     val lvlColor = when (entry.level.uppercase()) {
         "ERROR" -> C.danger
         "WARN"  -> C.warn
-        "INFO"  -> C.textDim
+        "INFO"  -> C.signal
         "DEBUG" -> BlueDebug
         "TRACE" -> C.textFaint
         "OK"    -> C.signal
         else    -> C.textDim
+    }
+    val msgColor = when (entry.level.uppercase()) {
+        "ERROR" -> C.danger.copy(alpha = 0.85f)
+        "WARN"  -> C.warn.copy(alpha = 0.8f)
+        "DEBUG" -> BlueDebug.copy(alpha = 0.7f)
+        "TRACE" -> C.textFaint
+        else    -> C.bone
+    }
+    val rowBg = when (entry.level.uppercase()) {
+        "ERROR" -> C.danger.copy(alpha = 0.08f)
+        "WARN"  -> C.warn.copy(alpha = 0.05f)
+        else    -> Color.Transparent
     }
     val lvlShort = when (entry.level.uppercase()) {
         "ERROR" -> "ERR"
@@ -159,7 +171,16 @@ private fun LogEntryRow(entry: LogEntry) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp),
+            .background(rowBg)
+            .drawBehind {
+                // Left accent bar
+                drawRect(
+                    color = lvlColor,
+                    topLeft = Offset.Zero,
+                    size = androidx.compose.ui.geometry.Size(2.dp.toPx(), size.height),
+                )
+            }
+            .padding(start = 6.dp, top = 2.dp, bottom = 2.dp),
         verticalAlignment = Alignment.Top,
     ) {
         Text(
@@ -178,7 +199,7 @@ private fun LogEntryRow(entry: LogEntry) {
         Text(
             text = entry.message,
             style = GsText.logMsg,
-            color = C.bone,
+            color = msgColor,
             modifier = Modifier.fillMaxWidth(),
         )
     }
