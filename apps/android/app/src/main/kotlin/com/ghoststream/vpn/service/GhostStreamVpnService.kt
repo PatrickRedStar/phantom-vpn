@@ -215,22 +215,17 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      * instead of polling nativeGetStats().
      */
     override fun onStatusFrame(json: String) {
+        Log.d(TAG, "status: $json")
         // Store for watchdog polling via readNativeStats().
         lastStatusJson = json
-        // State transitions are handled by the watchdog reading lastStatusJson.
+        // Push to VpnStateManager so DashboardViewModel can observe.
+        VpnStateManager.pushStatusFrame(json)
     }
 
-    /**
-     * Called from Rust when a new log frame arrives. Appended to the log buffer
-     * in VpnStateManager for LogsViewModel consumption.
-     *
-     * TODO (Phase 5): route to LogsViewModel directly via a StateFlow instead of
-     * the current polling nativeGetLogs() approach.
-     */
     override fun onLogFrame(json: String) {
-        // Log to Android logcat for debugging; LogsViewModel still polls via
-        // nativeGetLogs() stub during migration (returns null → no-op).
         Log.d(TAG, "log: $json")
+        // Push to VpnStateManager so LogsViewModel can observe.
+        VpnStateManager.pushLogFrame(json)
     }
 
     override fun onCreate() {
@@ -372,6 +367,12 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             }
         }
 
+        // КРИТИЧНО: резолвим hostname ДО builder.establish(). После establish()
+        // activeNetwork становится VPN, и resolveServerAddrViaUnderlying() не
+        // сможет найти не-VPN сеть для DNS. Без этого Rust получает hostname
+        // вместо IP и его DNS-запрос идёт через мёртвый TUN → "No address".
+        val effectiveAddr = resolveServerAddrViaUnderlying(serverAddr)
+
         vpnInterface = builder.establish() ?: run {
             VpnStateManager.update(VpnState.Error("Не удалось создать TUN"))
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -396,10 +397,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         )
 
         val fd = vpnInterface!!.fd
-        // Резолвим hostname через не-VPN сеть до вызова native: если VPN DNS
-        // уже настроен системой, но tun мёртв, tokio-резолвер внутри Rust
-        // зависает в getaddrinfo. Передаём уже готовый IP:port.
-        val effectiveAddr = resolveServerAddrViaUnderlying(serverAddr)
         // Phase 4: build ConnectProfile JSON for the new nativeStart.
         val cfgJson = buildConnectProfileJson(name = serverName, connString = connString, serverAddr = effectiveAddr)
         val settingsJson = """{"dns_leak_protection":true,"ipv6_killswitch":true,"auto_reconnect":true}"""
@@ -413,11 +410,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             return
         }
 
-        // Set Connected immediately so Android starts routing traffic through VPN
-        // Watchdog will monitor connection health
-        val notification = buildNotification("Подключение...")
-        startForeground(1, notification)
-        VpnStateManager.update(VpnState.Connecting)
+        // Watchdog will transition to Connected once Rust reports state=connected.
+        // Note: VpnState.Connecting was already set by DashboardViewModel.startVpn()
+        // before the service intent was sent, so no update needed here.
 
         startWatchdog(serverName, serverAddr)
     }
@@ -442,6 +437,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     if (connected && !wasConnected) {
                         wasConnected = true
                         timeoutSecs = Int.MAX_VALUE
+                        Log.i(TAG, "Tunnel connected to $serverAddr")
                         mainHandler.post {
                             VpnStateManager.update(VpnState.Connected(serverName = serverName))
                             val nm = getSystemService(NotificationManager::class.java)
@@ -453,6 +449,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     }
                     if (!connected && wasConnected) {
                         wasConnected = false
+                        Log.i(TAG, "Tunnel lost connection, starting reconnect")
+                        VpnStateManager.emitLifecycleLog("WARN", "Соединение потеряно, переподключение...")
                         mainHandler.post {
                             VpnStateManager.update(VpnState.Connecting)
                             getSystemService(NotificationManager::class.java)
@@ -468,6 +466,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                         while (attempt < 8) {
                             if (!hasUsableNetwork()) {
                                 Log.i(TAG, "No usable network — parking reconnect until onAvailable")
+                                VpnStateManager.emitLifecycleLog("WARN", "Нет сети — ожидание подключения...")
                                 if (!waitForUsableNetwork()) break@outer
                                 // Сеть появилась — пробуем сразу, без exponential задержки.
                                 backoffMs = 3_000L
@@ -484,6 +483,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                             backoffMs = minOf(backoffMs * 2, 60_000L)
                         }
                         if (!reconnected) {
+                            VpnStateManager.emitLifecycleLog("ERROR", "8 попыток реконнекта исчерпаны")
                             mainHandler.post { failTunnel("Не удалось переподключиться к серверу") }
                             break@outer
                         }
@@ -493,6 +493,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     // иначе 60-секундный бюджет сгорает за время простоя WiFi.
                     if (hasUsableNetwork()) timeoutSecs--
                     if (!connected && timeoutSecs <= 0) {
+                        VpnStateManager.emitLifecycleLog("ERROR", "Тайм-аут 60с: сервер не ответил")
                         mainHandler.post { failTunnel("Тайм-аут подключения к серверу") }
                         break
                     }
@@ -517,9 +518,12 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val result = nativeStart(iface.fd, cfgJson, settingsJson, this)
         if (result == 0) {
             Log.i(TAG, "Tunnel restarted")
+            VpnStateManager.emitLifecycleLog("INFO", "Туннель перезапущен")
             return true
         }
-        Log.w(TAG, "Tunnel restart failed: code=$result")
+        val errMsg = nativeStartErrorMessage(result)
+        Log.w(TAG, "Tunnel restart failed: code=$result ($errMsg)")
+        VpnStateManager.emitLifecycleLog("ERROR", "Перезапуск не удался: $errMsg")
         return false
     }
 
@@ -561,20 +565,32 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     /**
      * Build a ConnectProfile JSON string suitable for nativeStart's cfgJson parameter.
      * The conn_string must be a valid ghs:// URL. If blank, Rust will return an error.
+     *
+     * [serverAddr] is the pre-resolved IP:port from [resolveServerAddrViaUnderlying].
+     * We patch the authority in conn_string so Rust doesn't attempt its own DNS
+     * resolution (the VPN TUN is already active, DNS would be circular).
      */
     private fun buildConnectProfileJson(name: String, connString: String, serverAddr: String): String {
-        // TODO (Phase 5): thread the raw conn_string from VpnProfile through
-        // the intent extras so it's always available here. For now, if connString
-        // is blank (legacy call path), Rust will reject the start with an error.
+        val effectiveConnString = patchConnStringAuthority(connString, serverAddr)
         return JSONObject().apply {
             put("name", name)
-            put("conn_string", connString)
+            put("conn_string", effectiveConnString)
             put("settings", JSONObject().apply {
                 put("dns_leak_protection", true)
                 put("ipv6_killswitch", true)
                 put("auto_reconnect", true)
             })
         }.toString()
+    }
+
+    /** Replace the host:port in a ghs:// URL with a pre-resolved address. */
+    private fun patchConnStringAuthority(connString: String, resolvedAddr: String): String {
+        if (connString.isBlank() || resolvedAddr.isBlank()) return connString
+        // ghs://<userinfo>@<host:port>?<query>
+        val atIdx = connString.indexOf('@')
+        val qIdx = connString.indexOf('?', atIdx.coerceAtLeast(0))
+        if (atIdx < 0 || qIdx < 0) return connString
+        return connString.substring(0, atIdx + 1) + resolvedAddr + connString.substring(qIdx)
     }
 
     private fun nativeStartErrorMessage(code: Int): String = when (code) {
@@ -618,13 +634,14 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             nativeStopDone.join(3_000L)
             if (nativeStopDone.isAlive) {
                 Log.w(TAG, "nativeStop did not return in 3s — proceeding anyway")
+                VpnStateManager.emitLifecycleLog("WARN", "nativeStop завис (3с) — принудительное завершение")
             }
             mainHandler.post {
                 VpnStateManager.update(finalState)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
-        }.apply { name = "vpn-stop"; isDaemon = true; start() }
+        }.apply { name = "vpn-stop"; start() }
     }
 
     // Legacy name retained for onRevoke/onDestroy call sites.
@@ -715,23 +732,39 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         if (host.matches(Regex("^[0-9.]+$")) || host.contains(':')) return hostPort
 
         val cm = connectivityManager ?: return hostPort
-        val net = cm.activeNetwork ?: return hostPort
-        val caps = cm.getNetworkCapabilities(net)
-        if (caps == null ||
-            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
-            !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-        ) return hostPort
+
+        // Ищем не-VPN сеть: сначала activeNetwork, потом перебираем allNetworks.
+        // Критично при реконнекте: activeNetwork = VPN, но WiFi/LTE всё ещё
+        // доступны через allNetworks.
+        fun isUsableNonVpn(net: Network): Boolean {
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                   caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        }
+
+        val net = cm.activeNetwork?.takeIf { isUsableNonVpn(it) }
+            ?: cm.allNetworks.firstOrNull { isUsableNonVpn(it) }
+            ?: return hostPort
 
         return runCatching {
             val addrs = net.getAllByName(host)
             val ip = addrs.firstOrNull { it is java.net.Inet4Address }
                 ?: addrs.firstOrNull()
-                ?: return@runCatching hostPort
+                ?: run {
+                    Log.w(TAG, "DNS resolved $host but no addresses returned")
+                    VpnStateManager.emitLifecycleLog("WARN", "DNS: $host — нет адресов")
+                    return@runCatching hostPort
+                }
             val ipStr = ip.hostAddress ?: return@runCatching hostPort
             val out = if (ip is java.net.Inet6Address) "[$ipStr]:$port" else "$ipStr:$port"
             Log.i(TAG, "Pre-resolved $host → $ipStr via underlying network")
+            VpnStateManager.emitLifecycleLog("DEBUG", "DNS: $host → $ipStr")
             out
-        }.getOrDefault(hostPort)
+        }.getOrElse { e ->
+            Log.w(TAG, "DNS resolution failed for $host: ${e.message}")
+            VpnStateManager.emitLifecycleLog("WARN", "DNS: не удалось разрешить $host — ${e.message}")
+            hostPort
+        }
     }
 
     private fun wakeWatchdog(reason: String) {
