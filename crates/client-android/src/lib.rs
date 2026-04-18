@@ -8,12 +8,13 @@
 use std::ffi::CString;
 use std::os::unix::io::RawFd;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
 use jni::sys::{jint, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 
-use client_core_runtime::{ConnectProfile, TunIo, TunnelSettings};
+use client_core_runtime::{ConnectProfile, ProtectSocket, TunIo, TunnelSettings};
 use ghoststream_gui_ipc::LogFrame;
 
 use tokio::sync::{mpsc, watch};
@@ -43,13 +44,18 @@ static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 struct TunnelState {
     cancel: Arc<tokio::sync::Notify>,
+    join: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
 static TUNNEL: Mutex<Option<TunnelState>> = Mutex::new(None);
 
-/// Protected TCP fds for N parallel TLS streams, prepared on the JNI thread
-/// (VpnService.protect() must run on the thread holding the JNIEnv).
-static PROTECTED_TCP_FDS: Mutex<Vec<RawFd>> = Mutex::new(Vec::new());
+/// Serializes nativeStart/nativeStop calls to prevent zombie tunnels.
+/// Without this, rapid Kotlin start/stop cycles can overlap on different
+/// threads: Thread A's nativeStart holds TUNNEL briefly (step 0), releases
+/// it, then Thread B's nativeStart sees an empty TUNNEL and proceeds —
+/// creating two concurrent supervisors where only the last is tracked.
+static START_STOP_LOCK: Mutex<()> = Mutex::new(());
+
 
 // ─── Runtime helper ──────────────────────────────────────────────────────────
 
@@ -82,6 +88,23 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     settings_json: JString,
     listener: JObject,
 ) -> jint {
+    // Serialize with other nativeStart/nativeStop calls to prevent zombies.
+    let _op_guard = START_STOP_LOCK.lock().unwrap();
+
+    // ── 0. Cancel any previous tunnel and WAIT for it to fully exit ────────
+    // Without awaiting the JoinHandle, old supervisor tasks survive as zombies
+    // that keep reading/writing the TUN fd → protect() failures, dual tunnels,
+    // "TUN write failed" errors.
+    if let Some(TunnelState { cancel, join }) = TUNNEL.lock().unwrap().take() {
+        logcat(4, "nativeStart: cancelling previous tunnel");
+        cancel.notify_waiters();
+        let rt = get_or_init_runtime();
+        let _ = rt.block_on(async {
+            let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
+        });
+        logcat(4, "nativeStart: previous tunnel cleaned up");
+    }
+
     // ── 1. Parse ConnectProfile ──────────────────────────────────────────────
     let cfg_str = match env.get_string(&cfg_json) {
         Ok(s) => String::from(s),
@@ -107,72 +130,70 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         Err(_) => TunnelSettings::default(),
     };
 
-    // ── 3. Dup TUN fd ────────────────────────────────────────────────────────
-    let fd = unsafe { libc::dup(tun_fd as RawFd) };
-    if fd < 0 {
-        logcat(6, &format!("nativeStart: dup() failed: {}", std::io::Error::last_os_error()));
-        return -1;
-    }
+    // ── 3. TUN fd ────────────────────────────────────────────────────────────
+    // Don't dup here — client_core_runtime::run() dups internally for
+    // BlockingThreads and closes the dup'd fd on supervisor exit.
+    let fd = tun_fd as RawFd;
 
-    // ── 4. Pre-create + protect() N TCP sockets on the JNI thread ────────────
-    {
-        use phantom_core::wire::n_data_streams;
-        let n_streams = n_data_streams();
-        let mut fds: Vec<RawFd> = Vec::with_capacity(n_streams);
-        for i in 0..n_streams {
-            let tcp_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-            if tcp_fd < 0 {
-                logcat(6, &format!("nativeStart: socket() failed for stream {}", i));
-                for f in &fds { unsafe { libc::close(*f); } }
-                unsafe { libc::close(fd); }
-                return -1;
-            }
-
-            let protected = env
-                .call_method(&this, "protect", "(I)Z", &[JValue::Int(tcp_fd)])
-                .ok()
-                .and_then(|v| v.z().ok())
-                .unwrap_or(false);
-
-            if !protected {
-                logcat(6, &format!("nativeStart: VpnService.protect() returned false on stream {}", i));
-                unsafe { libc::close(tcp_fd); }
-                for f in &fds { unsafe { libc::close(*f); } }
-                unsafe { libc::close(fd); }
-                return -1;
-            }
-
-            unsafe {
-                let one: libc::c_int = 1;
-                libc::setsockopt(
-                    tcp_fd, libc::IPPROTO_TCP, libc::TCP_NODELAY,
-                    &one as *const _ as *const libc::c_void,
-                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-                );
-            }
-            logcat(4, &format!("Stream {}: TCP fd={} protected + TCP_NODELAY", i, tcp_fd));
-            fds.push(tcp_fd);
-        }
-        *PROTECTED_TCP_FDS.lock().unwrap() = fds;
-    }
-
-    // ── 5. Obtain JavaVM + global ref to listener for cross-thread callbacks ──
+    // ── 4. Obtain JavaVM + global refs ─────────────────────────────────────────
     let jvm: Arc<JavaVM> = match env.get_java_vm() {
         Ok(vm) => Arc::new(vm),
         Err(e) => {
             logcat(6, &format!("nativeStart: get_java_vm failed: {:?}", e));
-            unsafe { libc::close(fd); }
             return -1;
         }
     };
-    let listener_global: GlobalRef = match env.new_global_ref(&listener) {
+    // Create separate global refs from the local ref — GlobalRef::clone()
+    // passes a global ref to NewGlobalRef which ART's -Xcheck:jni rejects as
+    // an "invalid local reference".
+    let listener_for_status: GlobalRef = match env.new_global_ref(&listener) {
         Ok(g) => g,
         Err(e) => {
-            logcat(6, &format!("nativeStart: new_global_ref failed: {:?}", e));
-            unsafe { libc::close(fd); }
+            logcat(6, &format!("nativeStart: new_global_ref(status) failed: {:?}", e));
             return -1;
         }
     };
+    let listener_for_logs: GlobalRef = match env.new_global_ref(&listener) {
+        Ok(g) => g,
+        Err(e) => {
+            logcat(6, &format!("nativeStart: new_global_ref(logs) failed: {:?}", e));
+            return -1;
+        }
+    };
+    // Global ref to VpnService for protect() calls from tokio worker threads.
+    let service_for_protect: GlobalRef = match env.new_global_ref(&this) {
+        Ok(g) => g,
+        Err(e) => {
+            logcat(6, &format!("nativeStart: new_global_ref(service) failed: {:?}", e));
+            return -1;
+        }
+    };
+
+    // ── 5. Build ProtectSocket callback ──────────────────────────────────────
+    // Called by the runtime on tokio worker threads before each TCP connect.
+    let jvm_protect = jvm.clone();
+    let protect: ProtectSocket = Arc::new(move |tcp_fd: RawFd| {
+        let mut jni_env = match jvm_protect.attach_current_thread() {
+            Ok(e) => e,
+            Err(_) => return false,
+        };
+        let result = jni_env
+            .call_method(
+                service_for_protect.as_obj(),
+                "protect",
+                "(I)Z",
+                &[JValue::Int(tcp_fd)],
+            )
+            .ok()
+            .and_then(|v| v.z().ok())
+            .unwrap_or(false);
+        if result {
+            logcat(4, &format!("protect(fd={}) OK", tcp_fd));
+        } else {
+            logcat(6, &format!("protect(fd={}) FAILED", tcp_fd));
+        }
+        result
+    });
 
     // ── 6. Get or create the shared tokio runtime ────────────────────────────
     let rt = get_or_init_runtime();
@@ -182,55 +203,88 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let (log_tx, mut log_rx) = mpsc::channel::<LogFrame>(256);
 
     // ── 8. Start the tunnel via client_core_runtime::run() ───────────────────
-    let (handles, _join) = match rt.block_on(client_core_runtime::run(
+    let (handles, join) = match rt.block_on(client_core_runtime::run(
         cfg,
         TunIo::BlockingThreads(fd),
         status_tx,
         log_tx,
+        Some(protect),
     )) {
         Ok(r) => r,
         Err(e) => {
             logcat(6, &format!("nativeStart: run() failed: {:#}", e));
-            unsafe { libc::close(fd); }
             return -10;
         }
     };
 
-    // Store cancel handle so nativeStop can trigger graceful shutdown.
+    // Store cancel handle AND join handle so nativeStop can trigger graceful
+    // shutdown and WAIT for the supervisor task to fully exit.  Previously
+    // the JoinHandle was dropped (_join), leaving no way to join the
+    // supervisor — the root cause of zombie tunnels.
     *TUNNEL.lock().unwrap() = Some(TunnelState {
         cancel: handles.cancel.clone(),
+        join,
     });
 
     // ── 9. Spawn status watcher ───────────────────────────────────────────────
     // watch::Receiver changes → listener.onStatusFrame(json)
     {
         let jvm_status = jvm.clone();
-        let listener_status = listener_global.clone();
+        let listener_status = listener_for_status;
         rt.spawn(async move {
+            logcat(4, "status watcher: task started");
             loop {
-                if status_rx.changed().await.is_err() {
-                    break;
+                match status_rx.changed().await {
+                    Ok(()) => {},
+                    Err(e) => {
+                        logcat(6, &format!("status watcher: channel closed: {}", e));
+                        break;
+                    }
                 }
                 let frame: StatusFrame = status_rx.borrow_and_update().clone();
                 let json = match serde_json::to_string(&frame) {
                     Ok(j) => j,
-                    Err(_) => continue,
+                    Err(e) => {
+                        logcat(6, &format!("status watcher: json serialize failed: {}", e));
+                        continue;
+                    }
                 };
 
                 let mut jni_env: jni::AttachGuard<'_> = match jvm_status.attach_current_thread() {
                     Ok(e) => e,
-                    Err(_) => break,
+                    Err(e) => {
+                        logcat(6, &format!("status watcher: attach_current_thread failed: {:?}", e));
+                        break;
+                    }
                 };
 
-                if let Ok(jstr) = jni_env.new_string(&json) {
-                    let _ = jni_env.call_method(
-                        listener_status.as_obj(),
-                        "onStatusFrame",
-                        "(Ljava/lang/String;)V",
-                        &[JValue::Object(&jstr)],
-                    );
+                match jni_env.new_string(&json) {
+                    Ok(jstr) => {
+                        let result = jni_env.call_method(
+                            listener_status.as_obj(),
+                            "onStatusFrame",
+                            "(Ljava/lang/String;)V",
+                            &[JValue::Object(&jstr)],
+                        );
+                        if let Err(e) = result {
+                            logcat(6, &format!("status watcher: call_method failed: {:?}", e));
+                            // Check for and clear JNI exception
+                            if jni_env.exception_check().unwrap_or(false) {
+                                jni_env.exception_describe().ok();
+                                jni_env.exception_clear().ok();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        logcat(6, &format!("status watcher: new_string failed: {:?}", e));
+                    }
                 }
             }
+            logcat(4, "status watcher: task exiting");
+            // Attach thread to JVM before GlobalRef drop to avoid
+            // "Dropping a GlobalRef in a detached thread" warning.
+            let _guard = jvm_status.attach_current_thread();
+            drop(listener_status);
         });
     }
 
@@ -238,7 +292,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     // mpsc::Receiver<LogFrame> → listener.onLogFrame(json)
     {
         let jvm_log = jvm;
-        let listener_log = listener_global;
+        let listener_log = listener_for_logs;
         rt.spawn(async move {
             while let Some(frame) = log_rx.recv().await {
                 let json = match serde_json::to_string(&frame) {
@@ -260,6 +314,9 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
                     );
                 }
             }
+            // Attach thread to JVM before GlobalRef drop.
+            let _guard = jvm_log.attach_current_thread();
+            drop(listener_log);
         });
     }
 
@@ -273,9 +330,16 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     _env: JNIEnv,
     _class: JClass,
 ) -> jint {
-    if let Some(TunnelState { cancel }) = TUNNEL.lock().unwrap().take() {
+    let _op_guard = START_STOP_LOCK.lock().unwrap();
+    if let Some(TunnelState { cancel, join }) = TUNNEL.lock().unwrap().take() {
         logcat(4, "nativeStop: notifying cancel");
         cancel.notify_waiters();
+        logcat(4, "nativeStop: waiting for tunnel exit");
+        let rt = get_or_init_runtime();
+        let _ = rt.block_on(async {
+            let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
+        });
+        logcat(4, "nativeStop: tunnel stopped");
     }
     0
 }
@@ -301,14 +365,20 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     std::ptr::null_mut()
 }
 
-/// Stub — log level is controlled via RUST_LOG / EnvFilter in logsink::install().
+/// Change the tracing log level at runtime.
+/// `level` is one of: "trace", "debug", "info", "warn", "error".
 #[no_mangle]
 pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeSetLogLevel(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
-    _level: JString,
+    level: JString,
 ) {
-    // No-op: filtering is handled by the tracing subscriber in client_core_runtime.
+    let lvl = match env.get_string(&level) {
+        Ok(s) => String::from(s),
+        Err(_) => return,
+    };
+    logcat(4, &format!("setLogLevel: {}", lvl));
+    client_core_runtime::logsink::set_level(&lvl);
 }
 
 // ─── Routing ─────────────────────────────────────────────────────────────────

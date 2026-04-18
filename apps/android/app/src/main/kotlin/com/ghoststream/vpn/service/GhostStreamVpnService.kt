@@ -52,6 +52,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val perAppList: List<String>,
         /** Original ghs:// connection string — required for Phase 4 nativeStart. */
         val connString: String = "",
+        /** Relay host:port — when set, TCP connects here instead of serverAddr (SNI passthrough). */
+        val relayAddr: String = "",
     ) {
         fun toJson(): String = JSONObject().apply {
             put("server_addr", serverAddr); put("server_name", serverName)
@@ -60,6 +62,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             put("split_routing", splitRouting); put("direct_cidrs", directCidrs)
             put("per_app_mode", perAppMode); put("per_app_list", perAppList.joinToString(","))
             put("conn_string", connString)
+            if (relayAddr.isNotBlank()) put("relay_addr", relayAddr)
         }.toString()
 
         companion object {
@@ -80,6 +83,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     perAppList = o.optString("per_app_list")
                         .split(",").filter { it.isNotBlank() },
                     connString = o.optString("conn_string", ""),
+                    relayAddr = o.optString("relay_addr", ""),
                 )
             }.getOrNull()
         }
@@ -104,6 +108,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 perAppList = (intent.getStringExtra(EXTRA_PER_APP_LIST) ?: "")
                     .split(",").filter { it.isNotBlank() },
                 connString = intent.getStringExtra(EXTRA_CONN_STRING) ?: "",
+                relayAddr = intent.getStringExtra(EXTRA_RELAY_ADDR) ?: "",
             )
         }
         // Null intent (process killed & system restarted service): restore from prefs
@@ -124,6 +129,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val keyPath: String,
         /** Original ghs:// connection string for Phase 4 nativeStart. */
         val connString: String = "",
+        /** Relay host:port for SNI passthrough routing. */
+        val relayAddr: String = "",
     )
 
     private data class NativeStatsSnapshot(
@@ -148,6 +155,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     @Volatile private var savedPerAppMode: String = "none"
     @Volatile private var savedPerAppList: List<String> = emptyList()
     @Volatile private var userStopped = false
+    /** Monotonic generation counter — incremented on every start/stop command.
+     *  Stale startup threads check this and bail before calling nativeStart. */
+    @Volatile private var tunnelGeneration = 0
 
     // Used by watchdog to sleep-with-wakeup. notifyAll() from network callback or stopTunnel
     // short-circuits exponential backoff so reconnect happens immediately.
@@ -196,6 +206,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         const val EXTRA_PER_APP_LIST  = "per_app_list"
         /** Phase 4: full ghs:// connection string, used by new nativeStart. */
         const val EXTRA_CONN_STRING   = "conn_string"
+        const val EXTRA_RELAY_ADDR    = "relay_addr"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
@@ -280,12 +291,14 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         }
 
         val connString = resolved.connString
+        val relayAddr = resolved.relayAddr
+        val myGeneration = ++tunnelGeneration
         startupThread?.interrupt()
         startupThread = Thread {
             startTunnel(
                 serverAddr, serverName, insecure, certPath, keyPath,
                 tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
-                connString,
+                connString, relayAddr, myGeneration,
             )
         }.apply {
             name = "vpn-startup"
@@ -302,6 +315,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         splitRouting: Boolean, directCidrsPath: String,
         perAppMode: String, perAppList: List<String>,
         connString: String = "",
+        relayAddr: String = "",
+        generation: Int = -1,
     ) {
         val parts     = tunAddr.split("/")
         val tunIp     = parts.getOrElse(0) { "10.7.0.2" }
@@ -371,7 +386,36 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // activeNetwork становится VPN, и resolveServerAddrViaUnderlying() не
         // сможет найти не-VPN сеть для DNS. Без этого Rust получает hostname
         // вместо IP и его DNS-запрос идёт через мёртвый TUN → "No address".
-        val effectiveAddr = resolveServerAddrViaUnderlying(serverAddr)
+        // Relay: если задан relayAddr, резолвим его — Rust подключится к relay,
+        // а SNI останется от exit-сервера (SNI passthrough).
+        val effectiveAddr = if (relayAddr.isNotBlank()) {
+            // Если relay без порта — берём порт из serverAddr
+            val relayWithPort = if (!relayAddr.contains(':')) {
+                val serverPort = serverAddr.substringAfterLast(':', "443")
+                "$relayAddr:$serverPort"
+            } else relayAddr
+            Log.i(TAG, "Relay mode: routing via $relayWithPort")
+            VpnStateManager.emitLifecycleLog("INFO", "Relay: $relayWithPort")
+            val resolved = resolveServerAddrViaUnderlying(relayWithPort)
+            Log.i(TAG, "Relay resolved: $resolved")
+            resolved
+        } else {
+            resolveServerAddrViaUnderlying(serverAddr)
+        }
+
+        // Bail if a newer start/stop has been issued while we were setting up.
+        if (generation >= 0 && tunnelGeneration != generation) {
+            Log.i(TAG, "startTunnel: superseded by generation $tunnelGeneration (mine=$generation), aborting")
+            return
+        }
+
+        // Close any previous VPN interface before creating a replacement.
+        // Android restores default routes when the TUN fd is closed; leaving
+        // an old one open leaks the fd and may leave stale routes that block
+        // internet after disconnect (the "broken VPN, no internet" state).
+        val oldIface = vpnInterface
+        vpnInterface = null
+        runCatching { oldIface?.close() }
 
         vpnInterface = builder.establish() ?: run {
             VpnStateManager.update(VpnState.Error("Не удалось создать TUN"))
@@ -394,6 +438,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             certPath = certPath,
             keyPath = keyPath,
             connString = connString,
+            relayAddr = relayAddr,
         )
 
         val fd = vpnInterface!!.fd
@@ -511,7 +556,15 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val iface = vpnInterface ?: return false
         nativeStop()
         if (userStopped) return false
-        val effectiveAddr = resolveServerAddrViaUnderlying(params.serverAddr)
+        val effectiveAddr = if (params.relayAddr.isNotBlank()) {
+            val relayWithPort = if (!params.relayAddr.contains(':')) {
+                val serverPort = params.serverAddr.substringAfterLast(':', "443")
+                "${params.relayAddr}:$serverPort"
+            } else params.relayAddr
+            resolveServerAddrViaUnderlying(relayWithPort)
+        } else {
+            resolveServerAddrViaUnderlying(params.serverAddr)
+        }
         // Phase 4: build ConnectProfile JSON for the new nativeStart.
         val cfgJson = buildConnectProfileJson(name = params.serverName, connString = params.connString, serverAddr = effectiveAddr)
         val settingsJson = """{"dns_leak_protection":true,"ipv6_killswitch":true,"auto_reconnect":true}"""
@@ -605,6 +658,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      * unable to stopSelf().
      */
     private fun stopTunnelAsync(finalState: VpnState = VpnState.Disconnected) {
+        tunnelGeneration++ // Invalidate any in-flight startTunnel threads
         userStopped = true
         lastStatusJson = null
         synchronized(watchdogLock) { watchdogLock.notifyAll() }
@@ -631,10 +685,10 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             val nativeStopDone = Thread {
                 runCatching { nativeStop() }
             }.apply { name = "vpn-native-stop"; isDaemon = true; start() }
-            nativeStopDone.join(3_000L)
+            nativeStopDone.join(15_000L)
             if (nativeStopDone.isAlive) {
-                Log.w(TAG, "nativeStop did not return in 3s — proceeding anyway")
-                VpnStateManager.emitLifecycleLog("WARN", "nativeStop завис (3с) — принудительное завершение")
+                Log.w(TAG, "nativeStop did not return in 15s — proceeding anyway")
+                VpnStateManager.emitLifecycleLog("WARN", "nativeStop завис (15с) — принудительное завершение")
             }
             mainHandler.post {
                 VpnStateManager.update(finalState)
