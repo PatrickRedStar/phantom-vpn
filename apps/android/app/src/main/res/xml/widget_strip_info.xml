@@ -11,4 +11,5 @@
     android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen"
     android:updatePeriodMillis="0"
-    android:description="@string/widget_strip_desc" />
+    android:description="@string/widget_strip_desc"
+    android:previewLayout="@layout/widget_preview_strip" />

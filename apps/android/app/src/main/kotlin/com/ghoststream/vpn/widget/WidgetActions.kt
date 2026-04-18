@@ -2,6 +2,7 @@ package com.ghoststream.vpn.widget
 
 import android.content.Context
 import android.content.Intent
+import android.net.VpnService
 import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.action.ActionCallback
@@ -17,16 +18,31 @@ class ToggleVpnAction : ActionCallback {
     ) {
         val state = VpnStateManager.state.value
         if (state is VpnState.Connected || state is VpnState.Connecting) {
-            // Stop
-            val intent = Intent(context, GhostStreamVpnService::class.java)
-                .setAction(GhostStreamVpnService.ACTION_STOP)
-            context.startService(intent)
+            // Disconnect
+            try {
+                val intent = Intent(context, GhostStreamVpnService::class.java)
+                    .setAction(GhostStreamVpnService.ACTION_STOP)
+                context.startService(intent)
+            } catch (_: Exception) {
+                openApp(context)
+            }
         } else {
-            // Open app — connecting requires VPN permission + profile selection
-            val launch = context.packageManager
-                .getLaunchIntentForPackage(context.packageName)
-                ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (launch != null) context.startActivity(launch)
+            // Connect: check if VPN permission is already granted
+            val prepare = VpnService.prepare(context)
+            if (prepare == null) {
+                // Permission granted — start service directly.
+                // Service restores last-used config from SharedPreferences.
+                try {
+                    val intent = Intent(context, GhostStreamVpnService::class.java)
+                        .setAction(GhostStreamVpnService.ACTION_START)
+                    context.startForegroundService(intent)
+                } catch (_: Exception) {
+                    openApp(context)
+                }
+            } else {
+                // Permission not granted (first time) — must open app
+                openApp(context)
+            }
         }
     }
 }
@@ -37,9 +53,13 @@ class OpenAppAction : ActionCallback {
         glanceId: GlanceId,
         parameters: ActionParameters,
     ) {
-        val launch = context.packageManager
-            .getLaunchIntentForPackage(context.packageName)
-            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (launch != null) context.startActivity(launch)
+        openApp(context)
     }
+}
+
+private fun openApp(context: Context) {
+    val launch = context.packageManager
+        .getLaunchIntentForPackage(context.packageName)
+        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (launch != null) context.startActivity(launch)
 }

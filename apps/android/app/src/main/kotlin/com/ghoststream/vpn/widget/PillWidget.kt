@@ -18,7 +18,6 @@ import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
-import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
@@ -41,23 +40,17 @@ class PillWidget : GlanceAppWidget() {
             val rx = prefs[WidgetState.RX_SPEED] ?: "--"
             val tx = prefs[WidgetState.TX_SPEED] ?: "--"
             val server = prefs[WidgetState.SERVER_NAME] ?: ""
+            val timer = prefs[WidgetState.TIMER_TEXT] ?: "--:--:--"
 
-            // Outer border capsule
-            Box(
+            Row(
                 modifier = GlanceModifier
                     .fillMaxSize()
-                    .background(W.hair)
-                    .cornerRadius(24.dp)
-                    .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
+                    .background(W.bgElev)
+                    .cornerRadius(28.dp)
+                    .padding(start = 16.dp, end = 6.dp)
+                    .clickable(onClick = actionRunCallback<OpenAppAction>()),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = GlanceModifier
-                        .fillMaxSize()
-                        .background(W.bgElev)
-                        .cornerRadius(23.dp)
-                        .padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
                     // Status dot
                     val dotColor = when {
                         connected -> W.dotGreen
@@ -73,57 +66,82 @@ class PillWidget : GlanceAppWidget() {
 
                     Spacer(GlanceModifier.width(10.dp))
 
-                    // Label
+                    // Server name
                     Text(
                         text = when {
                             connected -> server.ifBlank { "GhostStream" }.take(12)
                             connecting -> "Tuning..."
-                            else -> "GhostStream"
+                            else -> server.ifBlank { "GhostStream" }.take(12)
                         },
                         style = TextStyle(
-                            color = W.bone,
+                            color = if (connected) W.bone else W.dim,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                         ),
                         maxLines = 1,
                     )
 
-                    Spacer(GlanceModifier.defaultWeight())
-
                     if (connected) {
-                        // Separator
-                        Box(
-                            modifier = GlanceModifier
-                                .width(1.dp)
-                                .fillMaxHeight()
-                                .padding(vertical = 12.dp)
-                                .background(W.hair),
-                        ) {}
+                        // Timer
+                        Spacer(GlanceModifier.width(8.dp))
+                        Text(
+                            text = timer,
+                            style = TextStyle(
+                                color = W.dim,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                            ),
+                        )
 
-                        Spacer(GlanceModifier.width(12.dp))
+                        Spacer(GlanceModifier.defaultWeight())
 
                         // Speed indicators
                         Text(
                             text = "\u2193$rx",
                             style = TextStyle(
                                 color = W.signal,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                fontFamily = FontFamily.Monospace,
+                                fontSize = 9.sp,
                             ),
                         )
-                        Spacer(GlanceModifier.width(8.dp))
+                        Spacer(GlanceModifier.width(6.dp))
                         Text(
                             text = "\u2191$tx",
                             style = TextStyle(
                                 color = W.warn,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                fontFamily = FontFamily.Monospace,
+                                fontSize = 9.sp,
+                            ),
+                        )
+                    } else {
+                        Spacer(GlanceModifier.width(8.dp))
+                        Text(
+                            text = "Offline",
+                            style = TextStyle(
+                                color = W.faint,
+                                fontSize = 10.sp,
+                            ),
+                        )
+                        Spacer(GlanceModifier.defaultWeight())
+                    }
+
+                    Spacer(GlanceModifier.width(6.dp))
+
+                    // Toggle button (44dp circle like mockup)
+                    Box(
+                        modifier = GlanceModifier
+                            .size(44.dp)
+                            .background(if (connected) W.bgElev else W.btnConnect)
+                            .cornerRadius(22.dp)
+                            .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (connected) "\u23FB" else "\u25B6",
+                            style = TextStyle(
+                                color = if (connected) W.danger else W.btnConnectText,
+                                fontSize = 16.sp,
                             ),
                         )
                     }
-                }
             }
         }
     }

@@ -47,58 +47,56 @@ class FullDashboardWidget : GlanceAppWidget() {
             val up = prefs[WidgetState.STREAMS_UP] ?: 0
             val total = prefs[WidgetState.STREAMS_TOTAL] ?: 8
 
-            Box(
+            Column(
                 modifier = GlanceModifier
                     .fillMaxSize()
-                    .background(W.hair)
-                    .cornerRadius(10.dp)
+                    .background(W.bgElev)
+                    .cornerRadius(16.dp)
+                    .padding(8.dp)
                     .clickable(onClick = actionRunCallback<OpenAppAction>()),
             ) {
-                Row(modifier = GlanceModifier.fillMaxSize().background(W.bgElev).cornerRadius(9.dp)) {
-                    // Left accent bar
+                    // Top accent bar when connected
                     if (connected) {
                         Box(
                             modifier = GlanceModifier
-                                .width(2.dp)
-                                .fillMaxSize()
-                                .padding(vertical = 20.dp)
-                                .background(W.signal),
+                                .fillMaxWidth()
+                                .height(2.dp)
+                                .background(W.signal)
+                                .cornerRadius(1.dp),
                         ) {}
+                        Spacer(GlanceModifier.height(4.dp))
                     }
-
-                    Column(
-                        modifier = GlanceModifier
-                            .fillMaxSize()
-                            .padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
-                    ) {
-                        // Row 1: Brand + State + Timer
+                        // Row 1: Brand dot + "Ghoststream" + Timer
                         Row(
                             modifier = GlanceModifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = "GHOST",
-                                style = TextStyle(
-                                    color = W.faint,
-                                    fontSize = 9.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                ),
-                            )
+                            // Status dot
+                            val dotColor = when {
+                                connected -> W.dotGreen
+                                connecting -> W.dotOrange
+                                else -> W.dotGray
+                            }
+                            Box(
+                                modifier = GlanceModifier
+                                    .size(8.dp)
+                                    .background(dotColor)
+                                    .cornerRadius(4.dp),
+                            ) {}
                             Spacer(GlanceModifier.width(8.dp))
                             Text(
-                                text = when {
-                                    connected -> "ONLINE"
-                                    connecting -> "TUNING"
-                                    else -> "STANDBY"
-                                },
+                                text = "G",
                                 style = TextStyle(
-                                    color = when {
-                                        connected -> W.signal
-                                        connecting -> W.warn
-                                        else -> W.faint
-                                    },
-                                    fontSize = 9.sp,
-                                    fontFamily = FontFamily.Monospace,
+                                    color = W.signal,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                ),
+                            )
+                            Text(
+                                text = "hoststream",
+                                style = TextStyle(
+                                    color = W.bone,
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
                                 ),
                             )
@@ -113,115 +111,98 @@ class FullDashboardWidget : GlanceAppWidget() {
                             )
                         }
 
-                        Spacer(GlanceModifier.height(6.dp))
-
-                        // Row 2: Server name large
-                        Text(
-                            text = server.ifBlank { "---" },
-                            style = TextStyle(
-                                color = W.bone,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                            maxLines = 1,
-                        )
-
                         Spacer(GlanceModifier.height(8.dp))
 
-                        // Row 3: Separator
+                        // Separator
                         Box(GlanceModifier.fillMaxWidth().height(1.dp).background(W.hair)) {}
 
                         Spacer(GlanceModifier.height(8.dp))
 
-                        // Row 4: Stats grid (RX, TX, MUX, Streams visual)
+                        // Stats: RX, TX, STREAMS stacked on right side
                         Row(modifier = GlanceModifier.fillMaxWidth()) {
-                            // RX column
+                            // Stream bars (left, visual)
                             Column(modifier = GlanceModifier.defaultWeight()) {
+                                Row(
+                                    modifier = GlanceModifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    for (i in 0 until total.coerceAtMost(12)) {
+                                        if (i > 0) Spacer(GlanceModifier.width(2.dp))
+                                        Box(
+                                            modifier = GlanceModifier
+                                                .height(4.dp)
+                                                .defaultWeight()
+                                                .background(if (i < up) W.signal else W.hair)
+                                                .cornerRadius(2.dp),
+                                        ) {}
+                                    }
+                                }
+                            }
+                            Spacer(GlanceModifier.width(14.dp))
+                            // Stats column (right)
+                            Column(horizontalAlignment = Alignment.End) {
                                 Text(
                                     "RX",
-                                    style = TextStyle(
-                                        color = W.faint,
-                                        fontSize = 8.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                    ),
+                                    style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace),
                                 )
                                 Text(
                                     text = if (connected) rx else "\u2014",
                                     style = TextStyle(
                                         color = if (connected) W.signal else W.faint,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
                                     ),
                                 )
-                            }
-                            // TX column
-                            Column(modifier = GlanceModifier.defaultWeight()) {
+                                Spacer(GlanceModifier.height(4.dp))
                                 Text(
                                     "TX",
-                                    style = TextStyle(
-                                        color = W.faint,
-                                        fontSize = 8.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                    ),
+                                    style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace),
                                 )
                                 Text(
                                     text = if (connected) tx else "\u2014",
                                     style = TextStyle(
                                         color = if (connected) W.warn else W.faint,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
                                     ),
                                 )
-                            }
-                            // MUX column
-                            Column(modifier = GlanceModifier.defaultWeight()) {
+                                Spacer(GlanceModifier.height(4.dp))
                                 Text(
-                                    "MUX",
-                                    style = TextStyle(
-                                        color = W.faint,
-                                        fontSize = 8.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                    ),
+                                    "STREAMS",
+                                    style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace),
                                 )
                                 Text(
                                     text = "$up/$total",
                                     style = TextStyle(
                                         color = W.bone,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
                                     ),
                                 )
                             }
                         }
 
-                        Spacer(GlanceModifier.height(8.dp))
-
-                        // Row 5: Stream bars (visual representation)
-                        Row(
-                            modifier = GlanceModifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            for (i in 0 until total.coerceAtMost(12)) {
-                                if (i > 0) Spacer(GlanceModifier.width(3.dp))
-                                Box(
-                                    modifier = GlanceModifier
-                                        .height(4.dp)
-                                        .defaultWeight()
-                                        .background(if (i < up) W.signal else W.hair)
-                                        .cornerRadius(2.dp),
-                                ) {}
-                            }
-                        }
-
                         Spacer(GlanceModifier.defaultWeight())
 
-                        // Row 6: Toggle button
+                        // Footer: server name + button
+                        Text(
+                            text = server.ifBlank { "---" }.take(18),
+                            style = TextStyle(
+                                color = W.dim,
+                                fontSize = 9.sp,
+                            ),
+                            maxLines = 1,
+                        )
+
+                        Spacer(GlanceModifier.height(4.dp))
+
+                        // Toggle button row
                         Box(
                             modifier = GlanceModifier
                                 .fillMaxWidth()
-                                .height(30.dp)
-                                .background(if (connected) W.bgElev2 else W.btnConnect)
-                                .cornerRadius(2.dp)
+                                .height(26.dp)
+                                .background(if (connected) W.hair else W.btnConnect)
+                                .cornerRadius(4.dp)
                                 .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -229,14 +210,12 @@ class FullDashboardWidget : GlanceAppWidget() {
                                 text = if (connected) "DISCONNECT" else "CONNECT",
                                 style = TextStyle(
                                     color = if (connected) W.dim else W.btnConnectText,
-                                    fontSize = 10.sp,
+                                    fontSize = 8.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold,
                                 ),
                             )
                         }
-                    }
-                }
             }
         }
     }

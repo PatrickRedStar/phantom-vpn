@@ -11,4 +11,5 @@
     android:resizeMode="horizontal"
     android:widgetCategory="home_screen"
     android:updatePeriodMillis="0"
-    android:description="@string/widget_pill_desc" />
+    android:description="@string/widget_pill_desc"
+    android:previewLayout="@layout/widget_preview_pill" />

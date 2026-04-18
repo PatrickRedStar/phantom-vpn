@@ -47,133 +47,127 @@ class StatusPanelWidget : GlanceAppWidget() {
             val up = prefs[WidgetState.STREAMS_UP] ?: 0
             val total = prefs[WidgetState.STREAMS_TOTAL] ?: 8
 
-            Box(
+            Column(
                 modifier = GlanceModifier
                     .fillMaxSize()
-                    .background(W.hair)
-                    .cornerRadius(10.dp)
+                    .background(W.bgElev)
+                    .cornerRadius(16.dp)
+                    .padding(8.dp)
                     .clickable(onClick = actionRunCallback<OpenAppAction>()),
             ) {
-                Row(modifier = GlanceModifier.fillMaxSize().background(W.bgElev).cornerRadius(9.dp)) {
-                    // Left accent bar
-                    if (connected) {
-                        Box(
-                            modifier = GlanceModifier
-                                .width(2.dp)
-                                .fillMaxSize()
-                                .padding(vertical = 24.dp)
-                                .background(W.signal),
-                        ) {}
-                    }
-
-                    Column(
+                // Left accent bar via top colored strip
+                if (connected) {
+                    Box(
                         modifier = GlanceModifier
-                            .fillMaxSize()
-                            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 10.dp),
-                    ) {
-                        // Header: brand + timer
-                        Row(
-                            modifier = GlanceModifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "GHOST",
-                                style = TextStyle(color = W.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace),
-                            )
-                            Spacer(GlanceModifier.defaultWeight())
-                            Text(
-                                text = if (connected) timer else "--:--:--",
-                                style = TextStyle(color = W.dim, fontSize = 10.sp, fontFamily = FontFamily.Monospace),
-                            )
-                        }
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .background(W.signal)
+                            .cornerRadius(1.dp),
+                    ) {}
+                    Spacer(GlanceModifier.height(4.dp))
+                }
 
-                        Spacer(GlanceModifier.height(4.dp))
+                // Header: brand + timer
+                Row(
+                    modifier = GlanceModifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "G",
+                        style = TextStyle(color = W.signal, fontSize = 9.sp, fontFamily = FontFamily.Monospace),
+                    )
+                    Text(
+                        text = "HOST",
+                        style = TextStyle(color = W.faint, fontSize = 9.sp, fontFamily = FontFamily.Monospace),
+                    )
+                    Spacer(GlanceModifier.defaultWeight())
+                    Text(
+                        text = if (connected) timer else "--:--:--",
+                        style = TextStyle(color = W.dim, fontSize = 10.sp, fontFamily = FontFamily.Monospace),
+                    )
+                }
 
-                        // State headline
+                Spacer(GlanceModifier.height(2.dp))
+
+                // State headline
+                Text(
+                    text = when {
+                        connected -> "Online."
+                        connecting -> "Tuning..."
+                        else -> "Standby."
+                    },
+                    style = TextStyle(
+                        color = when {
+                            connected -> W.signal
+                            connecting -> W.warn
+                            else -> W.faint
+                        },
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                )
+
+                // Server name
+                Text(
+                    text = server.ifBlank { "---" },
+                    style = TextStyle(color = W.dim, fontSize = 10.sp),
+                    maxLines = 1,
+                )
+
+                Spacer(GlanceModifier.height(6.dp))
+
+                // Separator
+                Box(GlanceModifier.fillMaxWidth().height(1.dp).background(W.hair)) {}
+
+                Spacer(GlanceModifier.height(6.dp))
+
+                // Stats row
+                Row(modifier = GlanceModifier.fillMaxWidth()) {
+                    Column(modifier = GlanceModifier.defaultWeight()) {
+                        Text("RX", style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace))
                         Text(
-                            text = when {
-                                connected -> "Online."
-                                connecting -> "Tuning..."
-                                else -> "Standby."
-                            },
-                            style = TextStyle(
-                                color = when {
-                                    connected -> W.signal
-                                    connecting -> W.warn
-                                    else -> W.faint
-                                },
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
+                            text = if (connected) rx else "\u2014",
+                            style = TextStyle(color = if (connected) W.signal else W.faint, fontSize = 11.sp, fontWeight = FontWeight.Medium),
                         )
-
-                        // Server name
-                        Text(
-                            text = server.ifBlank { "---" },
-                            style = TextStyle(color = W.dim, fontSize = 10.sp),
-                            maxLines = 1,
-                        )
-
-                        Spacer(GlanceModifier.defaultWeight())
-
-                        // Separator
-                        Box(GlanceModifier.fillMaxWidth().height(1.dp).background(W.hair)) {}
-
-                        Spacer(GlanceModifier.height(6.dp))
-
-                        // Stats row
-                        Row(modifier = GlanceModifier.fillMaxWidth()) {
-                            // RX
-                            Column {
-                                Text("RX", style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace))
-                                Text(
-                                    text = if (connected) rx else "\u2014",
-                                    style = TextStyle(color = if (connected) W.signal else W.faint, fontSize = 11.sp, fontWeight = FontWeight.Medium),
-                                )
-                            }
-                            Spacer(GlanceModifier.width(12.dp))
-                            // TX
-                            Column {
-                                Text("TX", style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace))
-                                Text(
-                                    text = if (connected) tx else "\u2014",
-                                    style = TextStyle(color = if (connected) W.warn else W.faint, fontSize = 11.sp, fontWeight = FontWeight.Medium),
-                                )
-                            }
-                            Spacer(GlanceModifier.width(12.dp))
-                            // Streams
-                            Column {
-                                Text("MUX", style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace))
-                                Text(
-                                    text = "$up/$total",
-                                    style = TextStyle(color = W.bone, fontSize = 11.sp, fontWeight = FontWeight.Medium),
-                                )
-                            }
-                        }
-
-                        Spacer(GlanceModifier.height(8.dp))
-
-                        // Toggle button
-                        Box(
-                            modifier = GlanceModifier
-                                .fillMaxWidth()
-                                .height(28.dp)
-                                .background(if (connected) W.bgElev2 else W.btnConnect)
-                                .cornerRadius(2.dp)
-                                .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                text = if (connected) "DISCONNECT" else "CONNECT",
-                                style = TextStyle(
-                                    color = if (connected) W.dim else W.btnConnectText,
-                                    fontSize = 9.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                            )
-                        }
                     }
+                    Column(modifier = GlanceModifier.defaultWeight()) {
+                        Text("TX", style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace))
+                        Text(
+                            text = if (connected) tx else "\u2014",
+                            style = TextStyle(color = if (connected) W.warn else W.faint, fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                        )
+                    }
+                    Column(modifier = GlanceModifier.defaultWeight()) {
+                        Text("MUX", style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace))
+                        Text(
+                            text = "$up/$total",
+                            style = TextStyle(color = W.bone, fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                        )
+                    }
+                }
+
+                // Flex spacer pushes button to bottom
+                Spacer(GlanceModifier.defaultWeight())
+
+                // Toggle button
+                Box(
+                    modifier = GlanceModifier
+                        .fillMaxWidth()
+                        .height(28.dp)
+                        .background(if (connected) W.hair else W.btnConnect)
+                        .cornerRadius(4.dp)
+                        .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (connected) "DISCONNECT" else "CONNECT",
+                        style = TextStyle(
+                            color = if (connected) W.dim else W.btnConnectText,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                    )
                 }
             }
         }

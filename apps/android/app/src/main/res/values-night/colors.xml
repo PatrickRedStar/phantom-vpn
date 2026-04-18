@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widget preview colors (dark theme) -->
+    <color name="wp_bg_elev">#FF12110E</color>
+    <color name="wp_hair">#FF2A2619</color>
+    <color name="wp_bone">#FFE8E2D0</color>
+    <color name="wp_dim">#FF948A6F</color>
+    <color name="wp_faint">#FF5A5240</color>
+    <color name="wp_signal">#FFC4FF3E</color>
+    <color name="wp_btn_connect">#FFC4FF3E</color>
+    <color name="wp_btn_connect_text">#FF0A0908</color>
+    <color name="wp_dot_gray">#FF5A5240</color>
+</resources>

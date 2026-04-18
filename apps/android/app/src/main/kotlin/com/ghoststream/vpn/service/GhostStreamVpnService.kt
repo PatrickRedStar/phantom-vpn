@@ -112,13 +112,17 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 relayAddr = intent.getStringExtra(EXTRA_RELAY_ADDR) ?: "",
             )
         }
-        // Null intent (process killed & system restarted service): restore from prefs
-        // only if user had an active session.
-        val wasRunning = prefs.wasRunningBlocking()
-        if (!wasRunning) return null
+        // Restore from saved prefs. Two cases:
+        // 1. Null intent — system restarted service after process kill → require wasRunning flag.
+        // 2. Non-null intent without extras — explicit start from widget → try prefs regardless.
+        val explicitStart = intent != null
+        if (!explicitStart) {
+            val wasRunning = prefs.wasRunningBlocking()
+            if (!wasRunning) return null
+        }
         val json = prefs.loadLastTunnelParamsBlocking() ?: return null
         val restored = StartExtras.fromJson(json) ?: return null
-        Log.i(TAG, "Restored tunnel params from prefs after process kill")
+        Log.i(TAG, "Restored tunnel params from prefs (explicit=$explicitStart)")
         return restored
     }
 
@@ -273,6 +277,18 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             return START_NOT_STICKY
         }
 
+        // Must call startForeground() before anything else when started via
+        // startForegroundService(). Android kills the app if we don't within 5 s.
+        createNotificationChannel()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID, buildNotification("Подключение..."),
+                FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification("Подключение..."))
+        }
+
         // Resolve extras — either from intent, or restored from prefs if system re-created us with null intent.
         val resolved = resolveStartExtras(intent) ?: run {
             Log.w(TAG, "onStartCommand: no params to start with")
@@ -298,16 +314,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 prefs.setWasRunning(true)
                 prefs.saveLastTunnelParams(resolved.toJson())
             }
-        }
-
-        createNotificationChannel()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID, buildNotification("Подключение..."),
-                FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, buildNotification("Подключение..."))
         }
 
         val connString = resolved.connString

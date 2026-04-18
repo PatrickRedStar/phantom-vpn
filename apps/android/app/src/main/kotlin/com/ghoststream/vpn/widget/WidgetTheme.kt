@@ -2,7 +2,6 @@ package com.ghoststream.vpn.widget
 
 import androidx.compose.ui.graphics.Color
 import androidx.glance.color.ColorProvider as DayNight
-import androidx.glance.unit.ColorProvider
 
 /** GhostStream Phosphor palette adapted for Glance widgets (day/night auto-switch). */
 object W {
@@ -31,8 +30,8 @@ object W {
     val btnConnectText = DayNight(day = Color(0xFFF1ECDC), night = Color(0xFF0A0908))
     val btnDisconnect  = DayNight(day = Color(0xFFB5AD96), night = Color(0xFF3D3828))
 
-    // Fixed colors (no day/night)
-    val dotGreen  = ColorProvider(Color(0xFFC4FF3E))
-    val dotOrange = ColorProvider(Color(0xFFFF7A3D))
+    // Status dots (theme-aware like in mockup)
+    val dotGreen  = DayNight(day = Color(0xFF4A6010), night = Color(0xFFC4FF3E))
+    val dotOrange = DayNight(day = Color(0xFFD4600A), night = Color(0xFFFF7A3D))
     val dotGray   = DayNight(day = Color(0xFFB5AD96), night = Color(0xFF5A5240))
 }
