@@ -163,6 +163,13 @@
     <string name="qr_close">✕ close</string>
     <string name="qr_permission">Allow camera access</string>
 
+    <!-- Widgets -->
+    <string name="widget_micro_desc">Quick toggle — connect/disconnect with one tap</string>
+    <string name="widget_status_desc">Status panel — state, server, speeds, toggle</string>
+    <string name="widget_strip_desc">Dashboard strip — full status bar</string>
+    <string name="widget_full_desc">Full dashboard — all stats and stream bars</string>
+    <string name="widget_pill_desc">Compact pill — minimal status indicator</string>
+
     <!-- Misc -->
     <string name="no_profiles">No profiles. Add a connection.</string>
     <string name="add_profile_title">Add connection</string>

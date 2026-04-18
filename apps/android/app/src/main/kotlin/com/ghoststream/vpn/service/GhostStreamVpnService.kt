@@ -18,6 +18,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.data.PreferencesStore
+import com.ghoststream.vpn.widget.WidgetState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -231,6 +232,25 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         lastStatusJson = json
         // Push to VpnStateManager so DashboardViewModel can observe.
         VpnStateManager.pushStatusFrame(json)
+        // Push to home screen widgets.
+        val frame = StatusFrameData.fromJson(json)
+        if (frame != null) {
+            serviceScope.launch {
+                val isConn = frame.state == "connected"
+                val isConning = frame.state == "connecting"
+                WidgetState.push(
+                    context = applicationContext,
+                    connected = isConn,
+                    connecting = isConning,
+                    serverName = savedParams?.serverName ?: "",
+                    timer = formatTimer(frame.sessionSecs),
+                    rxSpeed = formatSpeed(frame.rateRxBps),
+                    txSpeed = formatSpeed(frame.rateTxBps),
+                    streamsUp = frame.streamsUp,
+                    streamsTotal = frame.nStreams,
+                )
+            }
+        }
     }
 
     override fun onLogFrame(json: String) {
@@ -661,6 +681,10 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         tunnelGeneration++ // Invalidate any in-flight startTunnel threads
         userStopped = true
         lastStatusJson = null
+        // Push disconnected state to widgets
+        serviceScope.launch {
+            WidgetState.push(context = applicationContext, connected = false)
+        }
         synchronized(watchdogLock) { watchdogLock.notifyAll() }
         startupThread?.interrupt()
         startupThread = null
@@ -861,6 +885,22 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 CHANNEL_ID, "GhostStream VPN", NotificationManager.IMPORTANCE_LOW,
             ).apply { description = "Статус VPN-туннеля" }
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun formatTimer(secs: Long): String {
+        val h = secs / 3600
+        val m = (secs % 3600) / 60
+        val s = secs % 60
+        return "%02d:%02d:%02d".format(h, m, s)
+    }
+
+    private fun formatSpeed(bps: Double): String {
+        if (bps <= 0) return "--"
+        return when {
+            bps >= 1_000_000 -> "%.1f MB/s".format(bps / 1_000_000)
+            bps >= 1_000 -> "%.0f KB/s".format(bps / 1_000)
+            else -> "%.0f B/s".format(bps)
         }
     }
 
