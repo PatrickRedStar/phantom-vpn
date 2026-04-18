@@ -160,6 +160,7 @@ impl Manager {
             TunIo::Uring(tun_fd),
             self.status_tx.clone(),
             log_tx,
+            None, // Linux: RouteGuard handles VPN routing, no socket protection needed
         ).await.context("client_core_runtime::run")?;
 
         let mut g = self.inner.lock().await;

@@ -94,6 +94,12 @@ fun LogsScreen(viewModel: LogsViewModel) {
                 )
             }
             GhostChip(
+                text = stringResource(R.string.chip_clear),
+                active = false,
+                onClick = { viewModel.clearLogs() },
+                accent = C.textDim,
+            )
+            GhostChip(
                 text = stringResource(R.string.chip_share),
                 active = false,
                 onClick = { viewModel.shareLogs(context) },

@@ -8,6 +8,7 @@
 
 #if DEBUG
 import Foundation
+import PhantomKit
 
 /// Factory helpers that produce pre-populated Admin VMs without touching the
 /// network. Previews use these to render realistic layouts.

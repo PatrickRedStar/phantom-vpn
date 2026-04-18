@@ -7,6 +7,7 @@
 //  `Form` bakes in iOS system chrome that fights the Ghoststream palette.
 //
 
+import PhantomKit
 import SwiftUI
 
 /// Root SwiftUI view for the Settings tab.

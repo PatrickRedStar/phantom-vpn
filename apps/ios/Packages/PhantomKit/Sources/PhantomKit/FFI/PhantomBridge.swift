@@ -106,9 +106,15 @@ public actor PhantomBridge {
         logHandler     = onLog
         inboundHandler = onInbound
 
+        guard let connStr = profile.connString ?? ConnStringBuilder.build(from: profile),
+              !connStr.isEmpty
+        else {
+            throw BridgeError.encoding
+        }
+
         let connProfile = ConnectProfile(
             name: profile.name,
-            connString: profile.serverAddr,   // serverAddr carries the ghs:// conn string
+            connString: connStr,
             settings: settings
         )
 

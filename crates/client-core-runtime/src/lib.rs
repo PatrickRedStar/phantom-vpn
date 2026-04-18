@@ -45,9 +45,19 @@ pub use ghoststream_gui_ipc::{
 pub use telemetry::Telemetry;
 pub use tun_io::{PacketIo, TunIo};
 
+use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::{watch, Mutex};
+
+// ── Socket protection (Android VpnService.protect) ─────────────────────────
+
+/// Callback to protect a raw TCP socket fd from VPN routing.
+/// On Android, calls `VpnService.protect(fd)` via JNI so the socket
+/// bypasses the TUN interface. Returns `true` on success.
+/// Other platforms pass `None` (Linux uses RouteGuard, iOS routes
+/// extension-sockets automatically).
+pub type ProtectSocket = Arc<dyn Fn(RawFd) -> bool + Send + Sync>;
 
 // ── Public constants ─────────────────────────────────────────────────────────
 
@@ -88,14 +98,20 @@ pub async fn run(
     tun: TunIo,
     status_tx: watch::Sender<StatusFrame>,
     log_tx: tokio::sync::mpsc::Sender<LogFrame>,
+    protect_socket: Option<ProtectSocket>,
 ) -> anyhow::Result<(RuntimeHandles, tokio::task::JoinHandle<anyhow::Result<()>>)> {
     // Ensure the global tracing subscriber is installed.
     logsink::install();
+    // Evict stale senders from previous sessions to avoid duplicate log lines.
+    logsink::clear_senders();
     // Register the caller's log sink.
     logsink::add_sender(log_tx);
 
     // Build TUN factory: called once per reconnect attempt.
     // For Callback mode we also build an inbound mpsc channel.
+    // fd to close when supervisor exits (BlockingThreads only).
+    let mut tun_fd_to_close: Option<RawFd> = None;
+
     let (tun_factory, inbound_tx): (supervise::TunFactory, tokio::sync::mpsc::Sender<Bytes>) =
         match tun {
             #[cfg(target_os = "linux")]
@@ -112,25 +128,48 @@ pub async fn run(
                 // We dup() the fd so it's owned independently of the JNI layer.
                 let raw_fd = unsafe { libc::dup(fd) };
                 anyhow::ensure!(raw_fd >= 0, "dup(tun_fd) failed: {}", std::io::Error::last_os_error());
+                // Clear O_NONBLOCK — Android's ParcelFileDescriptor sets it,
+                // but our reader thread needs blocking reads.
+                unsafe {
+                    let flags = libc::fcntl(raw_fd, libc::F_GETFL);
+                    if flags >= 0 {
+                        libc::fcntl(raw_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+                    }
+                }
+                tun_fd_to_close = Some(raw_fd);
+                tracing::info!(tun_fd = raw_fd, "BlockingThreads: dup'd TUN fd (blocking mode)");
                 let factory: supervise::TunFactory = Arc::new(move || {
                     let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
                     let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
                     let tun_fd = raw_fd;
+                    tracing::info!(tun_fd, "TUN factory: spawning reader+writer");
                     // Reader thread: blocking libc::read → async channel
                     std::thread::spawn(move || {
+                        tracing::info!(tun_fd, "TUN reader thread started");
                         let mut buf = vec![0u8; 4096];
                         loop {
                             let n = unsafe { libc::read(tun_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-                            if n <= 0 { break; }
+                            if n <= 0 {
+                                let err = std::io::Error::last_os_error();
+                                tracing::error!(tun_fd, n, %err, "TUN read failed — reader exiting");
+                                break;
+                            }
                             let pkt = Bytes::copy_from_slice(&buf[..n as usize]);
-                            if read_tx.blocking_send(pkt).is_err() { break; }
+                            if read_tx.blocking_send(pkt).is_err() {
+                                tracing::info!(tun_fd, "TUN reader: channel closed");
+                                break;
+                            }
                         }
                     });
                     // Writer task: async channel → blocking libc::write
                     tokio::spawn(async move {
                         while let Some(pkt) = write_rx.recv().await {
                             let ret = unsafe { libc::write(tun_fd, pkt.as_ptr() as *const libc::c_void, pkt.len()) };
-                            if ret < 0 { break; }
+                            if ret < 0 {
+                                let err = std::io::Error::last_os_error();
+                                tracing::error!(tun_fd, %err, "TUN write failed");
+                                break;
+                            }
                         }
                     });
                     Ok((read_rx, write_tx))
@@ -191,8 +230,16 @@ pub async fn run(
             status_tx,
             supervisor_cancel,
             supervisor_telem,
+            protect_socket,
         )
         .await;
+        // Close the dup'd TUN fd so Android can tear down the VPN interface.
+        // Without this, the dup'd fd keeps the TUN device alive even after
+        // VpnService closes its ParcelFileDescriptor.
+        if let Some(fd) = tun_fd_to_close {
+            tracing::info!(tun_fd = fd, "closing dup'd TUN fd");
+            unsafe { libc::close(fd); }
+        }
         Ok(())
     });
 

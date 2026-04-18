@@ -116,6 +116,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     cachedEnabled   = if (p.has("cachedEnabled")) p.optBoolean("cachedEnabled") else null,
                     cachedIsAdmin   = if (p.has("cachedIsAdmin")) p.optBoolean("cachedIsAdmin") else null,
                     cachedAdminServerCertFp = p.optString("cachedAdminServerCertFp").takeIf { it.isNotBlank() },
+                    relayEnabled = p.optBoolean("relayEnabled", false),
+                    relayAddr = p.optString("relayAddr").takeIf { it.isNotBlank() },
                 )
             }
             _activeId.value = obj.optString("activeId").takeIf { it.isNotBlank() }
@@ -191,6 +193,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     if (p.cachedEnabled != null) put("cachedEnabled", p.cachedEnabled)
                     if (p.cachedIsAdmin != null) put("cachedIsAdmin", p.cachedIsAdmin)
                     if (p.cachedAdminServerCertFp != null) put("cachedAdminServerCertFp", p.cachedAdminServerCertFp)
+                    put("relayEnabled", p.relayEnabled)
+                    if (p.relayAddr != null) put("relayAddr", p.relayAddr)
                 })
             }
             file.writeText(

@@ -15,57 +15,41 @@ extern "C" {
 #endif // __cplusplus
 
 /**
- * Start the tunnel. `config_json` is a JSON object:
- * `{"server_addr":"...","server_name":"...","insecure":bool,`
- * ` "cert_pem":"...","key_pem":"...","ca_cert_pem":"..."|null}`
+ * Start the tunnel runtime.
+ *
+ * * `cfg_json`      — JSON-encoded [`ConnectProfile`] (name + conn_string + settings).
+ * * `settings_json` — JSON-encoded [`TunnelSettings`] (overrides settings inside
+ *                     cfg_json if present; may be `null` / empty to use defaults).
+ * * `status_cb`     — called on every [`StatusFrame`] change; JSON-encoded bytes.
+ * * `log_cb`        — called for every [`LogFrame`]; JSON-encoded bytes.
+ * * `outbound_cb`   — called for each IP packet from the tunnel destined to the device.
+ * * `ctx`           — opaque pointer forwarded to all three callbacks.
  *
  * Returns 0 on success, negative on error.
  */
- int32_t phantom_start(const char *config_json);
+
+int32_t phantom_runtime_start(const char *cfg_json,
+                              const char *settings_json,
+                              void (*status_cb)(const uint8_t*, uintptr_t, void*),
+                              void (*log_cb)(const uint8_t*, uintptr_t, void*),
+                              void (*outbound_cb)(const uint8_t*, uintptr_t, void*),
+                              void *ctx);
 
 /**
- * Signal the running tunnel to shut down. Non-blocking beyond a brief yield
- * to let the abort propagate. Subsequent `phantom_start` calls reuse the
- * same tokio runtime.
- */
- void phantom_stop(void);
-
-/**
- * Submit an outbound IP packet read from `NEPacketTunnelProvider.packetFlow`.
- * Returns 0 on accept, -10 on queue full (packet dropped), -11 if no tunnel
- * is running, -1 on bad pointer/len.
- */
- int32_t phantom_submit_outbound(const uint8_t *ptr, uintptr_t len);
-
-/**
- * Register a C callback that Rust will invoke for each inbound IP packet
- * decoded from the TLS streams. Pass `cb=None` to clear.
+ * Push an outbound IP packet (read from `packetFlow`) into the tunnel.
  *
- * The `ctx` pointer is stored and passed back verbatim. The caller must keep
- * it valid until a subsequent call replaces it.
+ * Naming convention note: "inbound" here is from the tunnel's perspective —
+ * this packet travels inbound to the tunnel (device → network).
+ *
+ * Returns 0 on accept, -10 on queue full (drop), -11 if no tunnel running.
  */
- void phantom_set_inbound_callback(void (*cb)(const uint8_t*, uintptr_t, void*), void *ctx);
+ int32_t phantom_runtime_submit_inbound(const uint8_t *ptr, uintptr_t len);
 
 /**
- * Returns a newly-allocated JSON string:
- * `{"bytes_rx":N,"bytes_tx":N,"pkts_rx":N,"pkts_tx":N,"connected":bool}`.
- * Caller must free via `phantom_free_string`.
+ * Signal the running tunnel to shut down gracefully.
+ * Returns 0 if a shutdown was signalled, -11 if no tunnel was running.
  */
- char *phantom_get_stats(void);
-
-/**
- * Returns a JSON array of log entries with `seq > since_seq`. Pass -1 to
- * get everything in the ring buffer.
- * Shape: `[{"seq":N,"ts":"HH:MM:SS","level":"INFO","msg":"..."}]`.
- * Caller must free via `phantom_free_string`.
- */
- char *phantom_get_logs(int64_t since_seq);
-
-/**
- * Accepts "trace", "debug", "info", "warn", "error" (case-insensitive).
- * Unknown strings reset to "info".
- */
- void phantom_set_log_level(const char *level);
+ int32_t phantom_runtime_stop(void);
 
 /**
  * Parse a `ghs://...` connection string and return JSON with the iOS-

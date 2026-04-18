@@ -6,6 +6,7 @@
 //  cards, mux bars, connect FAB. Implements §3.1 of the iOS UI spec.
 //
 
+import PhantomKit
 import SwiftUI
 
 /// Root Dashboard screen. Consumes the main-actor singletons via the
@@ -223,8 +224,8 @@ struct DashboardView: View {
         let txMbps = sf.rateTxBps > 0
             ? formatMbps(rateBps: sf.rateTxBps)
             : formatMbps(rateBps: vm.txSamples.last ?? 0)
-        let rxTotal = formatBytesShort(Int64(sf.bytesRx > 0 ? sf.bytesRx : UInt64(vm.latest?.bytesRx ?? 0)))
-        let txTotal = formatBytesShort(Int64(sf.bytesTx > 0 ? sf.bytesTx : UInt64(vm.latest?.bytesTx ?? 0)))
+        let rxTotal = formatBytesShort(Int64(sf.bytesRx > 0 ? sf.bytesRx : UInt64(vm.samples.last?.bytesRx ?? 0)))
+        let txTotal = formatBytesShort(Int64(sf.bytesTx > 0 ? sf.bytesTx : UInt64(vm.samples.last?.bytesTx ?? 0)))
         return HStack(spacing: 10) {
             StatCard(title: "RX", value: rxMbps, unit: "Mbps")
             StatCard(title: "TX", value: txMbps, unit: "Mbps")

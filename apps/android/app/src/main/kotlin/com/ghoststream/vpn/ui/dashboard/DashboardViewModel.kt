@@ -252,6 +252,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 putExtra(GhostStreamVpnService.EXTRA_PER_APP_MODE, cfg.perAppMode)
                 putExtra(GhostStreamVpnService.EXTRA_PER_APP_LIST, cfg.perAppList.joinToString(","))
                 putExtra(GhostStreamVpnService.EXTRA_CONN_STRING, connString)
+                if (profile?.relayEnabled == true && !profile.relayAddr.isNullOrBlank()) {
+                    putExtra(GhostStreamVpnService.EXTRA_RELAY_ADDR, profile.relayAddr)
+                }
             }
             ctx.startForegroundService(intent)
         }

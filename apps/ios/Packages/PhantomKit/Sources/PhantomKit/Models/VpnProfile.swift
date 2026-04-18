@@ -33,6 +33,8 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
     public var cachedEnabled: Bool?
     public var cachedIsAdmin: Bool?
     public var cachedAdminServerCertFp: String?
+    /// Original ghs:// connection string — required for phantom_runtime_start.
+    public var connString: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -51,7 +53,8 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         cachedExpiresAt: Int64? = nil,
         cachedEnabled: Bool? = nil,
         cachedIsAdmin: Bool? = nil,
-        cachedAdminServerCertFp: String? = nil
+        cachedAdminServerCertFp: String? = nil,
+        connString: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -70,6 +73,7 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         self.cachedEnabled = cachedEnabled
         self.cachedIsAdmin = cachedIsAdmin
         self.cachedAdminServerCertFp = cachedAdminServerCertFp
+        self.connString = connString
     }
 
     /// Returns a copy with PEM secrets stripped — for persistence to

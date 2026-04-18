@@ -317,6 +317,7 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
             TunIo::Uring(tun_fd),
             status_tx,
             log_tx,
+            None,
         ).await.context("client_core_runtime::run")?;
 
         // Wait for SIGINT/SIGTERM to cancel, or for the tunnel to die.

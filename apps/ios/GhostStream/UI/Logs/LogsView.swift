@@ -6,6 +6,7 @@
 //  SHARE + CLEAR), auto-scrolling log list, bottom fade to the nav bar.
 //
 
+import PhantomKit
 import SwiftUI
 
 /// Root Logs screen.
@@ -138,8 +139,8 @@ struct LogsView: View {
                     // auto-scroll to the newest when appended, unless
                     // the user has scrolled manually.
                     ForEach(vm.visibleLogs) { entry in
-                        LogEntryRow(entry: entry)
-                            .id(entry.seq)
+                        LogFrameRow(entry: entry)
+                            .id(entry.tsUnixMs)
                     }
                     // Tail sentinel — used for scroll-to-bottom.
                     Color.clear
@@ -165,17 +166,17 @@ struct LogsView: View {
     }
 }
 
-// MARK: - LogEntryRow
+// MARK: - LogFrameRow
 
-private struct LogEntryRow: View {
+private struct LogFrameRow: View {
 
-    let entry: LogEntry
+    let entry: LogFrame
 
     @Environment(\.gsColors) private var C
 
     var body: some View {
         HStack(alignment: .top, spacing: 4) {
-            Text(LogsViewModel.formatTs(entry.ts))
+            Text(LogsViewModel.formatTs(entry.tsUnixMs))
                 .gsFont(.logTs)
                 .foregroundStyle(C.textFaint)
                 .frame(width: 60, alignment: .leading)
@@ -183,7 +184,7 @@ private struct LogEntryRow: View {
                 .gsFont(.logLevel)
                 .foregroundStyle(levelColor)
                 .frame(width: 36, alignment: .leading)
-            Text(entry.message)
+            Text(entry.msg)
                 .gsFont(.logMsg)
                 .foregroundStyle(messageColor)
                 .frame(maxWidth: .infinity, alignment: .leading)

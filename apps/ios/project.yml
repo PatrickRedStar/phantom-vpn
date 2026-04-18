@@ -8,10 +8,14 @@ options:
   groupSortPosition: top
   generateEmptyDirectories: true
 
+packages:
+  PhantomKit:
+    path: Packages/PhantomKit
+
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "7DHEYBY99N"
     CODE_SIGN_STYLE: Automatic
     ENABLE_BITCODE: NO
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
@@ -75,6 +79,8 @@ targets:
       - target: PacketTunnelProvider
         embed: true
         codeSign: true
+      - package: PhantomKit
+        product: PhantomKit
       - framework: Frameworks/PhantomCore.xcframework
         embed: true
         codeSign: true
@@ -109,6 +115,8 @@ targets:
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Frameworks"
     dependencies:
+      - package: PhantomKit
+        product: PhantomKit
       - framework: Frameworks/PhantomCore.xcframework
         embed: false
         optional: true

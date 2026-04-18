@@ -6,6 +6,7 @@
 //  Pushed from Settings with an active `VpnProfile`.
 //
 
+import PhantomKit
 import SwiftUI
 
 // MARK: - AdminView

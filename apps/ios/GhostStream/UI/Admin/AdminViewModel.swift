@@ -15,6 +15,7 @@
 
 import Foundation
 import Observation
+import PhantomKit
 
 /// MainActor-bound observable view model that owns an `AdminHttpClient` for
 /// one `VpnProfile`. Re-created when the active profile changes (the profile

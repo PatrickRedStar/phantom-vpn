@@ -7,6 +7,7 @@
 //  Actions: re-import (paste new ghs://…) and delete.
 //
 
+import PhantomKit
 import SwiftUI
 
 /// Sheet presented from the Settings list. Allows renaming, editing the

@@ -2,18 +2,19 @@
 //  LogsViewModel.swift
 //  GhostStream
 //
-//  Polls `PhantomBridge.logs(sinceSeq:)` every 500ms, keeps an
-//  in-memory rolling buffer of up to 50 000 entries, and exposes a
-//  hierarchical level filter (INFO shows INFO+WARN+ERROR etc.).
-//
+//  Polls the PacketTunnelProvider via TunnelIpcBridge every 500ms for
+//  LogFrame entries. Keeps an in-memory rolling buffer of up to 50 000
+//  entries and exposes a hierarchical level filter.
 
 import Foundation
+import NetworkExtension
 import Observation
+import PhantomKit
 import os.log
 
-/// The set of filter labels shown in the chip row of `LogsView`. The
-/// raw string is also what gets passed to `PhantomBridge.setLogLevel`
-/// (lower-cased) so the Rust side only emits what the user wants.
+/// The set of filter labels shown in the chip row of `LogsView`.
+/// Filtering is now purely client-side — the Rust side always emits at
+/// its configured level (no more `setLogLevel` IPC).
 enum LogFilter: String, CaseIterable, Hashable {
     case all    = "ALL"
     case trace  = "TRACE"
@@ -45,19 +46,6 @@ enum LogFilter: String, CaseIterable, Hashable {
         default: return 2
         }
     }
-
-    /// Rust-side log-level argument (nil = don't reconfigure level).
-    var nativeLevel: String? {
-        switch self {
-        case .all:   return "trace"
-        case .trace: return "trace"
-        case .debug: return "debug"
-        case .info:  return "info"
-        // Rust collapses warn/error to info — matches Android semantics.
-        case .warn:  return "info"
-        case .error: return "info"
-        }
-    }
 }
 
 /// Main-actor observable VM for the Logs screen.
@@ -67,27 +55,21 @@ final class LogsViewModel {
 
     // MARK: - Observable state
 
-    /// Rolling buffer of log entries, in emission order (oldest first).
+    /// Rolling buffer of log frames, in emission order (oldest first).
     /// Capped at `maxEntries`.
-    private(set) var allLogs: [LogEntry] = []
+    private(set) var allLogs: [LogFrame] = []
 
     /// Active filter chip.
-    var filter: LogFilter = .info {
-        didSet {
-            guard filter != oldValue else { return }
-            if let level = filter.nativeLevel {
-                PhantomBridge.setLogLevel(level)
-            }
-        }
-    }
+    var filter: LogFilter = .info
 
     /// `true` while the view wants live polling.
     private(set) var polling = false
 
     // MARK: - Private
 
-    private var lastSeq: Int64 = -1
+    private var lastTsMs: UInt64 = 0
     private var pollTask: Task<Void, Never>?
+    private var ipc: TunnelIpcBridge?
     private let maxEntries = 50_000
     private let log = Logger(subsystem: "com.ghoststream.vpn", category: "LogsVM")
 
@@ -95,7 +77,7 @@ final class LogsViewModel {
 
     /// `allLogs` reduced to entries at or above the current filter's
     /// priority. Hierarchical: INFO includes WARN + ERROR.
-    var visibleLogs: [LogEntry] {
+    var visibleLogs: [LogFrame] {
         let min = filter.priority
         if min < 0 { return allLogs }
         return allLogs.filter { LogFilter.priority(of: $0.level) >= min }
@@ -103,19 +85,15 @@ final class LogsViewModel {
 
     // MARK: - Lifecycle
 
-    init() {
-        if let level = filter.nativeLevel {
-            PhantomBridge.setLogLevel(level)
-        }
-    }
-
     /// Starts the 500ms polling loop. Idempotent.
     func startPolling() {
         guard !polling else { return }
         polling = true
         pollTask = Task { @MainActor [weak self] in
-            while let self, self.polling, !Task.isCancelled {
-                self.drainNewEntries()
+            guard let self else { return }
+            await self.setupIpc()
+            while self.polling, !Task.isCancelled {
+                await self.drainNewEntries()
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
@@ -130,8 +108,7 @@ final class LogsViewModel {
 
     // MARK: - Actions
 
-    /// Wipes the in-memory buffer. The Rust ring buffer is untouched —
-    /// next poll will continue with `lastSeq`.
+    /// Wipes the in-memory buffer.
     func clear() {
         allLogs.removeAll()
     }
@@ -157,27 +134,47 @@ final class LogsViewModel {
 
     // MARK: - Private
 
-    private func drainNewEntries() {
-        let fresh = PhantomBridge.logs(sinceSeq: lastSeq)
-        guard !fresh.isEmpty else { return }
-        lastSeq = fresh.map(\.seq).max() ?? lastSeq
-        allLogs.append(contentsOf: fresh)
-        if allLogs.count > maxEntries {
-            allLogs.removeFirst(allLogs.count - maxEntries)
+    /// Loads the NETunnelProviderManager and creates a TunnelIpcBridge
+    /// to communicate with the PacketTunnelProvider extension.
+    private func setupIpc() async {
+        do {
+            let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+            if let session = managers.first?.connection as? NETunnelProviderSession {
+                ipc = TunnelIpcBridge(session: session)
+            }
+        } catch {
+            log.error("Failed to load VPN manager for IPC: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Fetches new log entries from the extension via IPC.
+    private func drainNewEntries() async {
+        guard let ipc else { return }
+        do {
+            let response = try await ipc.send(.subscribeLogs(sinceMs: lastTsMs))
+            if case .logs(let frames) = response, !frames.isEmpty {
+                lastTsMs = frames.map(\.tsUnixMs).max() ?? lastTsMs
+                allLogs.append(contentsOf: frames)
+                if allLogs.count > maxEntries {
+                    allLogs.removeFirst(allLogs.count - maxEntries)
+                }
+            }
+        } catch {
+            // IPC can fail when tunnel isn't running — silently retry next poll
         }
     }
 
     /// Format an entry for file export / clipboard.
-    static func format(_ e: LogEntry) -> String {
-        let ts = Date(timeIntervalSince1970: e.ts)
+    static func format(_ e: LogFrame) -> String {
+        let ts = Date(timeIntervalSince1970: Double(e.tsUnixMs) / 1000.0)
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
-        return "\(f.string(from: ts)) [\(e.level)] \(e.target): \(e.message)"
+        return "\(f.string(from: ts)) [\(e.level)] \(e.msg)"
     }
 
     /// Format timestamp for the list row ("HH:MM:SS").
-    static func formatTs(_ ts: Double) -> String {
-        let d = Date(timeIntervalSince1970: ts)
+    static func formatTs(_ tsMs: UInt64) -> String {
+        let d = Date(timeIntervalSince1970: Double(tsMs) / 1000.0)
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         return f.string(from: d)

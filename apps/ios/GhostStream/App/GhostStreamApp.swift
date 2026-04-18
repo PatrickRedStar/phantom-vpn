@@ -6,6 +6,7 @@
 //  SwiftUI environment and applies the Ghoststream theme + colour scheme.
 //
 
+import PhantomKit
 import SwiftUI
 
 /// App entry point. Hosts the root `AppNavigation` and injects:

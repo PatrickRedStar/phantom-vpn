@@ -15,6 +15,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import Foundation
+import PhantomKit
 import Security
 import CryptoKit
 

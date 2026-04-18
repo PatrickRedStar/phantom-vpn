@@ -1,21 +1,11 @@
 // PacketTunnelProvider — NEPacketTunnelProvider entry point for GhostStream.
 //
-// Architecture (Phase 6):
-//   • Reads profileId from providerConfiguration (set by VpnTunnelController).
-//   • Loads the full VpnProfile from shared App Group UserDefaults via
-//     ProfilesStore; PEM secrets hydrated from the shared Keychain.
-//   • Configures NEPacketTunnelNetworkSettings with IPv4 full-tunnel +
-//     IPv6 killswitch (excludes default IPv6 route to prevent leaks).
-//   • Registers a Rust inbound callback, starts the Rust tunnel, pumps
-//     outbound packets from packetFlow to Rust.
-//   • Writes StatusFrame snapshots to the App Group container
-//     (snapshot.json) so VpnStateManager can observe them via UserDefaults
-//     change notifications — no Darwin notification needed for status.
-//   • Handles handleAppMessage for IPC with the main app (get status,
-//     subscribe logs, disconnect).
+// Uses PhantomKit's actor-based PhantomBridge with push callbacks for
+// status, logs, and inbound packets.
 
 import Foundation
 import NetworkExtension
+import PhantomKit
 import os.log
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -23,13 +13,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = Logger(subsystem: "com.ghoststream.vpn.PacketTunnel", category: "tunnel")
 
     private var outboundTask: Task<Void, Never>?
-    private var statsTask: Task<Void, Never>?
-    private var didPostConnected = false
 
     // MARK: - In-process state
 
-    private var lastStatusPayload = VpnStatePayload(kind: .disconnected)
-    private var recentLogLines: [AppLogEntry] = []
+    private var lastStatusFrame: StatusFrame = .disconnected
+    private var recentLogFrames: [LogFrame] = []
 
     // MARK: - Lifecycle
 
@@ -39,11 +27,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     ) {
         Task {
             do {
-                try await self.startTunnelAsync()
-                completionHandler(nil)
+                try await self.startTunnelAsync(completionHandler: completionHandler)
             } catch {
                 self.log.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
-                self.broadcastState(VpnStatePayload(kind: .error, error: error.localizedDescription))
+                self.writeStatePayload(.init(kind: .error, error: error.localizedDescription))
                 completionHandler(error)
             }
         }
@@ -55,72 +42,57 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     ) {
         log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
         outboundTask?.cancel()
-        statsTask?.cancel()
         outboundTask = nil
-        statsTask = nil
 
-        PhantomBridge.stop()
-        PhantomBridge.clearInboundCallback()
-
-        broadcastState(VpnStatePayload(kind: .disconnected))
-        completionHandler()
+        Task {
+            await PhantomBridge.shared.stop()
+            writeStatePayload(VpnStatePayload(kind: .disconnected))
+            completionHandler()
+        }
     }
 
     // MARK: - IPC (handleAppMessage)
-
-    /// Simple IPC message tag (must match the main app's VpnTunnelController call sites).
-    private enum IpcCommand: String, Decodable {
-        case getStatus
-        case getLogs
-        case disconnect
-    }
-
-    private struct IpcRequest: Decodable {
-        let cmd: IpcCommand
-        let sinceMs: UInt64?
-    }
-
-    private struct IpcResponse: Encodable {
-        let ok: Bool
-        let status: VpnStatePayload?
-        let logs: [AppLogEntry]?
-    }
+    // Uses TunnelIpcBridge.Message / Response from PhantomKit so the
+    // host app and extension share a single Codable wire format.
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        let request: IpcRequest
+        let message: TunnelIpcBridge.Message
         do {
-            request = try JSONDecoder().decode(IpcRequest.self, from: messageData)
+            message = try JSONDecoder().decode(TunnelIpcBridge.Message.self, from: messageData)
         } catch {
             completionHandler?(nil)
             return
         }
 
-        switch request.cmd {
+        switch message {
         case .getStatus:
-            let response = IpcResponse(ok: true, status: lastStatusPayload, logs: nil)
+            let response = TunnelIpcBridge.Response.status(lastStatusFrame)
             completionHandler?(try? JSONEncoder().encode(response))
 
-        case .getLogs:
-            let sinceMs = request.sinceMs ?? 0
-            let filtered = recentLogLines.filter { $0.tsMs > sinceMs }
-            let response = IpcResponse(ok: true, status: nil, logs: filtered)
+        case .subscribeLogs(let sinceMs):
+            let filtered = recentLogFrames.filter { $0.tsUnixMs > sinceMs }
+            let response = TunnelIpcBridge.Response.logs(filtered)
+            completionHandler?(try? JSONEncoder().encode(response))
+
+        case .getCurrentProfile:
+            let response = TunnelIpcBridge.Response.ok
             completionHandler?(try? JSONEncoder().encode(response))
 
         case .disconnect:
             outboundTask?.cancel()
-            statsTask?.cancel()
-            PhantomBridge.stop()
-            PhantomBridge.clearInboundCallback()
-            broadcastState(VpnStatePayload(kind: .disconnected))
-            let response = IpcResponse(ok: true, status: nil, logs: nil)
-            completionHandler?(try? JSONEncoder().encode(response))
+            Task {
+                await PhantomBridge.shared.stop()
+                writeStatePayload(VpnStatePayload(kind: .disconnected))
+                let response = TunnelIpcBridge.Response.ok
+                completionHandler?(try? JSONEncoder().encode(response))
+            }
         }
     }
 
     // MARK: - Start implementation
 
-    private func startTunnelAsync() async throws {
-        broadcastState(VpnStatePayload(kind: .connecting))
+    private func startTunnelAsync(completionHandler: @escaping (Error?) -> Void) async throws {
+        writeStatePayload(VpnStatePayload(kind: .connecting))
 
         let profile = try loadProfile()
 
@@ -131,20 +103,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let networkSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverHost)
         networkSettings.mtu = NSNumber(value: 1350)
 
-        // IPv4: route all traffic through the tunnel.
         let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         ipv4.excludedRoutes = []
         networkSettings.ipv4Settings = ipv4
 
-        // IPv6 killswitch: exclude the default IPv6 route to prevent leaks
-        // while the tunnel is active. This matches the approach recommended in
-        // Apple's NEPacketTunnelNetworkSettings docs.
+        // IPv6 killswitch
         let ipv6 = NEIPv6Settings(addresses: [], networkPrefixLengths: [])
         ipv6.excludedRoutes = [NEIPv6Route.default()]
         networkSettings.ipv6Settings = ipv6
 
-        // DNS — prefer profile-level servers; fall back to Cloudflare/Google.
         let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
         let dns = NEDNSSettings(servers: dnsServers)
         dns.matchDomains = [""]
@@ -152,40 +120,55 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         try await setTunnelNetworkSettings(networkSettings)
 
-        // Register the inbound callback — Rust pushes decapsulated IP packets
-        // here; we forward them to packetFlow.
-        PhantomBridge.setInboundCallback { [weak self] data in
-            guard let self else { return }
-            self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
+        let settings = TunnelSettings()
+        var didCallCompletion = false
+
+        // Start the Rust tunnel via PhantomKit actor bridge.
+        do {
+            try await PhantomBridge.shared.start(
+                profile: profile,
+                settings: settings,
+                onStatus: { [weak self] frame in
+                    guard let self else { return }
+                    self.lastStatusFrame = frame
+
+                    // Write snapshot for the main app to read
+                    self.writeSnapshot(frame)
+
+                    // Signal connected to NEPacketTunnelProvider on first .connected
+                    if frame.state == .connected && !didCallCompletion {
+                        didCallCompletion = true
+                        completionHandler(nil)
+                    }
+                },
+                onLog: { [weak self] frame in
+                    guard let self else { return }
+                    self.recentLogFrames.append(frame)
+                    if self.recentLogFrames.count > 1000 {
+                        self.recentLogFrames.removeFirst(self.recentLogFrames.count - 1000)
+                    }
+                },
+                onInbound: { [weak self] data in
+                    guard let self else { return }
+                    self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
+                }
+            )
+        } catch {
+            await PhantomBridge.shared.stop()
+            throw error
         }
 
-        // Start the Rust tunnel.
-        let startConfig = StartConfig(
-            serverAddr: profile.serverAddr,
-            serverName: profile.serverName,
-            insecure: profile.insecure,
-            certPem: profile.certPem ?? "",
-            keyPem: profile.keyPem ?? "",
-            tunAddr: profile.tunAddr,
-            tunMtu: 1350
-        )
-        do {
-            try PhantomBridge.start(startConfig)
-        } catch {
-            PhantomBridge.clearInboundCallback()
-            throw error
+        // If we haven't received .connected yet, call completion after a short delay
+        // to avoid hanging the system VPN UI forever. The tunnel is running,
+        // status callbacks will update the state.
+        if !didCallCompletion {
+            didCallCompletion = true
+            completionHandler(nil)
         }
 
         // Outbound loop: drain packetFlow → Rust.
         outboundTask = Task.detached { [weak self] in
             await self?.outboundLoop()
-        }
-
-        // Stats loop: flip state to .connected once Rust reports live tunnel,
-        // then keep writing snapshots periodically.
-        let serverNameCopy = profile.serverName
-        statsTask = Task.detached { [weak self] in
-            await self?.statsLoop(serverName: serverNameCopy)
         }
     }
 
@@ -196,7 +179,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw ProviderError.missingProtocol
         }
 
-        // Phase 6+: prefer profileId-based lookup.
         if let profileId = proto.providerConfiguration?["profileId"] as? String {
             guard let profile = resolveProfile(id: profileId) else {
                 throw ProviderError.profileNotFound(profileId)
@@ -204,7 +186,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return profile
         }
 
-        // Fallback: legacy full-profile JSON blob (pre-Phase-6 VpnTunnelController).
         guard let profileData = proto.providerConfiguration?["profile"] as? Data else {
             throw ProviderError.missingProfile
         }
@@ -215,8 +196,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Resolves a VpnProfile by id from App Group UserDefaults, with PEM
-    /// secrets hydrated from the shared Keychain access group.
     private func resolveProfile(id: String) -> VpnProfile? {
         let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")
         guard
@@ -225,13 +204,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             var profile = profiles.first(where: { $0.id == id })
         else { return nil }
 
-        // Hydrate PEM secrets from the shared Keychain.
         profile.certPem = Keychain.get("profile.\(id).cert")
         profile.keyPem  = Keychain.get("profile.\(id).key")
         return profile
     }
 
-    // MARK: - Packet loops
+    // MARK: - Packet loop
 
     private func outboundLoop() async {
         while !Task.isCancelled {
@@ -242,56 +220,46 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             if Task.isCancelled { break }
             for pkt in packets {
-                PhantomBridge.submitOutbound(pkt)
+                await PhantomBridge.shared.submitInbound(pkt)
             }
-        }
-    }
-
-    private func statsLoop(serverName: String) async {
-        while !Task.isCancelled {
-            if let stats = PhantomBridge.stats(), stats.connected {
-                if !didPostConnected {
-                    didPostConnected = true
-                    broadcastState(VpnStatePayload(
-                        kind: .connected,
-                        since: Date().timeIntervalSince1970,
-                        serverName: serverName
-                    ))
-                }
-            }
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
 
     // MARK: - State broadcast
 
-    /// Writes the payload to App Group UserDefaults and posts a Darwin
-    /// notification so the main app's VpnStateManager can pick it up.
-    /// Note: `writeVpnState` (SharedState.swift) already posts the Darwin
-    /// notification — no need to post it again here.
-    private func broadcastState(_ payload: VpnStatePayload) {
-        lastStatusPayload = payload
-        writeVpnState(payload)
-    }
-
-    // MARK: - Log capture
-
-    struct AppLogEntry: Codable {
-        let tsMs: UInt64
-        let level: String
-        let msg: String
-    }
-
-    private func appendLog(level: String, msg: String) {
-        let entry = AppLogEntry(
-            tsMs: UInt64(Date().timeIntervalSince1970 * 1000),
-            level: level,
-            msg: msg
-        )
-        recentLogLines.append(entry)
-        if recentLogLines.count > 1000 {
-            recentLogLines.removeFirst(recentLogLines.count - 1000)
+    private func writeStatePayload(_ payload: VpnStatePayload) {
+        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn") else { return }
+        if let data = try? JSONEncoder().encode(payload) {
+            defaults.set(data, forKey: "vpn.state.v1")
         }
+        DarwinNotifications.post(DarwinNotifications.stateChanged)
+    }
+
+    private func writeSnapshot(_ frame: StatusFrame) {
+        guard let url = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn")?
+            .appendingPathComponent("snapshot.json"),
+              let data = try? JSONEncoder().encode(frame)
+        else { return }
+        try? data.write(to: url, options: .atomic)
+
+        // Also update the legacy state payload for VpnStateManager
+        let payload: VpnStatePayload
+        switch frame.state {
+        case .disconnected:
+            payload = VpnStatePayload(kind: .disconnected)
+        case .connecting:
+            payload = VpnStatePayload(kind: .connecting)
+        case .reconnecting:
+            payload = VpnStatePayload(kind: .connecting)
+        case .connected:
+            payload = VpnStatePayload(kind: .connected,
+                                       since: Date().timeIntervalSince1970 - Double(frame.sessionSecs),
+                                       serverName: frame.sni ?? frame.serverAddr ?? "")
+        case .error:
+            payload = VpnStatePayload(kind: .error, error: frame.lastError)
+        }
+        writeStatePayload(payload)
     }
 
     // MARK: - Helpers
@@ -314,7 +282,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Parses "10.7.0.2/24" into ("10.7.0.2", "255.255.255.0").
     private func parseCidr(_ cidr: String) throws -> (String, String) {
         let parts = cidr.split(separator: "/")
         guard parts.count == 2,
@@ -329,7 +296,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return (ip, octets.map { String($0) }.joined(separator: "."))
     }
 
-    /// Extracts the host part of "host:port".
     private func hostPart(of addr: String) -> String {
         if let lastColon = addr.lastIndex(of: ":"),
            addr.firstIndex(of: ":") == lastColon {
