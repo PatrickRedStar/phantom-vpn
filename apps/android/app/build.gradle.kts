@@ -12,9 +12,9 @@ android {
         applicationId = "com.ghoststream.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 57
-        versionName = "0.22.2"
-        buildConfigField("String", "GIT_TAG", "\"v0.22.2\"")
+        versionCode = 58
+        versionName = "0.22.3"
+        buildConfigField("String", "GIT_TAG", "\"v0.22.3\"")
     }
 
     buildFeatures {
@@ -83,6 +83,11 @@ dependencies {
 
     // OkHttp for mTLS admin API
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Glance — home screen widgets
+    implementation("androidx.glance:glance:1.1.1")
+    implementation("androidx.glance:glance-appwidget:1.1.1")
+    implementation("androidx.glance:glance-material3:1.1.1")
 }
 
 val cargoWorkspaceDir = file("${rootProject.rootDir}/../..")

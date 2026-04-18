@@ -156,6 +156,13 @@
     <string name="qr_close">✕ закрыть</string>
     <string name="qr_permission">Разреши доступ к камере</string>
 
+    <!-- Widgets -->
+    <string name="widget_micro_desc">Быстрый переключатель — подключение одним нажатием</string>
+    <string name="widget_status_desc">Панель статуса — состояние, сервер, скорости</string>
+    <string name="widget_strip_desc">Полоса дашборда — полная строка статуса</string>
+    <string name="widget_full_desc">Полный дашборд — все данные и потоки</string>
+    <string name="widget_pill_desc">Компактная капсула — минимальный индикатор</string>
+
     <string name="no_profiles">Нет профилей. Добавьте подключение.</string>
     <string name="add_profile_title">Добавить подключение</string>
     <string name="add_profile_name_hint">Название (необязательно)</string>
