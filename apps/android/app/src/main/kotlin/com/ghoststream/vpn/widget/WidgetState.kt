@@ -57,14 +57,10 @@ object WidgetState {
             }
         }
         // Trigger re-render
-        widgetClasses.forEachIndexed { i, _ ->
-            when (i) {
-                0 -> MicroToggleWidget().updateAll(context)
-                1 -> StatusPanelWidget().updateAll(context)
-                2 -> StripWidget().updateAll(context)
-                3 -> FullDashboardWidget().updateAll(context)
-                4 -> PillWidget().updateAll(context)
-            }
-        }
+        MicroToggleWidget().updateAll(context)
+        StatusPanelWidget().updateAll(context)
+        StripWidget().updateAll(context)
+        FullDashboardWidget().updateAll(context)
+        PillWidget().updateAll(context)
     }
 }

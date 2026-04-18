@@ -42,90 +42,83 @@ class MicroToggleWidget : GlanceAppWidget() {
             val connecting = prefs[WidgetState.IS_CONNECTING] ?: false
             val server = prefs[WidgetState.SERVER_NAME] ?: "GhostStream"
 
-            // Outer border simulation: bg=hair, padding=1dp, inner bg=bgElev
-            Box(
+            Row(
                 modifier = GlanceModifier
                     .fillMaxSize()
-                    .background(W.hair)
-                    .cornerRadius(10.dp)
+                    .background(W.bgElev)
+                    .cornerRadius(16.dp)
+                    .padding(horizontal = 8.dp)
                     .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = GlanceModifier
-                        .fillMaxSize()
-                        .background(W.bgElev)
-                        .cornerRadius(9.dp)
-                        .padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Left accent bar when connected
-                    if (connected) {
-                        Box(
-                            modifier = GlanceModifier
-                                .width(2.dp)
-                                .height(28.dp)
-                                .background(W.signal)
-                                .cornerRadius(1.dp),
-                        ) {}
-                        Spacer(GlanceModifier.width(10.dp))
-                    }
-
-                    // Status dot
-                    val dotColor = when {
-                        connected -> W.dotGreen
-                        connecting -> W.dotOrange
-                        else -> W.dotGray
-                    }
+                // Left accent bar when connected
+                if (connected) {
                     Box(
                         modifier = GlanceModifier
-                            .size(10.dp)
-                            .background(dotColor)
-                            .cornerRadius(5.dp),
+                            .width(2.dp)
+                            .height(28.dp)
+                            .background(W.signal)
+                            .cornerRadius(1.dp),
                     ) {}
+                    Spacer(GlanceModifier.width(8.dp))
+                }
 
-                    Spacer(GlanceModifier.width(10.dp))
+                // Status dot
+                val dotColor = when {
+                    connected -> W.dotGreen
+                    connecting -> W.dotOrange
+                    else -> W.dotGray
+                }
+                Box(
+                    modifier = GlanceModifier
+                        .size(10.dp)
+                        .background(dotColor)
+                        .cornerRadius(5.dp),
+                ) {}
 
-                    // Server info
-                    Column(modifier = GlanceModifier.defaultWeight()) {
-                        Text(
-                            text = when {
-                                connected -> "ONLINE"
-                                connecting -> "TUNING"
-                                else -> "OFFLINE"
-                            },
-                            style = TextStyle(
-                                color = W.dim,
-                                fontSize = 9.sp,
-                                fontFamily = FontFamily.Monospace,
-                            ),
-                        )
-                        Text(
-                            text = server.take(14),
-                            style = TextStyle(
-                                color = W.bone,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                            maxLines = 1,
-                        )
-                    }
+                Spacer(GlanceModifier.width(8.dp))
 
-                    // Action icon area
-                    Box(
-                        modifier = GlanceModifier
-                            .size(28.dp)
-                            .background(if (connected) W.bgElev2 else W.btnConnect)
-                            .cornerRadius(14.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (connected) "\u23FB" else "\u25B6",
-                            style = TextStyle(
-                                color = if (connected) W.dim else W.btnConnectText,
-                                fontSize = 12.sp,
-                            ),
-                        )
-                    }
+                // Server info
+                Column(modifier = GlanceModifier.defaultWeight()) {
+                    Text(
+                        text = when {
+                            connected -> "ONLINE"
+                            connecting -> "TUNING"
+                            else -> "OFFLINE"
+                        },
+                        style = TextStyle(
+                            color = W.dim,
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                    Text(
+                        text = server.take(14),
+                        style = TextStyle(
+                            color = W.bone,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        maxLines = 1,
+                    )
+                }
+
+                // Action icon area
+                Box(
+                    modifier = GlanceModifier
+                        .size(28.dp)
+                        .background(if (connected) W.bgElev else W.btnConnect)
+                        .cornerRadius(14.dp)
+                        .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (connected) "\u23FB" else "\u25B6",
+                        style = TextStyle(
+                            color = if (connected) W.danger else W.btnConnectText,
+                            fontSize = 12.sp,
+                        ),
+                    )
                 }
             }
         }

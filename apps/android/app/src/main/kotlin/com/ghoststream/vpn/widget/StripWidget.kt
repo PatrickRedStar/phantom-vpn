@@ -20,7 +20,6 @@ import androidx.glance.layout.Column
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxSize
-import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
@@ -45,141 +44,118 @@ class StripWidget : GlanceAppWidget() {
             val rx = prefs[WidgetState.RX_SPEED] ?: "--"
             val tx = prefs[WidgetState.TX_SPEED] ?: "--"
 
-            Box(
+            Row(
                 modifier = GlanceModifier
                     .fillMaxSize()
-                    .background(W.hair)
-                    .cornerRadius(10.dp)
+                    .background(W.bgElev)
+                    .cornerRadius(16.dp)
+                    .padding(horizontal = 14.dp)
                     .clickable(onClick = actionRunCallback<OpenAppAction>()),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = GlanceModifier
-                        .fillMaxSize()
-                        .background(W.bgElev)
-                        .cornerRadius(9.dp)
-                        .padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Left accent bar
-                    if (connected) {
-                        Box(
-                            modifier = GlanceModifier
-                                .width(2.dp)
-                                .height(28.dp)
-                                .background(W.signal)
-                                .cornerRadius(1.dp),
-                        ) {}
-                        Spacer(GlanceModifier.width(10.dp))
-                    }
-
-                    // Status dot
-                    val dotColor = when {
-                        connected -> W.dotGreen
-                        connecting -> W.dotOrange
-                        else -> W.dotGray
-                    }
+                // Status dot + label column (like mockup: 14dp dot with label below)
+                val dotColor = when {
+                    connected -> W.dotGreen
+                    connecting -> W.dotOrange
+                    else -> W.dotGray
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(
                         modifier = GlanceModifier
-                            .size(8.dp)
+                            .size(14.dp)
                             .background(dotColor)
-                            .cornerRadius(4.dp),
+                            .cornerRadius(7.dp),
                     ) {}
+                    Spacer(GlanceModifier.height(4.dp))
+                    Text(
+                        text = when {
+                            connected -> "ONLINE"
+                            connecting -> "TUNING"
+                            else -> "OFFLINE"
+                        },
+                        style = TextStyle(
+                            color = W.dim,
+                            fontSize = 7.sp,
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                }
 
-                    Spacer(GlanceModifier.width(10.dp))
+                Spacer(GlanceModifier.width(12.dp))
 
-                    // Server + status
-                    Column(modifier = GlanceModifier.defaultWeight()) {
+                // Separator
+                Box(GlanceModifier.width(1.dp).height(36.dp).background(W.hair)) {}
+
+                Spacer(GlanceModifier.width(12.dp))
+
+                // Server + meta row (timer + speeds)
+                Column(modifier = GlanceModifier.defaultWeight()) {
+                    Text(
+                        text = server.ifBlank { "GhostStream" }.take(18),
+                        style = TextStyle(
+                            color = W.bone,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        maxLines = 1,
+                    )
+                    Row {
                         Text(
-                            text = server.ifBlank { "GhostStream" }.take(16),
-                            style = TextStyle(
-                                color = W.bone,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                            ),
-                            maxLines = 1,
-                        )
-                        Text(
-                            text = when {
-                                connected -> "ONLINE"
-                                connecting -> "TUNING"
-                                else -> "OFFLINE"
-                            },
+                            text = if (connected) timer else "",
                             style = TextStyle(
                                 color = W.dim,
                                 fontSize = 9.sp,
                                 fontFamily = FontFamily.Monospace,
                             ),
                         )
+                        if (connected) {
+                            Spacer(GlanceModifier.width(10.dp))
+                            Text(
+                                text = "\u2193$rx",
+                                style = TextStyle(
+                                    color = W.signal,
+                                    fontSize = 9.sp,
+                                ),
+                            )
+                            Spacer(GlanceModifier.width(6.dp))
+                            Text(
+                                text = "\u2191$tx",
+                                style = TextStyle(
+                                    color = W.warn,
+                                    fontSize = 9.sp,
+                                ),
+                            )
+                        }
+                        if (!connected && !connecting) {
+                            Text(
+                                text = "Last: --",
+                                style = TextStyle(
+                                    color = W.faint,
+                                    fontSize = 9.sp,
+                                ),
+                            )
+                        }
                     }
+                }
 
-                    // Timer
+                Spacer(GlanceModifier.width(6.dp))
+
+                // Toggle button (36dp like mockup)
+                Box(
+                    modifier = GlanceModifier
+                        .size(36.dp)
+                        .background(if (connected) W.bgElev else W.btnConnect)
+                        .cornerRadius(18.dp)
+                        .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Text(
-                        text = if (connected) timer else "--:--:--",
+                        text = if (connected) "\u23FB" else "\u25B6",
                         style = TextStyle(
-                            color = W.dim,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
+                            color = if (connected) W.danger else W.btnConnectText,
+                            fontSize = 14.sp,
                         ),
                     )
-
-                    Spacer(GlanceModifier.width(14.dp))
-
-                    // Separator
-                    Box(GlanceModifier.width(1.dp).height(24.dp).background(W.hair)) {}
-
-                    Spacer(GlanceModifier.width(14.dp))
-
-                    // RX / TX
-                    Column(horizontalAlignment = Alignment.End) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "RX ",
-                                style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace),
-                            )
-                            Text(
-                                text = if (connected) rx else "\u2014",
-                                style = TextStyle(
-                                    color = if (connected) W.signal else W.faint,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                            )
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "TX ",
-                                style = TextStyle(color = W.faint, fontSize = 8.sp, fontFamily = FontFamily.Monospace),
-                            )
-                            Text(
-                                text = if (connected) tx else "\u2014",
-                                style = TextStyle(
-                                    color = if (connected) W.warn else W.faint,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
-                                ),
-                            )
-                        }
-                    }
-
-                    Spacer(GlanceModifier.width(14.dp))
-
-                    // Toggle button
-                    Box(
-                        modifier = GlanceModifier
-                            .size(28.dp)
-                            .background(if (connected) W.bgElev2 else W.btnConnect)
-                            .cornerRadius(14.dp)
-                            .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = if (connected) "\u23FB" else "\u25B6",
-                            style = TextStyle(
-                                color = if (connected) W.dim else W.btnConnectText,
-                                fontSize = 12.sp,
-                            ),
-                        )
-                    }
                 }
             }
         }
