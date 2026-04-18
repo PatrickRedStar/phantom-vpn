@@ -83,23 +83,42 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         else -> "${scopeWindowSecs}s"
     }
 
-    // Rolling RX/TX sparkline (delta per second) — fed by push-based statusFrame
+    // Rolling RX/TX sparkline (1 sample per real second) — fed by push-based statusFrame
     val rxBuffer = remember { mutableStateListOf<Float>() }
     val txBuffer = remember { mutableStateListOf<Float>() }
     var lastRx by remember { mutableStateOf(0L) }
     var lastTx by remember { mutableStateOf(0L) }
+    var accRx by remember { mutableStateOf(0f) }
+    var accTx by remember { mutableStateOf(0f) }
+
+    // Accumulate deltas from each StatusFrame push
     LE(statusFrame.bytesRx, statusFrame.bytesTx, vpnState) {
         if (vpnState is VpnState.Connected) {
             val dRx = (statusFrame.bytesRx - lastRx).coerceAtLeast(0)
             val dTx = (statusFrame.bytesTx - lastTx).coerceAtLeast(0)
-            rxBuffer.add(dRx.toFloat())
-            txBuffer.add(dTx.toFloat())
-            while (rxBuffer.size > scopeWindowSecs) rxBuffer.removeAt(0)
-            while (txBuffer.size > scopeWindowSecs) txBuffer.removeAt(0)
+            accRx += dRx.toFloat()
+            accTx += dTx.toFloat()
             lastRx = statusFrame.bytesRx
             lastTx = statusFrame.bytesTx
         } else {
-            rxBuffer.clear(); txBuffer.clear(); lastRx = 0; lastTx = 0
+            rxBuffer.clear(); txBuffer.clear()
+            lastRx = 0; lastTx = 0
+            accRx = 0f; accTx = 0f
+        }
+    }
+
+    // Flush accumulated bytes into buffer once per second
+    LE(vpnState, scopeWindowSecs) {
+        if (vpnState is VpnState.Connected) {
+            while (true) {
+                delay(1000)
+                rxBuffer.add(accRx)
+                txBuffer.add(accTx)
+                accRx = 0f
+                accTx = 0f
+                while (rxBuffer.size > scopeWindowSecs) rxBuffer.removeAt(0)
+                while (txBuffer.size > scopeWindowSecs) txBuffer.removeAt(0)
+            }
         }
     }
 
@@ -281,6 +300,16 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                         stringResource(R.string.kv_identity),
                         activeProfile?.name ?: "—",
                         C.bone,
+                    )
+                    DashedHairline()
+                    val relayActive = activeProfile?.relayEnabled == true && !activeProfile?.relayAddr.isNullOrBlank()
+                    KvRow(
+                        stringResource(R.string.kv_route),
+                        if (relayActive)
+                            "${stringResource(R.string.kv_route_relay)} · ${activeProfile!!.relayAddr}"
+                        else
+                            stringResource(R.string.kv_route_direct),
+                        if (relayActive) C.signal else C.bone,
                     )
                     DashedHairline()
                     KvRow(
