@@ -31,6 +31,10 @@ vps_nl.json
 api_ishostig.yaml
 .tmp/
 
+# Signing keys
+*.jks
+*.keystore
+
 # Android build artifacts
 apps/android/app/build/
 apps/android/.gradle/

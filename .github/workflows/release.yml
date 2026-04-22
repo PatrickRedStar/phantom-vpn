@@ -77,7 +77,7 @@ jobs:
 
 # ─────────────────────────────────────────────────────────────────────────────
   build-android:
-    name: Android client (.apk)
+    name: Android client (.apk + .aab)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,14 +119,28 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
-        run: cd apps/android && ./gradlew assembleDebug --no-daemon
+      - name: Decode release keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > /tmp/ghoststream-release.jks
+
+      - name: Build signed release APK + AAB
+        env:
+          RELEASE_KEYSTORE_PATH: /tmp/ghoststream-release.jks
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+        run: cd apps/android && ./gradlew assembleRelease bundleRelease --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: PhantomVPN-Android
-          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          path: apps/android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhantomVPN-Android-AAB
+          path: apps/android/app/build/outputs/bundle/release/app-release.aab
 
 # ─────────────────────────────────────────────────────────────────────────────
   build-linux-gui:
@@ -271,7 +285,7 @@ jobs:
             | Linux client x86_64 | `phantom-client-linux` |
             | Server x86_64 | `phantom-server` |
             | Keygen x86_64 | `phantom-keygen` |
-            | Android (arm64) | `app-debug.apk` |
+            | Android (arm64) | `app-release.apk` |
             | Linux GUI x86_64 | `ghoststream-linux-gui-x86_64.tar.gz` |
             | OpenWrt aarch64 | `openwrt-aarch64` |
             | OpenWrt armv7 | `openwrt-armv7` |
@@ -286,13 +300,13 @@ jobs:
 
             ### Android install
             ```sh
-            adb install app-debug.apk
+            adb install app-release.apk
             ```
           files: |
             artifacts/phantom-client-linux/phantom-client-linux
             artifacts/phantom-server/phantom-server
             artifacts/phantom-keygen/phantom-keygen
-            artifacts/PhantomVPN-Android/app-debug.apk
+            artifacts/PhantomVPN-Android/app-release.apk
             artifacts/ghoststream-linux-gui-x86_64/ghoststream-linux-gui-x86_64.tar.gz
             artifacts/openwrt-aarch64/openwrt-aarch64
             artifacts/openwrt-armv7/openwrt-armv7

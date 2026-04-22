@@ -9,12 +9,24 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.ghoststream.vpn"
+        applicationId = "io.ghoststream.vpn"
         minSdk = 26
         targetSdk = 36
         versionCode = 59
         versionName = "0.22.4"
         buildConfigField("String", "GIT_TAG", "\"v0.22.4\"")
+    }
+
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("RELEASE_KEYSTORE_PATH")
+            if (keystorePath != null) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildFeatures {
@@ -29,6 +41,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
