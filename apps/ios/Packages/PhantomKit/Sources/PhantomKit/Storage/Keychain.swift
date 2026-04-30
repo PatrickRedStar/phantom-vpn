@@ -13,6 +13,7 @@ import Security
 public enum Keychain {
     /// App Group id used as keychain access group (must match entitlements).
     public static let appGroupIdentifier = "group.com.ghoststream.vpn"
+    private static let appIdentifierPrefix = "UPG896A272."
 
     public static var accessGroup: String {
         resolvedAccessGroup()
@@ -52,7 +53,7 @@ public enum Keychain {
             group == appGroupIdentifier || group.hasSuffix(".\(appGroupIdentifier)")
         } ?? appGroupIdentifier
         #else
-        return appGroupIdentifier
+        return appIdentifierPrefix + appGroupIdentifier
         #endif
     }
 

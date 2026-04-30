@@ -104,23 +104,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         // Build NEPacketTunnelNetworkSettings.
         let (tunIp, subnetMask) = try parseCidr(profile.tunAddr)
-        let serverHost = hostPart(of: profile.serverAddr)
-
-        let networkSettings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: serverHost)
+        let networkSettings = NEPacketTunnelNetworkSettings(
+            tunnelRemoteAddress: tunnelRemoteAddress(for: profile.serverAddr)
+        )
         networkSettings.mtu = NSNumber(value: 1350)
 
         let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
         configureIPv4Routes(ipv4, for: profile, settings: settings)
         networkSettings.ipv4Settings = ipv4
 
-        // IPv6 killswitch
-        let ipv6 = NEIPv6Settings(addresses: [], networkPrefixLengths: [])
+        // iOS rejects NEIPv6Settings without at least one tunnel address.
+        // Route IPv6 into the tunnel with a ULA address so unsupported IPv6
+        // traffic is captured and dropped instead of leaking outside the VPN.
         if settings.ipv6Killswitch {
+            let ipv6 = NEIPv6Settings(
+                addresses: ["fd00:6768:6f73:7473::1"],
+                networkPrefixLengths: [64]
+            )
             ipv6.includedRoutes = [NEIPv6Route.default()]
-        } else {
-            ipv6.excludedRoutes = [NEIPv6Route.default()]
+            networkSettings.ipv6Settings = ipv6
         }
-        networkSettings.ipv6Settings = ipv6
 
         let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
         let dns = NEDNSSettings(servers: dnsServers)
@@ -585,5 +588,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return String(addr[..<lastColon])
         }
         return addr
+    }
+
+    private func tunnelRemoteAddress(for addr: String) -> String {
+        let host = hostPart(of: addr)
+        return isIPv4Literal(host) ? host : "127.0.0.1"
+    }
+
+    private func isIPv4Literal(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { part in
+            guard let byte = UInt8(part) else { return false }
+            return String(byte) == String(part)
+        }
     }
 }
