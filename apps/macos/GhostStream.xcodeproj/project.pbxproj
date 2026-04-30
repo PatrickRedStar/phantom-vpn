@@ -518,6 +518,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.23.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn;
+				PROVISIONING_PROFILE_SPECIFIER = "$(GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -632,6 +633,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn.tunnel;
 				PRODUCT_MODULE_NAME = PacketTunnelExtension;
 				PRODUCT_NAME = com.ghoststream.vpn.tunnel;
+				PROVISIONING_PROFILE_SPECIFIER = "$(GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = macosx;
 				WRAPPER_EXTENSION = systemextension;
 			};
