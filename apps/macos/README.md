@@ -85,6 +85,7 @@ GitHub Actions делает то же самое в `.github/workflows/release.y
 
 - `MACOS_CERTIFICATE_P12_BASE64` — Developer ID Application certificate в `.p12`, закодированный base64.
 - `MACOS_CERTIFICATE_PASSWORD` — пароль от `.p12`.
+- `MACOS_DEVELOPER_ID_CERTIFICATE_BASE64` — публичный Developer ID Application `.cer`, который соответствует private key из `.p12`.
 - `APPLE_TEAM_ID` — Team ID, по умолчанию используется `UPG896A272`.
 - `APP_STORE_CONNECT_API_KEY_BASE64`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID` — API key для automatic provisioning и notarization.
 - `MACOS_APP_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.vpn`.
@@ -99,6 +100,7 @@ Base64 для GitHub Secret на macOS:
 
 ```bash
 base64 -i DeveloperID.p12 | pbcopy
+base64 -i "Developer ID Application: Petr Kurkin (UPG896A272).cer" | pbcopy
 base64 -i GhostStream.provisionprofile | pbcopy
 ```
 
