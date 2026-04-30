@@ -24,31 +24,30 @@ public struct AdminView: View {
     }
 
     public var body: some View {
-        ZStack(alignment: .bottom) {
-            C.bg.ignoresSafeArea()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if vm.mtlsUnavailable {
-                        mtlsBanner
-                    } else if let err = vm.error, vm.status == nil {
-                        errorBanner(err)
-                    }
-
-                    statusGrid
-                    clientsList
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if vm.mtlsUnavailable {
+                    mtlsBanner
+                } else if let err = vm.error, vm.status == nil {
+                    errorBanner(err)
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 18)
-                .padding(.bottom, 104)
-            }
-            .scrollIndicators(.hidden)
-            .refreshable {
-                await vm.refresh()
-            }
 
-            createFab
-
+                statusGrid
+                clientsList
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 24)
+        }
+        .background(C.bg.ignoresSafeArea())
+        .scrollIndicators(.hidden)
+        .refreshable {
+            await vm.refresh()
+        }
+        .safeAreaInset(edge: .bottom) {
+            createButton
+        }
+        .overlay(alignment: .bottom) {
             if let toastMessage {
                 toast(text: toastMessage)
             }
@@ -76,38 +75,41 @@ public struct AdminView: View {
     }
 
     private var mtlsBanner: some View {
-        GhostCard(bg: C.danger.opacity(0.08), border: C.danger) {
+        NativeSectionCard {
             VStack(alignment: .leading, spacing: 6) {
-                Text(L("admin.mtls.unavailable").uppercased())
-                    .gsFont(.labelMono)
+                Text(L("admin.mtls.unavailable"))
+                    .font(.body.weight(.semibold))
                     .foregroundColor(C.danger)
                 Text(L("admin.ed25519.error"))
-                    .gsFont(.body)
+                    .font(.footnote)
                     .foregroundColor(C.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 10)
         }
     }
 
     private func errorBanner(_ message: String) -> some View {
-        GhostCard(bg: C.danger.opacity(0.08), border: C.danger) {
+        NativeSectionCard {
             VStack(alignment: .leading, spacing: 8) {
-                Text(L("admin.error").uppercased())
-                    .gsFont(.labelMono)
+                Text(L("admin.error"))
+                    .font(.body.weight(.semibold))
                     .foregroundColor(C.danger)
                 Text(message)
-                    .gsFont(.body)
+                    .font(.footnote)
                     .foregroundColor(C.textDim)
                     .fixedSize(horizontal: false, vertical: true)
                 Button {
                     Task { await vm.refresh() }
                 } label: {
-                    Text(L("admin.retry").uppercased())
-                        .gsFont(.labelMonoSmall)
-                        .foregroundColor(C.signal)
+                    Label(L("admin.retry"), systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .tint(C.signal)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 10)
         }
     }
 
@@ -120,68 +122,87 @@ public struct AdminView: View {
     }
 
     private func statCell(label: String, value: String, signal: Bool = false) -> some View {
-        GhostCard {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(label.uppercased())
-                    .gsFont(.labelMonoSmall)
-                    .foregroundColor(C.textFaint)
-                Text(value)
-                    .gsFont(.valueMono)
-                    .foregroundColor(signal ? C.signal : C.bone)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(C.textDim)
+            Text(value)
+                .font(.title3.monospacedDigit().weight(.semibold))
+                .foregroundColor(signal ? C.signal : C.bone)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(C.bgElev.opacity(0.92))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(C.hair, lineWidth: 1)
+                )
+        )
     }
 
     private var clientsList: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(String(format: L("admin.clients.count"), vm.clients.count).uppercased())
-                .gsFont(.labelMono)
-                .foregroundColor(C.textFaint)
+            Text(String(format: L("admin.clients.count"), vm.clients.count))
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(C.textDim)
                 .padding(.leading, 4)
 
             if vm.clients.isEmpty && !vm.loading {
-                GhostCard {
-                    Text(L("admin.no.clients").uppercased())
-                        .gsFont(.labelMonoSmall)
+                NativeSectionCard {
+                    Text(L("admin.no.clients"))
+                        .font(.footnote.weight(.semibold))
                         .foregroundColor(C.textFaint)
                         .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 18)
                 }
             } else {
-                VStack(spacing: 8) {
-                    ForEach(vm.clients) { client in
+                NativeSectionCard {
+                    ForEach(Array(vm.clients.enumerated()), id: \.element.id) { idx, client in
                         NavigationLink(destination: ClientDetailView(client: client, adminVM: vm)) {
                             ClientRowView(client: client)
                         }
                         .buttonStyle(.plain)
+                        if idx < vm.clients.count - 1 {
+                            HairlineDivider()
+                        }
                     }
                 }
             }
         }
     }
 
-    private var createFab: some View {
-        GhostFab(text: L("admin.new.client").uppercased(), outline: true) {
+    private var createButton: some View {
+        Button {
             showCreateSheet = true
+        } label: {
+            Label(L("admin.new.client"), systemImage: "plus")
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .frame(height: 54)
         }
+        .buttonStyle(.borderedProminent)
+        .tint(C.signal)
+        .foregroundColor(C.bg)
         .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .background(C.bg)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
         .disabled(vm.mtlsUnavailable)
         .opacity(vm.mtlsUnavailable ? 0.45 : 1.0)
     }
 
     private func toast(text: String) -> some View {
         Text(text)
-            .gsFont(.labelMonoSmall)
+            .font(.caption.weight(.semibold))
             .foregroundColor(C.bg)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                Capsule(style: .continuous)
                     .fill(C.signal)
             )
             .padding(.bottom, 86)
@@ -197,40 +218,46 @@ struct ClientRowView: View {
     @Environment(\.gsColors) private var C
 
     var body: some View {
-        GhostCard(active: client.connected) {
+        HStack(alignment: .top, spacing: 12) {
+            Circle()
+                .fill(client.connected ? C.signal : C.textFaint)
+                .frame(width: 10, height: 10)
+                .padding(.top, 7)
+
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .center, spacing: 8) {
                     Text(client.name)
-                        .gsFont(.clientName)
+                        .font(.body.weight(.semibold))
                         .foregroundColor(C.bone)
                         .lineLimit(1)
                     Spacer(minLength: 8)
                     statusBadge
                 }
 
-                Text(client.tunAddr.isEmpty ? "—" : client.tunAddr)
-                    .gsFont(.body)
+                Text(clientSubtitle)
+                    .font(.footnote)
                     .foregroundColor(C.textDim)
                     .lineLimit(1)
+                    .truncationMode(.middle)
 
-                HStack(spacing: 10) {
-                    Text("↓ \(AdminFormat.bytes(client.bytesRx))")
-                        .gsFont(.labelMonoSmall)
-                    Text("↑ \(AdminFormat.bytes(client.bytesTx))")
-                        .gsFont(.labelMonoSmall)
-                    if let days = daysLeft {
-                        Text("· \(days)d".uppercased())
-                            .gsFont(.labelMonoSmall)
-                    }
-                    Spacer(minLength: 0)
+                HStack(spacing: 8) {
                     if client.isAdmin { AdminBadge() }
                     if !client.enabled { DisabledBadge() }
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                    Text("RX \(AdminFormat.bytes(client.bytesRx))")
+                        .font(.caption.monospacedDigit())
+                    Text("TX \(AdminFormat.bytes(client.bytesTx))")
+                        .font(.caption.monospacedDigit())
                 }
-                .foregroundColor(C.textDim)
+                .foregroundColor(C.textFaint)
             }
+
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(C.textFaint)
+                .padding(.top, 4)
         }
+        .contentShape(Rectangle())
+        .padding(.vertical, 12)
     }
 
     private var daysLeft: Int? {
@@ -240,36 +267,47 @@ struct ClientRowView: View {
 
     private var statusBadge: some View {
         let status = clientStatus
-        return Text(status.text.uppercased())
-            .gsFont(.labelMonoSmall)
+        return Text(status.text)
+            .font(.caption.weight(.semibold))
             .foregroundColor(status.color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(status.color.opacity(0.12), in: Capsule(style: .continuous))
     }
 
     private var clientStatus: (text: String, color: Color) {
         if !client.enabled {
-            return ("○ \(L("admin.tag.off"))", C.textFaint)
+            return (L("admin.tag.off"), C.textFaint)
         }
         if client.connected {
-            return ("◉ \(L("admin.tag.live"))", C.signal)
+            return (L("admin.tag.live"), C.signal)
         }
         if let daysLeft, daysLeft < 7 {
-            return ("! \(String(format: L("admin.tag.exp.days.left"), max(0, daysLeft)))", C.warn)
+            return (String(format: L("admin.tag.exp.days.left"), max(0, daysLeft)), C.warn)
         }
         let hours = (client.lastSeenSecs ?? 0) / 3_600
-        return ("◌ \(L("admin.tag.idle")) · \(hours)h", C.textDim)
+        return ("\(L("admin.tag.idle")) · \(hours)h", C.textDim)
+    }
+
+    private var clientSubtitle: String {
+        let address = client.tunAddr.isEmpty ? "—" : client.tunAddr
+        if let daysLeft {
+            return "\(address) · \(daysLeft)d"
+        }
+        return address
     }
 }
 
 struct AdminBadge: View {
     @Environment(\.gsColors) private var C
     var body: some View {
-        Text(L("profile.role.admin").uppercased())
-            .gsFont(.labelMonoSmall)
+        Text(L("profile.role.admin"))
+            .font(.caption2.weight(.semibold))
             .foregroundColor(C.bg)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
             .background(
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                Capsule(style: .continuous)
                     .fill(C.warn)
             )
     }
@@ -278,13 +316,13 @@ struct AdminBadge: View {
 struct DisabledBadge: View {
     @Environment(\.gsColors) private var C
     var body: some View {
-        Text(L("admin.tag.off").uppercased())
-            .gsFont(.labelMonoSmall)
+        Text(L("admin.tag.off"))
+            .font(.caption2.weight(.semibold))
             .foregroundColor(C.textDim)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
             .background(
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                Capsule(style: .continuous)
                     .stroke(C.hairBold, lineWidth: 1)
             )
     }

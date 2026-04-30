@@ -136,7 +136,7 @@ struct NativeBottomAction: View {
     }
 
     private var filled: Bool {
-        tone == .success || tone == .danger
+        true
     }
 
     private var color: Color {

@@ -26,98 +26,95 @@ public struct CreateClientSheet: View {
     }
 
     public var body: some View {
-        ZStack {
-            C.bg.ignoresSafeArea()
-
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(L("admin.add.title").uppercased())
-                        .gsFont(.labelMono)
-                        .foregroundColor(C.bone)
-                    Spacer()
-                    Button {
-                        dismiss()
-                    } label: {
-                        Text("×")
-                            .gsFont(.valueMono)
-                            .foregroundColor(C.textDim)
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        fieldLabel(L("admin.add.name.hint"))
+                        TextField("alice", text: $name)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body)
+                            .padding(12)
+                            .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
-                    .buttonStyle(.plain)
+
+                    NativeSectionCard {
+                        Toggle(isOn: $perpetual) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(L("admin.subscription.perpetual"))
+                                    .font(.body.weight(.semibold))
+                                    .foregroundColor(C.bone)
+                                Text(L("admin.add.days.hint"))
+                                    .font(.footnote)
+                                    .foregroundColor(C.textDim)
+                            }
+                        }
+                        .tint(C.signal)
+
+                        if !perpetual {
+                            HairlineDivider()
+                            TextField(L("admin.sub.days.hint"), text: $expiresDaysText)
+                                .keyboardType(.numberPad)
+                                .font(.body.monospacedDigit())
+                                .padding(.vertical, 12)
+                        }
+                    }
+
+                    NativeSectionCard {
+                        Toggle(isOn: $isAdmin) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(L("admin.client.is.admin"))
+                                    .font(.body.weight(.semibold))
+                                    .foregroundColor(C.bone)
+                                Text(L("admin.client.is.admin.subtitle"))
+                                    .font(.footnote)
+                                    .foregroundColor(C.textDim)
+                            }
+                        }
+                        .tint(C.signal)
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundColor(C.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(18)
+            }
+            .background(C.bg.ignoresSafeArea())
+            .navigationTitle(L("admin.add.title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L("general.cancel")) {
+                        dismiss()
+                    }
                     .disabled(submitting)
                 }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    fieldLabel(L("admin.add.name.hint"))
-                    GhostTextField("alice", text: $name)
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    fieldLabel(L("admin.subscription.perpetual"))
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(L("admin.add.days.hint"))
-                                .gsFont(.body)
-                                .foregroundColor(C.textDim)
-                        }
-                        Spacer()
-                        GhostToggle(isOn: $perpetual, onLabel: L("admin.subscription.perpetual"))
-                    }
-                    if !perpetual {
-                        GhostTextField(L("admin.sub.days.hint"), text: $expiresDaysText, keyboardType: .numberPad)
-                    }
-                }
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L("admin.client.is.admin").uppercased())
-                            .gsFont(.labelMono)
-                            .foregroundColor(C.textFaint)
-                        Text(L("admin.client.is.admin.subtitle"))
-                            .gsFont(.body)
-                            .foregroundColor(C.textDim)
-                    }
-                    Spacer()
-                    GhostToggle(isOn: $isAdmin, onLabel: L("profile.role.admin"))
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .gsFont(.body)
-                        .foregroundColor(C.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                HStack(spacing: 10) {
-                    GhostButton(L("general.cancel"), variant: .secondary) { dismiss() }
-                        .disabled(submitting)
-                    GhostButton(L("admin.action.create"), isEnabled: canSubmit && !submitting) {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
                         Task { await submit() }
+                    } label: {
+                        if submitting {
+                            ProgressView()
+                        } else {
+                            Text(L("admin.action.create"))
+                        }
                     }
+                    .disabled(!canSubmit || submitting)
                 }
-            }
-            .padding(18)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(C.bgElev)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(C.hairBold, lineWidth: 1)
-                    )
-            )
-            .padding(18)
-
-            if submitting {
-                Color.black.opacity(0.25).ignoresSafeArea()
-                ProgressView().tint(C.signal)
             }
         }
         .presentationDetents([.medium, .large])
     }
 
     private func fieldLabel(_ text: String) -> some View {
-        Text(text.uppercased())
-            .gsFont(.labelMonoSmall)
-            .foregroundColor(C.textFaint)
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .foregroundColor(C.textDim)
     }
 
     private var canSubmit: Bool {

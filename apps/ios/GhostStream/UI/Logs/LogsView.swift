@@ -20,28 +20,28 @@ struct LogsView: View {
     @State private var userPinnedScroll = false
 
     var body: some View {
-        ZStack {
-            C.bg.ignoresSafeArea()
-
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                filterRow
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                statusBanner
-                logList
-            }
-
-            // Bottom fade so the last log line doesn't crash into the nav.
-            VStack {
-                Spacer()
-                LinearGradient(
-                    colors: [C.bg.opacity(0), C.bg],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 60)
-                .allowsHitTesting(false)
+        VStack(alignment: .leading, spacing: 0) {
+            filterRow
+                .padding(.top, 4)
+            statusBanner
+            logList
+        }
+        .background(C.bg.ignoresSafeArea())
+        .navigationTitle(L("nav_logs"))
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    if isLive {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 6, height: 6)
+                    }
+                    Text(metaText)
+                        .font(.caption2.monospaced().weight(.semibold))
+                        .foregroundStyle(C.textDim)
+                        .lineLimit(1)
+                }
             }
         }
         .searchable(
@@ -66,17 +66,6 @@ struct LogsView: View {
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        ScreenHeader(
-            brand: NSLocalizedString("brand_tail", comment: ""),
-            meta: metaText,
-            pulse: isLive,
-            pulseColor: statusColor
-        )
     }
 
     private var metaText: String {
@@ -125,14 +114,13 @@ struct LogsView: View {
             }
             .foregroundStyle(statusColor)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(12)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(statusColor.opacity(0.10))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(statusColor.opacity(0.35), lineWidth: 1)
             )
             .padding(.horizontal, 16)
@@ -143,28 +131,28 @@ struct LogsView: View {
     // MARK: - Filter row
 
     private var filterRow: some View {
-        LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 74), spacing: 6, alignment: .leading)],
-            alignment: .leading,
-            spacing: 6
-        ) {
-            ForEach(LogFilter.allCases, id: \.self) { f in
-                chip(filter: f)
-            }
-            logChip(L("chip_clear"), active: false, accent: C.danger) {
-                showClearConfirmation = true
-            }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(LogFilter.allCases, id: \.self) { f in
+                    chip(filter: f)
+                }
+                logChip(L("chip_clear"), active: false, accent: C.danger) {
+                    showClearConfirmation = true
+                }
 
-            logChip(L("chip_share"), active: false, accent: C.signal) {
-                if let url = vm.shareFileURL(range: 500) {
-                    shareItem = ShareItem(url: url)
+                logChip(L("chip_share"), active: false, accent: C.signal) {
+                    if let url = vm.shareFileURL(range: 500) {
+                        shareItem = ShareItem(url: url)
+                    }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
     }
 
     private func chip(filter f: LogFilter) -> some View {
-        logChip(f.rawValue, active: vm.filter == f, accent: C.signal) {
+        logChip(f.nativeTitle, active: vm.filter == f, accent: C.signal) {
             vm.filter = f
         }
     }
@@ -176,18 +164,14 @@ struct LogsView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Text(text.uppercased())
-                .gsFont(.chipText)
+            Text(text)
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(active ? C.bg : accent)
                 .lineLimit(1)
-                .minimumScaleFactor(0.68)
-                .frame(maxWidth: .infinity, minHeight: 42)
-                .padding(.horizontal, 4)
-                .background(active ? accent : Color.clear)
-                .overlay(
-                    Rectangle()
-                        .stroke(active ? accent : C.hairBold, lineWidth: 1)
-                )
+                .padding(.horizontal, 13)
+                .frame(height: 34)
+                .background(active ? accent : C.bgElev.opacity(0.62), in: Capsule(style: .continuous))
+                .overlay(Capsule(style: .continuous).stroke(active ? accent : C.hairBold, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -228,6 +212,19 @@ struct LogsView: View {
 
 private func L(_ key: String) -> String {
     NSLocalizedString(key, comment: "")
+}
+
+private extension LogFilter {
+    var nativeTitle: String {
+        switch self {
+        case .all: return "All"
+        case .trace: return "Trace"
+        case .debug: return "Debug"
+        case .info: return "Info"
+        case .warn: return "Warn"
+        case .error: return "Error"
+        }
+    }
 }
 
 // MARK: - LogFrameRow

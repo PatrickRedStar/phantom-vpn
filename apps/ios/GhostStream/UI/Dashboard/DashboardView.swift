@@ -23,61 +23,60 @@ struct DashboardView: View {
     @State private var vm = DashboardViewModel()
 
     var body: some View {
-        ZStack {
-            C.bg.ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                header
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        nativeStatusCard
-                        reconnectBanner
-                        emptyHint
-                        preflightBanner
-                        metricsCard
-                        scopeCard
-                        muxCard
-                        detailsCard
-                        NativeBottomAction(
-                            title: dashboardPresentation.primaryActionTitle,
-                            tone: dashboardPresentation.tone,
-                            action: handlePrimaryAction
-                        )
-                        Spacer(minLength: 88)
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 12)
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                connectionCard
+                reconnectBanner
+                emptyHint
+                preflightBanner
+                scopeCard
+                muxCard
+                detailsCard
             }
-
-            bottomTabFade
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 18)
+        }
+        .background(C.bg.ignoresSafeArea())
+        .navigationTitle(L("nav_stream"))
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                toolbarMeta
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            bottomActionBar
         }
         .onAppear { vm.onAppear() }
     }
 
     // MARK: - Sections
 
-    private var header: some View {
-        ScreenHeader(
-            brand: NSLocalizedString("brand_stream", comment: ""),
-            meta: headerMetaText,
-            pulse: shouldPulse(vm.state),
-            pulseColor: pulseColor(for: vm.state, colors: C)
-        )
+    private var toolbarMeta: some View {
+        HStack(spacing: 6) {
+            if shouldPulse(vm.state) {
+                Circle()
+                    .fill(pulseColor(for: vm.state, colors: C))
+                    .frame(width: 6, height: 6)
+            }
+            Text(headerMetaText)
+                .font(.caption2.monospaced().weight(.semibold))
+                .foregroundStyle(C.textDim)
+                .lineLimit(1)
+        }
     }
 
-    private var bottomTabFade: some View {
-        VStack {
-            Spacer()
-            LinearGradient(
-                colors: [C.bg.opacity(0), C.bg.opacity(0.92), C.bg],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 132)
-            .allowsHitTesting(false)
-        }
+    private var bottomActionBar: some View {
+        NativeBottomAction(
+            title: dashboardPresentation.primaryActionTitle,
+            tone: dashboardPresentation.tone,
+            action: handlePrimaryAction
+        )
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
     }
 
     /// Reconnect banner — visible when `statusFrame.state == .reconnecting`.
@@ -87,20 +86,22 @@ struct DashboardView: View {
             let attempt = stateMgr.statusFrame.reconnectAttempt.map { Int($0) } ?? 0
             let nextDelay = stateMgr.statusFrame.reconnectNextDelaySecs.map { Int($0) } ?? 0
             HStack(spacing: 10) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.callout.weight(.semibold))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(L("native.dashboard.reconnecting").uppercased())
-                        .gsFont(.labelMono)
+                    Text(L("native.dashboard.reconnecting"))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(C.warn)
                     Text(String(format: L("native.dashboard.reconnect.detail.format"), attempt, nextDelay))
-                        .gsFont(.kvValue)
+                        .font(.footnote)
                         .foregroundStyle(C.textDim)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(12)
-            .background(C.warn.opacity(0.10))
+            .padding(14)
+            .background(C.warn.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(C.warn.opacity(0.4), lineWidth: 1)
             )
         }
@@ -109,11 +110,11 @@ struct DashboardView: View {
     @ViewBuilder
     private var emptyHint: some View {
         if profiles.activeProfile == nil && !isConnected {
-            GhostCard {
-                Text(L("hint_add_profile").uppercased())
-                    .gsFont(.body)
-                    .foregroundStyle(C.textDim)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            NativeSectionCard {
+                NativeRow(title: L("native.dashboard.add.profile"), subtitle: L("hint_add_profile"), action: nil) {
+                    Image(systemName: "plus.circle")
+                        .foregroundStyle(C.signal)
+                }
             }
         }
     }
@@ -123,7 +124,7 @@ struct DashboardView: View {
         if let warn = vm.preflightWarning {
             HStack(spacing: 10) {
                 Text(warn)
-                    .gsFont(.kvValue)
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(C.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button("×") {
@@ -131,97 +132,207 @@ struct DashboardView: View {
                 }
                 .foregroundStyle(C.danger)
             }
-            .padding(12)
-            .background(C.danger.opacity(0.10))
+            .padding(14)
+            .background(C.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(C.danger.opacity(0.4), lineWidth: 1)
             )
         }
     }
 
     private var scopeCard: some View {
-        GhostCard {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 12) {
-                    HStack(spacing: 6) {
-                        Rectangle()
-                            .fill(C.signal)
-                            .frame(width: 2, height: 14)
-                        Text(rxValueText)
-                            .gsFont(.kvValue)
-                            .foregroundStyle(C.bone)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                    }
-                    HStack(spacing: 6) {
-                        Rectangle()
-                            .fill(C.warn)
-                            .frame(width: 2, height: 14)
-                        Text(txValueText)
-                            .gsFont(.kvValue)
-                            .foregroundStyle(C.bone)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                    }
-                    Spacer(minLength: 8)
-                    Button {
-                        vm.cycleWindow()
-                    } label: {
-                        Text("\(vm.window.label)")
-                            .gsFont(.hdrMeta)
-                            .foregroundStyle(C.textFaint)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                    .buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(L("native.dashboard.traffic"))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(C.bone)
+                Spacer()
+                Button {
+                    vm.cycleWindow()
+                } label: {
+                    Text(vm.window.label)
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(C.textDim)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(C.bgElev2.opacity(0.8), in: Capsule(style: .continuous))
                 }
+                .buttonStyle(.plain)
+            }
 
-                Divider().background(C.hair).frame(height: 1)
+            ScopeChart(
+                rxSamples: vm.rxSamples,
+                txSamples: vm.txSamples,
+                sampleCapacity: vm.window.rawValue
+            )
+            .frame(height: 112)
+        }
+        .padding(16)
+        .background(C.bgElev.opacity(0.92), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(C.hair, lineWidth: 1)
+        )
+    }
 
-                ScopeChart(
-                    rxSamples: vm.rxSamples,
-                    txSamples: vm.txSamples,
-                    sampleCapacity: vm.window.rawValue
-                )
+    private var connectionCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                NativeStatusPill(text: dashboardPresentation.title, tone: dashboardPresentation.tone)
+                Spacer(minLength: 12)
+                Text(dashboardPresentation.routeText)
+                    .font(.caption.monospaced().weight(.semibold))
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
+            }
+
+            Text(profiles.activeProfile?.serverAddr ?? L("native.dashboard.no.endpoint"))
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(C.bone)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .padding(.top, 16)
+
+            Text(dashboardPresentation.subtitle)
+                .font(.footnote)
+                .foregroundStyle(C.textDim)
+                .lineLimit(2)
+                .padding(.top, 4)
+
+            Text(vm.timerText)
+                .font(.system(size: 52, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(isConnected ? C.bone : C.textFaint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .padding(.top, 18)
+
+            HStack(spacing: 10) {
+                miniStat(title: L("native.dashboard.download"), value: rxMetricValueText, tint: C.signal)
+                miniStat(title: L("native.dashboard.upload"), value: txMetricValueText, tint: C.warn)
+            }
+            .padding(.top, 18)
+        }
+        .padding(18)
+        .background {
+            ZStack(alignment: .topTrailing) {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(C.bgElev.opacity(0.96))
+                if isConnected {
+                    Circle()
+                        .fill(C.signal.opacity(0.18))
+                        .frame(width: 210, height: 210)
+                        .blur(radius: 34)
+                        .offset(x: 74, y: -92)
+                }
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(isConnected ? C.signal.opacity(0.28) : C.hairBold, lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.24), radius: 28, x: 0, y: 18)
+    }
+
+    private func miniStat(title: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(C.textFaint)
+                .lineLimit(1)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(C.bg.opacity(0.32), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(C.hair, lineWidth: 1)
+        )
     }
 
     private var muxCard: some View {
-        let sf = stateMgr.statusFrame
-        // Use real stream counts when available; fall back to defaults.
-        let nStreams = sf.nStreams > 0 ? Int(sf.nStreams) : 8
-        let streamsUp = Int(sf.streamsUp)
-        let streamCountText = isConnected
-            ? "\(streamsUp)/\(nStreams) STREAMS"
-            : "—/— STREAMS"
-        let streamCountColor: Color = isConnected
-            ? (streamsUp == nStreams ? C.signal : C.warn)
-            : C.textFaint
-        // Pass real activity levels when connected; nil → synthetic shimmer.
-        let activityLevels: [Float]? = isConnected && !sf.streamActivity.isEmpty
-            ? Array(sf.streamActivity.prefix(nStreams))
-            : nil
-        return GhostCard {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text(L("lbl_stream_multiplex").uppercased())
-                        .gsFont(.hdrMeta)
-                        .foregroundStyle(C.textDim)
+                    Text(L("native.dashboard.streams"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(C.bone)
                     Spacer()
                     Text(streamCountText)
-                        .gsFont(.hdrMeta)
+                        .font(.caption.monospaced().weight(.semibold))
                         .foregroundStyle(streamCountColor)
                 }
-                Divider().background(C.hair).frame(height: 1)
                 MuxBars(
                     active: isConnected,
-                    barCount: nStreams,
-                    activityLevels: activityLevels
+                    barCount: streamTotalCount,
+                    activityLevels: streamActivityForMux
                 )
-            }
         }
+        .padding(16)
+        .background(C.bgElev.opacity(0.92), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(C.hair, lineWidth: 1)
+        )
+    }
+
+    private var streamCountText: String {
+        let sf = stateMgr.statusFrame
+        guard isConnected else { return L("native.dashboard.streams.empty") }
+        let nStreams = sf.nStreams > 0 ? Int(sf.nStreams) : 8
+        let streamsUp = Int(sf.streamsUp)
+        return String(format: L("native.dashboard.streams.count.format"), streamsUp, nStreams)
+    }
+
+    private var rxRateBps: Double {
+        let sf = stateMgr.statusFrame
+        return sf.rateRxBps > 0 ? sf.rateRxBps : (vm.rxSamples.last ?? 0)
+    }
+
+    private var txRateBps: Double {
+        let sf = stateMgr.statusFrame
+        return sf.rateTxBps > 0 ? sf.rateTxBps : (vm.txSamples.last ?? 0)
+    }
+
+    private var rxMetricValueText: String {
+        "\(formatMbps(rateBps: rxRateBps)) Mbps"
+    }
+
+    private var txMetricValueText: String {
+        "\(formatMbps(rateBps: txRateBps)) Mbps"
+    }
+
+    private var streamActivityLevels: [Float]? {
+        let sf = stateMgr.statusFrame
+        let nStreams = sf.nStreams > 0 ? Int(sf.nStreams) : 8
+        return isConnected && !sf.streamActivity.isEmpty
+            ? Array(sf.streamActivity.prefix(nStreams))
+            : nil
+    }
+
+    private var streamTotalCount: Int {
+        let sf = stateMgr.statusFrame
+        return sf.nStreams > 0 ? Int(sf.nStreams) : 8
+    }
+
+    private var streamUpCount: Int {
+        Int(stateMgr.statusFrame.streamsUp)
+    }
+
+    private var streamCountColor: Color {
+        guard isConnected else { return C.textFaint }
+        return streamUpCount == streamTotalCount ? C.signal : C.warn
+    }
+
+    private var streamActivityForMux: [Float]? {
+        streamActivityLevels
     }
 
     private var dashboardPresentation: DashboardPresentationResult {
@@ -232,48 +343,6 @@ struct DashboardView: View {
             routeIsDirect: routeIsDirect,
             subscriptionText: subscriptionSummaryText
         )
-    }
-
-    private var nativeStatusCard: some View {
-        GhostCard(active: isConnected) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    NativeStatusPill(text: dashboardPresentation.title, tone: dashboardPresentation.tone)
-                    Spacer()
-                    Text(vm.timerText)
-                        .font(.system(.callout, design: .monospaced).weight(.semibold))
-                        .foregroundStyle(isConnected ? C.bone : C.textFaint)
-                }
-
-                Text(dashboardPresentation.subtitle)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(C.bone)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
-
-                Text(profiles.activeProfile?.serverAddr ?? L("native.dashboard.no.endpoint"))
-                    .font(.footnote)
-                    .foregroundStyle(C.textDim)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-    }
-
-    private var metricsCard: some View {
-        NativeSectionCard {
-            NativeRow(title: L("native.dashboard.download"), subtitle: rxValueText, action: nil) {
-                Text("RX")
-                    .foregroundStyle(C.signal)
-                    .font(.caption.weight(.bold))
-            }
-            HairlineDivider()
-            NativeRow(title: L("native.dashboard.upload"), subtitle: txValueText, action: nil) {
-                Text("TX")
-                    .foregroundStyle(C.warn)
-                    .font(.caption.weight(.bold))
-            }
-        }
     }
 
     private var detailsCard: some View {
@@ -311,18 +380,6 @@ struct DashboardView: View {
         case .error:                  return L("native.dashboard.meta.error")
         case .disconnected:           return L("native.dashboard.meta.standby")
         }
-    }
-
-    private var rxValueText: String {
-        let sf = stateMgr.statusFrame
-        let bps = sf.rateRxBps > 0 ? sf.rateRxBps : (vm.rxSamples.last ?? 0)
-        return "RX \(formatMbps(rateBps: bps))"
-    }
-
-    private var txValueText: String {
-        let sf = stateMgr.statusFrame
-        let bps = sf.rateTxBps > 0 ? sf.rateTxBps : (vm.txSamples.last ?? 0)
-        return "TX \(formatMbps(rateBps: bps))"
     }
 
     private func formatMbps(rateBps: Double) -> String {

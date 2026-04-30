@@ -88,6 +88,8 @@
 "settings.profile.active" = "Active profile";
 "settings.profile.make.active" = "Make active";
 "settings.profile.ping" = "Measure ping";
+"settings.profile.admin" = "Admin";
+"settings.profile.user" = "User";
 "settings.paste.connection" = "Paste ghs://…";
 "settings.import.title" = "Import";
 "settings.import.subtitle" = "Paste a ghs:// connection string.";
@@ -178,6 +180,10 @@
 "native.dashboard.stop.attempt" = "Stop attempt";
 "native.dashboard.download" = "Download";
 "native.dashboard.upload" = "Upload";
+"native.dashboard.traffic" = "Traffic";
+"native.dashboard.streams" = "Streams";
+"native.dashboard.streams.empty" = "— of —";
+"native.dashboard.streams.count.format" = "%d of %d";
 "native.dashboard.reconnecting" = "Reconnecting";
 "native.dashboard.reconnect.detail.format" = "Attempt %d · next in %ds";
 "native.dashboard.subscription.remaining.format" = "Subscription: %lldd %lldh";

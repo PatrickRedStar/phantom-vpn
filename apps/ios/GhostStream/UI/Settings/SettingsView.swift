@@ -32,84 +32,64 @@ public struct SettingsView: View {
     public init() {}
 
     public var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                header
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
-                        endpointsSection
-                        routingSection
-                        appearanceSection
-                        diagnosticSection
-                        aboutSection
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 18)
-                }
-                .scrollIndicators(.hidden)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                endpointsSection
+                routingSection
+                appearanceSection
+                diagnosticSection
+                aboutSection
             }
-            .background(C.bg.ignoresSafeArea())
-            .navigationBarHidden(true)
-            .navigationDestination(isPresented: Binding(
-                get: { selectedProfileId != nil },
-                set: { if !$0 { selectedProfileId = nil } }
-            )) {
-                if let id = selectedProfileId,
-                   let profile = model.profiles.first(where: { $0.id == id }) {
-                    ProfileDetailView(
-                        profile: profile,
-                        isActive: profile.id == model.activeId,
-                        pingMs: model.pingResults[profile.id],
-                        onSetActive: {
-                            model.setActiveProfile(id: profile.id)
-                            selectedProfileId = nil
-                        },
-                        onEdit: {
-                            editorProfileId = profile.id
-                        },
-                        onDelete: {
-                            deleteProfileId = profile.id
-                            selectedProfileId = nil
-                        },
-                        onOpenAdmin: {
-                            guard profile.cachedIsAdmin == true else { return }
-                            adminProfile = profile
-                        }
-                    )
-                }
+            .padding(.horizontal, 18)
+            .padding(.top, 8)
+            .padding(.bottom, 28)
+        }
+        .scrollIndicators(.hidden)
+        .background(C.bg.ignoresSafeArea())
+        .navigationTitle(L("nav_settings"))
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(buildMeta)
+                    .font(.caption2.monospaced().weight(.semibold))
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
             }
-            .navigationDestination(isPresented: Binding(
-                get: { adminProfile != nil },
-                set: { if !$0 { adminProfile = nil } }
-            )) {
-                if let p = adminProfile {
-                    AdminView(profile: p)
-                }
-            }
-
-            if showPasteDialog {
-                PasteConnStringDialog(
-                    text: $pasteDraft,
-                    onSubmit: { raw in
-                        importConnString(raw)
-                        pasteDraft = ""
-                        showPasteDialog = false
+        }
+        .navigationDestination(isPresented: Binding(
+            get: { selectedProfileId != nil },
+            set: { if !$0 { selectedProfileId = nil } }
+        )) {
+            if let id = selectedProfileId,
+               let profile = model.profiles.first(where: { $0.id == id }) {
+                ProfileDetailView(
+                    profile: profile,
+                    isActive: profile.id == model.activeId,
+                    pingMs: model.pingResults[profile.id],
+                    onSetActive: {
+                        model.setActiveProfile(id: profile.id)
+                        selectedProfileId = nil
                     },
-                    onDismiss: { showPasteDialog = false }
+                    onEdit: {
+                        editorProfileId = profile.id
+                    },
+                    onDelete: {
+                        deleteProfileId = profile.id
+                        selectedProfileId = nil
+                    },
+                    onOpenAdmin: {
+                        guard profile.cachedIsAdmin == true else { return }
+                        adminProfile = profile
+                    }
                 )
             }
-
-            if let importErrorText {
-                GhostDialogFrame(title: L("settings.import.error.title"), onDismiss: { self.importErrorText = nil }) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(importErrorText)
-                            .gsFont(.body)
-                            .foregroundColor(C.textDim)
-                            .fixedSize(horizontal: false, vertical: true)
-                        GhostButton(L("general.ok"), action: { self.importErrorText = nil })
-                    }
-                }
+        }
+        .navigationDestination(isPresented: Binding(
+            get: { adminProfile != nil },
+            set: { if !$0 { adminProfile = nil } }
+        )) {
+            if let p = adminProfile {
+                AdminView(profile: p)
             }
         }
         .task {
@@ -154,6 +134,18 @@ public struct SettingsView: View {
             )
             .ignoresSafeArea()
         }
+        .sheet(isPresented: $showPasteDialog) {
+            PasteConnStringDialog(
+                text: $pasteDraft,
+                onSubmit: { raw in
+                    importConnString(raw)
+                    pasteDraft = ""
+                    showPasteDialog = false
+                },
+                onDismiss: { showPasteDialog = false }
+            )
+            .presentationDetents([.medium])
+        }
         .sheet(isPresented: $showDNSDialog) {
             DNSDialog(
                 draft: $dnsDraft,
@@ -191,10 +183,19 @@ public struct SettingsView: View {
                     .environment(\.gsColors, C)
             }
         }
-    }
-
-    private var header: some View {
-        ScreenHeader(brand: L("brand_settings"), meta: buildMeta)
+        .alert(
+            L("settings.import.error.title"),
+            isPresented: Binding(
+                get: { importErrorText != nil },
+                set: { if !$0 { importErrorText = nil } }
+            )
+        ) {
+            Button(L("general.ok"), role: .cancel) {
+                importErrorText = nil
+            }
+        } message: {
+            Text(importErrorText ?? "")
+        }
     }
 
     private var buildMeta: String {
@@ -205,25 +206,21 @@ public struct SettingsView: View {
 
     private var endpointsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(L("settings.section.endpoints"), right: String(format: "· %02d", model.profiles.count))
+            sectionHeader(L("settings.section.endpoints"), right: String(format: "%02d", model.profiles.count))
 
-            ForEach(model.profiles, id: \.id) { profile in
-                ProfileCard(
-                    profile: profile,
-                    isActive: profile.id == model.activeId,
-                    pingMs: model.pingResults[profile.id],
-                    isPinging: model.pinging.contains(profile.id),
-                    expiresAt: profile.cachedExpiresAt,
-                    onTap: {
-                        selectedProfileId = profile.id
-                    },
-                    onLongPress: { deleteProfileId = profile.id },
-                    actions: profileActions(for: profile)
-                )
-            }
-
-            DashedProfileCTA {
-                showAddDialog = true
+            NativeSectionCard {
+                if model.profiles.isEmpty {
+                    addProfileRow
+                } else {
+                    ForEach(Array(model.profiles.enumerated()), id: \.element.id) { idx, profile in
+                        profileRow(profile)
+                        if idx < model.profiles.count - 1 {
+                            HairlineDivider()
+                        }
+                    }
+                    HairlineDivider()
+                    addProfileRow
+                }
             }
         }
     }
@@ -231,12 +228,12 @@ public struct SettingsView: View {
     private var routingSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(L("settings.section.routing"))
-            GhostCard {
+            NativeSectionCard {
                 VStack(spacing: 0) {
                     settingRow(
                         title: L("settings.row.dns"),
                         subtitle: dnsDraft.isEmpty ? L("settings.value.system") : dnsDraft.joined(separator: " · "),
-                        value: dnsDraft.isEmpty ? L("settings.value.system").uppercased() : "\(dnsDraft.count)",
+                        value: dnsDraft.isEmpty ? L("settings.value.system") : "\(dnsDraft.count)",
                         action: { showDNSDialog = true }
                     )
                     HairlineDivider()
@@ -257,59 +254,159 @@ public struct SettingsView: View {
     }
 
     private var splitRoutingRow: some View {
-        Button {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L("settings.row.split.tunnel"))
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(C.bone)
+                Text(splitOn ? L("settings.split.bypass.summary") : L("settings.split.all.summary"))
+                    .font(.footnote)
+                    .foregroundColor(C.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { splitOn },
+                set: {
+                    splitOn = $0
+                    model.setSplitRouting($0)
+                }
+            ))
+            .labelsHidden()
+            .tint(C.signal)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
             showSplitDialog = true
+        }
+        .padding(.vertical, 12)
+    }
+
+    private var addProfileRow: some View {
+        Button {
+            showAddDialog = true
         } label: {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L("settings.row.split.tunnel").uppercased())
-                        .gsFont(.labelMono)
-                        .foregroundColor(C.textFaint)
-                    Text(splitOn ? L("settings.split.bypass.summary") : L("settings.split.all.summary"))
-                        .gsFont(.body)
-                        .foregroundColor(C.textDim)
-                        .fixedSize(horizontal: false, vertical: true)
+                Image(systemName: "plus.circle.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(C.signal)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L("settings.add.profile"))
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(C.bone)
+                    Text(L("settings.profile.add.cta"))
+                        .font(.footnote)
+                        .foregroundStyle(C.textDim)
                 }
-                Spacer()
-                GhostToggle(isOn: Binding(
-                    get: { splitOn },
-                    set: {
-                        splitOn = $0
-                        model.setSplitRouting($0)
-                    }
-                ), onLabel: L("settings.row.split.tunnel"))
+                Spacer(minLength: 12)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(C.textFaint)
             }
             .padding(.vertical, 12)
         }
         .buttonStyle(.plain)
     }
 
+    private func profileRow(_ profile: VpnProfile) -> some View {
+        Button {
+            selectedProfileId = profile.id
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(profile.name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(C.bone)
+                        .lineLimit(1)
+                    Text(profileSubtitle(profile))
+                        .font(.footnote)
+                        .foregroundStyle(C.textDim)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 12)
+                profileBadge(profile)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(C.textFaint)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 12)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            ForEach(profileActions(for: profile)) { action in
+                Button(role: action.role) {
+                    action.action()
+                } label: {
+                    Label(action.label, systemImage: action.systemImage)
+                }
+                .disabled(!action.isEnabled)
+            }
+        }
+    }
+
+    private func profileSubtitle(_ profile: VpnProfile) -> String {
+        var parts: [String] = []
+        if profile.id == model.activeId { parts.append(L("settings.profile.active")) }
+        if let ping = model.pingResults[profile.id] { parts.append("\(ping) ms") }
+        parts.append(profile.cachedIsAdmin == true ? L("native.profile.server.control") : L("native.profile.identity"))
+        if !profile.serverAddr.isEmpty { parts.append(profile.serverAddr) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func profileBadge(_ profile: VpnProfile) -> some View {
+        let isActive = profile.id == model.activeId
+        let text = profile.cachedIsAdmin == true
+            ? L("settings.profile.admin")
+            : (isActive ? L("settings.profile.active") : L("settings.profile.user"))
+        let color = isActive || profile.cachedIsAdmin == true ? C.signal : C.textDim
+        return Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(color.opacity(0.12), in: Capsule(style: .continuous))
+            .lineLimit(1)
+    }
+
     private var appearanceSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(L("settings.section.appearance"))
-            GhostCard {
+            NativeSectionCard {
                 VStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(L("settings.row.language").uppercased())
-                            .gsFont(.labelMono)
-                            .foregroundColor(C.textFaint)
-                        LangSwitch(selected: $languageSelection)
-                            .onChange(of: languageSelection) { _, next in
-                                model.setLanguage(next == "system" ? nil : next)
-                            }
+                        Text(L("settings.row.language"))
+                            .font(.body.weight(.semibold))
+                            .foregroundColor(C.bone)
+                        Picker(L("settings.row.language"), selection: $languageSelection) {
+                            Text("System").tag("system")
+                            Text("RU").tag("ru")
+                            Text("EN").tag("en")
+                        }
+                        .pickerStyle(.segmented)
+                        .tint(C.signal)
+                        .onChange(of: languageSelection) { _, next in
+                            model.setLanguage(next == "system" ? nil : next)
+                        }
                     }
                     .padding(.vertical, 12)
 
                     HairlineDivider()
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Text(L("settings.row.theme").uppercased())
-                            .gsFont(.labelMono)
-                            .foregroundColor(C.textFaint)
-                        ThemeSwitch(selected: $themeSelection)
-                            .onChange(of: themeSelection) { _, next in
-                                model.setTheme(next)
-                            }
+                        Text(L("settings.row.theme"))
+                            .font(.body.weight(.semibold))
+                            .foregroundColor(C.bone)
+                        Picker(L("settings.row.theme"), selection: $themeSelection) {
+                            Text("System").tag(ThemeOverride.system)
+                            Text("Dark").tag(ThemeOverride.dark)
+                            Text("Light").tag(ThemeOverride.light)
+                        }
+                        .pickerStyle(.segmented)
+                        .tint(C.signal)
+                        .onChange(of: themeSelection) { _, next in
+                            model.setTheme(next)
+                        }
                     }
                     .padding(.vertical, 12)
 
@@ -327,20 +424,20 @@ public struct SettingsView: View {
     private var diagnosticSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(L("settings.section.diagnostic"))
-            GhostCard {
+            NativeSectionCard {
                 ShareLink(item: debugReportText) {
                     HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(L("settings.row.share.debug").uppercased())
-                                .gsFont(.labelMono)
-                                .foregroundColor(C.textFaint)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(L("settings.row.share.debug"))
+                                .font(.body.weight(.semibold))
+                                .foregroundColor(C.bone)
                             Text(L("settings.debug.subtitle"))
-                                .gsFont(.body)
+                                .font(.footnote)
                                 .foregroundColor(C.textDim)
                         }
                         Spacer()
-                        Text(L("settings.value.export").uppercased())
-                            .gsFont(.labelMonoSmall)
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.body.weight(.semibold))
                             .foregroundColor(C.signal)
                     }
                     .padding(.vertical, 12)
@@ -353,8 +450,8 @@ public struct SettingsView: View {
     private var aboutSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(L("settings.section.about"))
-            GhostCard {
-                VStack(alignment: .leading, spacing: 8) {
+            NativeSectionCard {
+                VStack(alignment: .leading, spacing: 0) {
                     kvRow(L("settings.about.version"), (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—")
                     HairlineDivider()
                     kvRow(L("settings.about.build"), (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "—")
@@ -372,57 +469,70 @@ public struct SettingsView: View {
         value: String,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        NativeRow(title: title, subtitle: subtitle, action: action) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title.uppercased()).gsFont(.labelMono).foregroundColor(C.textFaint)
-                    Text(subtitle).gsFont(.body).foregroundColor(C.textDim).lineLimit(2)
-                }
-                Spacer()
-                Text(value.uppercased())
-                    .gsFont(.labelMonoSmall)
+                Text(value)
+                    .font(.caption.weight(.semibold))
                     .foregroundColor(C.signal)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundColor(C.textFaint)
             }
-            .padding(.vertical, 12)
         }
-        .buttonStyle(.plain)
     }
 
     private func disabledPlatformRow(title: String, subtitle: String) -> some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title.uppercased()).gsFont(.labelMono).foregroundColor(C.textFaint)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(C.bone)
                 Text(subtitle)
-                    .gsFont(.body)
+                    .font(.footnote)
                     .foregroundColor(C.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Text(L("settings.value.unavailable").uppercased())
-                .gsFont(.labelMonoSmall)
+            Text(L("settings.value.unavailable"))
+                .font(.caption.weight(.semibold))
                 .foregroundColor(C.textFaint)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(C.textFaint.opacity(0.10), in: Capsule(style: .continuous))
         }
         .padding(.vertical, 12)
-        .opacity(0.58)
+        .opacity(0.72)
     }
 
     private func sectionHeader(_ title: String, right: String? = nil) -> some View {
         HStack {
-            Text(title.uppercased()).gsFont(.labelMono).foregroundColor(C.textFaint)
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(C.textDim)
             if let right {
-                Text(right).gsFont(.labelMonoSmall).foregroundColor(C.textFaint)
+                Text(right)
+                    .font(.footnote.monospacedDigit().weight(.semibold))
+                    .foregroundColor(C.textFaint)
             }
             Spacer()
         }
+        .padding(.horizontal, 2)
     }
 
     private func kvRow(_ k: String, _ v: String) -> some View {
-        HStack {
-            Text(k.uppercased()).gsFont(.labelMonoSmall).foregroundColor(C.textDim)
+        HStack(spacing: 12) {
+            Text(k)
+                .font(.body.weight(.semibold))
+                .foregroundColor(C.bone)
             Spacer()
-            Text(v).gsFont(.valueMono).foregroundColor(C.bone)
-                .lineLimit(1).truncationMode(.middle)
+            Text(v)
+                .font(.body.monospacedDigit())
+                .foregroundColor(C.textDim)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
+        .padding(.vertical, 12)
     }
 
     private func profileActions(for profile: VpnProfile) -> [ProfileCardAction] {
@@ -483,59 +593,6 @@ public struct SettingsView: View {
     }
 }
 
-private struct DashedProfileCTA: View {
-    let action: () -> Void
-    @Environment(\.gsColors) private var C
-
-    var body: some View {
-        DashedGhostCard(action: action) {
-            Text(L("settings.profile.add.cta").uppercased())
-                .gsFont(.labelMono)
-                .foregroundColor(C.textDim)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-        }
-    }
-}
-
-private struct GhostDialogFrame<Content: View>: View {
-    let title: String
-    let onDismiss: () -> Void
-    @ViewBuilder let content: () -> Content
-    @Environment(\.gsColors) private var C
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.48).ignoresSafeArea().onTapGesture { onDismiss() }
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(title.uppercased())
-                        .gsFont(.labelMono)
-                        .foregroundColor(C.bone)
-                    Spacer()
-                    Button(action: onDismiss) {
-                        Text("×")
-                            .gsFont(.valueMono)
-                            .foregroundColor(C.textDim)
-                    }
-                    .buttonStyle(.plain)
-                }
-                content()
-            }
-            .padding(18)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(C.bgElev)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(C.hairBold, lineWidth: 1)
-                    )
-            )
-            .padding(.horizontal, 22)
-        }
-    }
-}
-
 private struct PasteConnStringDialog: View {
     @Binding var text: String
     let onSubmit: (String) -> Void
@@ -544,17 +601,35 @@ private struct PasteConnStringDialog: View {
     @Environment(\.gsColors) private var C
 
     var body: some View {
-        GhostDialogFrame(title: L("settings.import.title"), onDismiss: onDismiss) {
-            VStack(alignment: .leading, spacing: 12) {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
                 Text(L("settings.import.subtitle"))
-                    .gsFont(.body)
+                    .font(.body)
                     .foregroundColor(C.textDim)
-                GhostTextField("ghs://…", text: $text)
-                HStack(spacing: 10) {
-                    GhostButton(L("general.cancel"), variant: .secondary, action: onDismiss)
-                    GhostButton(L("settings.import.action"), isEnabled: !text.isEmpty) {
+
+                TextField("ghs://...", text: $text, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.body.monospaced())
+                    .lineLimit(4...8)
+                    .padding(12)
+                    .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+            .background(C.bg.ignoresSafeArea())
+            .navigationTitle(L("settings.import.title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L("general.cancel"), action: onDismiss)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L("settings.import.action")) {
                         onSubmit(text)
                     }
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
@@ -577,17 +652,42 @@ private struct DNSDialog: View {
     ]
 
     var body: some View {
-        GhostDialogFrame(title: L("settings.row.dns"), onDismiss: onDismiss) {
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(presets, id: \.0) { preset in
-                    presetRow(name: preset.0, servers: preset.1)
-                    HairlineDivider()
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    NativeSectionCard {
+                        ForEach(Array(presets.enumerated()), id: \.element.0) { idx, preset in
+                            presetRow(name: preset.0, servers: preset.1)
+                            if idx < presets.count - 1 {
+                                HairlineDivider()
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L("settings.dns.custom.hint"))
+                            .font(.footnote.weight(.semibold))
+                            .foregroundColor(C.textDim)
+                        TextField("1.1.1.1, 9.9.9.9", text: $customText, axis: .vertical)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                            .lineLimit(2...5)
+                            .padding(12)
+                            .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
                 }
-                GhostTextField(L("settings.dns.custom.hint"), text: $customText)
-                    .onAppear { customText = draft.joined(separator: ", ") }
-                HStack(spacing: 10) {
-                    GhostButton(L("general.cancel"), variant: .secondary, action: onDismiss)
-                    GhostButton(L("general.save")) {
+                .padding(18)
+            }
+            .background(C.bg.ignoresSafeArea())
+            .navigationTitle(L("settings.row.dns"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L("general.cancel"), action: onDismiss)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L("general.save")) {
                         draft = customText
                             .split { $0 == "," || $0 == " " || $0 == "\n" }
                             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -597,6 +697,7 @@ private struct DNSDialog: View {
                 }
             }
         }
+        .onAppear { customText = draft.joined(separator: ", ") }
     }
 
     private func presetRow(name: String, servers: [String]) -> some View {
@@ -606,14 +707,14 @@ private struct DNSDialog: View {
         } label: {
             HStack {
                 Text(name)
-                    .gsFont(.profileName)
+                    .font(.body.weight(.semibold))
                     .foregroundColor(draft == servers ? C.signal : C.bone)
                 Spacer()
                 Text(servers.joined(separator: " · "))
-                    .gsFont(.labelMonoSmall)
+                    .font(.caption.monospaced())
                     .foregroundColor(C.textDim)
             }
-            .padding(.vertical, 7)
+            .padding(.vertical, 12)
         }
         .buttonStyle(.plain)
     }
@@ -627,51 +728,52 @@ private struct SplitTunnelDialog: View {
     @Environment(\.gsColors) private var C
 
     var body: some View {
-        GhostDialogFrame(title: L("settings.split.title"), onDismiss: onDismiss) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    modeButton(L("settings.split.mode.all"), selected: !splitOn) { splitOn = false }
-                    modeButton(L("settings.split.mode.bypass"), selected: splitOn) { splitOn = true }
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Picker(L("settings.split.title"), selection: $splitOn) {
+                    Text(L("settings.split.mode.all")).tag(false)
+                    Text(L("settings.split.mode.bypass")).tag(true)
                 }
-                HairlineDivider()
-                infoRow(L("settings.split.cidr.title"), L("settings.split.cidr.ios"))
-                HairlineDivider()
-                infoRow(L("settings.row.per.app"), L("settings.ios.per.app.unavailable"))
-                HairlineDivider()
-                infoRow(L("settings.row.always.on"), L("settings.ios.always.on.unavailable"))
-                HStack(spacing: 10) {
-                    GhostButton(L("general.cancel"), variant: .secondary, action: onDismiss)
-                    GhostButton(L("general.save"), action: onSave)
+                .pickerStyle(.segmented)
+                .tint(C.signal)
+
+                NativeSectionCard {
+                    infoRow(L("settings.split.cidr.title"), L("settings.split.cidr.ios"))
+                    HairlineDivider()
+                    infoRow(L("settings.row.per.app"), L("settings.ios.per.app.unavailable"))
+                    HairlineDivider()
+                    infoRow(L("settings.row.always.on"), L("settings.ios.always.on.unavailable"))
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(18)
+            .background(C.bg.ignoresSafeArea())
+            .navigationTitle(L("settings.split.title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L("general.cancel"), action: onDismiss)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L("general.save"), action: onSave)
                 }
             }
         }
     }
 
-    private func modeButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title.uppercased())
-                .gsFont(.labelMonoSmall)
-                .foregroundColor(selected ? C.bg : C.textDim)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(selected ? C.signal : C.bgElev2)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(selected ? C.signalDim : C.hair, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-    }
-
     private func infoRow(_ title: String, _ subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased()).gsFont(.labelMonoSmall).foregroundColor(C.textFaint)
-            Text(subtitle).gsFont(.body).foregroundColor(C.textDim).fixedSize(horizontal: false, vertical: true)
+            Text(title)
+                .font(.body.weight(.semibold))
+                .foregroundColor(C.bone)
+            Text(subtitle)
+                .font(.footnote)
+                .foregroundColor(C.textDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
         .opacity(0.72)
     }
 }

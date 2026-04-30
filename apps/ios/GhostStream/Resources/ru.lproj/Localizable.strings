@@ -88,6 +88,8 @@
 "settings.profile.active" = "Активный профиль";
 "settings.profile.make.active" = "Сделать активным";
 "settings.profile.ping" = "Измерить пинг";
+"settings.profile.admin" = "Админ";
+"settings.profile.user" = "Пользователь";
 "settings.paste.connection" = "Вставить ghs://…";
 "settings.import.title" = "Импорт";
 "settings.import.subtitle" = "Вставьте строку подключения ghs://.";
@@ -178,6 +180,10 @@
 "native.dashboard.stop.attempt" = "Остановить попытку";
 "native.dashboard.download" = "Загрузка";
 "native.dashboard.upload" = "Отдача";
+"native.dashboard.traffic" = "Трафик";
+"native.dashboard.streams" = "Потоки";
+"native.dashboard.streams.empty" = "— из —";
+"native.dashboard.streams.count.format" = "%d из %d";
 "native.dashboard.reconnecting" = "Переподключение";
 "native.dashboard.reconnect.detail.format" = "Попытка %d · след. через %dс";
 "native.dashboard.subscription.remaining.format" = "Подписка: %lldд %lldч";
