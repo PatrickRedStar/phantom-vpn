@@ -16,7 +16,7 @@ import SwiftUI
 /// `bone` color for the thumb.
 public struct GhostToggle: View {
     @Binding private var isOn: Bool
-    private let onLabel: String?
+    private let label: String
 
     @Environment(\.gsColors) private var C
 
@@ -28,7 +28,7 @@ public struct GhostToggle: View {
     /// Creates a toggle bound to `isOn`. `onLabel` is an optional accessibility hint.
     public init(isOn: Binding<Bool>, onLabel: String? = nil) {
         self._isOn = isOn
-        self.onLabel = onLabel
+        self.label = onLabel ?? "Toggle"
     }
 
     public var body: some View {
@@ -50,10 +50,11 @@ public struct GhostToggle: View {
         .animation(.easeInOut(duration: 0.18), value: isOn)
         .contentShape(Rectangle())
         .onTapGesture { isOn.toggle() }
-        .accessibilityElement()
-        .accessibilityLabel(onLabel ?? "Toggle")
-        .accessibilityValue(isOn ? "On" : "Off")
-        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .accessibilityRepresentation {
+            Toggle(isOn: $isOn) {
+                Text(label)
+            }
+        }
     }
 }
 

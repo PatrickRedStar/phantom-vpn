@@ -30,6 +30,7 @@ struct LogsView: View {
                 filterRow
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
+                statusBanner
                 logList
             }
 
@@ -64,7 +65,7 @@ struct LogsView: View {
                 Text(metaText)
                     .gsFont(.hdrMeta)
                     .foregroundStyle(C.textFaint)
-                PulseDot(color: C.signal, size: 5)
+                PulseDot(color: statusColor, size: 5)
             }
         }
     }
@@ -72,9 +73,47 @@ struct LogsView: View {
     private var metaText: String {
         let n = vm.allLogs.count
         if n >= 1000 {
-            return "LIVE · \(String(format: "%.1fk", Double(n) / 1000)) LINES"
+            return "\(vm.statusLabel) · \(String(format: "%.1fk", Double(n) / 1000)) LINES"
         }
-        return "LIVE · \(n) LINES"
+        return "\(vm.statusLabel) · \(n) LINES"
+    }
+
+    private var statusColor: Color {
+        if vm.hasIpcError { return C.danger }
+        switch vm.tunnelState {
+        case .connected: return C.signal
+        case .connecting, .disconnecting: return C.warn
+        case .error: return C.danger
+        case .disconnected: return C.textFaint
+        }
+    }
+
+    @ViewBuilder
+    private var statusBanner: some View {
+        if let message = vm.statusMessage {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: vm.hasIpcError ? "exclamationmark.triangle.fill" : "info.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                Text(message)
+                    .gsFont(.hdrMeta)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundStyle(statusColor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(statusColor.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(statusColor.opacity(0.35), lineWidth: 1)
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+        }
     }
 
     // MARK: - Filter row

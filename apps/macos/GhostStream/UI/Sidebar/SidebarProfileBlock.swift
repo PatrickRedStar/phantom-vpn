@@ -39,6 +39,36 @@ public struct SidebarProfileBlock: View {
 
     @ViewBuilder
     private var profilePill: some View {
+        Menu {
+            if profiles.profiles.isEmpty {
+                Button("No profiles") {}
+                    .disabled(true)
+            } else {
+                ForEach(profiles.profiles) { profile in
+                    Button {
+                        profiles.setActive(id: profile.id)
+                    } label: {
+                        HStack {
+                            Text(profile.name)
+                            if profiles.activeId == profile.id {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            profilePillContent
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityLabel("Choose active profile")
+    }
+
+    @ViewBuilder
+    private var profilePillContent: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(profiles.activeProfile?.name ?? "—")

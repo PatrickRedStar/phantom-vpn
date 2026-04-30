@@ -98,7 +98,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func startTunnelAsync(completionHandler: @escaping (Error?) -> Void) async throws {
         writeStatePayload(VpnStatePayload(kind: .connecting))
 
-        let profile = try loadProfile()
+        var profile = try loadProfile()
+        let settings = loadSettings()
+        profile = applyProviderConfigurationOverrides(to: profile)
 
         // Build NEPacketTunnelNetworkSettings.
         let (tunIp, subnetMask) = try parseCidr(profile.tunAddr)
@@ -108,23 +110,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         networkSettings.mtu = NSNumber(value: 1350)
 
         let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
-        ipv4.includedRoutes = [NEIPv4Route.default()]
-        ipv4.excludedRoutes = []
+        configureIPv4Routes(ipv4, for: profile, settings: settings)
         networkSettings.ipv4Settings = ipv4
 
         // IPv6 killswitch
         let ipv6 = NEIPv6Settings(addresses: [], networkPrefixLengths: [])
-        ipv6.excludedRoutes = [NEIPv6Route.default()]
+        if settings.ipv6Killswitch {
+            ipv6.includedRoutes = [NEIPv6Route.default()]
+        } else {
+            ipv6.excludedRoutes = [NEIPv6Route.default()]
+        }
         networkSettings.ipv6Settings = ipv6
 
         let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
         let dns = NEDNSSettings(servers: dnsServers)
-        dns.matchDomains = [""]
+        if settings.dnsLeakProtection && shouldForceDnsMatchDomains(settings: settings) {
+            dns.matchDomains = [""]
+        }
         networkSettings.dnsSettings = dns
 
         try await setTunnelNetworkSettings(networkSettings)
 
-        let settings = TunnelSettings()
         var didCallCompletion = false
 
         // Start the Rust tunnel via PhantomKit actor bridge.
@@ -178,6 +184,96 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Profile loading
 
+    private struct LastTunnelParams: Decodable {
+        let dnsServers: [String]?
+        let settings: TunnelSettings?
+
+        enum CodingKeys: String, CodingKey {
+            case profileId = "profile_id"
+            case dnsServers = "dns_servers"
+            case dnsServersCamel = "dnsServers"
+            case settings
+            case splitRouting = "split_routing"
+            case directCidrs = "direct_cidrs"
+            case manualDirectCidrs = "manual_direct_cidrs"
+            case routingMode = "routing_mode"
+            case preserveScopedDns = "preserve_scoped_dns"
+            case dnsLeakProtection = "dns_leak_protection"
+            case ipv6Killswitch = "ipv6_killswitch"
+            case autoReconnect = "auto_reconnect"
+            case routePolicy = "route_policy"
+            case streams
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            dnsServers = Self.decodeStringArray(.dnsServers, from: container)
+                ?? Self.decodeStringArray(.dnsServersCamel, from: container)
+
+            if let settings = try? container.decode(TunnelSettings.self, forKey: .settings) {
+                self.settings = settings
+                return
+            }
+
+            let splitRouting = Self.decodeBool(.splitRouting, from: container)
+            let routingMode = Self.decodeString(.routingMode, from: container)
+                .flatMap(RoutingMode.init(rawValue:))
+                ?? RoutingMode.defaultValue(splitRouting: splitRouting)
+            let manualDirectCidrs = Self.decodeStringArray(.manualDirectCidrs, from: container)
+                ?? Self.decodeStringArray(.directCidrs, from: container)
+                ?? []
+
+            self.settings = TunnelSettings(
+                dnsLeakProtection: Self.decodeBool(.dnsLeakProtection, from: container) ?? true,
+                ipv6Killswitch: Self.decodeBool(.ipv6Killswitch, from: container) ?? true,
+                autoReconnect: Self.decodeBool(.autoReconnect, from: container) ?? true,
+                routingMode: routingMode,
+                manualDirectCidrs: manualDirectCidrs,
+                preserveScopedDns: Self.decodeBool(.preserveScopedDns, from: container) ?? true,
+                routePolicy: try? container.decode(RoutePolicySnapshot.self, forKey: .routePolicy),
+                streams: Self.decodeInt(.streams, from: container) ?? 8
+            )
+        }
+
+        private static func decodeBool(
+            _ key: CodingKeys,
+            from container: KeyedDecodingContainer<CodingKeys>
+        ) -> Bool? {
+            try? container.decode(Bool.self, forKey: key)
+        }
+
+        private static func decodeInt(
+            _ key: CodingKeys,
+            from container: KeyedDecodingContainer<CodingKeys>
+        ) -> Int? {
+            try? container.decode(Int.self, forKey: key)
+        }
+
+        private static func decodeString(
+            _ key: CodingKeys,
+            from container: KeyedDecodingContainer<CodingKeys>
+        ) -> String? {
+            try? container.decode(String.self, forKey: key)
+        }
+
+        private static func decodeStringArray(
+            _ key: CodingKeys,
+            from container: KeyedDecodingContainer<CodingKeys>
+        ) -> [String]? {
+            if let values = try? container.decode([String].self, forKey: key) {
+                let cleaned = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                return cleaned.isEmpty ? nil : cleaned
+            }
+            guard let joined = try? container.decode(String.self, forKey: key) else { return nil }
+            let cleaned = joined
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            return cleaned.isEmpty ? nil : cleaned
+        }
+    }
+
     private func loadProfile() throws -> VpnProfile {
         guard let proto = protocolConfiguration as? NETunnelProviderProtocol else {
             throw ProviderError.missingProtocol
@@ -200,6 +296,71 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    private func loadSettings() -> TunnelSettings {
+        guard let proto = protocolConfiguration as? NETunnelProviderProtocol else {
+            return loadLastTunnelParams()?.settings ?? TunnelSettings()
+        }
+
+        if let settingsData = proto.providerConfiguration?["settings"] as? Data,
+           let settings = try? JSONDecoder().decode(TunnelSettings.self, from: settingsData) {
+            return settings
+        }
+
+        if let settingsJson = proto.providerConfiguration?["settings"] as? String,
+           let data = settingsJson.data(using: .utf8),
+           let settings = try? JSONDecoder().decode(TunnelSettings.self, from: data) {
+            return settings
+        }
+
+        return loadLastTunnelParams()?.settings ?? TunnelSettings()
+    }
+
+    private func applyProviderConfigurationOverrides(to profile: VpnProfile) -> VpnProfile {
+        var output = profile
+        if let dnsServers = loadProviderDnsServers() {
+            output.dnsServers = dnsServers
+        }
+        return output
+    }
+
+    private func loadProviderDnsServers() -> [String]? {
+        if let proto = protocolConfiguration as? NETunnelProviderProtocol {
+            if let dnsServers = normalizedDnsServers(proto.providerConfiguration?["dnsServers"]) {
+                return dnsServers
+            }
+            if let dnsServers = normalizedDnsServers(proto.providerConfiguration?["dns_servers"]) {
+                return dnsServers
+            }
+        }
+        return loadLastTunnelParams()?.dnsServers
+    }
+
+    private func loadLastTunnelParams() -> LastTunnelParams? {
+        guard
+            let raw = UserDefaults(suiteName: "group.com.ghoststream.vpn")?
+                .string(forKey: "last_tunnel_params"),
+            let data = raw.data(using: .utf8)
+        else { return nil }
+
+        return try? JSONDecoder().decode(LastTunnelParams.self, from: data)
+    }
+
+    private func normalizedDnsServers(_ raw: Any?) -> [String]? {
+        let values: [String]
+        if let raw = raw as? [String] {
+            values = raw
+        } else if let raw = raw as? String {
+            values = raw.split(separator: ",").map(String.init)
+        } else {
+            return nil
+        }
+
+        let cleaned = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
     private func resolveProfile(id: String) -> VpnProfile? {
         let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")
         guard
@@ -211,6 +372,124 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         profile.certPem = Keychain.get("profile.\(id).cert")
         profile.keyPem  = Keychain.get("profile.\(id).key")
         return profile
+    }
+
+    // MARK: - Route settings
+
+    private func configureIPv4Routes(
+        _ ipv4: NEIPv4Settings,
+        for profile: VpnProfile,
+        settings: TunnelSettings
+    ) {
+        let serverDirectCidrs = settings.routePolicy?.serverDirectCidrs ?? []
+        let shouldUseSplitRoutes = settings.routingMode != .global
+            || !serverDirectCidrs.isEmpty
+            || (settings.routePolicy == nil && profile.splitRouting == true)
+        guard shouldUseSplitRoutes else {
+            ipv4.includedRoutes = [NEIPv4Route.default()]
+            ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
+            return
+        }
+
+        if let directCountries = profile.directCountries, !directCountries.isEmpty {
+            log.warning(
+                "split routing has directCountries=\(directCountries.joined(separator: ","), privacy: .public), but no country CIDR bundle is available; applying configured direct CIDRs only"
+            )
+        }
+
+        let directCidrs = directCidrsForRouteComputation(settings: settings)
+        let routes = PhantomBridge.computeVpnRoutes(directCidrs: directCidrs.joined(separator: "\n"))
+            .compactMap { route in
+                mask(forIPv4Prefix: route.prefix).map {
+                    NEIPv4Route(destinationAddress: route.addr, subnetMask: $0)
+                }
+            }
+
+        if routes.isEmpty {
+            log.error("split routing route computation returned no routes; leaving IPv4 includedRoutes empty")
+            ipv4.includedRoutes = []
+        } else {
+            ipv4.includedRoutes = routes
+        }
+        ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
+    }
+
+    private func shouldForceDnsMatchDomains(settings: TunnelSettings) -> Bool {
+        !(settings.routingMode == .layeredAuto && settings.preserveScopedDns)
+    }
+
+    private func directCidrsForRouteComputation(settings: TunnelSettings) -> [String] {
+        var cidrs = settings.routePolicy?.serverDirectCidrs ?? []
+        if settings.routingMode != .global {
+            cidrs.append(contentsOf: settings.manualDirectCidrs)
+        }
+        if settings.routingMode == .layeredAuto {
+            cidrs.append(contentsOf: settings.routePolicy?.detectedUpstreamCidrs ?? [])
+            cidrs.append(contentsOf: settings.routePolicy?.manualDirectCidrs ?? [])
+        }
+        return RoutePolicySnapshot.normalizedCidrs(from: cidrs.joined(separator: "\n")).valid
+    }
+
+    private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {
+        let upstreamCidrs = settings.routingMode == .layeredAuto
+            ? (settings.routePolicy?.detectedUpstreamCidrs ?? [])
+            : []
+        return (settings.routePolicy?.serverDirectCidrs ?? []).compactMap { cidr in
+            guard !cidrIsContainedInAny(cidr, containers: upstreamCidrs),
+                  let route = route(forCIDR: cidr)
+            else { return nil }
+            return route
+        }
+    }
+
+    private func route(forCIDR cidr: String) -> NEIPv4Route? {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = UInt8(parts[1]),
+              let subnetMask = mask(forIPv4Prefix: prefix)
+        else { return nil }
+        return NEIPv4Route(destinationAddress: String(parts[0]), subnetMask: subnetMask)
+    }
+
+    private func mask(forIPv4Prefix prefix: UInt8) -> String? {
+        guard prefix <= 32 else { return nil }
+        guard prefix > 0 else { return "0.0.0.0" }
+        let mask = UInt32.max << (32 - UInt32(prefix))
+        let octets = [(mask >> 24) & 0xFF, (mask >> 16) & 0xFF, (mask >> 8) & 0xFF, mask & 0xFF]
+        return octets.map { String($0) }.joined(separator: ".")
+    }
+
+    private func cidrIsContainedInAny(_ cidr: String, containers: [String]) -> Bool {
+        guard let child = ipv4Range(forCIDR: cidr) else { return false }
+        return containers.contains { container in
+            guard let parent = ipv4Range(forCIDR: container) else { return false }
+            return parent.lower <= child.lower && child.upper <= parent.upper
+        }
+    }
+
+    private func ipv4Range(forCIDR cidr: String) -> (lower: UInt32, upper: UInt32)? {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = UInt32(parts[1]),
+              prefix <= 32,
+              let ip = ipv4Integer(String(parts[0]))
+        else { return nil }
+
+        let hostMask: UInt32 = prefix == 32 ? 0 : (UInt32.max >> prefix)
+        let networkMask = ~hostMask
+        let lower = ip & networkMask
+        return (lower, lower | hostMask)
+    }
+
+    private func ipv4Integer(_ address: String) -> UInt32? {
+        let octets = address.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else { return nil }
+        var output: UInt32 = 0
+        for octet in octets {
+            guard let value = UInt32(octet), value <= 255 else { return nil }
+            output = (output << 8) | value
+        }
+        return output
     }
 
     // MARK: - Packet loop

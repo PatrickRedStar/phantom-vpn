@@ -240,10 +240,8 @@ public struct MenuBarPopover: View {
         }
     }
 
-    /// Surface only real connection failures inline. Missing prerequisites
-    /// (no profile, sys-ext not activated) are now handled by the wizard,
-    /// which gets opened from `toggleConnect()` instead of being shown as
-    /// a red inline message.
+    /// Surface connect failures and prerequisite feedback inline. The wizard
+    /// still opens for setup, but the tap should never look like a no-op.
     private var inlineConnectError: String? {
         if let msg = tunnel.lastError, !msg.isEmpty { return msg }
         return nil
@@ -442,13 +440,9 @@ public struct MenuBarPopover: View {
             return
         }
 
-        // Any prerequisite missing → punt the user to the wizard. We do
-        // NOT surface red inline errors for these cases; the onboarding
-        // window has full explanations and System Settings deeplinks.
-        if profiles.activeProfile == nil
-            || sysExt.state != .activated {
+        if let preflightError = connectPreflightError() {
             popoverLog.info("toggleConnect → prerequisites missing, opening Welcome wizard")
-            tunnel.lastError = nil
+            tunnel.lastError = preflightError
             openWindow(id: "welcome")
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -462,6 +456,25 @@ public struct MenuBarPopover: View {
         } catch {
             popoverLog.error("installAndStart failed: \(error.localizedDescription, privacy: .public)")
             tunnel.lastError = error.localizedDescription
+        }
+    }
+
+    private func connectPreflightError() -> String? {
+        if profiles.activeProfile == nil {
+            return "No VPN profile selected. Opening setup to import one."
+        }
+
+        switch sysExt.state {
+        case .activated:
+            return nil
+        case .failed(let message):
+            return "System extension is not ready: \(message). Opening setup."
+        case .awaitingUserApproval:
+            return "System extension is waiting for approval. Opening setup."
+        case .requestPending:
+            return "System extension install is still pending. Opening setup."
+        case .notInstalled:
+            return "System extension is not installed yet. Opening setup."
         }
     }
 

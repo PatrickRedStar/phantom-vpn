@@ -41,39 +41,37 @@ public struct SettingsView: View {
     public init() {}
 
     public var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    header
-                    profilesSection
-                    if let active = model.activeProfile {
-                        activeProfileSection(active: active)
-                    }
-                    appearanceSection
-                    platformNoteSection
-                    aboutSection
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                header
+                profilesSection
+                if let active = model.activeProfile {
+                    activeProfileSection(active: active)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 18)
+                appearanceSection
+                platformNoteSection
+                aboutSection
             }
-            .background(C.bg.ignoresSafeArea())
-            .scrollIndicators(.hidden)
-            .navigationBarHidden(true)
-            .navigationDestination(isPresented: Binding(
-                get: { adminProfile != nil },
-                set: { if !$0 { adminProfile = nil } }
-            )) {
-                if let p = adminProfile {
-                    AdminView(profile: p)
-                }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 18)
+        }
+        .background(C.bg.ignoresSafeArea())
+        .scrollIndicators(.hidden)
+        .navigationBarHidden(true)
+        .navigationDestination(isPresented: Binding(
+            get: { adminProfile != nil },
+            set: { if !$0 { adminProfile = nil } }
+        )) {
+            if let p = adminProfile {
+                AdminView(profile: p)
             }
-            .task {
-                hydrate()
-                await model.refreshPings()
-            }
-            .refreshable {
-                await model.refreshPings()
-            }
+        }
+        .task {
+            hydrate()
+            await model.refreshPings()
+        }
+        .refreshable {
+            await model.refreshPings()
         }
         // Add profile action sheet
         .confirmationDialog("Добавить профиль",
@@ -180,22 +178,9 @@ public struct SettingsView: View {
                         model.setActiveProfile(id: profile.id)
                         Task { _ = await model.pingProfile(profile) }
                     },
-                    onLongPress: { deleteProfileId = profile.id }
+                    onLongPress: { deleteProfileId = profile.id },
+                    actions: profileActions(for: profile)
                 )
-                .contextMenu {
-                    if profile.cachedIsAdmin == true {
-                        Button {
-                            adminProfile = profile
-                        } label: {
-                            Label("Admin Panel", systemImage: "shield.fill")
-                        }
-                    }
-                    Button("Изменить") { editorProfileId = profile.id }
-                    Button("Сделать активным") { model.setActiveProfile(id: profile.id) }
-                    Button("Измерить пинг") { Task { _ = await model.pingProfile(profile) } }
-                    Divider()
-                    Button("Удалить", role: .destructive) { deleteProfileId = profile.id }
-                }
             }
 
             GhostButton("ДОБАВИТЬ ПРОФИЛЬ", variant: .secondary) {
@@ -383,10 +368,56 @@ public struct SettingsView: View {
         }
     }
 
+    private func profileActions(for profile: VpnProfile) -> [ProfileCardAction] {
+        let isActive = profile.id == model.activeId
+        var actions: [ProfileCardAction] = []
+
+        if profile.cachedIsAdmin == true {
+            actions.append(ProfileCardAction(
+                label: "Admin Panel",
+                systemImage: "shield.fill"
+            ) {
+                adminProfile = profile
+            })
+        }
+
+        actions.append(ProfileCardAction(
+            label: "Изменить профиль",
+            systemImage: "pencil"
+        ) {
+            editorProfileId = profile.id
+        })
+
+        actions.append(ProfileCardAction(
+            label: isActive ? "Активный профиль" : "Сделать активным",
+            systemImage: isActive ? "checkmark.circle.fill" : "checkmark.circle",
+            isEnabled: !isActive
+        ) {
+            model.setActiveProfile(id: profile.id)
+        })
+
+        actions.append(ProfileCardAction(
+            label: "Измерить пинг",
+            systemImage: "speedometer"
+        ) {
+            Task { _ = await model.pingProfile(profile) }
+        })
+
+        actions.append(ProfileCardAction(
+            label: "Удалить профиль",
+            systemImage: "trash",
+            role: .destructive
+        ) {
+            deleteProfileId = profile.id
+        })
+
+        return actions
+    }
+
     private func hydrate() {
         dnsDraft = model.dnsServers
         splitOn = model.splitRouting
-        themeSelection = ThemeOverride.current
+        themeSelection = model.theme
         languageSelection = model.languageOverride ?? "system"
     }
 

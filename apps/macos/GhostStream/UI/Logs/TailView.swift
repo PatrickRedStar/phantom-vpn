@@ -34,6 +34,8 @@ public struct TailView: View {
     @State private var lastLogTsMs: UInt64 = 0
     @State private var ipcBridge: TunnelIpcBridge?
     @State private var pollTask: Task<Void, Never>?
+    @State private var pollErrorMessage: String?
+    @State private var actionStatus: TailStatus?
     private let providerBundleId = "com.ghoststream.vpn.tunnel"
 
     public init() {}
@@ -42,6 +44,7 @@ public struct TailView: View {
         VStack(alignment: .leading, spacing: 14) {
             detailHead
             toolbar
+            tailStatusStrip
             tailTable
         }
         .padding(.horizontal, 28)
@@ -185,6 +188,27 @@ public struct TailView: View {
         }
     }
 
+    @ViewBuilder
+    private var tailStatusStrip: some View {
+        if let status = visibleTailStatus {
+            HStack(spacing: 8) {
+                Image(systemName: status.iconName)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(status.message)
+                    .font(.custom("JetBrainsMono-Regular", size: 11))
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(tailStatusColor(status.tone))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(tailStatusColor(status.tone).opacity(0.06))
+            .overlay(
+                Rectangle().stroke(tailStatusColor(status.tone).opacity(0.35), lineWidth: 1)
+            )
+        }
+    }
+
     // MARK: - 3. tail table
 
     @ViewBuilder
@@ -249,26 +273,51 @@ public struct TailView: View {
     // MARK: - Helpers
 
     private var filteredLogs: [LogFrame] {
-        logs.filter { row in
+        let regex = activeSearchRegex
+        return logs.filter { row in
             let levelOk = activeFilter == .all || row.level.lowercased() == activeFilter.matchKey
-            let textOk = matchesSearch(row)
+            let textOk = matchesSearch(row, regex: regex)
             return levelOk && textOk
         }
     }
 
-    private func matchesSearch(_ row: LogFrame) -> Bool {
+    private var activeSearchRegex: NSRegularExpression? {
+        guard regexSearch, !searchText.isEmpty else { return nil }
+        return try? NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
+    }
+
+    private var regexSearchError: String? {
+        guard regexSearch, !searchText.isEmpty else { return nil }
+        do {
+            _ = try NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private var visibleTailStatus: TailStatus? {
+        if let regexSearchError {
+            return TailStatus(message: "Invalid regex: \(regexSearchError)", tone: .danger)
+        }
+        if let actionStatus, actionStatus.tone != .info {
+            return actionStatus
+        }
+        if let pollErrorMessage {
+            return TailStatus(message: pollErrorMessage, tone: .danger)
+        }
+        return actionStatus
+    }
+
+    private func matchesSearch(_ row: LogFrame, regex: NSRegularExpression?) -> Bool {
         guard !searchText.isEmpty else { return true }
         let haystack = "\(row.level) \(row.msg)"
         guard regexSearch else {
             return haystack.localizedCaseInsensitiveContains(searchText)
         }
-        do {
-            let regex = try NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
-            let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
-            return regex.firstMatch(in: haystack, range: range) != nil
-        } catch {
-            return false
-        }
+        guard let regex else { return true }
+        let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
+        return regex.firstMatch(in: haystack, range: range) != nil
     }
 
     private func startPollingLogs() {
@@ -288,33 +337,58 @@ public struct TailView: View {
 
     @MainActor
     private func pollLogsOnce() async {
-        if ipcBridge == nil {
-            ipcBridge = await makeIpcBridge()
+        guard shouldPollLogs else {
+            pollErrorMessage = nil
+            ipcBridge = nil
+            return
         }
-        guard let bridge = ipcBridge else { return }
+
+        if ipcBridge == nil {
+            do {
+                ipcBridge = try await makeIpcBridge()
+            } catch {
+                pollErrorMessage = "Log stream setup failed: \(error.localizedDescription)"
+                return
+            }
+        }
+        guard let bridge = ipcBridge else {
+            pollErrorMessage = "Log stream unavailable: tunnel IPC session not found"
+            return
+        }
 
         do {
             let response = try await bridge.send(.subscribeLogs(sinceMs: lastLogTsMs))
-            guard case .logs(let frames) = response, !frames.isEmpty else { return }
+            guard case .logs(let frames) = response else {
+                pollErrorMessage = "Log stream returned an unexpected IPC response"
+                return
+            }
+            pollErrorMessage = nil
+            guard !frames.isEmpty else { return }
             lastLogTsMs = frames.map(\.tsUnixMs).max() ?? lastLogTsMs
             logs.append(contentsOf: frames)
             trimLogs()
         } catch {
             ipcBridge = nil
+            pollErrorMessage = "Log polling failed: \(error.localizedDescription)"
         }
     }
 
     @MainActor
-    private func makeIpcBridge() async -> TunnelIpcBridge? {
-        do {
-            let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-            let manager = selectGhostStreamManager(from: managers)
-            guard let session = manager?.connection as? NETunnelProviderSession else {
-                return nil
-            }
-            return TunnelIpcBridge(session: session)
-        } catch {
+    private func makeIpcBridge() async throws -> TunnelIpcBridge? {
+        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+        let manager = selectGhostStreamManager(from: managers)
+        guard let session = manager?.connection as? NETunnelProviderSession else {
             return nil
+        }
+        return TunnelIpcBridge(session: session)
+    }
+
+    private var shouldPollLogs: Bool {
+        switch stateMgr.statusFrame.state {
+        case .connecting, .reconnecting, .connected, .error:
+            return true
+        case .disconnected:
+            return false
         }
     }
 
@@ -350,16 +424,37 @@ public struct TailView: View {
     }
 
     private func copyVisibleLogs() {
+        let output = renderVisibleLogs()
+        guard !output.isEmpty else {
+            actionStatus = TailStatus(message: "No visible log lines to copy", tone: .warning)
+            return
+        }
+
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(renderVisibleLogs(), forType: .string)
+        guard NSPasteboard.general.setString(output, forType: .string) else {
+            actionStatus = TailStatus(message: "Copy failed: pasteboard rejected the log text", tone: .danger)
+            return
+        }
+        actionStatus = TailStatus(message: "Copied \(filteredLogs.count) visible log lines", tone: .info)
     }
 
     private func exportVisibleLogs() {
+        let output = renderVisibleLogs()
+        guard !output.isEmpty else {
+            actionStatus = TailStatus(message: "No visible log lines to export", tone: .warning)
+            return
+        }
+
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "ghoststream-logs-\(Int(Date().timeIntervalSince1970)).txt"
         panel.allowedContentTypes = [.plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? renderVisibleLogs().write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try output.write(to: url, atomically: true, encoding: .utf8)
+            actionStatus = TailStatus(message: "Exported \(filteredLogs.count) visible log lines", tone: .info)
+        } catch {
+            actionStatus = TailStatus(message: "Export failed: \(error.localizedDescription)", tone: .danger)
+        }
     }
 
     private func renderVisibleLogs() -> String {
@@ -381,12 +476,39 @@ public struct TailView: View {
         }
     }
 
+    private func tailStatusColor(_ tone: TailStatusTone) -> Color {
+        switch tone {
+        case .info:    return C.signal
+        case .warning: return C.warn
+        case .danger:  return C.danger
+        }
+    }
+
     private func formatTs(_ tsMs: UInt64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(tsMs) / 1000.0)
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SS"
         return formatter.string(from: date)
     }
+}
+
+private struct TailStatus {
+    let message: String
+    let tone: TailStatusTone
+
+    var iconName: String {
+        switch tone {
+        case .info:    return "checkmark.circle"
+        case .warning: return "exclamationmark.triangle"
+        case .danger:  return "xmark.octagon"
+        }
+    }
+}
+
+private enum TailStatusTone: Equatable {
+    case info
+    case warning
+    case danger
 }
 
 private enum LevelFilter: String, CaseIterable {

@@ -65,6 +65,12 @@ final class LogsViewModel {
     /// `true` while the view wants live polling.
     private(set) var polling = false
 
+    /// Last VPN state observed from the shared state bridge.
+    private(set) var tunnelState: VpnState = VpnStateManager.shared.state
+
+    /// Last IPC failure seen while asking the provider for logs.
+    private(set) var lastIpcError: String?
+
     // MARK: - Private
 
     private var lastTsMs: UInt64 = 0
@@ -83,6 +89,45 @@ final class LogsViewModel {
         return allLogs.filter { LogFilter.priority(of: $0.level) >= min }
     }
 
+    var hasIpcError: Bool { lastIpcError != nil }
+
+    var isDisconnected: Bool {
+        switch tunnelState {
+        case .disconnected, .disconnecting:
+            return true
+        case .connecting, .connected, .error:
+            return false
+        }
+    }
+
+    var statusLabel: String {
+        if hasIpcError { return "IPC ERROR" }
+        switch tunnelState {
+        case .connected: return "LIVE"
+        case .connecting: return "CONNECTING"
+        case .disconnecting: return "DISCONNECTING"
+        case .error: return "VPN ERROR"
+        case .disconnected: return "DISCONNECTED"
+        }
+    }
+
+    var statusMessage: String? {
+        if let lastIpcError {
+            return "IPC error: \(lastIpcError)"
+        }
+
+        switch tunnelState {
+        case .disconnected:
+            return "VPN disconnected. Live log IPC is unavailable."
+        case .disconnecting:
+            return "VPN disconnecting. Live log IPC may be unavailable."
+        case .error(let message):
+            return "VPN error: \(message)"
+        case .connecting, .connected:
+            return nil
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Starts the 500ms polling loop. Idempotent.
@@ -91,8 +136,12 @@ final class LogsViewModel {
         polling = true
         pollTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.setupIpc()
+            self.refreshTunnelState()
+            if self.shouldAttemptIpc {
+                await self.setupIpc()
+            }
             while self.polling, !Task.isCancelled {
+                self.refreshTunnelState()
                 await self.drainNewEntries()
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
@@ -139,20 +188,51 @@ final class LogsViewModel {
     private func setupIpc() async {
         do {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-            if let session = managers.first?.connection as? NETunnelProviderSession {
-                ipc = TunnelIpcBridge(session: session)
+            guard let manager = selectTunnelManager(from: managers) else {
+                ipc = nil
+                recordIpcError("VPN configuration is not installed")
+                return
             }
+            guard let session = manager.connection as? NETunnelProviderSession else {
+                ipc = nil
+                recordIpcError("VPN provider session is unavailable")
+                return
+            }
+            ipc = TunnelIpcBridge(session: session)
+            lastIpcError = nil
         } catch {
-            log.error("Failed to load VPN manager for IPC: \(error.localizedDescription, privacy: .public)")
+            ipc = nil
+            recordIpcError("Failed to load VPN manager: \(error.localizedDescription)")
         }
     }
 
     /// Fetches new log entries from the extension via IPC.
     private func drainNewEntries() async {
-        guard let ipc else { return }
+        guard shouldAttemptIpc else {
+            ipc = nil
+            lastIpcError = nil
+            return
+        }
+
+        if ipc == nil {
+            await setupIpc()
+        }
+
+        guard let bridge = ipc else { return }
         do {
-            let response = try await ipc.send(.subscribeLogs(sinceMs: lastTsMs))
-            if case .logs(let frames) = response, !frames.isEmpty {
+            let response = try await bridge.send(.subscribeLogs(sinceMs: lastTsMs))
+            if case .error(let message) = response {
+                recordIpcError(message)
+                return
+            }
+
+            guard case .logs(let frames) = response else {
+                recordIpcError("Unexpected IPC response")
+                return
+            }
+
+            lastIpcError = nil
+            if !frames.isEmpty {
                 lastTsMs = frames.map(\.tsUnixMs).max() ?? lastTsMs
                 allLogs.append(contentsOf: frames)
                 if allLogs.count > maxEntries {
@@ -160,8 +240,47 @@ final class LogsViewModel {
                 }
             }
         } catch {
-            // IPC can fail when tunnel isn't running — silently retry next poll
+            ipc = nil
+            recordIpcError(error.localizedDescription)
         }
+    }
+
+    private var shouldAttemptIpc: Bool {
+        switch tunnelState {
+        case .connected, .connecting:
+            return true
+        case .disconnected, .disconnecting, .error:
+            return false
+        }
+    }
+
+    private func refreshTunnelState() {
+        tunnelState = VpnStateManager.shared.state
+    }
+
+    private func selectTunnelManager(from managers: [NETunnelProviderManager]) -> NETunnelProviderManager? {
+        let expectedProviderId = Bundle.main.bundleIdentifier.map {
+            "\($0).PacketTunnelProvider"
+        }
+        let matches = managers.filter { manager in
+            guard let providerId = (manager.protocolConfiguration as? NETunnelProviderProtocol)?
+                .providerBundleIdentifier
+            else { return false }
+
+            if let expectedProviderId {
+                return providerId == expectedProviderId
+            }
+            return providerId.hasSuffix(".PacketTunnelProvider")
+        }
+
+        return matches.first { $0.connection.status != .disconnected } ?? matches.first
+    }
+
+    private func recordIpcError(_ message: String) {
+        if lastIpcError != message {
+            log.error("Log IPC failed: \(message, privacy: .public)")
+        }
+        lastIpcError = message
     }
 
     /// Format an entry for file export / clipboard.

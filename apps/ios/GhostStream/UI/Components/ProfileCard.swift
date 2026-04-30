@@ -10,6 +10,32 @@ import PhantomKit
 import PhantomUI
 import SwiftUI
 
+/// Explicit action rendered in the profile card action rail.
+public struct ProfileCardAction: Identifiable {
+    public let id: String
+    public let label: String
+    public let systemImage: String
+    public let role: ButtonRole?
+    public let isEnabled: Bool
+    public let action: () -> Void
+
+    public init(
+        id: String? = nil,
+        label: String,
+        systemImage: String,
+        role: ButtonRole? = nil,
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) {
+        self.id = id ?? label
+        self.label = label
+        self.systemImage = systemImage
+        self.role = role
+        self.isEnabled = isEnabled
+        self.action = action
+    }
+}
+
 /// Card representation of a `VpnProfile` used inside the Settings list.
 ///
 /// Visual elements:
@@ -34,8 +60,10 @@ public struct ProfileCard: View {
 
     /// Invoked on short tap — typically "set as active".
     public let onTap: () -> Void
-    /// Invoked on long-press — typically opens rename / delete menu.
+    /// Legacy long-press callback kept for existing call sites.
     public let onLongPress: () -> Void
+    /// Explicit profile actions. Prefer these over hidden long-press gestures.
+    private let actions: [ProfileCardAction]
 
     @Environment(\.gsColors) private var C
 
@@ -47,7 +75,8 @@ public struct ProfileCard: View {
         isPinging: Bool = false,
         expiresAt: Int64? = nil,
         onTap: @escaping () -> Void,
-        onLongPress: @escaping () -> Void
+        onLongPress: @escaping () -> Void,
+        actions: [ProfileCardAction] = []
     ) {
         self.profile = profile
         self.isActive = isActive
@@ -56,22 +85,37 @@ public struct ProfileCard: View {
         self.expiresAt = expiresAt
         self.onTap = onTap
         self.onLongPress = onLongPress
+        self.actions = actions
     }
 
     public var body: some View {
         GhostCard(active: isActive) {
             VStack(alignment: .leading, spacing: 8) {
-                topRow
-                HairlineDivider()
-                bottomRow
+                profileSummary
+                if !actions.isEmpty {
+                    HairlineDivider()
+                    actionRow
+                }
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture { onTap() }
-        .onLongPressGesture(minimumDuration: 0.5) { onLongPress() }
     }
 
     // MARK: - Rows
+
+    private var profileSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            topRow
+            HairlineDivider()
+            bottomRow
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(profileAccessibilityLabel)
+        .accessibilityValue(isActive ? "Активный" : "Не активный")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: "Сделать активным") { onTap() }
+    }
 
     private var topRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -99,6 +143,39 @@ public struct ProfileCard: View {
                 subscriptionView(expiry: expiry)
             }
         }
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 8) {
+            ForEach(actions) { action in
+                actionButton(action)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 1)
+    }
+
+    private func actionButton(_ action: ProfileCardAction) -> some View {
+        Button(role: action.role) {
+            action.action()
+        } label: {
+            Image(systemName: action.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(action.role == .destructive ? C.danger : C.textDim)
+                .frame(width: 32, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(C.bgElev2.opacity(action.isEnabled ? 0.78 : 0.35))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(C.hair.opacity(action.isEnabled ? 1 : 0.45), lineWidth: 1)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!action.isEnabled)
+        .opacity(action.isEnabled ? 1 : 0.55)
+        .accessibilityLabel(action.label)
     }
 
     // MARK: - Ping
@@ -131,6 +208,11 @@ public struct ProfileCard: View {
         if ms < 100    { return C.signal }
         if ms < 300    { return C.warn }
         return C.danger
+    }
+
+    private var profileAccessibilityLabel: String {
+        let host = profile.serverAddr.isEmpty ? "адрес не указан" : profile.serverAddr
+        return "\(profile.name), \(host)"
     }
 
     // MARK: - Subscription

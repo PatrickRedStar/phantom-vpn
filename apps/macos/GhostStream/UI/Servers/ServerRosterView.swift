@@ -9,8 +9,8 @@
 //   2. toolbar: "+ new profile · ⌘N" (signal border) + "paste ghs://"
 //      (hairBold border bone) + count text right.
 //   3. SwiftUI Table rows with columns
-//        ★ | name (+ ● active) | endpoint (+ sni small)
-//          | region badge | rtt (colour by range) | last used | ⋯
+//        active | name (+ ● active) | endpoint (+ sni small)
+//          | region badge | rtt (colour by range) | state | commands
 //      Active row gets signal.opacity(0.06) bg + 2pt left border.
 //
 
@@ -146,8 +146,8 @@ public struct ServerRosterView: View {
         Table(rows, sortOrder: $sortOrder) {
             TableColumn("") { row in
                 rowActionArea(row) {
-                    Image(systemName: row.isFav ? "star.fill" : "star")
-                        .foregroundStyle(row.isFav ? C.warn : C.textFaint)
+                    Image(systemName: row.active ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(row.active ? C.signal : C.textFaint)
                         .font(.system(size: 13))
                 }
             }
@@ -208,7 +208,7 @@ public struct ServerRosterView: View {
             }
             .width(80)
 
-            TableColumn("last used", value: \.status) { row in
+            TableColumn("state", value: \.status) { row in
                 rowActionArea(row) {
                     Text(row.status.lowercased())
                         .font(.custom("JetBrainsMono-Regular", size: 11))
@@ -218,11 +218,7 @@ public struct ServerRosterView: View {
             .width(120)
 
             TableColumn("") { row in
-                rowActionArea(row) {
-                    Text("⋯")
-                        .foregroundStyle(C.textFaint)
-                        .font(.system(size: 14))
-                }
+                rowMenu(row)
             }
             .width(30)
         }
@@ -283,9 +279,8 @@ public struct ServerRosterView: View {
                 sni: profile.serverName,
                 region: detectRegion(profile),
                 rttMs: rttCache[profile.id],
-                isFav: profiles.activeId == profile.id,
                 active: profiles.activeId == profile.id,
-                status: profiles.activeId == profile.id ? "just now" : "—",
+                status: profiles.activeId == profile.id ? "active" : "—",
                 connString: profile.connString
             )
         }
@@ -430,29 +425,50 @@ public struct ServerRosterView: View {
                 rosterStatus = "Active profile: \(row.name)"
             }
             .contextMenu {
-                Button("Set Active") {
-                    profiles.setActive(id: row.id)
-                    rosterStatus = "Active profile: \(row.name)"
-                }
-                Button("Edit") {
-                    profiles.setActive(id: row.id)
-                    showAddSheet = true
-                }
-                Button("Copy endpoint") {
-                    copy(row.endpoint)
-                    rosterStatus = "Endpoint copied"
-                }
-                if let connString = row.connString, !connString.isEmpty {
-                    Button("Copy ghs://") {
-                        copy(connString)
-                        rosterStatus = "ghs:// copied"
-                    }
-                }
-                Button("Delete", role: .destructive) {
-                    profiles.remove(id: row.id)
-                    rosterStatus = "Deleted \(row.name)"
-                }
+                rowMenuCommands(row)
             }
+    }
+
+    @ViewBuilder
+    private func rowMenu(_ row: RosterRow) -> some View {
+        Menu {
+            rowMenuCommands(row)
+        } label: {
+            Image(systemName: "ellipsis")
+                .foregroundStyle(C.textFaint)
+                .font(.system(size: 14))
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Profile actions")
+    }
+
+    @ViewBuilder
+    private func rowMenuCommands(_ row: RosterRow) -> some View {
+        Button("Set Active") {
+            profiles.setActive(id: row.id)
+            rosterStatus = "Active profile: \(row.name)"
+        }
+        Button("Edit") {
+            profiles.setActive(id: row.id)
+            showAddSheet = true
+        }
+        Button("Copy endpoint") {
+            copy(row.endpoint)
+            rosterStatus = "Endpoint copied"
+        }
+        if let connString = row.connString, !connString.isEmpty {
+            Button("Copy ghs://") {
+                copy(connString)
+                rosterStatus = "ghs:// copied"
+            }
+        }
+        Button("Delete", role: .destructive) {
+            profiles.remove(id: row.id)
+            rosterStatus = "Deleted \(row.name)"
+        }
     }
 
     private func copy(_ value: String) {
@@ -470,7 +486,6 @@ private struct RosterRow: Identifiable {
     let sni: String
     let region: String
     let rttMs: UInt32?
-    let isFav: Bool
     let active: Bool
     let status: String
     let connString: String?

@@ -36,6 +36,7 @@ public enum Keychain {
     }
 
     private static func resolvedAccessGroup() -> String {
+        #if os(macOS)
         guard let task = SecTaskCreateFromSelf(nil),
               let value = SecTaskCopyValueForEntitlement(
                 task,
@@ -50,6 +51,9 @@ public enum Keychain {
         return groups.first { group in
             group == appGroupIdentifier || group.hasSuffix(".\(appGroupIdentifier)")
         } ?? appGroupIdentifier
+        #else
+        return appGroupIdentifier
+        #endif
     }
 
     /// Stores `value` under `key`. Overwrites any existing item atomically

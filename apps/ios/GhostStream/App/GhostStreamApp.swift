@@ -6,6 +6,7 @@
 //  SwiftUI environment and applies the Ghoststream theme + colour scheme.
 //
 
+import Foundation
 import PhantomKit
 import PhantomUI
 import SwiftUI
@@ -30,12 +31,17 @@ struct GhostStreamApp: App {
     /// Singleton, main-actor-bound observable VPN state.
     @State private var state = VpnStateManager.shared
 
+    init() {
+        PhantomUIResources.registerFonts()
+    }
+
     var body: some Scene {
         WindowGroup {
             AppNavigation()
                 .environment(profiles)
                 .environment(prefs)
                 .environment(state)
+                .environment(\.locale, appLocale(from: prefs.languageOverride))
                 .gsTheme(override: themeOverride(from: prefs.theme))
         }
     }
@@ -44,5 +50,18 @@ struct GhostStreamApp: App {
     /// `ThemeOverride`. Unknown values fall back to `.system`.
     private func themeOverride(from raw: String) -> ThemeOverride {
         ThemeOverride(rawValue: raw) ?? .system
+    }
+
+    /// Resolve the saved language override for SwiftUI localization. Missing,
+    /// blank, or explicit "system" values follow the current system locale.
+    private func appLocale(from raw: String?) -> Locale {
+        guard let raw,
+              !raw.isEmpty,
+              raw != "system"
+        else {
+            return .autoupdatingCurrent
+        }
+
+        return Locale(identifier: raw)
     }
 }

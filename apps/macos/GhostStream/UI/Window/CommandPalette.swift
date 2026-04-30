@@ -26,10 +26,12 @@ public struct CommandPalette: View {
     @Environment(ProfilesStore.self) private var profiles
     @EnvironmentObject private var tunnel: VpnTunnelController
     @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(SystemExtensionInstaller.self) private var sysExt
     @Environment(\.openWindow) private var openWindow
 
     @State private var query: String = ""
     @State private var selection: Int = 0
+    @State private var statusMessage: PaletteStatusMessage?
     @FocusState private var fieldFocused: Bool
 
     public init() {}
@@ -43,6 +45,10 @@ public struct CommandPalette: View {
             VStack(alignment: .leading, spacing: 0) {
                 inputRow
                 Rectangle().fill(C.hair).frame(height: 1)
+                if let statusMessage {
+                    statusBanner(statusMessage)
+                    Rectangle().fill(C.hair).frame(height: 1)
+                }
                 resultList
                 Rectangle().fill(C.hair).frame(height: 1)
                 footerHint
@@ -94,7 +100,10 @@ public struct CommandPalette: View {
                 .font(.custom("JetBrainsMono-Regular", size: 18))
                 .foregroundStyle(C.bone)
                 .focused($fieldFocused)
-                .onSubmit { runSelected() }
+                .onSubmit {
+                    statusMessage = nil
+                    runSelected()
+                }
             Text("ESC")
                 .font(.custom("DepartureMono-Regular", size: 9.5))
                 .tracking(0.14 * 9.5)
@@ -105,6 +114,30 @@ public struct CommandPalette: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 18)
+    }
+
+    @ViewBuilder
+    private func statusBanner(_ message: PaletteStatusMessage) -> some View {
+        let isError: Bool = {
+            if case .error = message.kind { return true }
+            return false
+        }()
+        let color = isError ? C.danger : C.signal
+        HStack(spacing: 10) {
+            Image(systemName: isError ? "exclamationmark.triangle" : "dot.radiowaves.left.and.right")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(color)
+                .frame(width: 16, height: 16)
+            Text(message.text)
+                .font(.custom("JetBrainsMono-Regular", size: 12))
+                .foregroundStyle(isError ? C.bone : C.textDim)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 10)
+        .background(color.opacity(0.06))
     }
 
     // MARK: - Result list
@@ -231,12 +264,27 @@ public struct CommandPalette: View {
         let section: String
         let icon: String
         let kbd: String?
-        let action: () -> Void
+        let action: () -> PaletteActionResult
     }
 
     private struct Group {
         let section: String
         let items: [PaletteItem]
+    }
+
+    private enum PaletteActionResult {
+        case close
+        case stayOpen
+    }
+
+    private enum PaletteStatusKind {
+        case info
+        case error
+    }
+
+    private struct PaletteStatusMessage {
+        let text: String
+        let kind: PaletteStatusKind
     }
 
     private var allGroups: [Group] {
@@ -254,7 +302,7 @@ public struct CommandPalette: View {
                 kbd: nil,
                 action: {
                     profiles.setActive(id: profile.id)
-                    start(profile)
+                    return start(profile)
                 }
             )
         }
@@ -273,11 +321,13 @@ public struct CommandPalette: View {
             icon: isLive ? "power.circle.fill" : "power.circle",
             kbd: nil,
             action: {
-                if isLive { tunnel.stop() }
-                else if let p = profiles.activeProfile {
-                    start(p)
+                if isLive {
+                    tunnel.stop()
+                    return .close
+                } else if let p = profiles.activeProfile {
+                    return start(p)
                 } else {
-                    tunnel.lastError = "No active profile to connect"
+                    return openSetupWithError("No VPN profile selected. Opening setup to import one.")
                 }
             }
         ))
@@ -289,8 +339,7 @@ public struct CommandPalette: View {
             icon: "arrow.clockwise.circle",
             kbd: nil,
             action: {
-                tunnel.stop()
-                reconnectActive()
+                return reconnectActive()
             }
         ))
         actionItems.append(.init(
@@ -307,6 +356,7 @@ public struct CommandPalette: View {
                 case .dark: p.theme = ThemeOverride.light.rawValue
                 case .light: p.theme = ThemeOverride.system.rawValue
                 }
+                return .close
             }
         ))
         actionItems.append(.init(
@@ -316,7 +366,10 @@ public struct CommandPalette: View {
             section: "ACTIONS",
             icon: "arrow.down.circle",
             kbd: nil,
-            action: { tunnel.lastError = "Check for updates is unavailable: Sparkle is not integrated" }
+            action: {
+                tunnel.lastError = "Check for updates is unavailable: Sparkle is not integrated"
+                return .close
+            }
         ))
         actionItems.append(.init(
             id: "act.logs",
@@ -328,6 +381,7 @@ public struct CommandPalette: View {
             action: {
                 router.openDetachedLogs()
                 openWindow(id: "logs")
+                return .close
             }
         ))
         actionItems.append(.init(
@@ -337,7 +391,10 @@ public struct CommandPalette: View {
             section: "ACTIONS",
             icon: "info.circle",
             kbd: nil,
-            action: { openWindow(id: "about") }
+            action: {
+                openWindow(id: "about")
+                return .close
+            }
         ))
         actionItems.append(.init(
             id: "act.quit",
@@ -346,7 +403,10 @@ public struct CommandPalette: View {
             section: "ACTIONS",
             icon: "xmark.circle",
             kbd: "⌘Q",
-            action: { NSApp.terminate(nil) }
+            action: {
+                NSApp.terminate(nil)
+                return .close
+            }
         ))
         groups.append(Group(section: "ACTIONS", items: actionItems))
 
@@ -359,7 +419,10 @@ public struct CommandPalette: View {
                 section: "NAV",
                 icon: channel.sfSymbol,
                 kbd: "⌘\(channel.hotkey)",
-                action: { router.select(channel) }
+                action: {
+                    router.select(channel)
+                    return .close
+                }
             )
         }
         groups.append(Group(section: "NAV", items: navItems))
@@ -396,8 +459,13 @@ public struct CommandPalette: View {
     }
 
     private func run(_ item: PaletteItem) {
-        item.action()
-        router.commandPaletteOpen = false
+        statusMessage = nil
+        switch item.action() {
+        case .close:
+            router.commandPaletteOpen = false
+        case .stayOpen:
+            break
+        }
     }
 
     private func runSelected() {
@@ -420,32 +488,74 @@ public struct CommandPalette: View {
         selection = count == 0 ? 0 : min(selection, count - 1)
     }
 
-    private func start(_ profile: VpnProfile) {
+    private func start(_ profile: VpnProfile) -> PaletteActionResult {
+        if let preflightError = connectPreflightError() {
+            return openSetupWithError(preflightError)
+        }
+
+        statusMessage = .init(text: "Connecting to \(profile.name)...", kind: .info)
         Task {
             do {
                 try await tunnel.installAndStart(
                     profile: profile,
                     preferences: PreferencesStore.shared
                 )
+                tunnel.lastError = nil
+                router.commandPaletteOpen = false
             } catch {
                 tunnel.lastError = error.localizedDescription
+                statusMessage = .init(text: error.localizedDescription, kind: .error)
             }
         }
+        return .stayOpen
     }
 
-    private func reconnectActive() {
+    private func reconnectActive() -> PaletteActionResult {
         guard let profile = profiles.activeProfile else {
-            tunnel.lastError = "No active profile to reconnect"
-            return
+            return openSetupWithError("No VPN profile selected. Opening setup to import one.")
         }
+
+        if let preflightError = connectPreflightError() {
+            return openSetupWithError(preflightError)
+        }
+
+        tunnel.stop()
+        statusMessage = .init(text: "Reconnecting to \(profile.name)...", kind: .info)
         Task {
             do {
                 try await Task.sleep(nanoseconds: 350_000_000)
                 try await tunnel.installAndStart(profile: profile, preferences: PreferencesStore.shared)
+                tunnel.lastError = nil
+                router.commandPaletteOpen = false
             } catch {
                 tunnel.lastError = error.localizedDescription
+                statusMessage = .init(text: error.localizedDescription, kind: .error)
             }
         }
+        return .stayOpen
+    }
+
+    private func connectPreflightError() -> String? {
+        switch sysExt.state {
+        case .activated:
+            return nil
+        case .failed(let message):
+            return "System extension is not ready: \(message). Opening setup."
+        case .awaitingUserApproval:
+            return "System extension is waiting for approval. Opening setup."
+        case .requestPending:
+            return "System extension install is still pending. Opening setup."
+        case .notInstalled:
+            return "System extension is not installed yet. Opening setup."
+        }
+    }
+
+    private func openSetupWithError(_ message: String) -> PaletteActionResult {
+        tunnel.lastError = message
+        statusMessage = .init(text: message, kind: .error)
+        openWindow(id: "welcome")
+        NSApp.activate(ignoringOtherApps: true)
+        return .close
     }
 
     private func fuzzyScore(query: String, item: PaletteItem) -> Int? {

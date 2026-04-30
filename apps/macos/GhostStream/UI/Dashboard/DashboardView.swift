@@ -485,10 +485,9 @@ public struct DashboardView: View {
             tunnel.stop()
             return
         }
-        // Missing profile or sys-ext not activated → open the wizard.
-        if profiles.activeProfile == nil || sysExt.state != .activated {
+        if let preflightError = connectPreflightError() {
             dashLog.info("toggle → prerequisites missing, opening Welcome wizard")
-            tunnel.lastError = nil
+            tunnel.lastError = preflightError
             openWindow(id: "welcome")
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -501,6 +500,25 @@ public struct DashboardView: View {
         } catch {
             dashLog.error("installAndStart failed: \(error.localizedDescription, privacy: .public)")
             tunnel.lastError = error.localizedDescription
+        }
+    }
+
+    private func connectPreflightError() -> String? {
+        if profiles.activeProfile == nil {
+            return "No VPN profile selected. Opening setup to import one."
+        }
+
+        switch sysExt.state {
+        case .activated:
+            return nil
+        case .failed(let message):
+            return "System extension is not ready: \(message). Opening setup."
+        case .awaitingUserApproval:
+            return "System extension is waiting for approval. Opening setup."
+        case .requestPending:
+            return "System extension install is still pending. Opening setup."
+        case .notInstalled:
+            return "System extension is not installed yet. Opening setup."
         }
     }
 

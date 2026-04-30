@@ -34,6 +34,14 @@ enum AppTab: Int, CaseIterable, Hashable {
         case .settings:  return "slider.horizontal.3"
         }
     }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .dashboard: return "Stream"
+        case .logs:      return "Tail"
+        case .settings:  return "Setup"
+        }
+    }
 }
 
 /// Root of the app UI. Custom bottom-nav pill over a `ZStack` of tab
@@ -54,12 +62,15 @@ struct AppNavigation: View {
                 tabContent(.dashboard)
                     .opacity(selection == .dashboard ? 1 : 0)
                     .allowsHitTesting(selection == .dashboard)
+                    .accessibilityHidden(selection != .dashboard)
                 tabContent(.logs)
                     .opacity(selection == .logs ? 1 : 0)
                     .allowsHitTesting(selection == .logs)
+                    .accessibilityHidden(selection != .logs)
                 tabContent(.settings)
                     .opacity(selection == .settings ? 1 : 0)
                     .allowsHitTesting(selection == .settings)
+                    .accessibilityHidden(selection != .settings)
             }
 
             // Gradient fade behind the nav so scrolling content doesn't
@@ -152,6 +163,8 @@ private struct GhostBottomNav: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(tab.accessibilityLabel)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 }
 
