@@ -344,7 +344,6 @@ jobs:
       - name: Archive and export Developer ID app
         env:
           GHOSTSTREAM_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID || 'UPG896A272' }}
-          GHOSTSTREAM_CODE_SIGN_IDENTITY: Developer ID Application
         run: cd apps/macos && ./scripts/build-release.sh
 
       - name: Notarize exported app

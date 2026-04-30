@@ -3,7 +3,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TEAM_ID="${GHOSTSTREAM_DEVELOPMENT_TEAM:-UPG896A272}"
-SIGN_IDENTITY="${GHOSTSTREAM_CODE_SIGN_IDENTITY:-Developer ID Application}"
 CODE_SIGN_STYLE="${GHOSTSTREAM_CODE_SIGN_STYLE:-Automatic}"
 CONFIGURATION="${GHOSTSTREAM_CONFIGURATION:-Release}"
 DESTINATION="${GHOSTSTREAM_DESTINATION:-generic/platform=macOS}"
@@ -56,7 +55,6 @@ xcodebuild -project GhostStream.xcodeproj \
            archive \
            DEVELOPMENT_TEAM="$TEAM_ID" \
            CODE_SIGN_STYLE="$CODE_SIGN_STYLE" \
-           CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
            CODE_SIGNING_ALLOWED=YES \
            CODE_SIGNING_REQUIRED=YES \
            ONLY_ACTIVE_ARCH=NO
