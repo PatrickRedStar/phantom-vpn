@@ -73,10 +73,10 @@ struct DashboardView: View {
             let nextDelay = stateMgr.statusFrame.reconnectNextDelaySecs.map { Int($0) } ?? 0
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("RECONNECTING")
+                    Text(L("native.dashboard.reconnecting").uppercased())
                         .gsFont(.labelMono)
                         .foregroundStyle(C.warn)
-                    Text("Попытка \(attempt) · след. через \(nextDelay)с")
+                    Text(String(format: L("native.dashboard.reconnect.detail.format"), attempt, nextDelay))
                         .gsFont(.kvValue)
                         .foregroundStyle(C.textDim)
                 }
@@ -215,7 +215,7 @@ struct DashboardView: View {
             activeProfileName: profiles.activeProfile?.name,
             timerText: vm.timerText,
             routeIsDirect: routeIsDirect,
-            subscriptionText: vm.subscriptionText
+            subscriptionText: subscriptionSummaryText
         )
     }
 
@@ -236,7 +236,7 @@ struct DashboardView: View {
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
 
-                Text(profiles.activeProfile?.serverAddr ?? "No endpoint selected")
+                Text(profiles.activeProfile?.serverAddr ?? L("native.dashboard.no.endpoint"))
                     .font(.footnote)
                     .foregroundStyle(C.textDim)
                     .lineLimit(1)
@@ -247,13 +247,13 @@ struct DashboardView: View {
 
     private var metricsCard: some View {
         NativeSectionCard {
-            NativeRow(title: "Download", subtitle: rxValueText, action: nil) {
+            NativeRow(title: L("native.dashboard.download"), subtitle: rxValueText, action: nil) {
                 Text("RX")
                     .foregroundStyle(C.signal)
                     .font(.caption.weight(.bold))
             }
             HairlineDivider()
-            NativeRow(title: "Upload", subtitle: txValueText, action: nil) {
+            NativeRow(title: L("native.dashboard.upload"), subtitle: txValueText, action: nil) {
                 Text("TX")
                     .foregroundStyle(C.warn)
                     .font(.caption.weight(.bold))
@@ -263,19 +263,19 @@ struct DashboardView: View {
 
     private var detailsCard: some View {
         NativeSectionCard {
-            NativeRow(title: "Identity", subtitle: profiles.activeProfile?.name ?? "No profile", action: nil) {
+            NativeRow(title: L("kv_identity"), subtitle: profiles.activeProfile?.name ?? L("native.dashboard.no.profile"), action: nil) {
                 EmptyView()
             }
             HairlineDivider()
-            NativeRow(title: "Route", subtitle: dashboardPresentation.routeText, action: nil) {
+            NativeRow(title: L("kv_route"), subtitle: dashboardPresentation.routeText, action: nil) {
                 EmptyView()
             }
             HairlineDivider()
-            NativeRow(title: "Assigned address", subtitle: profiles.activeProfile?.tunAddr ?? "—", action: nil) {
+            NativeRow(title: L("kv_assigned"), subtitle: profiles.activeProfile?.tunAddr ?? "—", action: nil) {
                 EmptyView()
             }
             HairlineDivider()
-            NativeRow(title: "Subscription", subtitle: dashboardPresentation.subscriptionText, action: nil) {
+            NativeRow(title: L("kv_subscription"), subtitle: dashboardPresentation.subscriptionText, action: nil) {
                 EmptyView()
             }
         }
@@ -291,10 +291,10 @@ struct DashboardView: View {
     private var headerMetaText: String {
         switch vm.state {
         case .connected(_, let name): return "\(name) · \(vm.timerText)"
-        case .connecting:             return "connecting"
-        case .disconnecting:          return "disconnecting"
-        case .error:                  return "error"
-        case .disconnected:           return "standby"
+        case .connecting:             return L("native.dashboard.meta.connecting")
+        case .disconnecting:          return L("native.dashboard.meta.disconnecting")
+        case .error:                  return L("native.dashboard.meta.error")
+        case .disconnected:           return L("native.dashboard.meta.standby")
         }
     }
 
@@ -327,6 +327,15 @@ struct DashboardView: View {
         guard let profile = profiles.activeProfile else { return true }
         let relayEnabled: Bool = reflectedProfileValue("relayEnabled", in: profile) ?? false
         return !relayEnabled
+    }
+
+    private var subscriptionSummaryText: String? {
+        guard let expiresAt = profiles.activeProfile?.cachedExpiresAt else { return nil }
+        let remaining = expiresAt - Int64(Date().timeIntervalSince1970)
+        if remaining <= 0 { return L("dashboard.subscription.expired") }
+        let days = remaining / 86_400
+        let hours = (remaining % 86_400) / 3_600
+        return String(format: L("native.dashboard.subscription.remaining.format"), days, hours)
     }
 
     private func handlePrimaryAction() {

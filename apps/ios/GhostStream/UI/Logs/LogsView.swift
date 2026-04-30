@@ -82,14 +82,18 @@ struct LogsView: View {
     private var metaText: String {
         let n = vm.allLogs.count
         if n >= 1000 {
-            return "\(headerStateText) · \(String(format: "%.1fk", Double(n) / 1000)) LINES"
+            return String(
+                format: L("native.logs.lines.format"),
+                headerStateText,
+                String(format: "%.1fk", Double(n) / 1000)
+            )
         }
-        return "\(headerStateText) · \(n) LINES"
+        return String(format: L("native.logs.lines.format"), headerStateText, "\(n)")
     }
 
     private var headerStateText: String {
-        if vm.hasIpcError { return "IPC ERROR" }
-        return isLive ? "LIVE" : vm.statusLabel
+        if vm.hasIpcError { return L("native.logs.ipc.error") }
+        return isLive ? L("native.logs.live") : vm.statusLabel
     }
 
     private var isLive: Bool {

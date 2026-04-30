@@ -69,15 +69,15 @@ public struct CreateClientSheet: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("ADMIN")
+                        Text(L("admin.client.is.admin").uppercased())
                             .gsFont(.labelMono)
                             .foregroundColor(C.textFaint)
-                        Text("is_admin")
+                        Text(L("admin.client.is.admin.subtitle"))
                             .gsFont(.body)
                             .foregroundColor(C.textDim)
                     }
                     Spacer()
-                    GhostToggle(isOn: $isAdmin, onLabel: "Admin")
+                    GhostToggle(isOn: $isAdmin, onLabel: L("profile.role.admin"))
                 }
 
                 if let errorMessage {

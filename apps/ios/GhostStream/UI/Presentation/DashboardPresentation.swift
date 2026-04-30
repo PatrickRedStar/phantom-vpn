@@ -25,56 +25,62 @@ enum DashboardPresentation {
         routeIsDirect: Bool,
         subscriptionText: String?
     ) -> DashboardPresentationResult {
-        let profileName = activeProfileName ?? "No profile"
-        let route = routeIsDirect ? "Direct" : "Relay"
-        let subscription = subscriptionText ?? "No subscription data"
+        let profileName = activeProfileName ?? L("native.dashboard.no.profile", "No profile")
+        let route = routeIsDirect
+            ? L("native.dashboard.direct", "Direct")
+            : L("native.dashboard.relay", "Relay")
+        let subscription = subscriptionText ?? L("native.dashboard.no.subscription", "No subscription data")
 
         switch state {
         case .connected:
             return DashboardPresentationResult(
-                title: "Protected",
+                title: L("native.dashboard.protected", "Protected"),
                 subtitle: "\(profileName) · \(timerText)",
-                primaryActionTitle: "Disconnect",
+                primaryActionTitle: L("action_disconnect", "Disconnect"),
                 tone: .success,
                 routeText: route,
                 subscriptionText: subscription
             )
         case .connecting:
             return DashboardPresentationResult(
-                title: "Connecting",
+                title: L("native.dashboard.connecting", "Connecting"),
                 subtitle: profileName,
-                primaryActionTitle: "Stop attempt",
+                primaryActionTitle: L("native.dashboard.stop.attempt", "Stop attempt"),
                 tone: .warning,
                 routeText: route,
                 subscriptionText: subscription
             )
         case .disconnecting:
             return DashboardPresentationResult(
-                title: "Disconnecting",
+                title: L("native.dashboard.disconnecting", "Disconnecting"),
                 subtitle: profileName,
-                primaryActionTitle: "Disconnect",
+                primaryActionTitle: L("action_disconnect", "Disconnect"),
                 tone: .warning,
                 routeText: route,
                 subscriptionText: subscription
             )
         case .error(let message):
             return DashboardPresentationResult(
-                title: "Connection failed",
+                title: L("native.dashboard.failed", "Connection failed"),
                 subtitle: message,
-                primaryActionTitle: "Retry",
+                primaryActionTitle: L("action_retry", "Retry"),
                 tone: .danger,
                 routeText: route,
                 subscriptionText: subscription
             )
         case .disconnected:
             return DashboardPresentationResult(
-                title: "Standby",
-                subtitle: activeProfileName == nil ? "Add a profile to start VPN" : profileName,
-                primaryActionTitle: "Connect",
+                title: L("native.dashboard.standby", "Standby"),
+                subtitle: activeProfileName == nil ? L("native.dashboard.add.profile", "Add a profile to start VPN") : profileName,
+                primaryActionTitle: L("action_connect", "Connect"),
                 tone: .neutral,
                 routeText: route,
                 subscriptionText: subscription
             )
         }
+    }
+
+    private static func L(_ key: String, _ fallback: String) -> String {
+        NSLocalizedString(key, value: fallback, comment: "")
     }
 }

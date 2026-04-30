@@ -263,7 +263,7 @@ struct ClientRowView: View {
 struct AdminBadge: View {
     @Environment(\.gsColors) private var C
     var body: some View {
-        Text("ADMIN")
+        Text(L("profile.role.admin").uppercased())
             .gsFont(.labelMonoSmall)
             .foregroundColor(C.bg)
             .padding(.horizontal, 5)
@@ -278,7 +278,7 @@ struct AdminBadge: View {
 struct DisabledBadge: View {
     @Environment(\.gsColors) private var C
     var body: some View {
-        Text("OFF")
+        Text(L("admin.tag.off").uppercased())
             .gsFont(.labelMonoSmall)
             .foregroundColor(C.textDim)
             .padding(.horizontal, 5)
@@ -313,7 +313,7 @@ enum AdminFormat {
     static func subscriptionShort(_ expiresAt: Int64?) -> String {
         guard let exp = expiresAt else { return "∞" }
         let delta = exp - Int64(Date().timeIntervalSince1970)
-        if delta <= 0 { return "EXPIRED" }
+        if delta <= 0 { return L("admin.subscription.expired").uppercased() }
         let days = Int(delta / 86_400)
         if days >= 2 { return "exp \(days)d" }
         let hours = Int(delta / 3_600)

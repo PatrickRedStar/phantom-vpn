@@ -92,16 +92,16 @@ public struct ClientDetailView: View {
                 .disabled(vm.loading)
             }
         }
-        .confirmationDialog("DELETE CLIENT?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("DELETE", role: .destructive) {
+        .confirmationDialog(L("admin.client.delete.title"), isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button(L("general.delete").uppercased(), role: .destructive) {
                 Task {
                     await vm.delete()
                     if vm.error == nil { dismiss() }
                 }
             }
-            Button("CANCEL", role: .cancel) {}
+            Button(L("general.cancel").uppercased(), role: .cancel) {}
         } message: {
-            Text("Клиент «\(vm.client.name)» будет удалён вместе с сертификатами. Действие необратимо.")
+            Text(String(format: L("admin.client.delete.message"), vm.client.name))
         }
         .sheet(isPresented: $showSetDaysSheet) {
             SetSubscriptionDaysSheet(
@@ -164,14 +164,14 @@ public struct ClientDetailView: View {
         GhostCard {
             VStack(spacing: 12) {
                 HStack(spacing: 12) {
-                    Text("ENABLED")
+                    Text(L("admin.client.enabled").uppercased())
                         .gsFont(.labelMono)
                         .foregroundColor(C.textDim)
                     Spacer()
                     GhostToggle(isOn: Binding(
                         get: { vm.client.enabled },
                         set: { newValue in Task { await vm.setEnabled(newValue) } }
-                    ), onLabel: "ENABLED")
+                    ), onLabel: L("admin.client.enabled"))
                 }
                 .opacity(vm.mutating ? 0.5 : 1)
                 .allowsHitTesting(!vm.mutating)
@@ -179,14 +179,14 @@ public struct ClientDetailView: View {
                 Divider().background(C.hair)
 
                 HStack(spacing: 12) {
-                    Text("IS ADMIN")
+                    Text(L("admin.client.is.admin").uppercased())
                         .gsFont(.labelMono)
                         .foregroundColor(C.textDim)
                     Spacer()
                     GhostToggle(isOn: Binding(
                         get: { vm.client.isAdmin },
                         set: { newValue in Task { await vm.setAdmin(newValue) } }
-                    ), onLabel: "IS ADMIN")
+                    ), onLabel: L("admin.client.is.admin"))
                 }
                 .opacity(vm.mutating ? 0.5 : 1)
                 .allowsHitTesting(!vm.mutating)
@@ -199,13 +199,13 @@ public struct ClientDetailView: View {
     private var statsCard: some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("STATS")
+                Text(L("admin.client.stats").uppercased())
                     .gsFont(.labelMono)
                     .foregroundColor(C.textDim)
-                kvRow("RX TOTAL",  AdminFormat.bytes(vm.client.bytesRx))
-                kvRow("TX TOTAL",  AdminFormat.bytes(vm.client.bytesTx))
-                kvRow("LAST SEEN", AdminFormat.lastSeen(vm.client.lastSeenSecs))
-                kvRow("CREATED",   vm.client.createdAt)
+                kvRow(L("admin.client.rx.total"), AdminFormat.bytes(vm.client.bytesRx))
+                kvRow(L("admin.client.tx.total"), AdminFormat.bytes(vm.client.bytesTx))
+                kvRow(L("admin.client.last.seen"), AdminFormat.lastSeen(vm.client.lastSeenSecs))
+                kvRow(L("admin.client.created"), vm.client.createdAt)
             }
         }
     }
@@ -215,38 +215,38 @@ public struct ClientDetailView: View {
     private var subscriptionCard: some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 12) {
-                Text("SUBSCRIPTION")
+                Text(L("native.profile.subscription").uppercased())
                     .gsFont(.labelMono)
                     .foregroundColor(C.textDim)
 
                 if let exp = vm.client.expiresAt {
-                    kvRow("EXPIRES",  AdminFormat.absoluteDate(exp))
-                    kvRow("REMAINING", AdminFormat.subscriptionLong(exp))
+                    kvRow(L("admin.client.expires"), AdminFormat.absoluteDate(exp))
+                    kvRow(L("admin.client.remaining"), AdminFormat.subscriptionLong(exp))
                 } else {
-                    kvRow("EXPIRES", "Бессрочно")
+                    kvRow(L("admin.client.expires"), L("admin.subscription.perpetual"))
                 }
 
                 // Action buttons — wrap so they flow on narrow screens.
                 VStack(spacing: 8) {
                     HStack(spacing: 8) {
-                        subscriptionActionButton(title: "+30 ДНЕЙ", tint: C.signal) {
+                        subscriptionActionButton(title: L("admin.subscription.extend30").uppercased(), tint: C.signal) {
                             Task { await vm.subscription(action: "extend", days: 30) }
                         }
-                        subscriptionActionButton(title: "+90 ДНЕЙ", tint: C.signal) {
+                        subscriptionActionButton(title: L("admin.subscription.extend90").uppercased(), tint: C.signal) {
                             Task { await vm.subscription(action: "extend", days: 90) }
                         }
                     }
                     HStack(spacing: 8) {
-                        subscriptionActionButton(title: "ВЫБРАТЬ…", tint: C.bone) {
+                        subscriptionActionButton(title: L("admin.subscription.custom").uppercased(), tint: C.bone) {
                             customDaysText = "30"
                             showSetDaysSheet = true
                         }
-                        subscriptionActionButton(title: "БЕССРОЧНО", tint: C.bone) {
+                        subscriptionActionButton(title: L("admin.subscription.perpetual").uppercased(), tint: C.bone) {
                             Task { await vm.subscription(action: "cancel", days: nil) }
                         }
                     }
                     subscriptionActionButton(
-                        title: "REVOKE NOW",
+                        title: L("admin.subscription.revoke.now").uppercased(),
                         tint: C.bg,
                         bg: C.danger,
                         fullWidth: true
@@ -291,12 +291,12 @@ public struct ClientDetailView: View {
     private var trafficChartCard: some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 8) {
-                Text("TRAFFIC")
+                Text(L("admin.client.traffic").uppercased())
                     .gsFont(.labelMono)
                     .foregroundColor(C.textDim)
 
                 if vm.stats.isEmpty {
-                    Text(vm.loading ? "LOADING…" : "NO DATA")
+                    Text(vm.loading ? L("general.loading").uppercased() : L("general.no.data").uppercased())
                         .gsFont(.labelMonoSmall)
                         .foregroundColor(C.textFaint)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -351,12 +351,12 @@ public struct ClientDetailView: View {
                 }
             }
         } else {
-            Text("Требуется iOS 16+")
+            Text(L("admin.client.ios16.required"))
                 .gsFont(.labelMonoSmall)
                 .foregroundColor(C.textFaint)
         }
         #else
-        Text("Charts framework unavailable")
+        Text(L("admin.client.charts.unavailable"))
             .gsFont(.labelMonoSmall)
             .foregroundColor(C.textFaint)
         #endif
@@ -367,12 +367,12 @@ public struct ClientDetailView: View {
     private var logsCard: some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 8) {
-                Text("DESTINATIONS (\(vm.logs.count))")
+                Text(String(format: L("admin.client.destinations.count"), vm.logs.count))
                     .gsFont(.labelMono)
                     .foregroundColor(C.textDim)
 
                 if vm.logs.isEmpty {
-                    Text(vm.loading ? "LOADING…" : "NO DATA")
+                    Text(vm.loading ? L("general.loading").uppercased() : L("general.no.data").uppercased())
                         .gsFont(.labelMonoSmall)
                         .foregroundColor(C.textFaint)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -427,11 +427,11 @@ public struct ClientDetailView: View {
             Task {
                 if let s = await vm.getConnString() {
                     UIPasteboard.general.string = s
-                    showToast("Conn-string скопирован")
+                    showToast(L("admin.client.conn.copied"))
                 }
             }
         } label: {
-            Text("КОПИРОВАТЬ CONN-STRING")
+            Text(L("admin.client.copy.conn").uppercased())
                 .gsFont(.fabText)
                 .foregroundColor(C.bone)
                 .frame(maxWidth: .infinity)
@@ -449,7 +449,7 @@ public struct ClientDetailView: View {
         Button {
             showDeleteConfirm = true
         } label: {
-            Text("DELETE CLIENT")
+            Text(L("admin.client.delete.action").uppercased())
                 .gsFont(.fabText)
                 .foregroundColor(C.bg)
                 .frame(maxWidth: .infinity)
@@ -505,24 +505,28 @@ private struct SetSubscriptionDaysSheet: View {
                     TextField("30", text: $daysText)
                         .keyboardType(.numberPad)
                 } footer: {
-                    Text("Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.")
+                    Text(L("admin.subscription.set.footer"))
                 }
             }
             .scrollContentBackground(.hidden)
             .background(C.bg.ignoresSafeArea())
-            .navigationTitle("SET SUBSCRIPTION")
+            .navigationTitle(L("admin.subscription.set.title"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("CANCEL", action: onCancel)
+                    Button(L("general.cancel").uppercased(), action: onCancel)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("OK", action: onSave)
+                    Button(L("general.ok"), action: onSave)
                         .disabled(Int(daysText).map { $0 <= 0 } ?? true)
                 }
             }
         }
     }
+}
+
+private func L(_ key: String) -> String {
+    NSLocalizedString(key, comment: "")
 }
 
 // MARK: - Previews
