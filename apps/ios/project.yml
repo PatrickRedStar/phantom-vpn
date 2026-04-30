@@ -66,6 +66,13 @@ targets:
           - instrument_serif_italic.ttf
     entitlements:
       path: GhostStream/GhostStream.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.com.ghoststream.vpn
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.com.ghoststream.vpn
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn
@@ -83,10 +90,6 @@ targets:
         product: PhantomKit
       - package: PhantomKit
         product: PhantomUI
-      - framework: Frameworks/PhantomCore.xcframework
-        embed: true
-        codeSign: true
-        optional: true
       - sdk: NetworkExtension.framework
       - sdk: AVFoundation.framework
 
@@ -107,6 +110,13 @@ targets:
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
     entitlements:
       path: PacketTunnelProvider/PacketTunnelProvider.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.com.ghoststream.vpn
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)group.com.ghoststream.vpn
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn.PacketTunnelProvider
@@ -121,7 +131,21 @@ targets:
         product: PhantomKit
       - package: PhantomKit
         product: PhantomUI
-      - framework: Frameworks/PhantomCore.xcframework
-        embed: false
-        optional: true
       - sdk: NetworkExtension.framework
+
+  GhostStreamTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: GhostStreamTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn.tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: GhostStream
+      - package: PhantomKit
+        product: PhantomKit
+      - package: PhantomKit
+        product: PhantomUI

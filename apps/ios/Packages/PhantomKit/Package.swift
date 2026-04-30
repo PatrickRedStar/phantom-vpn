@@ -13,8 +13,13 @@ let package = Package(
         .library(name: "PhantomUI",  targets: ["PhantomUI"]),
     ],
     targets: [
+        .binaryTarget(
+            name: "PhantomCore",
+            path: "../../Frameworks/PhantomCore.xcframework"
+        ),
         .target(
             name: "PhantomKit",
+            dependencies: ["PhantomCore"],
             path: "Sources/PhantomKit",
             resources: [
                 .process("Resources")
@@ -41,7 +46,7 @@ let package = Package(
         ),
         .testTarget(
             name: "PhantomKitTests",
-            dependencies: ["PhantomKit", "PhantomCoreTestStubs"],
+            dependencies: ["PhantomKit"],
             path: "Tests/PhantomKitTests",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
