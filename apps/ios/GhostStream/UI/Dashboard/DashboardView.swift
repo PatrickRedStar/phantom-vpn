@@ -30,29 +30,24 @@ struct DashboardView: View {
                 header
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        stateSection
-                        timerRow
+                    VStack(alignment: .leading, spacing: 16) {
+                        nativeStatusCard
                         reconnectBanner
                         emptyHint
                         preflightBanner
+                        metricsCard
                         scopeCard
                         muxCard
-                        profileKvCard
-                        VpnConnectFab(
-                            state: vm.state,
-                            onStart: {
-                                vm.start(
-                                    profile: profiles.activeProfile,
-                                    preferences: prefs
-                                )
-                            },
-                            onStop: vm.stop
+                        detailsCard
+                        NativeBottomAction(
+                            title: dashboardPresentation.primaryActionTitle,
+                            tone: dashboardPresentation.tone,
+                            action: handlePrimaryAction
                         )
-                        Spacer(minLength: 120) // bottom nav clearance
+                        Spacer(minLength: 88)
                     }
                     .padding(.horizontal, 18)
-                    .padding(.top, 16)
+                    .padding(.top, 12)
                 }
             }
         }
@@ -68,39 +63,6 @@ struct DashboardView: View {
             pulse: shouldPulse(vm.state),
             pulseColor: pulseColor(for: vm.state, colors: C)
         )
-    }
-
-    private var stateSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(L("lbl_tunnel_state").uppercased())
-                .gsFont(.labelMono)
-                .foregroundStyle(C.textFaint)
-
-            let (prefix, accent, accentColor) = stateHeadline(for: vm.state, C: C)
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(prefix)
-                    .gsFont(.stateHeadline)
-                    .foregroundStyle(C.bone)
-                Text(accent)
-                    .gsFont(.stateHeadline)
-                    .foregroundStyle(accentColor)
-            }
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
-            .animation(.easeInOut(duration: 0.22), value: stateKey(vm.state))
-        }
-    }
-
-    private var timerRow: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(vm.timerText)
-                .gsFont(.ticker)
-                .foregroundStyle(isConnected ? C.bone : C.textFaint)
-            Spacer()
-            Text(L("lbl_session").uppercased())
-                .gsFont(.labelMonoSmall)
-                .foregroundStyle(C.textFaint)
-        }
     }
 
     /// Reconnect banner — visible when `statusFrame.state == .reconnecting`.
@@ -247,49 +209,75 @@ struct DashboardView: View {
         }
     }
 
-    private var profileKvCard: some View {
-        let route = routeInfo(for: profiles.activeProfile)
-        return GhostCard {
-            VStack(spacing: 0) {
-                kvRow(L("kv_identity").uppercased(), profiles.activeProfile?.name ?? "—", color: C.bone)
-                dashHair
-                kvRow(L("kv_route").uppercased(), route.value, color: route.color)
-                dashHair
-                kvRow(L("kv_assigned").uppercased(), profiles.activeProfile?.tunAddr ?? "—", color: C.bone)
-                dashHair
-                kvRow(
-                    L("kv_subscription").uppercased(),
-                    vm.subscriptionText ?? "—",
-                    color: subscriptionColor
-                )
+    private var dashboardPresentation: DashboardPresentationResult {
+        DashboardPresentation.make(
+            state: vm.state,
+            activeProfileName: profiles.activeProfile?.name,
+            timerText: vm.timerText,
+            routeIsDirect: routeIsDirect,
+            subscriptionText: vm.subscriptionText
+        )
+    }
+
+    private var nativeStatusCard: some View {
+        GhostCard(active: isConnected) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    NativeStatusPill(text: dashboardPresentation.title, tone: dashboardPresentation.tone)
+                    Spacer()
+                    Text(vm.timerText)
+                        .font(.system(.callout, design: .monospaced).weight(.semibold))
+                        .foregroundStyle(isConnected ? C.bone : C.textFaint)
+                }
+
+                Text(dashboardPresentation.subtitle)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(C.bone)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+
+                Text(profiles.activeProfile?.serverAddr ?? "No endpoint selected")
+                    .font(.footnote)
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
         }
     }
 
-    private var dashHair: some View {
-        // Poor-man's dashed hairline: dot-pattern overlay.
-        Rectangle()
-            .fill(C.hair)
-            .frame(height: 1)
-            .mask(
-                HStack(spacing: 4) {
-                    ForEach(0..<60, id: \.self) { _ in
-                        Rectangle().frame(width: 4, height: 1)
-                    }
-                }
-            )
-            .padding(.vertical, 6)
+    private var metricsCard: some View {
+        NativeSectionCard {
+            NativeRow(title: "Download", subtitle: rxValueText, action: nil) {
+                Text("RX")
+                    .foregroundStyle(C.signal)
+                    .font(.caption.weight(.bold))
+            }
+            HairlineDivider()
+            NativeRow(title: "Upload", subtitle: txValueText, action: nil) {
+                Text("TX")
+                    .foregroundStyle(C.warn)
+                    .font(.caption.weight(.bold))
+            }
+        }
     }
 
-    private func kvRow(_ label: String, _ value: String, color: Color) -> some View {
-        HStack {
-            Text(label)
-                .gsFont(.labelMono)
-                .foregroundStyle(C.textFaint)
-            Spacer()
-            Text(value)
-                .gsFont(.kvValue)
-                .foregroundStyle(color)
+    private var detailsCard: some View {
+        NativeSectionCard {
+            NativeRow(title: "Identity", subtitle: profiles.activeProfile?.name ?? "No profile", action: nil) {
+                EmptyView()
+            }
+            HairlineDivider()
+            NativeRow(title: "Route", subtitle: dashboardPresentation.routeText, action: nil) {
+                EmptyView()
+            }
+            HairlineDivider()
+            NativeRow(title: "Assigned address", subtitle: profiles.activeProfile?.tunAddr ?? "—", action: nil) {
+                EmptyView()
+            }
+            HairlineDivider()
+            NativeRow(title: "Subscription", subtitle: dashboardPresentation.subscriptionText, action: nil) {
+                EmptyView()
+            }
         }
     }
 
@@ -322,12 +310,6 @@ struct DashboardView: View {
         return "TX \(formatMbps(rateBps: bps))"
     }
 
-    private var subscriptionColor: Color {
-        guard let text = vm.subscriptionText else { return C.bone }
-        if text.contains("истекл") { return C.danger }
-        return C.signal
-    }
-
     private func formatMbps(rateBps: Double) -> String {
         // bytes/sec → Mbps = bytes * 8 / 1e6
         let mbps = rateBps * 8.0 / 1_000_000.0
@@ -341,45 +323,19 @@ struct DashboardView: View {
         }
     }
 
-    /// Cheap equality key for AnimatedContent-style transitions.
-    private func stateKey(_ s: VpnState) -> Int {
-        switch s {
-        case .disconnected:  return 0
-        case .connecting:    return 1
-        case .connected:     return 2
-        case .disconnecting: return 3
-        case .error:         return 4
-        }
-    }
-
-    /// Headline text split into (prefix in bone, accent word, accent
-    /// colour) matching the spec copy.
-    private func stateHeadline(
-        for state: VpnState,
-        C: GsColorSet
-    ) -> (String, String, Color) {
-        switch state {
-        case .connected:
-            return ("", "\(L("state_transmitting_verb").uppercased())·", C.signal)
-        case .connecting, .disconnecting:
-            return ("", "\(L("state_tuning_verb").uppercased())···", C.warn)
-        case .error:
-            return ("", "\(L("state_lost_verb").uppercased()) \(L("state_signal_word").uppercased())·", C.danger)
-        case .disconnected:
-            return ("", "\(L("state_standby_verb").uppercased())·", C.textDim)
-        }
-    }
-
-    private func routeInfo(for profile: VpnProfile?) -> (value: String, color: Color) {
-        guard let profile else { return (L("kv_route_direct").lowercased(), C.bone) }
+    private var routeIsDirect: Bool {
+        guard let profile = profiles.activeProfile else { return true }
         let relayEnabled: Bool = reflectedProfileValue("relayEnabled", in: profile) ?? false
-        guard relayEnabled else { return (L("kv_route_direct").lowercased(), C.bone) }
+        return !relayEnabled
+    }
 
-        let relayAddr: String? = reflectedProfileValue("relayAddr", in: profile)
-        if let relayAddr, !relayAddr.isEmpty {
-            return ("\(L("kv_route_relay").lowercased()) · \(relayAddr)", C.signal)
+    private func handlePrimaryAction() {
+        switch vm.state {
+        case .connected, .connecting, .disconnecting:
+            vm.stop()
+        case .disconnected, .error:
+            vm.start(profile: profiles.activeProfile, preferences: prefs)
         }
-        return (L("kv_route_relay").lowercased(), C.signal)
     }
 
     private func reflectedProfileValue<T>(_ label: String, in profile: VpnProfile) -> T? {
