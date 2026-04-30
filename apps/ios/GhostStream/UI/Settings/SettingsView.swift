@@ -88,20 +88,6 @@ public struct SettingsView: View {
                 }
             }
 
-            if showAddDialog {
-                AddProfileDialog(
-                    onPaste: {
-                        showAddDialog = false
-                        showPasteDialog = true
-                    },
-                    onScan: {
-                        showAddDialog = false
-                        showQRSheet = true
-                    },
-                    onDismiss: { showAddDialog = false }
-                )
-            }
-
             if showPasteDialog {
                 PasteConnStringDialog(
                     text: $pasteDraft,
@@ -111,34 +97,6 @@ public struct SettingsView: View {
                         showPasteDialog = false
                     },
                     onDismiss: { showPasteDialog = false }
-                )
-            }
-
-            if showDNSDialog {
-                DNSDialog(
-                    draft: $dnsDraft,
-                    onSave: {
-                        model.setDnsServers(dnsDraft)
-                        showDNSDialog = false
-                    },
-                    onDismiss: {
-                        dnsDraft = model.dnsServers
-                        showDNSDialog = false
-                    }
-                )
-            }
-
-            if showSplitDialog {
-                SplitTunnelDialog(
-                    splitOn: $splitOn,
-                    onSave: {
-                        model.setSplitRouting(splitOn)
-                        showSplitDialog = false
-                    },
-                    onDismiss: {
-                        splitOn = model.splitRouting
-                        showSplitDialog = false
-                    }
                 )
             }
 
@@ -153,26 +111,6 @@ public struct SettingsView: View {
                     }
                 }
             }
-
-            if let deleteProfileId {
-                GhostDialogFrame(title: L("settings.delete.profile.title"), onDismiss: { self.deleteProfileId = nil }) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(L("settings.delete.profile.message"))
-                            .gsFont(.body)
-                            .foregroundColor(C.textDim)
-                            .fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: 10) {
-                            GhostButton(L("general.cancel"), variant: .secondary) {
-                                self.deleteProfileId = nil
-                            }
-                            GhostButton(L("general.delete")) {
-                                model.deleteProfile(id: deleteProfileId)
-                                self.deleteProfileId = nil
-                            }
-                        }
-                    }
-                }
-            }
         }
         .task {
             hydrate()
@@ -180,6 +118,31 @@ public struct SettingsView: View {
         }
         .refreshable {
             await model.refreshPings()
+        }
+        .confirmationDialog(L("settings.add.profile"), isPresented: $showAddDialog, titleVisibility: .visible) {
+            Button(L("settings.scan.qr")) {
+                showQRSheet = true
+            }
+            Button(L("settings.paste.connection")) {
+                showPasteDialog = true
+            }
+            Button(L("general.cancel"), role: .cancel) {}
+        }
+        .confirmationDialog(L("settings.delete.profile.title"), isPresented: Binding(
+            get: { deleteProfileId != nil },
+            set: { if !$0 { deleteProfileId = nil } }
+        ), titleVisibility: .visible) {
+            Button(L("general.delete"), role: .destructive) {
+                if let deleteProfileId {
+                    model.deleteProfile(id: deleteProfileId)
+                    self.deleteProfileId = nil
+                }
+            }
+            Button(L("general.cancel"), role: .cancel) {
+                deleteProfileId = nil
+            }
+        } message: {
+            Text(L("settings.delete.profile.message"))
         }
         .sheet(isPresented: $showQRSheet) {
             QRScannerView(
@@ -190,6 +153,34 @@ public struct SettingsView: View {
                 onCancel: { showQRSheet = false }
             )
             .ignoresSafeArea()
+        }
+        .sheet(isPresented: $showDNSDialog) {
+            DNSDialog(
+                draft: $dnsDraft,
+                onSave: {
+                    model.setDnsServers(dnsDraft)
+                    showDNSDialog = false
+                },
+                onDismiss: {
+                    dnsDraft = model.dnsServers
+                    showDNSDialog = false
+                }
+            )
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showSplitDialog) {
+            SplitTunnelDialog(
+                splitOn: $splitOn,
+                onSave: {
+                    model.setSplitRouting(splitOn)
+                    showSplitDialog = false
+                },
+                onDismiss: {
+                    splitOn = model.splitRouting
+                    showSplitDialog = false
+                }
+            )
+            .presentationDetents([.medium])
         }
         .sheet(isPresented: Binding(
             get: { editorProfileId != nil },
@@ -541,22 +532,6 @@ private struct GhostDialogFrame<Content: View>: View {
                     )
             )
             .padding(.horizontal, 22)
-        }
-    }
-}
-
-private struct AddProfileDialog: View {
-    let onPaste: () -> Void
-    let onScan: () -> Void
-    let onDismiss: () -> Void
-
-    var body: some View {
-        GhostDialogFrame(title: L("settings.add.profile"), onDismiss: onDismiss) {
-            VStack(alignment: .leading, spacing: 12) {
-                GhostButton(L("settings.scan.qr"), variant: .primary, action: onScan)
-                GhostButton(L("settings.paste.connection"), variant: .secondary, action: onPaste)
-                GhostButton(L("general.cancel"), variant: .secondary, action: onDismiss)
-            }
         }
     }
 }
