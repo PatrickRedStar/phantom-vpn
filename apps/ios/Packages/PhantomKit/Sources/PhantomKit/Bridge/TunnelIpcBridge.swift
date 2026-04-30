@@ -16,6 +16,7 @@ public final class TunnelIpcBridge {
         case getStatus
         case subscribeLogs(sinceMs: UInt64)
         case getCurrentProfile
+        case updateRoutePolicy(RoutePolicySnapshot)
         case disconnect
     }
 
@@ -25,6 +26,7 @@ public final class TunnelIpcBridge {
         case logs([LogFrame])
         case profile(VpnProfile?)
         case ok
+        case error(String)
     }
 
     // MARK: - State

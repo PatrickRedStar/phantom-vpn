@@ -6,6 +6,7 @@
 //  `bone` text, `textFaint` placeholder.
 //
 
+import PhantomUI
 import SwiftUI
 
 /// A plain text field styled to match the Ghoststream design language.

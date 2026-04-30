@@ -78,6 +78,41 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { preferencesStore.setLanguageOverride(code) }
     }
 
+    val appIcon: StateFlow<String> = preferencesStore.appIcon
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "bone")
+
+    fun setAppIcon(icon: String) {
+        viewModelScope.launch {
+            preferencesStore.setAppIcon(icon)
+            switchLauncherIcon(icon)
+        }
+    }
+
+    private fun switchLauncherIcon(icon: String) {
+        val ctx = getApplication<Application>()
+        val pm = ctx.packageManager
+        val pkg = ctx.packageName
+
+        val boneAlias = android.content.ComponentName(pkg, "$pkg.IconBone")
+        val scopeAlias = android.content.ComponentName(pkg, "$pkg.IconScope")
+
+        val (enable, disable) = when (icon) {
+            "scope" -> scopeAlias to boneAlias
+            else -> boneAlias to scopeAlias
+        }
+
+        pm.setComponentEnabledSetting(
+            enable,
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+        pm.setComponentEnabledSetting(
+            disable,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP,
+        )
+    }
+
     val autoStartOnBoot: StateFlow<Boolean> = preferencesStore.autoStartOnBoot
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 

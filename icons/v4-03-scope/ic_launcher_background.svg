@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <rect width="108" height="108" fill="#0A0908"/>
+  <!-- scope grid (scaled to 108 space) -->
+  <g stroke="#2A2619" stroke-width="0.21">
+    <line x1="0" y1="27" x2="108" y2="27"/>
+    <line x1="0" y1="40.5" x2="108" y2="40.5"/>
+    <line x1="0" y1="54" x2="108" y2="54"/>
+    <line x1="0" y1="67.5" x2="108" y2="67.5"/>
+    <line x1="0" y1="81" x2="108" y2="81"/>
+    <line x1="27" y1="0" x2="27" y2="108"/>
+    <line x1="40.5" y1="0" x2="40.5" y2="108"/>
+    <line x1="54" y1="0" x2="54" y2="108"/>
+    <line x1="67.5" y1="0" x2="67.5" y2="108"/>
+    <line x1="81" y1="0" x2="81" y2="108"/>
+  </g>
+</svg>

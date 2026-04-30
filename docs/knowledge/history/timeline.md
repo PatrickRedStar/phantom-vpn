@@ -1,10 +1,10 @@
 ---
-updated: 2026-04-17
+updated: 2026-04-27
 ---
 
 # Timeline проекта
 
-163 коммита · 66 тегов · 7 эпох развития (2026-03-12 → 2026-04-17).
+163 коммита · 66 тегов · 8 эпох развития (2026-03-12 → 2026-04-27).
 
 Цель документа — **понимать откуда что пришло**. Если код смущает, ищи коммит в этой таблице: контекст в сообщении коммита + ADR (`decisions/`), если было крупное решение.
 
@@ -162,6 +162,32 @@ updated: 2026-04-17
 | `d5b4912` | Phase 9: iOS UI — real StatusFrame, Admin reachable, split-routing wired. |
 | `929d7d7` | docs: CLAUDE.md architecture + apps/ios/README.md (Phase 12). |
 | `6b7c00a` | **v0.22.0 — tunnel-runtime consolidation + iOS full parity.** |
+
+---
+
+## Эпоха 8 — Native macOS app (2026-04-27 → ...)
+
+**Старт работ над нативным macOS приложением.** Цель v0.23.0 — добавить нативный
+macOS клиент, переиспользуя `client-core-runtime` (через `TunIo::Callback`, как iOS),
+`crates/client-apple` (расширение xcframework на macOS slice), и Swift package
+PhantomKit (расширение platforms `.macOS(.v15)` + новый submodule `PhantomUI` —
+Theme + Components, перенесённые из `apps/ios/GhostStream/`).
+
+Distribution: **Direct (DMG + Developer ID notarize + Sparkle 2 EdDSA auto-update)**,
+не Mac App Store. Min macOS 15 Sequoia. Primary surface — menu bar (`MenuBarExtra` +
+popover); secondary — главное окно с `NavigationSplitView` (sidebar STREAM/TAIL/SETUP/ROSTER,
++ ADMIN если admin cert). 7 поверхностей: MenuBarPopover, MainConsoleWindow,
+WelcomeWindow (onboarding с большим полем для `ghs://` paste), CommandPalette (⌘⇧C),
+LogsDetachedWindow (⌘⇧L), AboutWindow, плюс MenuBarStatusItem.
+
+Платформ-документация: [../platforms/macos.md](../platforms/macos.md). План работы —
+13 фаз (Foundation → Project scaffold → System extension flow → PacketTunnel + IPC →
+Menu bar → Main console → Onboarding → ROSTER → Command palette → Login item / dock →
+Sparkle integration → Brand polish → Release pipeline).
+
+| Коммит | Событие |
+|--------|---------|
+| _в работе_ | Документация macOS платформы — `platforms/macos.md`, `apps/macos/README.md`. |
 
 ---
 

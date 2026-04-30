@@ -7,6 +7,7 @@
 //
 
 import PhantomKit
+import PhantomUI
 import SwiftUI
 
 /// Root Dashboard screen. Consumes the main-actor singletons via the

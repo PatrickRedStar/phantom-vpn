@@ -78,6 +78,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let response = TunnelIpcBridge.Response.ok
             completionHandler?(try? JSONEncoder().encode(response))
 
+        case .updateRoutePolicy:
+            let response = TunnelIpcBridge.Response.ok
+            completionHandler?(try? JSONEncoder().encode(response))
+
         case .disconnect:
             outboundTask?.cancel()
             Task {

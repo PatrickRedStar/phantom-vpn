@@ -8,6 +8,7 @@
 //
 
 import PhantomKit
+import PhantomUI
 import SwiftUI
 
 /// Root SwiftUI view for the Settings tab.

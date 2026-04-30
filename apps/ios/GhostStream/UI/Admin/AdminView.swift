@@ -7,6 +7,7 @@
 //
 
 import PhantomKit
+import PhantomUI
 import SwiftUI
 
 // MARK: - AdminView

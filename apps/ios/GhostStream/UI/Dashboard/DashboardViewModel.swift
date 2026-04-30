@@ -5,6 +5,7 @@
 //  Main-actor observable VM for the Dashboard screen. Uses push-based
 //  StatusFrame from VpnStateManager instead of polling PhantomBridge.stats().
 
+import PhantomUI
 import Foundation
 import Observation
 import PhantomKit

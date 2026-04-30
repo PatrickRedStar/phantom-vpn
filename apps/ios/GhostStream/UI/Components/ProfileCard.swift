@@ -7,6 +7,7 @@
 //
 
 import PhantomKit
+import PhantomUI
 import SwiftUI
 
 /// Card representation of a `VpnProfile` used inside the Settings list.

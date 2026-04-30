@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <!-- Monochrome for Android 13+ themed icons. Single color (will be tinted by system). -->
+  <g transform="translate(54,54) scale(0.165) translate(-256,-272)">
+    <path d="M 256 140
+             C 330 140 380 194 380 266
+             L 380 388
+             C 380 400 370 406 360 400
+             L 334 386
+             C 328 382 320 382 314 388
+             L 296 404
+             C 288 410 278 410 270 404
+             L 256 390
+             C 250 384 240 384 234 390
+             L 220 404
+             C 212 410 202 410 194 404
+             L 176 388
+             C 170 382 162 382 156 386
+             L 130 400
+             C 120 406 110 400 110 388
+             L 110 266
+             C 110 194 182 140 256 140 Z"
+          fill="#FFFFFF"/>
+    <ellipse cx="216" cy="240" rx="22" ry="28" fill="#000000"/>
+    <ellipse cx="296" cy="240" rx="22" ry="28" fill="#000000"/>
+    <path d="M 240 290 Q 256 306 272 290" fill="none" stroke="#000000" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</svg>

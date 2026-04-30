@@ -24,6 +24,7 @@ updated: 2026-04-17
 | `crates/client-common/`, `client-core-runtime/` | [architecture/transport.md](architecture/transport.md) |
 | `crates/client-android/` + `apps/android/` | [platforms/android.md](platforms/android.md) |
 | `crates/client-apple/` + `apps/ios/` | [platforms/ios.md](platforms/ios.md) |
+| `crates/client-apple/` + `apps/macos/` | [platforms/macos.md](platforms/macos.md) |
 | `crates/client-linux/` + `apps/linux/` | [platforms/linux.md](platforms/linux.md) |
 | `server/server/src/admin.rs`, conn_string, подписки | [architecture/admin-api.md](architecture/admin-api.md) |
 | Любое слово-жаргон (`effective_n`, `flow_stream_idx`, ...) | [glossary.md](glossary.md) |

@@ -14,6 +14,7 @@
 		1D4AE3DFB7E2576885B5D556 /* KeyboardShortcutHint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 735D0DD6A563FD9A2568459E /* KeyboardShortcutHint.swift */; };
 		22E9407401612BB76A747C01 /* WelcomeWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18EE894D73FD02941FDC2E20 /* WelcomeWindow.swift */; };
 		240AB4569EC7E07597B95E66 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 70DF2B5E0FF9CC6DEAADB874 /* Localizable.xcstrings */; };
+		2DBD991F4555DDEC913ED143 /* UpstreamVpnRouteDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE64869C73B206FEB664F6FD /* UpstreamVpnRouteDetector.swift */; };
 		337A008221CE70E7C2893472 /* DockPolicyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */; };
 		39C9936B348FE813522099E2 /* OnboardingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A380C0C517545C4A72D369B /* OnboardingCoordinator.swift */; };
 		3A6B9CAA10CA7EAE2028B3A8 /* PasteGhsField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 750B9134D64C078874D2F5CA /* PasteGhsField.swift */; };
@@ -26,6 +27,7 @@
 		56BA5BC6F3F4C992842BB875 /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 156C3D9A536950584A6D3F7B /* CommandPalette.swift */; };
 		79C9C49C81ACB0CFF7C6CF63 /* FontRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76DA79C7CCAF81197CACD8C8 /* FontRegistration.swift */; };
 		7B1B537BEF0A5224B74CF8CE /* PhantomKit in Frameworks */ = {isa = PBXBuildFile; productRef = BE3892E297CA7530A2C4328F /* PhantomKit */; };
+		7FB4E45A66321CF1349AF128 /* UpstreamVpnMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E160F03707922FDAB0058A26 /* UpstreamVpnMonitor.swift */; };
 		856469DBCB4079F628A8EA90 /* GhostStreamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D44DCB5C785BF403588E7AC7 /* GhostStreamApp.swift */; };
 		8712DF68B5B91649EBD1A9EC /* VpnTunnelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DBE55892E32B2EEB55A210 /* VpnTunnelController.swift */; };
 		8869D0009F207D8CCC8819E0 /* SidebarProfileBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */; };
@@ -101,6 +103,7 @@
 		B50B75A842C64C2669ADB7F5 /* ServerRosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerRosterView.swift; sourceTree = "<group>"; };
 		B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = PacketTunnelExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 		B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopover.swift; sourceTree = "<group>"; };
+		BE64869C73B206FEB664F6FD /* UpstreamVpnRouteDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpstreamVpnRouteDetector.swift; sourceTree = "<group>"; };
 		C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemExtensionInstaller.swift; sourceTree = "<group>"; };
 		C86C39DA03DEF188889E61E7 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		C9DBE55892E32B2EEB55A210 /* VpnTunnelController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VpnTunnelController.swift; sourceTree = "<group>"; };
@@ -108,6 +111,7 @@
 		D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
 		D9D6D7F04B20308F2ECD73AB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockPolicyController.swift; sourceTree = "<group>"; };
+		E160F03707922FDAB0058A26 /* UpstreamVpnMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpstreamVpnMonitor.swift; sourceTree = "<group>"; };
 		E178770D82843C786E17C471 /* MenuBarStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusItem.swift; sourceTree = "<group>"; };
 		E9415BCD9CF4A8CEA4F124C3 /* GhostStream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GhostStream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EB4009EBBC952758419A6DAE /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
@@ -185,6 +189,8 @@
 				E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */,
 				A1BF7582D129D427A55BF228 /* LoginItemController.swift */,
 				C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */,
+				E160F03707922FDAB0058A26 /* UpstreamVpnMonitor.swift */,
+				BE64869C73B206FEB664F6FD /* UpstreamVpnRouteDetector.swift */,
 				0C5FF9F9A7151C391868F6EF /* VpnStateManager.swift */,
 				C9DBE55892E32B2EEB55A210 /* VpnTunnelController.swift */,
 			);
@@ -468,6 +474,8 @@
 				8869D0009F207D8CCC8819E0 /* SidebarProfileBlock.swift in Sources */,
 				F926DB0657009EE342DDDACD /* SystemExtensionInstaller.swift in Sources */,
 				FE2128A1C154A27968768E54 /* TailView.swift in Sources */,
+				7FB4E45A66321CF1349AF128 /* UpstreamVpnMonitor.swift in Sources */,
+				2DBD991F4555DDEC913ED143 /* UpstreamVpnRouteDetector.swift in Sources */,
 				9C6A4AA1ADC745AA5A3BE02F /* VpnStateManager.swift in Sources */,
 				8712DF68B5B91649EBD1A9EC /* VpnTunnelController.swift in Sources */,
 				22E9407401612BB76A747C01 /* WelcomeWindow.swift in Sources */,
@@ -491,7 +499,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -512,7 +520,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -603,7 +611,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -626,7 +634,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",

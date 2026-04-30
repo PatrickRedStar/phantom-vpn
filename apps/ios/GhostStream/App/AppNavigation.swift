@@ -8,6 +8,7 @@
 //
 
 import PhantomKit
+import PhantomUI
 import SwiftUI
 
 /// Tab identifier for the bottom nav.

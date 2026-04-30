@@ -7,6 +7,7 @@
 //    - `.secondary` → transparent background, `hair` border, `bone` text
 //
 
+import PhantomUI
 import SwiftUI
 
 /// Visual variant of `GhostButton`.

@@ -7,6 +7,7 @@
 //
 
 import PhantomKit
+import PhantomUI
 import SwiftUI
 
 /// App entry point. Hosts the root `AppNavigation` and injects:

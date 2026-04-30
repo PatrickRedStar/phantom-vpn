@@ -42,7 +42,7 @@ targets:
         CFBundleDisplayName: GhostStream
         CFBundlePackageType: APPL
         CFBundleShortVersionString: "0.23.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "9"
         LSMinimumSystemVersion: "15.0"
         LSUIElement: false
         NSPrincipalClass: NSApplication
@@ -54,7 +54,7 @@ targets:
         INFOPLIST_FILE: GhostStream/Info.plist
         CODE_SIGN_ENTITLEMENTS: GhostStream/GhostStream.entitlements
         MARKETING_VERSION: "0.23.0"
-        CURRENT_PROJECT_VERSION: "5"
+        CURRENT_PROJECT_VERSION: "9"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
         ENABLE_HARDENED_RUNTIME: YES
@@ -89,7 +89,7 @@ targets:
       properties:
         CFBundlePackageType: SYSX
         CFBundleShortVersionString: "0.23.0"
-        CFBundleVersion: "5"
+        CFBundleVersion: "9"
         LSMinimumSystemVersion: "15.0"
         NetworkExtension:
           NEMachServiceName: group.com.ghoststream.vpn.tunnel
@@ -104,7 +104,7 @@ targets:
         INFOPLIST_FILE: PacketTunnelExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnelExtension/PacketTunnelExtension.entitlements
         MARKETING_VERSION: "0.23.0"
-        CURRENT_PROJECT_VERSION: "5"
+        CURRENT_PROJECT_VERSION: "9"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
         ENABLE_HARDENED_RUNTIME: YES

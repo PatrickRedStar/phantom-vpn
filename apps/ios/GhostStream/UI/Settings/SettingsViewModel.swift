@@ -6,6 +6,7 @@
 //  `PreferencesStore`, the Rust conn-string parser and a small TCP ping.
 //
 
+import PhantomUI
 import Foundation
 import Network
 import Observation

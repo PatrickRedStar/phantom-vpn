@@ -29,6 +29,7 @@ struct GhostStreamApp: App {
     @State private var sysExt   = SystemExtensionInstaller.shared
     @State private var login    = LoginItemController.shared
     @State private var dock     = DockPolicyController.shared
+    @State private var upstream = UpstreamVpnMonitor.shared
 
     @State private var tunnel = VpnTunnelController()
     @State private var startupHandled = false
@@ -42,12 +43,16 @@ struct GhostStreamApp: App {
                 .environment(state)
                 .environment(router)
                 .environment(sysExt)
+                .environment(upstream)
                 .environmentObject(tunnel)
                 .gsTheme(override: themeOverride(from: prefs.theme))
                 .frame(width: 380, height: 520)
         } label: {
             MenuBarStatusItem(state: state.statusFrame.state)
-                .task { await openSetupIfNeeded() }
+                .task {
+                    await openSetupIfNeeded()
+                    upstream.start(profiles: profiles, preferences: prefs, stateManager: state)
+                }
         }
         .menuBarExtraStyle(.window)
 
@@ -61,6 +66,7 @@ struct GhostStreamApp: App {
                 .environment(sysExt)
                 .environment(login)
                 .environment(dock)
+                .environment(upstream)
                 .environmentObject(tunnel)
                 .gsTheme(override: themeOverride(from: prefs.theme))
                 .frame(minWidth: 960, minHeight: 640)
@@ -117,6 +123,7 @@ struct GhostStreamApp: App {
                 .environment(profiles)
                 .environment(prefs)
                 .environment(sysExt)
+                .environment(upstream)
                 .environmentObject(tunnel)
                 .gsTheme(override: themeOverride(from: prefs.theme))
                 .frame(width: 720, height: 560)
@@ -140,6 +147,7 @@ struct GhostStreamApp: App {
                 .environment(profiles)
                 .environment(login)
                 .environment(dock)
+                .environment(upstream)
                 .gsTheme(override: themeOverride(from: prefs.theme))
                 .frame(minWidth: 520, minHeight: 480)
         }

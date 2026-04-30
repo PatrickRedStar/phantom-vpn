@@ -32,6 +32,7 @@ class PreferencesStore(private val context: Context) {
         private val WAS_RUNNING        = booleanPreferencesKey("was_running")
         private val LAST_TUNNEL_PARAMS = stringPreferencesKey("last_tunnel_params")
         private val LANGUAGE_OVERRIDE  = stringPreferencesKey("language_override")
+        private val APP_ICON           = stringPreferencesKey("app_icon")
     }
 
     /** "ru" | "en" | null (follow system) */
@@ -113,5 +114,14 @@ class PreferencesStore(private val context: Context) {
 
     suspend fun setTheme(theme: String) {
         context.dataStore.edit { it[THEME] = theme }
+    }
+
+    /** "bone" | "scope" */
+    val appIcon: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[APP_ICON] ?: "bone"
+    }
+
+    suspend fun setAppIcon(icon: String) {
+        context.dataStore.edit { it[APP_ICON] = icon }
     }
 }

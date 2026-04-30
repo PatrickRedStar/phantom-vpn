@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- V4-03 Mascot + Scope — Play Store / standalone 512×512 -->
+  <rect width="512" height="512" fill="#0A0908"/>
+
+  <!-- scope grid -->
+  <g stroke="#2A2619" stroke-width="1">
+    <line x1="0" y1="128" x2="512" y2="128"/>
+    <line x1="0" y1="192" x2="512" y2="192"/>
+    <line x1="0" y1="256" x2="512" y2="256"/>
+    <line x1="0" y1="320" x2="512" y2="320"/>
+    <line x1="0" y1="384" x2="512" y2="384"/>
+    <line x1="128" y1="0" x2="128" y2="512"/>
+    <line x1="192" y1="0" x2="192" y2="512"/>
+    <line x1="256" y1="0" x2="256" y2="512"/>
+    <line x1="320" y1="0" x2="320" y2="512"/>
+    <line x1="384" y1="0" x2="384" y2="512"/>
+  </g>
+
+  <!-- oscilloscope pulse line -->
+  <path d="M 40 340 L 120 340 Q 130 340 130 330 L 140 300 Q 145 285 155 300 L 170 340 L 400 340"
+        fill="none" stroke="#4A6010" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- signal dot top-right -->
+  <circle cx="440" cy="72" r="10" fill="#C4FF3E"/>
+
+  <!-- ghost body: lime -->
+  <path d="M 256 140
+           C 330 140 380 194 380 266
+           L 380 388
+           C 380 400 370 406 360 400
+           L 334 386
+           C 328 382 320 382 314 388
+           L 296 404
+           C 288 410 278 410 270 404
+           L 256 390
+           C 250 384 240 384 234 390
+           L 220 404
+           C 212 410 202 410 194 404
+           L 176 388
+           C 170 382 162 382 156 386
+           L 130 400
+           C 120 406 110 400 110 388
+           L 110 266
+           C 110 194 182 140 256 140 Z"
+        fill="#C4FF3E"/>
+
+  <ellipse cx="216" cy="240" rx="22" ry="28" fill="#0A0908"/>
+  <ellipse cx="296" cy="240" rx="22" ry="28" fill="#0A0908"/>
+  <circle cx="224" cy="228" r="7" fill="#E8E2D0"/>
+  <circle cx="304" cy="228" r="7" fill="#E8E2D0"/>
+  <ellipse cx="180" cy="294" rx="14" ry="9" fill="#FF7A3D"/>
+  <ellipse cx="332" cy="294" rx="14" ry="9" fill="#FF7A3D"/>
+  <path d="M 240 290 Q 256 306 272 290" fill="none" stroke="#0A0908" stroke-width="6" stroke-linecap="round"/>
+</svg>

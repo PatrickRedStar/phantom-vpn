@@ -8,6 +8,7 @@
 //
 
 import PhantomKit
+import PhantomUI
 import SwiftUI
 
 /// Sheet presented from the Settings list. Allows renaming, editing the

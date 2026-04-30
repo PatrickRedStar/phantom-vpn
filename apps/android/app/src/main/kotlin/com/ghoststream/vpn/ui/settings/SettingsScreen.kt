@@ -2,7 +2,9 @@ package com.ghoststream.vpn.ui.settings
 
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +38,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -83,6 +86,7 @@ fun SettingsScreen(
     val autoStart by viewModel.autoStartOnBoot.collectAsStateWithLifecycle()
     val languageOverride by viewModel.languageOverride.collectAsStateWithLifecycle()
     val theme by viewModel.theme.collectAsStateWithLifecycle()
+    val appIcon by viewModel.appIcon.collectAsStateWithLifecycle()
 
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
@@ -252,6 +256,17 @@ fun SettingsScreen(
                     ThemeSwitch(
                         selected = theme,
                         onSelect = { viewModel.setTheme(it) },
+                    )
+                },
+                showDivider = true,
+            )
+            SettingRow(
+                label = stringResource(R.string.row_app_icon),
+                sub = stringResource(R.string.sub_app_icon),
+                right = {
+                    IconSwitch(
+                        selected = appIcon,
+                        onSelect = { viewModel.setAppIcon(it) },
                     )
                 },
                 showDivider = false,
@@ -874,6 +889,47 @@ private fun pingColor(latencyMs: Long?): Color = when {
     latencyMs < 100    -> GsSignal
     latencyMs < 300    -> GsWarn
     else               -> GsDanger
+}
+
+// ── Icon switch ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun IconSwitch(
+    selected: String, // "bone" | "scope"
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .border(1.dp, C.hairBold)
+            .padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        val entries = listOf(
+            "bone" to R.mipmap.ic_launcher,
+            "scope" to R.mipmap.ic_launcher_scope,
+        )
+        entries.forEachIndexed { idx, (value, iconRes) ->
+            val active = selected == value
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .then(
+                        if (active) Modifier.border(1.dp, C.signal) else Modifier,
+                    )
+                    .clickable { onSelect(value) }
+                    .padding(2.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    painter = painterResource(iconRes),
+                    contentDescription = value,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        }
+    }
 }
 
 // ── Add profile dialog ──────────────────────────────────────────────────────

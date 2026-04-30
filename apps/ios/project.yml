@@ -81,6 +81,8 @@ targets:
         codeSign: true
       - package: PhantomKit
         product: PhantomKit
+      - package: PhantomKit
+        product: PhantomUI
       - framework: Frameworks/PhantomCore.xcframework
         embed: true
         codeSign: true
@@ -117,6 +119,8 @@ targets:
     dependencies:
       - package: PhantomKit
         product: PhantomKit
+      - package: PhantomKit
+        product: PhantomUI
       - framework: Frameworks/PhantomCore.xcframework
         embed: false
         optional: true

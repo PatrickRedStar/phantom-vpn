@@ -34,5 +34,18 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ]
         ),
+        .target(
+            name: "PhantomCoreTestStubs",
+            path: "Tests/PhantomCoreTestStubs",
+            publicHeadersPath: "."
+        ),
+        .testTarget(
+            name: "PhantomKitTests",
+            dependencies: ["PhantomKit", "PhantomCoreTestStubs"],
+            path: "Tests/PhantomKitTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v5)
+            ]
+        ),
     ]
 )

@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-04-30
 ---
 
 # Architecture Decision Records (ADR)
@@ -15,6 +15,7 @@ updated: 2026-04-17
 | [0003](0003-h2-multistream-transport.md) | accepted | H2/TLS reliable streams с мульти-стрим шардингом | 2026-03-29 |
 | [0004](0004-ghs-url-conn-string.md) | accepted | `ghs://` URL conn_string + dynamic admin mTLS | 2026-04-15 |
 | [0005](0005-client-core-runtime.md) | accepted | Унифицированный tunnel runtime через `client-core-runtime` | 2026-04-17 |
+| [0006](0006-layered-macos-vpn-routing.md) | accepted | Layered macOS routing для корпоративного VPN + GhostStream | 2026-04-30 |
 
 ## Когда писать новый ADR
 

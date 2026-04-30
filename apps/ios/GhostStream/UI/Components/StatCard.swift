@@ -6,6 +6,7 @@
 //  bold value below, optional unit appended to the value row.
 //
 
+import PhantomUI
 import SwiftUI
 
 /// A compact card: label (`labelMono`) + value (`statValue`) + unit.

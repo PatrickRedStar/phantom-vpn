@@ -129,7 +129,11 @@ fn subtract_nets(parent: Ipv4Net, exclusions: &[Ipv4Net]) -> Vec<Ipv4Net> {
 
 fn broadcast(net: Ipv4Net) -> Ipv4Addr {
     let ip: u32 = net.network().into();
-    let mask: u32 = !0u32 >> net.prefix_len();
+    let mask: u32 = if net.prefix_len() == 32 {
+        0
+    } else {
+        !0u32 >> net.prefix_len()
+    };
     (ip | mask).into()
 }
 
@@ -189,6 +193,24 @@ mod tests {
                 "VPN routes should not contain private IPs"
             );
         }
+    }
+
+    #[test]
+    fn complement_excludes_single_host_without_dropping_neighbor_ranges() {
+        let table = RoutingTable::from_cidrs("89.110.109.128/32\n");
+        let routes = table.compute_vpn_routes();
+
+        let contains = |addr: &str| {
+            let ip = addr.parse::<Ipv4Addr>().unwrap();
+            routes.iter().any(|r| {
+                let net: Ipv4Net = format!("{}/{}", r.addr, r.prefix).parse().unwrap();
+                net.contains(&ip)
+            })
+        };
+
+        assert!(!contains("89.110.109.128"), "direct server host must bypass VPN");
+        assert!(contains("89.110.109.127"), "previous host should still use VPN");
+        assert!(contains("89.110.109.129"), "next host should still use VPN");
     }
 
     #[test]

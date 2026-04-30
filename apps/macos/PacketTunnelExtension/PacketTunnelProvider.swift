@@ -19,6 +19,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = Logger(subsystem: "com.ghoststream.vpn.tunnel", category: "tunnel")
     private var outboundTask: Task<Void, Never>?
     private var providerTelemetryTask: Task<Void, Never>?
+    private var routeSettingsTask: Task<Void, Never>?
 
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
@@ -28,6 +29,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var telemetryStartedAt: Date?
     private var telemetryProfile: VpnProfile?
     private var telemetrySettings: TunnelSettings?
+    private var activeProfile: VpnProfile?
+    private var activeSettings: TunnelSettings?
     private var telemetryRxBytes: UInt64 = 0
     private var telemetryTxBytes: UInt64 = 0
     private var telemetryLastRxBytes: UInt64 = 0
@@ -60,6 +63,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         outboundTask = nil
         providerTelemetryTask?.cancel()
         providerTelemetryTask = nil
+        routeSettingsTask?.cancel()
+        routeSettingsTask = nil
+        activeProfile = nil
+        activeSettings = nil
         appendProviderLog(level: "INF", message: "stopTunnel reason=\(reason.rawValue)")
 
         Task {
@@ -92,10 +99,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let response = TunnelIpcBridge.Response.ok
             completionHandler?(try? JSONEncoder().encode(response))
 
+        case .updateRoutePolicy(let snapshot):
+            Task {
+                do {
+                    try await self.updateRoutePolicy(snapshot)
+                    let response = TunnelIpcBridge.Response.ok
+                    completionHandler?(try? JSONEncoder().encode(response))
+                } catch {
+                    self.appendProviderLog(level: "ERR", message: "route policy update failed: \(error.localizedDescription)")
+                    let response = TunnelIpcBridge.Response.error(error.localizedDescription)
+                    completionHandler?(try? JSONEncoder().encode(response))
+                }
+            }
+
         case .disconnect:
             outboundTask?.cancel()
             providerTelemetryTask?.cancel()
             providerTelemetryTask = nil
+            routeSettingsTask?.cancel()
+            routeSettingsTask = nil
+            activeProfile = nil
+            activeSettings = nil
             appendProviderLog(level: "INF", message: "disconnect requested by host app")
             Task {
                 await PhantomBridge.shared.stop()
@@ -120,6 +144,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     ?? (payload["since_ms"] as? NSNumber)?.uint64Value
                     ?? 0
                 return .subscribeLogs(sinceMs: since)
+            }
+            if let payload = object["updateRoutePolicy"] as? [String: Any],
+               let data = try? JSONSerialization.data(withJSONObject: payload),
+               let snapshot = try? JSONDecoder().decode(RoutePolicySnapshot.self, from: data) {
+                return .updateRoutePolicy(snapshot)
             }
         }
 
@@ -147,44 +176,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         let profile = try loadProfile()
         let settings = loadSettings()
+        activeProfile = profile
+        activeSettings = settings
         resetProviderTelemetry(profile: profile, settings: settings)
         appendProviderLog(level: "INF", message: "starting tunnel profile=\(profile.name)")
         publishProviderStatusFrame(state: .connecting)
 
-        let (tunIp, subnetMask) = try parseCidr(profile.tunAddr)
-
-        let networkSettings = NEPacketTunnelNetworkSettings(
-            tunnelRemoteAddress: tunnelRemoteAddress(for: profile.serverAddr)
-        )
-        networkSettings.mtu = NSNumber(value: 1350)
-
-        let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
-        configureIPv4Routes(ipv4, for: profile)
-        networkSettings.ipv4Settings = ipv4
-
-        let ipv6 = NEIPv6Settings(addresses: [], networkPrefixLengths: [])
-        if settings.ipv6Killswitch {
-            ipv6.includedRoutes = [NEIPv6Route.default()]
-        } else {
-            ipv6.excludedRoutes = [NEIPv6Route.default()]
-        }
-        networkSettings.ipv6Settings = ipv6
-
-        let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
-        let dns = NEDNSSettings(servers: dnsServers)
-        if settings.dnsLeakProtection {
-            dns.matchDomains = [""]
-        }
-        networkSettings.dnsSettings = dns
+        let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
 
         try await setTunnelNetworkSettings(networkSettings)
         appendProviderLog(level: "INF", message: "network settings applied tun=\(profile.tunAddr)")
+        let runtimeProfile = profileForRuntime(profile: profile, settings: settings)
 
         var didCallCompletion = false
 
         do {
             try await PhantomBridge.shared.start(
-                profile: profile,
+                profile: runtimeProfile,
                 settings: settings,
                 onStatus: { [weak self] frame in
                     guard let self else { return }
@@ -266,10 +274,51 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return settings
     }
 
-    private func configureIPv4Routes(_ ipv4: NEIPv4Settings, for profile: VpnProfile) {
-        guard profile.splitRouting == true else {
+    private func makeNetworkSettings(
+        profile: VpnProfile,
+        settings: TunnelSettings
+    ) throws -> NEPacketTunnelNetworkSettings {
+        let (tunIp, subnetMask) = try parseCidr(profile.tunAddr)
+
+        let networkSettings = NEPacketTunnelNetworkSettings(
+            tunnelRemoteAddress: tunnelRemoteAddress(for: profile.serverAddr)
+        )
+        networkSettings.mtu = NSNumber(value: 1350)
+
+        let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
+        configureIPv4Routes(ipv4, for: profile, settings: settings)
+        networkSettings.ipv4Settings = ipv4
+
+        let ipv6 = NEIPv6Settings(addresses: [], networkPrefixLengths: [])
+        if settings.ipv6Killswitch {
+            ipv6.includedRoutes = [NEIPv6Route.default()]
+        } else {
+            ipv6.excludedRoutes = [NEIPv6Route.default()]
+        }
+        networkSettings.ipv6Settings = ipv6
+
+        let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
+        let dns = NEDNSSettings(servers: dnsServers)
+        if settings.dnsLeakProtection && shouldForceDnsMatchDomains(settings: settings) {
+            dns.matchDomains = [""]
+        }
+        networkSettings.dnsSettings = dns
+
+        return networkSettings
+    }
+
+    private func configureIPv4Routes(
+        _ ipv4: NEIPv4Settings,
+        for profile: VpnProfile,
+        settings: TunnelSettings
+    ) {
+        let serverDirectCidrs = settings.routePolicy?.serverDirectCidrs ?? []
+        let shouldUseSplitRoutes = settings.routingMode != .global
+            || !serverDirectCidrs.isEmpty
+            || (settings.routePolicy == nil && profile.splitRouting == true)
+        guard shouldUseSplitRoutes else {
             ipv4.includedRoutes = [NEIPv4Route.default()]
-            ipv4.excludedRoutes = []
+            ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
             return
         }
 
@@ -279,7 +328,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         }
 
-        let routes = PhantomBridge.computeVpnRoutes(directCidrs: "")
+        let directCidrs = directCidrsForRouteComputation(profile: profile, settings: settings)
+        let routes = PhantomBridge.computeVpnRoutes(directCidrs: directCidrs.joined(separator: "\n"))
             .compactMap { route in
                 mask(forIPv4Prefix: route.prefix).map {
                     NEIPv4Route(destinationAddress: route.addr, subnetMask: $0)
@@ -292,7 +342,152 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } else {
             ipv4.includedRoutes = routes
         }
-        ipv4.excludedRoutes = []
+        ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
+    }
+
+    private func shouldForceDnsMatchDomains(settings: TunnelSettings) -> Bool {
+        !(settings.routingMode == .layeredAuto && settings.preserveScopedDns)
+    }
+
+    private func directCidrsForRouteComputation(
+        profile: VpnProfile,
+        settings: TunnelSettings
+    ) -> [String] {
+        var cidrs = settings.routePolicy?.serverDirectCidrs ?? []
+        if settings.routingMode != .global {
+            cidrs.append(contentsOf: settings.manualDirectCidrs)
+        }
+        if settings.routingMode == .layeredAuto {
+            cidrs.append(contentsOf: settings.routePolicy?.detectedUpstreamCidrs ?? [])
+            cidrs.append(contentsOf: settings.routePolicy?.manualDirectCidrs ?? [])
+        }
+
+        let normalized = RoutePolicySnapshot.normalizedCidrs(from: cidrs.joined(separator: "\n")).valid
+        if settings.routingMode == .layeredAuto {
+            appendProviderLog(
+                level: "INF",
+                message: "layered routing directCidrs=\(normalized.count) upstream=\(settings.routePolicy?.detectedUpstreamCidrs.count ?? 0) manual=\(settings.manualDirectCidrs.count)"
+            )
+        }
+        return normalized
+    }
+
+    private func profileForRuntime(profile: VpnProfile, settings: TunnelSettings) -> VpnProfile {
+        guard let endpoint = resolvedServerEndpoint(profile: profile, settings: settings) else {
+            return profile
+        }
+
+        var runtimeProfile = profile
+        runtimeProfile.serverAddr = endpoint
+        if let connString = profile.connString,
+           let rewritten = rewriteConnStringAuthority(connString, authority: endpoint) {
+            runtimeProfile.connString = rewritten
+            appendProviderLog(level: "INF", message: "runtime server endpoint pinned to \(endpoint)")
+        }
+        return runtimeProfile
+    }
+
+    private func resolvedServerEndpoint(profile: VpnProfile, settings: TunnelSettings) -> String? {
+        guard let serverCidr = settings.routePolicy?.serverDirectCidrs.first,
+              let serverIp = serverCidr.split(separator: "/", maxSplits: 1).first,
+              IPv4Address(String(serverIp)) != nil
+        else { return nil }
+
+        let currentHost = hostPart(of: profile.serverAddr)
+        guard IPv4Address(currentHost) == nil else { return nil }
+
+        let port = portPart(of: profile.connString)
+            ?? portPart(of: profile.serverAddr)
+            ?? "443"
+        return "\(serverIp):\(port)"
+    }
+
+    private func rewriteConnStringAuthority(_ connString: String, authority: String) -> String? {
+        guard connString.hasPrefix("ghs://"),
+              let at = connString.firstIndex(of: "@")
+        else { return nil }
+
+        let authorityStart = connString.index(after: at)
+        guard let queryStart = connString[authorityStart...].firstIndex(of: "?") else {
+            return nil
+        }
+
+        return String(connString[..<authorityStart])
+            + authority
+            + String(connString[queryStart...])
+    }
+
+    private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {
+        let upstreamCidrs = settings.routingMode == .layeredAuto
+            ? (settings.routePolicy?.detectedUpstreamCidrs ?? [])
+            : []
+        return (settings.routePolicy?.serverDirectCidrs ?? []).compactMap { cidr in
+            guard !cidrIsContainedInAny(cidr, containers: upstreamCidrs),
+                  let route = route(forCIDR: cidr)
+            else { return nil }
+            return route
+        }
+    }
+
+    private func route(forCIDR cidr: String) -> NEIPv4Route? {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = UInt8(parts[1]),
+              let subnetMask = mask(forIPv4Prefix: prefix)
+        else { return nil }
+        return NEIPv4Route(destinationAddress: String(parts[0]), subnetMask: subnetMask)
+    }
+
+    private func cidrIsContainedInAny(_ cidr: String, containers: [String]) -> Bool {
+        guard let child = ipv4Range(forCIDR: cidr) else { return false }
+        return containers.contains { container in
+            guard let parent = ipv4Range(forCIDR: container) else { return false }
+            return parent.lower <= child.lower && child.upper <= parent.upper
+        }
+    }
+
+    private func ipv4Range(forCIDR cidr: String) -> (lower: UInt32, upper: UInt32)? {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = UInt32(parts[1]),
+              prefix <= 32,
+              let ip = ipv4Integer(String(parts[0]))
+        else { return nil }
+
+        let hostMask: UInt32 = prefix == 32 ? 0 : (UInt32.max >> prefix)
+        let networkMask = ~hostMask
+        let lower = ip & networkMask
+        return (lower, lower | hostMask)
+    }
+
+    private func ipv4Integer(_ address: String) -> UInt32? {
+        let octets = address.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else { return nil }
+        var output: UInt32 = 0
+        for octet in octets {
+            guard let value = UInt32(octet), value <= 255 else { return nil }
+            output = (output << 8) | value
+        }
+        return output
+    }
+
+    private func updateRoutePolicy(_ snapshot: RoutePolicySnapshot) async throws {
+        guard var settings = activeSettings, let profile = activeProfile else {
+            throw ProviderError.missingProfile
+        }
+        settings.routingMode = snapshot.mode
+        settings.manualDirectCidrs = snapshot.manualDirectCidrs
+        settings.preserveScopedDns = snapshot.preserveScopedDns
+        settings.routePolicy = snapshot
+        activeSettings = settings
+
+        routeSettingsTask?.cancel()
+        let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
+        try await setTunnelNetworkSettings(networkSettings)
+        appendProviderLog(
+            level: "OK",
+            message: "route policy applied hash=\(snapshot.routeHash) upstreamRoutes=\(snapshot.detectedUpstreamCidrs.count)"
+        )
     }
 
     private func resolveProfile(id: String) -> VpnProfile? {
@@ -558,6 +753,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return String(addr[..<lastColon])
         }
         return addr
+    }
+
+    private func portPart(of addr: String?) -> String? {
+        guard let addr else { return nil }
+        let trimmed = addr.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmed.hasPrefix("["),
+           let close = trimmed.firstIndex(of: "]") {
+            let afterClose = trimmed.index(after: close)
+            guard afterClose < trimmed.endIndex,
+                  trimmed[afterClose] == ":"
+            else { return nil }
+            let portStart = trimmed.index(after: afterClose)
+            guard portStart < trimmed.endIndex else { return nil }
+            let port = String(trimmed[portStart...])
+            return UInt16(port) == nil ? nil : port
+        }
+
+        guard let colon = trimmed.lastIndex(of: ":"),
+              trimmed[..<colon].firstIndex(of: ":") == nil
+        else { return nil }
+
+        let port = String(trimmed[trimmed.index(after: colon)...])
+        return UInt16(port) == nil ? nil : port
     }
 
     private func tunnelRemoteAddress(for addr: String) -> String {

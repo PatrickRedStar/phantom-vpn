@@ -26,6 +26,9 @@ public final class PreferencesStore {
     private enum Key {
         static let dnsServers        = "dns_servers"
         static let splitRouting      = "split_routing"
+        static let routingMode       = "routing_mode"
+        static let manualDirectCidrs = "manual_direct_cidrs"
+        static let preserveScopedDns = "preserve_scoped_dns"
         static let perAppMode        = "per_app_mode"
         static let perAppList        = "per_app_list"
         static let autoStartOnBoot   = "auto_start_on_boot"
@@ -96,6 +99,28 @@ public final class PreferencesStore {
         }
     }
 
+    public var routingMode: RoutingMode = .global {
+        didSet {
+            guard !isAssigningRoutingModeWithoutPersistence else { return }
+            routingModeExplicitlySet = true
+            defaults.set(routingMode.rawValue, forKey: Key.routingMode)
+            if let legacyValue = routingMode.legacySplitRoutingValue {
+                defaults.set(legacyValue, forKey: Key.splitRouting)
+            }
+        }
+    }
+
+    private var routingModeExplicitlySet = false
+    private var isAssigningRoutingModeWithoutPersistence = false
+
+    public var manualDirectCidrsText: String = "" {
+        didSet { defaults.set(manualDirectCidrsText, forKey: Key.manualDirectCidrs) }
+    }
+
+    public var preserveScopedDns: Bool = true {
+        didSet { defaults.set(preserveScopedDns, forKey: Key.preserveScopedDns) }
+    }
+
     private init() {
         self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
         // Hydrate stored properties from UserDefaults
@@ -110,6 +135,20 @@ public final class PreferencesStore {
         self.autoUpdate = defaults.object(forKey: Key.autoUpdate) as? Bool ?? false
         let storedStreams = defaults.object(forKey: Key.streams) as? Int ?? 8
         self.streams = max(2, min(16, storedStreams))
+        let legacySplitRouting = defaults.object(forKey: Key.splitRouting) as? Bool
+        if let storedRoutingMode = defaults.string(forKey: Key.routingMode),
+           let mode = RoutingMode(rawValue: storedRoutingMode) {
+            self.routingMode = mode
+            self.routingModeExplicitlySet = true
+        } else if let legacySplitRouting {
+            self.routingMode = RoutingMode.defaultValue(splitRouting: legacySplitRouting)
+            self.routingModeExplicitlySet = true
+        } else {
+            self.routingMode = .global
+            self.routingModeExplicitlySet = false
+        }
+        self.manualDirectCidrsText = defaults.string(forKey: Key.manualDirectCidrs) ?? ""
+        self.preserveScopedDns = defaults.object(forKey: Key.preserveScopedDns) as? Bool ?? true
     }
 
     // MARK: - DNS
@@ -135,14 +174,42 @@ public final class PreferencesStore {
 
     /// Whether split-routing is enabled globally. nil = unset.
     public var splitRouting: Bool? {
-        get { defaults.object(forKey: Key.splitRouting) as? Bool }
+        get {
+            routingModeExplicitlySet ? routingMode.legacySplitRoutingValue : nil
+        }
         set {
             if let v = newValue {
-                defaults.set(v, forKey: Key.splitRouting)
+                routingMode = RoutingMode.defaultValue(splitRouting: v)
             } else {
                 defaults.removeObject(forKey: Key.splitRouting)
+                defaults.removeObject(forKey: Key.routingMode)
+                setRoutingModeWithoutPersisting(.global, explicitlySet: false)
             }
         }
+    }
+
+    public func effectiveRoutingMode(profileSplitRouting: Bool?) -> RoutingMode {
+        routingModeExplicitlySet
+            ? routingMode
+            : RoutingMode.defaultValue(splitRouting: profileSplitRouting)
+    }
+
+    private func setRoutingModeWithoutPersisting(
+        _ mode: RoutingMode,
+        explicitlySet: Bool
+    ) {
+        isAssigningRoutingModeWithoutPersistence = true
+        routingMode = mode
+        routingModeExplicitlySet = explicitlySet
+        isAssigningRoutingModeWithoutPersistence = false
+    }
+
+    public var manualDirectCidrs: [String] {
+        RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).valid
+    }
+
+    public var invalidManualDirectCidrs: [String] {
+        RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).invalid
     }
 
     // MARK: - Per-app (iOS-ignored — kept for Android schema parity)

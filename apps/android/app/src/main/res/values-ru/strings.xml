@@ -54,6 +54,7 @@
     <string name="row_always_on">Всегда включён</string>
     <string name="row_language">Язык</string>
     <string name="row_theme">Тема</string>
+    <string name="row_app_icon">Иконка</string>
     <string name="row_share_debug">Отладочный отчёт</string>
     <string name="row_insecure">Не проверять сертификат</string>
 
@@ -63,6 +64,7 @@
     <string name="sub_always_on">Подключаться при загрузке</string>
     <string name="sub_interface_locale">Язык интерфейса</string>
     <string name="sub_theme_descr">Phosphor · тёплый чёрный</string>
+    <string name="sub_app_icon">Ярлык на рабочем столе</string>
     <string name="sub_debug_descr">конфиг + последние 500 строк</string>
 
     <string name="value_custom">Свои</string>

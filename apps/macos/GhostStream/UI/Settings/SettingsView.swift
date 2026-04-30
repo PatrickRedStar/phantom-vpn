@@ -24,6 +24,7 @@ public struct SettingsView: View {
     @Environment(PreferencesStore.self) private var prefs
     @Environment(LoginItemController.self) private var login
     @Environment(DockPolicyController.self) private var dock
+    @Environment(UpstreamVpnMonitor.self) private var upstream
 
     public init() {}
 
@@ -120,6 +121,29 @@ public struct SettingsView: View {
             settingRow(title: "Routing",
                        description: "Какой трафик заворачивается в туннель") {
                 RoutingPill()
+            }
+            if p.routingMode == .layeredAuto {
+                cardSubHeader("WORK VPN")
+                settingRow(title: "Cisco/work VPN first",
+                           description: routeDiagnosticText) {
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("\(upstream.snapshot.detectedUpstreamCidrs.count)")
+                            .font(.custom("DepartureMono-Regular", size: 13))
+                            .tracking(0.10 * 13)
+                            .foregroundStyle(C.signal)
+                        Text("routes")
+                            .font(.custom("DepartureMono-Regular", size: 9.5))
+                            .tracking(0.14 * 9.5)
+                            .foregroundStyle(C.textFaint)
+                    }
+                }
+                HairlineDivider()
+                settingRow(title: "Preserve scoped DNS",
+                           description: dnsDiagnosticText) {
+                    SettingsToggle(on: $p.preserveScopedDns)
+                }
+                HairlineDivider()
+                manualDirectCidrsEditor
             }
             HairlineDivider()
             settingRow(title: "DNS",
@@ -268,6 +292,65 @@ public struct SettingsView: View {
         .buttonStyle(.plain)
         .disabled(disabled)
     }
+
+    @ViewBuilder
+    private var manualDirectCidrsEditor: some View {
+        @Bindable var p = prefs
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Manual direct CIDRs")
+                        .font(.custom("JetBrainsMono-Regular", size: 13))
+                        .foregroundStyle(C.bone)
+                    Text("GhostStream bypass · one IPv4 CIDR per line")
+                        .font(.custom("JetBrainsMono-Regular", size: 11))
+                        .foregroundStyle(C.textFaint)
+                }
+                Spacer()
+                Text("\(prefs.manualDirectCidrs.count)")
+                    .font(.custom("DepartureMono-Regular", size: 11))
+                    .tracking(0.14 * 11)
+                    .foregroundStyle(C.signal)
+            }
+
+            TextEditor(text: $p.manualDirectCidrsText)
+                .font(.custom("JetBrainsMono-Regular", size: 11))
+                .foregroundStyle(C.bone)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 74)
+                .padding(8)
+                .background(C.bgElev2)
+                .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+
+            if !prefs.invalidManualDirectCidrs.isEmpty {
+                Text("Invalid: \(prefs.invalidManualDirectCidrs.joined(separator: ", "))")
+                    .font(.custom("JetBrainsMono-Regular", size: 10.5))
+                    .foregroundStyle(C.danger)
+                    .lineLimit(2)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+    }
+
+    private var routeDiagnosticText: String {
+        let snapshot = upstream.snapshot
+        let provider = snapshot.upstreamProviderName ?? "no upstream VPN detected"
+        let interfaces = snapshot.upstreamInterfaceNames.isEmpty
+            ? "no utun"
+            : snapshot.upstreamInterfaceNames.joined(separator: ", ")
+        return "\(provider) · \(interfaces) · hash \(snapshot.routeHash.prefix(8))"
+    }
+
+    private var dnsDiagnosticText: String {
+        let snapshot = upstream.snapshot
+        if snapshot.upstreamDnsDomains.isEmpty && snapshot.upstreamDnsServers.isEmpty {
+            return "No upstream scoped DNS detected"
+        }
+        let domainCount = snapshot.upstreamDnsDomains.count
+        let serverCount = snapshot.upstreamDnsServers.count
+        return "\(domainCount) domains · \(serverCount) DNS servers stay with work VPN"
+    }
 }
 
 // MARK: - SettingsCard wrapper
@@ -373,16 +456,33 @@ private struct RoutingPill: View {
     var body: some View {
         @Bindable var p = prefs
         Menu {
-            Button("Global tunnel") { p.splitRouting = false }
-            Button("Split routing") { p.splitRouting = true }
+            Button("Global tunnel") { p.routingMode = .global }
+            Button("Public split") { p.routingMode = .publicSplit }
+            Button("Cisco/work VPN first") { p.routingMode = .layeredAuto }
         } label: {
             MenuPill(
-                label: p.splitRouting == true ? "split" : "all",
-                value: p.splitRouting == true ? "enabled" : "global"
+                label: routingLabel(mode: p.routingMode),
+                value: routingValue(mode: p.routingMode)
             )
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    private func routingLabel(mode: RoutingMode) -> String {
+        switch mode {
+        case .global: return "all"
+        case .publicSplit: return "split"
+        case .layeredAuto: return "work"
+        }
+    }
+
+    private func routingValue(mode: RoutingMode) -> String {
+        switch mode {
+        case .global: return "global"
+        case .publicSplit: return "public"
+        case .layeredAuto: return "first"
+        }
     }
 }
 
