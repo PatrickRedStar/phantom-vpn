@@ -11,7 +11,6 @@ import SwiftUI
 public struct AdminView: View {
 
     @Environment(\.gsColors) private var C
-    @Environment(\.dismiss) private var dismiss
     @State private var vm: AdminViewModel
     @State private var showCreateSheet = false
     @State private var toastMessage: String?
@@ -30,8 +29,6 @@ public struct AdminView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    controlHeader
-
                     if vm.mtlsUnavailable {
                         mtlsBanner
                     } else if let err = vm.error, vm.status == nil {
@@ -56,54 +53,25 @@ public struct AdminView: View {
                 toast(text: toastMessage)
             }
         }
-        .navigationBarBackButtonHidden(true)
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle(vm.profile.name)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await vm.refresh() }
+                } label: {
+                    Image(systemName: vm.loading ? "hourglass" : "arrow.clockwise")
+                }
+                .disabled(vm.loading)
+            }
+        }
         .task {
             await vm.refresh()
         }
         .sheet(isPresented: $showCreateSheet) {
             CreateClientSheet(viewModel: vm)
+                .presentationDetents([.medium, .large])
                 .environment(\.gsColors, C)
-        }
-    }
-
-    private var controlHeader: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(C.signal)
-                    .frame(width: 32, height: 32)
-                    .background(C.bgElev2)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            }
-            .buttonStyle(.plain)
-
-            Text(L("admin.brand.control").uppercased())
-                .gsFont(.brand)
-                .foregroundColor(C.bone)
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                Text(L("admin.mtls.you"))
-                    .gsFont(.hdrMeta)
-                    .foregroundColor(C.textFaint)
-                Circle()
-                    .fill(vm.mtlsUnavailable ? C.danger : C.signal)
-                    .frame(width: 6, height: 6)
-                Button {
-                    Task { await vm.refresh() }
-                } label: {
-                    Image(systemName: vm.loading ? "hourglass" : "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(vm.loading ? C.textFaint : C.signal)
-                }
-                .buttonStyle(.plain)
-                .disabled(vm.loading)
-            }
         }
     }
 

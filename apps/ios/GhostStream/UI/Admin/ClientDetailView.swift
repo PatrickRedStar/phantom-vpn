@@ -45,33 +45,22 @@ public struct ClientDetailView: View {
         ZStack {
             C.bg.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                ScreenHeader(
-                    brand: vm.client.name,
-                    meta: vm.client.connected ? "CLIENT · ACTIVE" : "CLIENT · IDLE",
-                    pulse: vm.client.connected,
-                    pulseColor: vm.client.connected ? C.signal : C.textFaint,
-                    leadingLabel: "‹",
-                    leadingAction: { dismiss() }
-                )
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        headerCard
-                        togglesCard
-                        statsCard
-                        subscriptionCard
-                        trafficChartCard
-                        logsCard
-                        connStringButton
-                        deleteButton
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 20)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    headerCard
+                    togglesCard
+                    statsCard
+                    subscriptionCard
+                    trafficChartCard
+                    logsCard
+                    connStringButton
+                    deleteButton
                 }
-                .refreshable {
-                    await vm.refresh()
-                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 20)
+            }
+            .refreshable {
+                await vm.refresh()
             }
 
             if let msg = toastMessage {
@@ -90,47 +79,47 @@ public struct ClientDetailView: View {
                 }
                 .transition(.opacity)
             }
-
-            if showDeleteConfirm {
-                GhostDialog(
-                    title: "DELETE CLIENT?",
-                    message: "Клиент «\(vm.client.name)» будет удалён вместе с сертификатами. Действие необратимо.",
-                    primaryTitle: "DELETE",
-                    secondaryTitle: "CANCEL",
-                    primaryAction: {
-                        showDeleteConfirm = false
-                        Task {
-                            await vm.delete()
-                            if vm.error == nil { dismiss() }
-                        }
-                    },
-                    secondaryAction: { showDeleteConfirm = false }
-                ) {
-                    EmptyView()
+        }
+        .navigationTitle(vm.client.name)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await vm.refresh() }
+                } label: {
+                    Image(systemName: vm.loading ? "hourglass" : "arrow.clockwise")
                 }
-            }
-
-            if showSetDaysSheet {
-                GhostDialog(
-                    title: "SET SUBSCRIPTION",
-                    message: "Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.",
-                    primaryTitle: "OK",
-                    secondaryTitle: "CANCEL",
-                    primaryAction: {
-                        guard let n = Int(customDaysText), n > 0 else { return }
-                        Task {
-                            await vm.subscription(action: "set", days: n)
-                            showSetDaysSheet = false
-                        }
-                    },
-                    secondaryAction: { showSetDaysSheet = false }
-                ) {
-                    GhostTextField("30", text: $customDaysText)
-                        .keyboardType(.numberPad)
-                }
+                .disabled(vm.loading)
             }
         }
-        .toolbar(.hidden, for: .navigationBar)
+        .confirmationDialog("DELETE CLIENT?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("DELETE", role: .destructive) {
+                Task {
+                    await vm.delete()
+                    if vm.error == nil { dismiss() }
+                }
+            }
+            Button("CANCEL", role: .cancel) {}
+        } message: {
+            Text("Клиент «\(vm.client.name)» будет удалён вместе с сертификатами. Действие необратимо.")
+        }
+        .sheet(isPresented: $showSetDaysSheet) {
+            SetSubscriptionDaysSheet(
+                daysText: $customDaysText,
+                onSave: {
+                    guard let n = Int(customDaysText), n > 0 else { return }
+                    Task {
+                        await vm.subscription(action: "set", days: n)
+                        showSetDaysSheet = false
+                    }
+                },
+                onCancel: {
+                    showSetDaysSheet = false
+                }
+            )
+            .presentationDetents([.medium])
+            .environment(\.gsColors, C)
+        }
         .task {
             await vm.refresh()
         }
@@ -497,6 +486,40 @@ public struct ClientDetailView: View {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if !Task.isCancelled {
                 await MainActor.run { toastMessage = nil }
+            }
+        }
+    }
+}
+
+private struct SetSubscriptionDaysSheet: View {
+    @Binding var daysText: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("30", text: $daysText)
+                        .keyboardType(.numberPad)
+                } footer: {
+                    Text("Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.")
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(C.bg.ignoresSafeArea())
+            .navigationTitle("SET SUBSCRIPTION")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("CANCEL", action: onCancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("OK", action: onSave)
+                        .disabled(Int(daysText).map { $0 <= 0 } ?? true)
+                }
             }
         }
     }
