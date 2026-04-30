@@ -33,6 +33,14 @@ public final class PreferencesStore {
         static let lastTunnelParams  = "last_tunnel_params"
         static let languageOverride  = "language_override"
         static let theme             = "theme"
+        static let dnsLeakProtection = "dns_leak_protection"
+        static let ipv6Killswitch    = "ipv6_killswitch"
+        static let autoReconnect     = "auto_reconnect"
+        static let startInMenuBar    = "start_in_menu_bar"
+        static let notifyStateChanges = "notify_state_changes"
+        static let reduceMotion      = "reduce_motion"
+        static let autoUpdate        = "auto_update"
+        static let streams           = "streams"
     }
 
     /// Stored property so `@Observable` can track changes and trigger SwiftUI
@@ -49,11 +57,59 @@ public final class PreferencesStore {
         }
     }
 
+    public var dnsLeakProtection: Bool = true {
+        didSet { defaults.set(dnsLeakProtection, forKey: Key.dnsLeakProtection) }
+    }
+
+    public var ipv6Killswitch: Bool = true {
+        didSet { defaults.set(ipv6Killswitch, forKey: Key.ipv6Killswitch) }
+    }
+
+    public var autoReconnect: Bool = true {
+        didSet { defaults.set(autoReconnect, forKey: Key.autoReconnect) }
+    }
+
+    public var startInMenuBar: Bool = false {
+        didSet { defaults.set(startInMenuBar, forKey: Key.startInMenuBar) }
+    }
+
+    public var notifyStateChanges: Bool = true {
+        didSet { defaults.set(notifyStateChanges, forKey: Key.notifyStateChanges) }
+    }
+
+    public var reduceMotion: Bool = false {
+        didSet { defaults.set(reduceMotion, forKey: Key.reduceMotion) }
+    }
+
+    public var autoUpdate: Bool = false {
+        didSet { defaults.set(autoUpdate, forKey: Key.autoUpdate) }
+    }
+
+    public var streams: Int = 8 {
+        didSet {
+            let clamped = max(2, min(16, streams))
+            if streams != clamped {
+                streams = clamped
+            } else {
+                defaults.set(streams, forKey: Key.streams)
+            }
+        }
+    }
+
     private init() {
         self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
         // Hydrate stored properties from UserDefaults
         self.theme = defaults.string(forKey: Key.theme) ?? "dark"
         self.languageOverride = defaults.string(forKey: Key.languageOverride)
+        self.dnsLeakProtection = defaults.object(forKey: Key.dnsLeakProtection) as? Bool ?? true
+        self.ipv6Killswitch = defaults.object(forKey: Key.ipv6Killswitch) as? Bool ?? true
+        self.autoReconnect = defaults.object(forKey: Key.autoReconnect) as? Bool ?? true
+        self.startInMenuBar = defaults.object(forKey: Key.startInMenuBar) as? Bool ?? false
+        self.notifyStateChanges = defaults.object(forKey: Key.notifyStateChanges) as? Bool ?? true
+        self.reduceMotion = defaults.object(forKey: Key.reduceMotion) as? Bool ?? false
+        self.autoUpdate = defaults.object(forKey: Key.autoUpdate) as? Bool ?? false
+        let storedStreams = defaults.object(forKey: Key.streams) as? Int ?? 8
+        self.streams = max(2, min(16, storedStreams))
     }
 
     // MARK: - DNS

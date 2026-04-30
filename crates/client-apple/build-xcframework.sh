@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build phantom-client-apple for iOS device + simulator archs and package
-# them as an XCFramework consumable by Xcode.
+# Build phantom-client-apple for iOS device + simulator + macOS archs and
+# package them as an XCFramework consumable by Xcode.
 #
 # Invoke from anywhere:  bash crates/client-apple/build-xcframework.sh
 # Make sure it is executable:  chmod +x crates/client-apple/build-xcframework.sh
@@ -20,6 +20,7 @@ OUT_DIR="$REPO_ROOT/apps/ios/Frameworks"
 OUT_XCFRAMEWORK="$OUT_DIR/PhantomCore.xcframework"
 LIB_NAME="libphantom_client_apple.a"
 FAT_SIM_DIR="$REPO_ROOT/target/ios-sim-fat/release"
+FAT_MACOS_DIR="$REPO_ROOT/target/macos-fat/release"
 
 # ─── Tool checks ──────────────────────────────────────────────────────────────
 
@@ -36,28 +37,46 @@ fi
 
 # ─── Targets ──────────────────────────────────────────────────────────────────
 
-echo "==> Ensuring iOS rustup targets are installed…"
+echo "==> Ensuring Apple rustup targets are installed…"
 rustup target add \
     aarch64-apple-ios \
     aarch64-apple-ios-sim \
-    x86_64-apple-ios
+    x86_64-apple-ios \
+    aarch64-apple-darwin \
+    x86_64-apple-darwin
 
 # ─── Build per target ─────────────────────────────────────────────────────────
 
 IOS_MIN="${IOS_DEPLOYMENT_TARGET:-17.0}"
+MACOS_MIN="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 
 build_target() {
     local triple="$1"
     local var_name="CFLAGS_${triple//-/_}"
     local deployment_flag=""
+    local platform_label=""
     case "$triple" in
-        aarch64-apple-ios)     deployment_flag="-mios-version-min=$IOS_MIN" ;;
-        aarch64-apple-ios-sim) deployment_flag="-mios-simulator-version-min=$IOS_MIN" ;;
-        x86_64-apple-ios)      deployment_flag="-mios-simulator-version-min=$IOS_MIN" ;;
+        aarch64-apple-ios)
+            deployment_flag="-mios-version-min=$IOS_MIN"
+            platform_label="min iOS $IOS_MIN"
+            ;;
+        aarch64-apple-ios-sim)
+            deployment_flag="-mios-simulator-version-min=$IOS_MIN"
+            platform_label="min iOS $IOS_MIN (sim)"
+            ;;
+        x86_64-apple-ios)
+            deployment_flag="-mios-simulator-version-min=$IOS_MIN"
+            platform_label="min iOS $IOS_MIN (sim)"
+            ;;
+        aarch64-apple-darwin|x86_64-apple-darwin)
+            deployment_flag="-mmacosx-version-min=$MACOS_MIN"
+            platform_label="min macOS $MACOS_MIN"
+            ;;
     esac
-    echo "==> cargo build --release --target $triple -p phantom-client-apple (min iOS $IOS_MIN)"
+    echo "==> cargo build --release --target $triple -p phantom-client-apple ($platform_label)"
     (cd "$REPO_ROOT" && \
         export IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN" && \
+        export MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN" && \
         export "$var_name=$deployment_flag" && \
         cargo build --release --target "$triple" -p phantom-client-apple)
 }
@@ -65,6 +84,8 @@ build_target() {
 build_target aarch64-apple-ios
 build_target aarch64-apple-ios-sim
 build_target x86_64-apple-ios
+build_target aarch64-apple-darwin
+build_target x86_64-apple-darwin
 
 # ─── Lipo the two simulator archs into a single fat lib ───────────────────────
 
@@ -74,6 +95,15 @@ lipo -create \
     "$REPO_ROOT/target/aarch64-apple-ios-sim/release/$LIB_NAME" \
     "$REPO_ROOT/target/x86_64-apple-ios/release/$LIB_NAME" \
     -output "$FAT_SIM_DIR/$LIB_NAME"
+
+# ─── Lipo the two macOS archs into a single fat lib ───────────────────────────
+
+echo "==> lipo arm64-macos + x86_64-macos → fat macos lib"
+mkdir -p "$FAT_MACOS_DIR"
+lipo -create \
+    "$REPO_ROOT/target/aarch64-apple-darwin/release/$LIB_NAME" \
+    "$REPO_ROOT/target/x86_64-apple-darwin/release/$LIB_NAME" \
+    -output "$FAT_MACOS_DIR/$LIB_NAME"
 
 # ─── Regenerate C header ──────────────────────────────────────────────────────
 
@@ -95,6 +125,8 @@ xcodebuild -create-xcframework \
     -library "$REPO_ROOT/target/aarch64-apple-ios/release/$LIB_NAME" \
     -headers "$HEADERS_DIR" \
     -library "$FAT_SIM_DIR/$LIB_NAME" \
+    -headers "$HEADERS_DIR" \
+    -library "$FAT_MACOS_DIR/$LIB_NAME" \
     -headers "$HEADERS_DIR" \
     -output "$OUT_XCFRAMEWORK"
 

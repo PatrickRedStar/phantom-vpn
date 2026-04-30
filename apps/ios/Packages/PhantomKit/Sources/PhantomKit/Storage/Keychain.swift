@@ -7,14 +7,16 @@ import Security
 /// Namespace for Keychain helpers used by `ProfilesStore` to persist PEM
 /// secrets in the shared access group.
 ///
-/// The Xcode project must declare the matching
-/// `$(AppIdentifierPrefix).group.com.ghoststream.vpn`
-/// keychain-access-group in entitlements on both targets; if it's missing,
-/// SecItem calls return `errSecMissingEntitlement` and we fall back to a
-/// non-shared item (sufficient for Simulator / debug builds).
+/// The Xcode project must declare the matching keychain access group on both
+/// targets. The signed entitlement includes the Team ID prefix, so we resolve
+/// the concrete access group from the running binary instead of hardcoding it.
 public enum Keychain {
     /// App Group id used as keychain access group (must match entitlements).
-    public static let accessGroup = "group.com.ghoststream.vpn"
+    public static let appGroupIdentifier = "group.com.ghoststream.vpn"
+
+    public static var accessGroup: String {
+        resolvedAccessGroup()
+    }
 
     /// Service identifier scoping all GhostStream secrets.
     public static let service = "com.ghoststream.vpn"
@@ -25,6 +27,29 @@ public enum Keychain {
         case unhandled(OSStatus)
         case notFound
         case encoding
+    }
+
+    private static func applyPlatformOptions(_ query: inout [String: Any]) {
+        #if os(macOS)
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
+    }
+
+    private static func resolvedAccessGroup() -> String {
+        guard let task = SecTaskCreateFromSelf(nil),
+              let value = SecTaskCopyValueForEntitlement(
+                task,
+                "keychain-access-groups" as CFString,
+                nil
+              )
+        else {
+            return appGroupIdentifier
+        }
+
+        let groups = value as? [String] ?? []
+        return groups.first { group in
+            group == appGroupIdentifier || group.hasSuffix(".\(appGroupIdentifier)")
+        } ?? appGroupIdentifier
     }
 
     /// Stores `value` under `key`. Overwrites any existing item atomically
@@ -40,6 +65,7 @@ public enum Keychain {
 
         try delete(key)
 
+        let accessGroup = resolvedAccessGroup()
         var addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -48,6 +74,7 @@ public enum Keychain {
             kSecValueData as String: data,
             kSecAttrAccessGroup as String: accessGroup,
         ]
+        applyPlatformOptions(&addQuery)
 
         var status = SecItemAdd(addQuery as CFDictionary, nil)
         if status == errSecMissingEntitlement {
@@ -69,6 +96,7 @@ public enum Keychain {
             return (status, item)
         }
 
+        let accessGroup = resolvedAccessGroup()
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -77,6 +105,7 @@ public enum Keychain {
             kSecReturnData as String: true,
             kSecAttrAccessGroup as String: accessGroup,
         ]
+        applyPlatformOptions(&query)
 
         var (status, item) = copy(query: query)
         if status == errSecMissingEntitlement {
@@ -92,12 +121,14 @@ public enum Keychain {
 
     /// Deletes the item under `key`. `errSecItemNotFound` is swallowed.
     public static func delete(_ key: String) throws {
+        let accessGroup = resolvedAccessGroup()
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecAttrAccessGroup as String: accessGroup,
         ]
+        applyPlatformOptions(&query)
         var status = SecItemDelete(query as CFDictionary)
         if status == errSecMissingEntitlement {
             query.removeValue(forKey: kSecAttrAccessGroup as String)

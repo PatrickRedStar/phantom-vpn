@@ -29,7 +29,7 @@ public final class TunnelIpcBridge {
 
     // MARK: - State
 
-    private weak var session: NETunnelProviderSession?
+    private let session: NETunnelProviderSession?
 
     // MARK: - Init
 

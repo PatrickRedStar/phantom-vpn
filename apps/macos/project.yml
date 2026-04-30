@@ -1,0 +1,118 @@
+name: GhostStream
+options:
+  bundleIdPrefix: com.ghoststream.vpn
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  defaultConfig: Debug
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+packages:
+  PhantomKit:
+    path: ../ios/Packages/PhantomKit
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: "UPG896A272"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "Apple Development"
+    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGNING_ALLOWED: "YES"
+    ENABLE_BITCODE: NO
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    REGISTER_APP_GROUPS: YES
+
+targets:
+  GhostStream:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: GhostStream
+        excludes:
+          - "**/.gitkeep"
+    resources:
+      - path: GhostStream/Resources/Assets.xcassets
+    info:
+      path: GhostStream/Info.plist
+      properties:
+        CFBundleDisplayName: GhostStream
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "0.23.0"
+        CFBundleVersion: "5"
+        LSMinimumSystemVersion: "15.0"
+        LSUIElement: false
+        NSPrincipalClass: NSApplication
+        NSHumanReadableCopyright: "© 2026 GhostStream"
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn
+        INFOPLIST_FILE: GhostStream/Info.plist
+        CODE_SIGN_ENTITLEMENTS: GhostStream/GhostStream.entitlements
+        MARKETING_VERSION: "0.23.0"
+        CURRENT_PROJECT_VERSION: "5"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - target: PacketTunnelExtension
+        embed: true
+        codeSign: true
+      - package: PhantomKit
+        product: PhantomKit
+      - package: PhantomKit
+        product: PhantomUI
+      - framework: ../ios/Frameworks/PhantomCore.xcframework
+        embed: false
+        codeSign: false
+        optional: true
+      - sdk: NetworkExtension.framework
+      - sdk: SystemExtensions.framework
+      - sdk: ServiceManagement.framework
+
+  PacketTunnelExtension:
+    type: system-extension
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: PacketTunnelExtension
+        excludes:
+          - "**/.gitkeep"
+    info:
+      path: PacketTunnelExtension/Info.plist
+      properties:
+        CFBundlePackageType: SYSX
+        CFBundleShortVersionString: "0.23.0"
+        CFBundleVersion: "5"
+        LSMinimumSystemVersion: "15.0"
+        NetworkExtension:
+          NEMachServiceName: group.com.ghoststream.vpn.tunnel
+          NEProviderClasses:
+            com.apple.networkextension.packet-tunnel: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+        NSSystemExtensionUsageDescription: GhostStream uses a network system extension to create and protect VPN tunnels.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn.tunnel
+        PRODUCT_NAME: com.ghoststream.vpn.tunnel
+        PRODUCT_MODULE_NAME: PacketTunnelExtension
+        INFOPLIST_FILE: PacketTunnelExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: PacketTunnelExtension/PacketTunnelExtension.entitlements
+        MARKETING_VERSION: "0.23.0"
+        CURRENT_PROJECT_VERSION: "5"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
+        ENABLE_HARDENED_RUNTIME: YES
+        WRAPPER_EXTENSION: systemextension
+    dependencies:
+      - package: PhantomKit
+        product: PhantomKit
+      - framework: ../ios/Frameworks/PhantomCore.xcframework
+        embed: false
+        optional: true
+      - sdk: NetworkExtension.framework

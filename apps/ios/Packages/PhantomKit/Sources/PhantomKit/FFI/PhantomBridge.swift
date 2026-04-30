@@ -200,10 +200,10 @@ public actor PhantomBridge {
     }
 
     /// Computes inverted VPN routes for split-routing.
-    /// `cidrsPath` is a file path to a newline-separated CIDR list.
+    /// `directCidrs` is newline-separated CIDR text.
     /// Returns `[]` on any failure.
-    public static func computeVpnRoutes(cidrsPath: String) -> [IPRoute] {
-        let raw: UnsafeMutablePointer<CChar>? = cidrsPath.withCString { c_phantom_compute_vpn_routes($0) }
+    public static func computeVpnRoutes(directCidrs: String) -> [IPRoute] {
+        let raw: UnsafeMutablePointer<CChar>? = directCidrs.withCString { c_phantom_compute_vpn_routes($0) }
         guard let raw else { return [] }
         defer { c_phantom_free_string(raw) }
         let json = String(cString: raw)
@@ -250,11 +250,11 @@ public struct ParsedConnConfig: Codable {
 
 /// A single split-routing route entry.
 public struct IPRoute: Codable {
-    public let cidr: String
-    public let viaTun: Bool
+    public let addr: String
+    public let prefix: UInt8
 
     private enum CodingKeys: String, CodingKey {
-        case cidr
-        case viaTun = "via_tun"
+        case addr
+        case prefix
     }
 }

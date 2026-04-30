@@ -1,0 +1,237 @@
+{
+  "sourceLanguage" : "ru",
+  "strings" : {
+    "app.name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "GhostStream" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "GhostStream" } }
+      }
+    },
+    "menu.open_console" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Open Console" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Открыть консоль" } }
+      }
+    },
+    "menu.command_palette" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Command Palette" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Командная палитра" } }
+      }
+    },
+    "menu.about" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "About GhostStream" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "О программе GhostStream" } }
+      }
+    },
+    "menu.quit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Quit" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Выйти" } }
+      }
+    },
+    "state.standby" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "STANDBY." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ОЖИДАНИЕ." } }
+      }
+    },
+    "state.tuning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "TUNING…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "НАСТРОЙКА…" } }
+      }
+    },
+    "state.transmitting" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "TRANSMITTING." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ПЕРЕДАЁТ." } }
+      }
+    },
+    "state.lost_signal" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "LOST SIGNAL." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "СИГНАЛ ПОТЕРЯН." } }
+      }
+    },
+    "fab.connect" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "CONNECT" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ПОДКЛЮЧИТЬ" } }
+      }
+    },
+    "fab.disconnect" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "DISCONNECT" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ОТКЛЮЧИТЬ" } }
+      }
+    },
+    "sidebar.stream" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "STREAM" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ПОТОК" } }
+      }
+    },
+    "sidebar.tail" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "TAIL" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ХВОСТ" } }
+      }
+    },
+    "sidebar.setup" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "SETUP" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "НАСТРОЙКА" } }
+      }
+    },
+    "sidebar.roster" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "ROSTER" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "СПИСОК" } }
+      }
+    },
+    "welcome.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste your config" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Вставьте конфиг" } }
+      }
+    },
+    "welcome.import" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "IMPORT" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ИМПОРТИРОВАТЬ" } }
+      }
+    },
+    "welcome.skip" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Skip" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Пропустить" } }
+      }
+    },
+    "welcome.clipboard_banner" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Detected ghs:// in clipboard" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Найдена ghs:// в буфере обмена" } }
+      }
+    },
+    "settings.appearance" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Appearance" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Оформление" } }
+      }
+    },
+    "settings.theme" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Theme" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Тема" } }
+      }
+    },
+    "settings.theme.system" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "System" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Система" } }
+      }
+    },
+    "settings.theme.dark" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Dark" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Тёмная" } }
+      }
+    },
+    "settings.theme.light" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Light" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Светлая" } }
+      }
+    },
+    "settings.tunnel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tunnel" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Тоннель" } }
+      }
+    },
+    "settings.mac_integration" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "macOS Integration" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Интеграция macOS" } }
+      }
+    },
+    "settings.launch_at_login" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Launch at login" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Запускать при старте" } }
+      }
+    },
+    "settings.show_in_dock" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Show in Dock" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Показывать в Dock" } }
+      }
+    },
+    "settings.diagnostics" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Diagnostics" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Диагностика" } }
+      }
+    },
+    "roster.empty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No profiles yet" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Профили не добавлены" } }
+      }
+    },
+    "roster.add" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "ADD" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ДОБАВИТЬ" } }
+      }
+    },
+    "logs.empty" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No logs yet" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Логов пока нет" } }
+      }
+    },
+    "command_palette.placeholder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Type a command or profile…" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Введите команду или профиль…" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}

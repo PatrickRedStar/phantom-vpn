@@ -1,0 +1,766 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0154840B4F2117F9F102C920 /* SidebarList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 257ADBA54B9B683D8C66A404 /* SidebarList.swift */; };
+		06CA2E6CEB0651746EBC453F /* MenuBarStatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = E178770D82843C786E17C471 /* MenuBarStatusItem.swift */; };
+		08EB60E72500643451B2C222 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0327D15C33430C284635D42A /* DashboardView.swift */; };
+		15913F4A43008B3BDCF5EDE7 /* SystemExtensions.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AE6742D4E48EC28BBC72622E /* SystemExtensions.framework */; };
+		1D4AE3DFB7E2576885B5D556 /* KeyboardShortcutHint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 735D0DD6A563FD9A2568459E /* KeyboardShortcutHint.swift */; };
+		22E9407401612BB76A747C01 /* WelcomeWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18EE894D73FD02941FDC2E20 /* WelcomeWindow.swift */; };
+		240AB4569EC7E07597B95E66 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 70DF2B5E0FF9CC6DEAADB874 /* Localizable.xcstrings */; };
+		337A008221CE70E7C2893472 /* DockPolicyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */; };
+		39C9936B348FE813522099E2 /* OnboardingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A380C0C517545C4A72D369B /* OnboardingCoordinator.swift */; };
+		3A6B9CAA10CA7EAE2028B3A8 /* PasteGhsField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 750B9134D64C078874D2F5CA /* PasteGhsField.swift */; };
+		3D8504537781E58EF705919E /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 206B1279E7E37C0862FEC03F /* main.swift */; };
+		423A69B5839190D55AD04276 /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
+		44882E92C4B6B7088F24E6BE /* PhantomKit in Frameworks */ = {isa = PBXBuildFile; productRef = 192F28EAB815474C93A38DAF /* PhantomKit */; };
+		527186CDE65ED9E37B948D97 /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */; };
+		53CB2B107A76ABC8F70FC547 /* LoginItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BF7582D129D427A55BF228 /* LoginItemController.swift */; };
+		56AF7BE36844517D1135A73B /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */; };
+		56BA5BC6F3F4C992842BB875 /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 156C3D9A536950584A6D3F7B /* CommandPalette.swift */; };
+		79C9C49C81ACB0CFF7C6CF63 /* FontRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76DA79C7CCAF81197CACD8C8 /* FontRegistration.swift */; };
+		7B1B537BEF0A5224B74CF8CE /* PhantomKit in Frameworks */ = {isa = PBXBuildFile; productRef = BE3892E297CA7530A2C4328F /* PhantomKit */; };
+		856469DBCB4079F628A8EA90 /* GhostStreamApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = D44DCB5C785BF403588E7AC7 /* GhostStreamApp.swift */; };
+		8712DF68B5B91649EBD1A9EC /* VpnTunnelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DBE55892E32B2EEB55A210 /* VpnTunnelController.swift */; };
+		8869D0009F207D8CCC8819E0 /* SidebarProfileBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */; };
+		8BAC9E8284EAB5B6251C764C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21597CEA9A505595AE9813DB /* SettingsView.swift */; };
+		8C9DFF80CDAA22010A53B558 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB4009EBBC952758419A6DAE /* AboutView.swift */; };
+		92BBC670737910138EB981D6 /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B8373F0C0C3AABD2CB455F7 /* ServiceManagement.framework */; };
+		930431B39EFAE6D0678A11E2 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB024577662DF32A109637B9 /* AppDelegate.swift */; };
+		96A058E90B52C17C206DBE36 /* PacketTunnelExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		9C6A4AA1ADC745AA5A3BE02F /* VpnStateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C5FF9F9A7151C391868F6EF /* VpnStateManager.swift */; };
+		9D1D3C3A932F5DC317776964 /* ProfileEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62F91C21525DA5CCD33520B0 /* ProfileEditorSheet.swift */; };
+		A8F99F92967F66EB987F52FD /* MainConsoleWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F847664C4CCC7651B2AC04 /* MainConsoleWindow.swift */; };
+		B9F34F9AA2B2DAAA36461268 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86C39DA03DEF188889E61E7 /* PacketTunnelProvider.swift */; };
+		CBAFDA18C57D0B4B1AF9897E /* ServerRosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50B75A842C64C2669ADB7F5 /* ServerRosterView.swift */; };
+		CD7E358B0D6284D85507B910 /* MenuBarPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */; };
+		E19F05F1756F778791751FFB /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
+		EAC8DA3B973E2586286EAD0A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D9D6D7F04B20308F2ECD73AB /* Assets.xcassets */; };
+		F08038F4DB1CA7EF2CE9D6E2 /* PhantomUI in Frameworks */ = {isa = PBXBuildFile; productRef = F139B5EE09A0217BAF3FE780 /* PhantomUI */; };
+		F0D426F0F9644CB018E33171 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */; };
+		F926DB0657009EE342DDDACD /* SystemExtensionInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */; };
+		FE2128A1C154A27968768E54 /* TailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B89D6EDEA25F404BBC533F4 /* TailView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D6372FD6731897533B202E1A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F7850207422D0502C4D25F72 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B35EDFDA2761F34D0AA9E4E7;
+			remoteInfo = PacketTunnelExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		F28F6445A7854BAEE42D52C4 /* Embed System Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(SYSTEM_EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				96A058E90B52C17C206DBE36 /* PacketTunnelExtension.systemextension in Embed System Extensions */,
+			);
+			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		006F59DB40E1D7DA4D58282A /* PhantomKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PhantomKit; path = ../ios/Packages/PhantomKit; sourceTree = SOURCE_ROOT; };
+		01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		0327D15C33430C284635D42A /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		0A380C0C517545C4A72D369B /* OnboardingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingCoordinator.swift; sourceTree = "<group>"; };
+		0B8373F0C0C3AABD2CB455F7 /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
+		0C5FF9F9A7151C391868F6EF /* VpnStateManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VpnStateManager.swift; sourceTree = "<group>"; };
+		156C3D9A536950584A6D3F7B /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
+		18EE894D73FD02941FDC2E20 /* WelcomeWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeWindow.swift; sourceTree = "<group>"; };
+		206B1279E7E37C0862FEC03F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		21597CEA9A505595AE9813DB /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		257ADBA54B9B683D8C66A404 /* SidebarList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarList.swift; sourceTree = "<group>"; };
+		2B083AADEC74AF6F046D2475 /* GhostStream.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GhostStream.entitlements; sourceTree = "<group>"; };
+		2C70003712DBB20C5F829D4E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		3872376E08B45829DB3C624D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProfileBlock.swift; sourceTree = "<group>"; };
+		51F847664C4CCC7651B2AC04 /* MainConsoleWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainConsoleWindow.swift; sourceTree = "<group>"; };
+		62F91C21525DA5CCD33520B0 /* ProfileEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditorSheet.swift; sourceTree = "<group>"; };
+		6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PhantomCore.xcframework; path = ../ios/Frameworks/PhantomCore.xcframework; sourceTree = "<group>"; };
+		70DF2B5E0FF9CC6DEAADB874 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		735D0DD6A563FD9A2568459E /* KeyboardShortcutHint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutHint.swift; sourceTree = "<group>"; };
+		750B9134D64C078874D2F5CA /* PasteGhsField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteGhsField.swift; sourceTree = "<group>"; };
+		76DA79C7CCAF81197CACD8C8 /* FontRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FontRegistration.swift; sourceTree = "<group>"; };
+		9B89D6EDEA25F404BBC533F4 /* TailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailView.swift; sourceTree = "<group>"; };
+		A1BF7582D129D427A55BF228 /* LoginItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemController.swift; sourceTree = "<group>"; };
+		AE6742D4E48EC28BBC72622E /* SystemExtensions.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemExtensions.framework; path = System/Library/Frameworks/SystemExtensions.framework; sourceTree = SDKROOT; };
+		B50B75A842C64C2669ADB7F5 /* ServerRosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerRosterView.swift; sourceTree = "<group>"; };
+		B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = PacketTunnelExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
+		B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopover.swift; sourceTree = "<group>"; };
+		C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemExtensionInstaller.swift; sourceTree = "<group>"; };
+		C86C39DA03DEF188889E61E7 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
+		C9DBE55892E32B2EEB55A210 /* VpnTunnelController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VpnTunnelController.swift; sourceTree = "<group>"; };
+		D44DCB5C785BF403588E7AC7 /* GhostStreamApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhostStreamApp.swift; sourceTree = "<group>"; };
+		D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
+		D9D6D7F04B20308F2ECD73AB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DockPolicyController.swift; sourceTree = "<group>"; };
+		E178770D82843C786E17C471 /* MenuBarStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusItem.swift; sourceTree = "<group>"; };
+		E9415BCD9CF4A8CEA4F124C3 /* GhostStream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GhostStream.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EB4009EBBC952758419A6DAE /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		FB024577662DF32A109637B9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		FC6CB792C9929B75A33654B1 /* PacketTunnelExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacketTunnelExtension.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		125FE132322924D6B5F1BA88 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7B1B537BEF0A5224B74CF8CE /* PhantomKit in Frameworks */,
+				E19F05F1756F778791751FFB /* PhantomCore.xcframework in Frameworks */,
+				56AF7BE36844517D1135A73B /* NetworkExtension.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		90DF7B5464A6F152BE61C5A8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				44882E92C4B6B7088F24E6BE /* PhantomKit in Frameworks */,
+				F08038F4DB1CA7EF2CE9D6E2 /* PhantomUI in Frameworks */,
+				423A69B5839190D55AD04276 /* PhantomCore.xcframework in Frameworks */,
+				F0D426F0F9644CB018E33171 /* NetworkExtension.framework in Frameworks */,
+				15913F4A43008B3BDCF5EDE7 /* SystemExtensions.framework in Frameworks */,
+				92BBC670737910138EB981D6 /* ServiceManagement.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0E5E088C52A13F12A203700E /* Sidebar */ = {
+			isa = PBXGroup;
+			children = (
+				257ADBA54B9B683D8C66A404 /* SidebarList.swift */,
+				406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */,
+			);
+			path = Sidebar;
+			sourceTree = "<group>";
+		};
+		15BDD09A23A40C89FEAE03BA /* Servers */ = {
+			isa = PBXGroup;
+			children = (
+				B50B75A842C64C2669ADB7F5 /* ServerRosterView.swift */,
+			);
+			path = Servers;
+			sourceTree = "<group>";
+		};
+		261A3CAC28E2B9119C7956DD /* PacketTunnelExtension */ = {
+			isa = PBXGroup;
+			children = (
+				3872376E08B45829DB3C624D /* Info.plist */,
+				206B1279E7E37C0862FEC03F /* main.swift */,
+				FC6CB792C9929B75A33654B1 /* PacketTunnelExtension.entitlements */,
+				C86C39DA03DEF188889E61E7 /* PacketTunnelProvider.swift */,
+			);
+			path = PacketTunnelExtension;
+			sourceTree = "<group>";
+		};
+		3709184FF03B972CD975FC08 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E9415BCD9CF4A8CEA4F124C3 /* GhostStream.app */,
+				B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		3900E6BDE7494B6AC3628AB1 /* Service */ = {
+			isa = PBXGroup;
+			children = (
+				E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */,
+				A1BF7582D129D427A55BF228 /* LoginItemController.swift */,
+				C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */,
+				0C5FF9F9A7151C391868F6EF /* VpnStateManager.swift */,
+				C9DBE55892E32B2EEB55A210 /* VpnTunnelController.swift */,
+			);
+			path = Service;
+			sourceTree = "<group>";
+		};
+		3EEB21946ABAC9AA3CC28B53 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				735D0DD6A563FD9A2568459E /* KeyboardShortcutHint.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		58A2482EC1093B78718C39BB /* Dashboard */ = {
+			isa = PBXGroup;
+			children = (
+				0327D15C33430C284635D42A /* DashboardView.swift */,
+			);
+			path = Dashboard;
+			sourceTree = "<group>";
+		};
+		5D375F38C8C2F990A95AEA3F /* Logs */ = {
+			isa = PBXGroup;
+			children = (
+				9B89D6EDEA25F404BBC533F4 /* TailView.swift */,
+			);
+			path = Logs;
+			sourceTree = "<group>";
+		};
+		6ADF36185F29BF1BE20FE97E /* MenuBar */ = {
+			isa = PBXGroup;
+			children = (
+				B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */,
+				E178770D82843C786E17C471 /* MenuBarStatusItem.swift */,
+			);
+			path = MenuBar;
+			sourceTree = "<group>";
+		};
+		7672F78F0B9FFACB05137932 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				62F91C21525DA5CCD33520B0 /* ProfileEditorSheet.swift */,
+				21597CEA9A505595AE9813DB /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		88BFCB57990DC1F2E63C9A84 /* Window */ = {
+			isa = PBXGroup;
+			children = (
+				EB4009EBBC952758419A6DAE /* AboutView.swift */,
+				156C3D9A536950584A6D3F7B /* CommandPalette.swift */,
+				51F847664C4CCC7651B2AC04 /* MainConsoleWindow.swift */,
+			);
+			path = Window;
+			sourceTree = "<group>";
+		};
+		8A69E6E2D65D85A015DBE4F1 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				3EEB21946ABAC9AA3CC28B53 /* Components */,
+				58A2482EC1093B78718C39BB /* Dashboard */,
+				5D375F38C8C2F990A95AEA3F /* Logs */,
+				6ADF36185F29BF1BE20FE97E /* MenuBar */,
+				BC3DFBB91D59999BFF5A89EC /* Onboarding */,
+				15BDD09A23A40C89FEAE03BA /* Servers */,
+				7672F78F0B9FFACB05137932 /* Settings */,
+				0E5E088C52A13F12A203700E /* Sidebar */,
+				88BFCB57990DC1F2E63C9A84 /* Window */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		99201D49F16C6F58E2BAA898 = {
+			isa = PBXGroup;
+			children = (
+				9988F8A85A412F1CB704CCDE /* GhostStream */,
+				E663310397C1DBD5C1E2C0A6 /* Packages */,
+				261A3CAC28E2B9119C7956DD /* PacketTunnelExtension */,
+				9C9D528F516DAACA14CBC2AF /* Frameworks */,
+				3709184FF03B972CD975FC08 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		9988F8A85A412F1CB704CCDE /* GhostStream */ = {
+			isa = PBXGroup;
+			children = (
+				E621A3FE5B2670F801FC52DD /* App */,
+				B0B4430230006DDA5094EC56 /* Resources */,
+				3900E6BDE7494B6AC3628AB1 /* Service */,
+				8A69E6E2D65D85A015DBE4F1 /* UI */,
+				2B083AADEC74AF6F046D2475 /* GhostStream.entitlements */,
+				2C70003712DBB20C5F829D4E /* Info.plist */,
+			);
+			path = GhostStream;
+			sourceTree = "<group>";
+		};
+		9C9D528F516DAACA14CBC2AF /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */,
+				6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */,
+				0B8373F0C0C3AABD2CB455F7 /* ServiceManagement.framework */,
+				AE6742D4E48EC28BBC72622E /* SystemExtensions.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		B0B4430230006DDA5094EC56 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				D9D6D7F04B20308F2ECD73AB /* Assets.xcassets */,
+				70DF2B5E0FF9CC6DEAADB874 /* Localizable.xcstrings */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		BC3DFBB91D59999BFF5A89EC /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				0A380C0C517545C4A72D369B /* OnboardingCoordinator.swift */,
+				750B9134D64C078874D2F5CA /* PasteGhsField.swift */,
+				18EE894D73FD02941FDC2E20 /* WelcomeWindow.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		E621A3FE5B2670F801FC52DD /* App */ = {
+			isa = PBXGroup;
+			children = (
+				FB024577662DF32A109637B9 /* AppDelegate.swift */,
+				D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */,
+				76DA79C7CCAF81197CACD8C8 /* FontRegistration.swift */,
+				D44DCB5C785BF403588E7AC7 /* GhostStreamApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		E663310397C1DBD5C1E2C0A6 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				006F59DB40E1D7DA4D58282A /* PhantomKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		93AD8F0CB8AA9463D2963FEA /* GhostStream */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7838063DE7AB6F64F5956D0E /* Build configuration list for PBXNativeTarget "GhostStream" */;
+			buildPhases = (
+				D5B225086CCAFA5C1D236A69 /* Sources */,
+				391FA3E69B63214B9F35D0BE /* Resources */,
+				90DF7B5464A6F152BE61C5A8 /* Frameworks */,
+				F28F6445A7854BAEE42D52C4 /* Embed System Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				190CB697C37493DD50BCBD94 /* PBXTargetDependency */,
+			);
+			name = GhostStream;
+			packageProductDependencies = (
+				192F28EAB815474C93A38DAF /* PhantomKit */,
+				F139B5EE09A0217BAF3FE780 /* PhantomUI */,
+			);
+			productName = GhostStream;
+			productReference = E9415BCD9CF4A8CEA4F124C3 /* GhostStream.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B35EDFDA2761F34D0AA9E4E7 /* PacketTunnelExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B5408CE3ADA59383906A87CC /* Build configuration list for PBXNativeTarget "PacketTunnelExtension" */;
+			buildPhases = (
+				1E5426E4B5775E1B747EEA21 /* Sources */,
+				125FE132322924D6B5F1BA88 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PacketTunnelExtension;
+			packageProductDependencies = (
+				BE3892E297CA7530A2C4328F /* PhantomKit */,
+			);
+			productName = PacketTunnelExtension;
+			productReference = B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */;
+			productType = "com.apple.product-type.system-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F7850207422D0502C4D25F72 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					93AD8F0CB8AA9463D2963FEA = {
+						DevelopmentTeam = UPG896A272;
+						ProvisioningStyle = Automatic;
+					};
+					B35EDFDA2761F34D0AA9E4E7 = {
+						DevelopmentTeam = UPG896A272;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 0D493A411660F74A4A28531F /* Build configuration list for PBXProject "GhostStream" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+				ru,
+			);
+			mainGroup = 99201D49F16C6F58E2BAA898;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				7407A42AF9467C291D8D1CEB /* XCLocalSwiftPackageReference "../ios/Packages/PhantomKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 3709184FF03B972CD975FC08 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				93AD8F0CB8AA9463D2963FEA /* GhostStream */,
+				B35EDFDA2761F34D0AA9E4E7 /* PacketTunnelExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		391FA3E69B63214B9F35D0BE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EAC8DA3B973E2586286EAD0A /* Assets.xcassets in Resources */,
+				240AB4569EC7E07597B95E66 /* Localizable.xcstrings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1E5426E4B5775E1B747EEA21 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B9F34F9AA2B2DAAA36461268 /* PacketTunnelProvider.swift in Sources */,
+				3D8504537781E58EF705919E /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D5B225086CCAFA5C1D236A69 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8C9DFF80CDAA22010A53B558 /* AboutView.swift in Sources */,
+				930431B39EFAE6D0678A11E2 /* AppDelegate.swift in Sources */,
+				527186CDE65ED9E37B948D97 /* AppRouter.swift in Sources */,
+				56BA5BC6F3F4C992842BB875 /* CommandPalette.swift in Sources */,
+				08EB60E72500643451B2C222 /* DashboardView.swift in Sources */,
+				337A008221CE70E7C2893472 /* DockPolicyController.swift in Sources */,
+				79C9C49C81ACB0CFF7C6CF63 /* FontRegistration.swift in Sources */,
+				856469DBCB4079F628A8EA90 /* GhostStreamApp.swift in Sources */,
+				1D4AE3DFB7E2576885B5D556 /* KeyboardShortcutHint.swift in Sources */,
+				53CB2B107A76ABC8F70FC547 /* LoginItemController.swift in Sources */,
+				A8F99F92967F66EB987F52FD /* MainConsoleWindow.swift in Sources */,
+				CD7E358B0D6284D85507B910 /* MenuBarPopover.swift in Sources */,
+				06CA2E6CEB0651746EBC453F /* MenuBarStatusItem.swift in Sources */,
+				39C9936B348FE813522099E2 /* OnboardingCoordinator.swift in Sources */,
+				3A6B9CAA10CA7EAE2028B3A8 /* PasteGhsField.swift in Sources */,
+				9D1D3C3A932F5DC317776964 /* ProfileEditorSheet.swift in Sources */,
+				CBAFDA18C57D0B4B1AF9897E /* ServerRosterView.swift in Sources */,
+				8BAC9E8284EAB5B6251C764C /* SettingsView.swift in Sources */,
+				0154840B4F2117F9F102C920 /* SidebarList.swift in Sources */,
+				8869D0009F207D8CCC8819E0 /* SidebarProfileBlock.swift in Sources */,
+				F926DB0657009EE342DDDACD /* SystemExtensionInstaller.swift in Sources */,
+				FE2128A1C154A27968768E54 /* TailView.swift in Sources */,
+				9C6A4AA1ADC745AA5A3BE02F /* VpnStateManager.swift in Sources */,
+				8712DF68B5B91649EBD1A9EC /* VpnTunnelController.swift in Sources */,
+				22E9407401612BB76A747C01 /* WelcomeWindow.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		190CB697C37493DD50BCBD94 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B35EDFDA2761F34D0AA9E4E7 /* PacketTunnelExtension */;
+			targetProxy = D6372FD6731897533B202E1A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		004071D55063607AC5C0CB4A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				ENABLE_HARDENED_RUNTIME = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
+					"\"../ios/Frameworks\"",
+				);
+				INFOPLIST_FILE = GhostStream/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.23.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		13E52A2DC8EF8B69AB163453 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				ENABLE_HARDENED_RUNTIME = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
+					"\"../ios/Frameworks\"",
+				);
+				INFOPLIST_FILE = GhostStream/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.23.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		422EEF7389224C61C118841D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = UPG896A272;
+				ENABLE_BITCODE = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		488EDCFE58C4C2D69DACC78C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				ENABLE_HARDENED_RUNTIME = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
+					"\"../ios/Frameworks\"",
+				);
+				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.23.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn.tunnel;
+				PRODUCT_MODULE_NAME = PacketTunnelExtension;
+				PRODUCT_NAME = com.ghoststream.vpn.tunnel;
+				SDKROOT = macosx;
+				WRAPPER_EXTENSION = systemextension;
+			};
+			name = Release;
+		};
+		73C998A05766216A3B16D674 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				ENABLE_HARDENED_RUNTIME = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
+					"\"../ios/Frameworks\"",
+				);
+				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.23.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn.tunnel;
+				PRODUCT_MODULE_NAME = PacketTunnelExtension;
+				PRODUCT_NAME = com.ghoststream.vpn.tunnel;
+				SDKROOT = macosx;
+				WRAPPER_EXTENSION = systemextension;
+			};
+			name = Debug;
+		};
+		CF2EDC53902F4A59B671D5F6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = UPG896A272;
+				ENABLE_BITCODE = NO;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0D493A411660F74A4A28531F /* Build configuration list for PBXProject "GhostStream" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				422EEF7389224C61C118841D /* Debug */,
+				CF2EDC53902F4A59B671D5F6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7838063DE7AB6F64F5956D0E /* Build configuration list for PBXNativeTarget "GhostStream" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				13E52A2DC8EF8B69AB163453 /* Debug */,
+				004071D55063607AC5C0CB4A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B5408CE3ADA59383906A87CC /* Build configuration list for PBXNativeTarget "PacketTunnelExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				73C998A05766216A3B16D674 /* Debug */,
+				488EDCFE58C4C2D69DACC78C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		7407A42AF9467C291D8D1CEB /* XCLocalSwiftPackageReference "../ios/Packages/PhantomKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../ios/Packages/PhantomKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		192F28EAB815474C93A38DAF /* PhantomKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PhantomKit;
+		};
+		BE3892E297CA7530A2C4328F /* PhantomKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PhantomKit;
+		};
+		F139B5EE09A0217BAF3FE780 /* PhantomUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PhantomUI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = F7850207422D0502C4D25F72 /* Project object */;
+}

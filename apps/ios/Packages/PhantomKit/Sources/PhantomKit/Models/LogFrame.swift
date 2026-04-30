@@ -7,7 +7,7 @@ public struct LogFrame: Codable, Identifiable {
     public var level: String
     public var msg: String
 
-    public var id: UInt64 { tsUnixMs }
+    public var id: String { "\(tsUnixMs)|\(level)|\(msg)" }
 
     enum CodingKeys: String, CodingKey {
         case tsUnixMs = "ts_unix_ms"
