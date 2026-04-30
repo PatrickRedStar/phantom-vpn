@@ -211,18 +211,18 @@ struct LogsView: View {
 }
 
 private func L(_ key: String) -> String {
-    NSLocalizedString(key, comment: "")
+    AppStrings.localized(key)
 }
 
 private extension LogFilter {
     var nativeTitle: String {
         switch self {
-        case .all: return "All"
-        case .trace: return "Trace"
-        case .debug: return "Debug"
-        case .info: return "Info"
-        case .warn: return "Warn"
-        case .error: return "Error"
+        case .all: return L("logs.filter.all")
+        case .trace: return "TRACE"
+        case .debug: return L("logs.filter.debug")
+        case .info: return L("logs.filter.info")
+        case .warn: return L("logs.filter.warn")
+        case .error: return L("logs.filter.error")
         }
     }
 }

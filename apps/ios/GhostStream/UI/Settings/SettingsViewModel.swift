@@ -47,6 +47,12 @@ public final class SettingsViewModel {
     /// Cached subscription status strings keyed by profile id (for display
     /// on the profile card).
     public private(set) var profileSubscriptions: [String: String] = [:]
+    /// Downloaded V2Fly routing presets keyed as `geoip:ru`, `geosite:cn`, etc.
+    public private(set) var downloadedRoutingRules: [String: RoutingRuleInfo] = [:]
+    /// Presets currently being downloaded.
+    public private(set) var downloadingRoutingRuleIds: Set<String> = []
+    /// Last routing preset download status.
+    public private(set) var routingDownloadStatus: String?
     /// Last import / rename error; nil when cleared.
     public private(set) var lastError: String?
 
@@ -58,6 +64,7 @@ public final class SettingsViewModel {
     ) {
         self.profilesStore = profilesStore
         self.preferencesStore = preferencesStore
+        refreshDownloadedRoutingRules()
     }
 
     // MARK: - Convenience accessors (pass-through to stores)
@@ -68,6 +75,11 @@ public final class SettingsViewModel {
 
     public var dnsServers: [String] { preferencesStore.dnsServers ?? [] }
     public var splitRouting: Bool { preferencesStore.splitRouting ?? false }
+    public var directCountries: [String] { preferencesStore.directCountries }
+    public var manualDirectCidrsText: String { preferencesStore.manualDirectCidrsText }
+    public var invalidManualDirectCidrs: [String] { preferencesStore.invalidManualDirectCidrs }
+    public var customDirectDomainsText: String { preferencesStore.customDirectDomainsText }
+    public var customDirectDomains: [String] { preferencesStore.customDirectDomains }
     var theme: ThemeOverride { ThemeOverride.current }
     public var languageOverride: String? { preferencesStore.languageOverride }
 
@@ -148,6 +160,49 @@ public final class SettingsViewModel {
     /// Toggles global split-routing.
     public func setSplitRouting(_ on: Bool) {
         preferencesStore.splitRouting = on
+    }
+
+    public func setDirectCountries(_ codes: [String]) {
+        preferencesStore.directCountries = codes
+    }
+
+    public func setManualDirectCidrsText(_ text: String) {
+        preferencesStore.manualDirectCidrsText = text
+    }
+
+    public func setCustomDirectDomainsText(_ text: String) {
+        preferencesStore.customDirectDomainsText = text
+    }
+
+    public func refreshDownloadedRoutingRules() {
+        downloadedRoutingRules = RoutingRulesManager.shared.downloadedRules()
+    }
+
+    public func downloadRulePreset(_ preset: RoutingRulePreset) async {
+        guard !downloadingRoutingRuleIds.contains(preset.id) else { return }
+        downloadingRoutingRuleIds.insert(preset.id)
+        routingDownloadStatus = "Downloading \(preset.code)…"
+        defer {
+            downloadingRoutingRuleIds.remove(preset.id)
+            refreshDownloadedRoutingRules()
+        }
+
+        do {
+            let info = try await RoutingRulesManager.shared.downloadRuleList(preset)
+            routingDownloadStatus = "\(preset.code) downloaded · \(info.ruleCount) rules"
+        } catch {
+            routingDownloadStatus = "Download failed for \(preset.code): \(error.localizedDescription)"
+            log.error("routing rule download failed \(preset.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    public func downloadCountryRules(_ codes: [String]) async {
+        for code in codes {
+            guard let preset = RoutingRulesManager.countryPresets.first(where: { $0.code == code }) else {
+                continue
+            }
+            await downloadRulePreset(preset)
+        }
     }
 
     /// Sets the theme override (`.system` / `.dark` / `.light`).

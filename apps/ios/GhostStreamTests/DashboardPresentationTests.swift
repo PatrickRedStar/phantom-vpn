@@ -36,7 +36,18 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(result.subscriptionText, "5 days remaining")
     }
 
+    func testLanguageOverrideSelectsExplicitLocalizationBundle() {
+        let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")
+        defaults?.set("en", forKey: "language_override")
+        XCTAssertEqual(AppStrings.localized("nav_settings", fallback: "Settings"), "Settings")
+
+        defaults?.set("ru", forKey: "language_override")
+        XCTAssertEqual(AppStrings.localized("nav_settings", fallback: "Settings"), "Настройки")
+
+        defaults?.removeObject(forKey: "language_override")
+    }
+
     private func L(_ key: String, _ fallback: String) -> String {
-        NSLocalizedString(key, value: fallback, comment: "")
+        AppStrings.localized(key, fallback: fallback)
     }
 }

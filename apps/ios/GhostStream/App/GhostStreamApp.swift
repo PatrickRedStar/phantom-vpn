@@ -65,3 +65,35 @@ struct GhostStreamApp: App {
         return Locale(identifier: raw)
     }
 }
+
+enum AppStrings {
+    private static let languageKey = "language_override"
+    private static let appGroup = "group.com.ghoststream.vpn"
+
+    static func localized(_ key: String, fallback: String? = nil) -> String {
+        let override = UserDefaults(suiteName: appGroup)?
+            .string(forKey: languageKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let bundle = localizedBundle(for: override)
+        return NSLocalizedString(
+            key,
+            tableName: nil,
+            bundle: bundle,
+            value: fallback ?? key,
+            comment: ""
+        )
+    }
+
+    private static func localizedBundle(for override: String?) -> Bundle {
+        guard let override,
+              !override.isEmpty,
+              override != "system",
+              let path = Bundle.main.path(forResource: override, ofType: "lproj"),
+              let bundle = Bundle(path: path)
+        else {
+            return .main
+        }
+        return bundle
+    }
+}

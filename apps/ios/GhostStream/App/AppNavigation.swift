@@ -20,9 +20,9 @@ enum AppTab: Int, CaseIterable, Hashable {
     /// Short label shown in the tab bar.
     var label: String {
         switch self {
-        case .dashboard: return NSLocalizedString("nav_stream", value: "Stream", comment: "")
-        case .logs:      return NSLocalizedString("nav_logs", value: "Logs", comment: "")
-        case .settings:  return NSLocalizedString("nav_settings", value: "Settings", comment: "")
+        case .dashboard: return AppStrings.localized("nav_stream", fallback: "Stream")
+        case .logs:      return AppStrings.localized("nav_logs", fallback: "Logs")
+        case .settings:  return AppStrings.localized("nav_settings", fallback: "Settings")
         }
     }
 
@@ -44,12 +44,14 @@ enum AppTab: Int, CaseIterable, Hashable {
 struct AppNavigation: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(PreferencesStore.self) private var prefs
     @State private var selection: AppTab = .dashboard
 
     var body: some View {
         TabView(selection: $selection) {
             NavigationStack {
                 DashboardView()
+                    .id(languageIdentity)
             }
             .tabItem {
                 Label(AppTab.dashboard.label, systemImage: AppTab.dashboard.systemImageName)
@@ -58,6 +60,7 @@ struct AppNavigation: View {
 
             NavigationStack {
                 LogsView()
+                    .id(languageIdentity)
             }
             .tabItem {
                 Label(AppTab.logs.label, systemImage: AppTab.logs.systemImageName)
@@ -66,6 +69,7 @@ struct AppNavigation: View {
 
             NavigationStack {
                 SettingsView()
+                    .id(languageIdentity)
             }
             .tabItem {
                 Label(AppTab.settings.label, systemImage: AppTab.settings.systemImageName)
@@ -75,6 +79,10 @@ struct AppNavigation: View {
         .tint(C.signal)
         .toolbarBackground(C.bg, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
+    }
+
+    private var languageIdentity: String {
+        prefs.languageOverride ?? "system"
     }
 }
 

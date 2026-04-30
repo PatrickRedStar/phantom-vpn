@@ -394,7 +394,7 @@ enum AdminFormat {
 }
 
 private func L(_ key: String) -> String {
-    NSLocalizedString(key, comment: "")
+    AppStrings.localized(key)
 }
 
 #Preview("AdminView — populated") {

@@ -526,7 +526,7 @@ private struct SetSubscriptionDaysSheet: View {
 }
 
 private func L(_ key: String) -> String {
-    NSLocalizedString(key, comment: "")
+    AppStrings.localized(key)
 }
 
 // MARK: - Previews

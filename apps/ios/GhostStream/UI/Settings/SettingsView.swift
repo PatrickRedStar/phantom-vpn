@@ -24,6 +24,9 @@ public struct SettingsView: View {
     @State private var adminProfile: VpnProfile? = nil
     @State private var dnsDraft: [String] = []
     @State private var splitOn = false
+    @State private var directCountrySelections: Set<String> = []
+    @State private var manualDirectCidrsText = ""
+    @State private var customDirectDomainsText = ""
     @State private var themeSelection: ThemeOverride = .system
     @State private var languageSelection = "system"
 
@@ -163,16 +166,31 @@ public struct SettingsView: View {
         .sheet(isPresented: $showSplitDialog) {
             SplitTunnelDialog(
                 splitOn: $splitOn,
+                selectedCountries: $directCountrySelections,
+                manualCidrsText: $manualDirectCidrsText,
+                directDomainsText: $customDirectDomainsText,
+                downloadedRules: model.downloadedRoutingRules,
+                downloadingRuleIds: model.downloadingRoutingRuleIds,
+                downloadStatus: model.routingDownloadStatus,
+                onDownload: { preset in
+                    Task { await model.downloadRulePreset(preset) }
+                },
+                onDownloadSelected: {
+                    Task { await model.downloadCountryRules(Array(directCountrySelections).sorted()) }
+                },
                 onSave: {
                     model.setSplitRouting(splitOn)
+                    model.setDirectCountries(Array(directCountrySelections).sorted())
+                    model.setManualDirectCidrsText(manualDirectCidrsText)
+                    model.setCustomDirectDomainsText(customDirectDomainsText)
                     showSplitDialog = false
                 },
                 onDismiss: {
-                    splitOn = model.splitRouting
+                    hydrateRouteDrafts()
                     showSplitDialog = false
                 }
             )
-            .presentationDetents([.medium])
+            .presentationDetents([.large])
         }
         .sheet(isPresented: Binding(
             get: { editorProfileId != nil },
@@ -239,10 +257,7 @@ public struct SettingsView: View {
                     HairlineDivider()
                     splitRoutingRow
                     HairlineDivider()
-                    disabledPlatformRow(
-                        title: L("settings.row.per.app"),
-                        subtitle: L("settings.ios.per.app.unavailable")
-                    )
+                    routeRulesRow
                     HairlineDivider()
                     disabledPlatformRow(
                         title: L("settings.row.always.on"),
@@ -277,9 +292,31 @@ public struct SettingsView: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
+            hydrateRouteDrafts()
             showSplitDialog = true
         }
         .padding(.vertical, 12)
+    }
+
+    private var routeRulesRow: some View {
+        NativeRow(
+            title: L("settings.row.route.rules"),
+            subtitle: routePolicySubtitle,
+            action: {
+                hydrateRouteDrafts()
+                showSplitDialog = true
+            }
+        ) {
+            HStack(spacing: 12) {
+                Text(routeRulesValue)
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(splitOn ? C.signal : C.textFaint)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundColor(C.textFaint)
+            }
+        }
     }
 
     private var addProfileRow: some View {
@@ -379,9 +416,9 @@ public struct SettingsView: View {
                             .font(.body.weight(.semibold))
                             .foregroundColor(C.bone)
                         Picker(L("settings.row.language"), selection: $languageSelection) {
-                            Text("System").tag("system")
-                            Text("RU").tag("ru")
-                            Text("EN").tag("en")
+                            Text(L("settings.language.system")).tag("system")
+                            Text(L("settings.language.ru")).tag("ru")
+                            Text(L("settings.language.en")).tag("en")
                         }
                         .pickerStyle(.segmented)
                         .tint(C.signal)
@@ -398,9 +435,9 @@ public struct SettingsView: View {
                             .font(.body.weight(.semibold))
                             .foregroundColor(C.bone)
                         Picker(L("settings.row.theme"), selection: $themeSelection) {
-                            Text("System").tag(ThemeOverride.system)
-                            Text("Dark").tag(ThemeOverride.dark)
-                            Text("Light").tag(ThemeOverride.light)
+                            Text(L("settings.theme.system")).tag(ThemeOverride.system)
+                            Text(L("settings.theme.dark")).tag(ThemeOverride.dark)
+                            Text(L("settings.theme.light")).tag(ThemeOverride.light)
                         }
                         .pickerStyle(.segmented)
                         .tint(C.signal)
@@ -563,9 +600,16 @@ public struct SettingsView: View {
 
     private func hydrate() {
         dnsDraft = model.dnsServers
-        splitOn = model.splitRouting
+        hydrateRouteDrafts()
         themeSelection = model.theme
         languageSelection = model.languageOverride ?? "system"
+    }
+
+    private func hydrateRouteDrafts() {
+        splitOn = model.splitRouting
+        directCountrySelections = Set(model.directCountries)
+        manualDirectCidrsText = model.manualDirectCidrsText
+        customDirectDomainsText = model.customDirectDomainsText
     }
 
     private func importConnString(_ raw: String) {
@@ -587,9 +631,37 @@ public struct SettingsView: View {
             "server=\(active?.serverAddr ?? "—")",
             "dns=\(model.dnsServers.isEmpty ? "system" : model.dnsServers.joined(separator: ","))",
             "split_routing=\(model.splitRouting)",
+            "direct_countries=\(directCountrySelections.sorted().joined(separator: ","))",
+            "manual_direct_cidrs=\(normalizedManualCidrs.joined(separator: ","))",
+            "custom_direct_domains=\(normalizedCustomDomains.joined(separator: ","))",
             "language=\(model.languageOverride ?? "system")",
             "last_logs=unavailable from Settings on iOS"
         ].joined(separator: "\n")
+    }
+
+    private var normalizedManualCidrs: [String] {
+        RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).valid
+    }
+
+    private var normalizedCustomDomains: [String] {
+        PreferencesStore.normalizedHostnames(from: customDirectDomainsText)
+    }
+
+    private var routePolicySubtitle: String {
+        guard splitOn else {
+            return L("settings.split.all.summary")
+        }
+        return String(
+            format: L("settings.route.rules.summary"),
+            directCountrySelections.count,
+            normalizedManualCidrs.count,
+            normalizedCustomDomains.count
+        )
+    }
+
+    private var routeRulesValue: String {
+        guard splitOn else { return L("settings.value.off") }
+        return "\(directCountrySelections.count + normalizedManualCidrs.count + normalizedCustomDomains.count)"
     }
 }
 
@@ -722,6 +794,14 @@ private struct DNSDialog: View {
 
 private struct SplitTunnelDialog: View {
     @Binding var splitOn: Bool
+    @Binding var selectedCountries: Set<String>
+    @Binding var manualCidrsText: String
+    @Binding var directDomainsText: String
+    let downloadedRules: [String: RoutingRuleInfo]
+    let downloadingRuleIds: Set<String>
+    let downloadStatus: String?
+    let onDownload: (RoutingRulePreset) -> Void
+    let onDownloadSelected: () -> Void
     let onSave: () -> Void
     let onDismiss: () -> Void
 
@@ -729,25 +809,54 @@ private struct SplitTunnelDialog: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 18) {
-                Picker(L("settings.split.title"), selection: $splitOn) {
-                    Text(L("settings.split.mode.all")).tag(false)
-                    Text(L("settings.split.mode.bypass")).tag(true)
-                }
-                .pickerStyle(.segmented)
-                .tint(C.signal)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Picker(L("settings.split.title"), selection: $splitOn) {
+                        Text(L("settings.split.mode.all")).tag(false)
+                        Text(L("settings.split.mode.bypass")).tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .tint(C.signal)
 
-                NativeSectionCard {
-                    infoRow(L("settings.split.cidr.title"), L("settings.split.cidr.ios"))
-                    HairlineDivider()
-                    infoRow(L("settings.row.per.app"), L("settings.ios.per.app.unavailable"))
-                    HairlineDivider()
-                    infoRow(L("settings.row.always.on"), L("settings.ios.always.on.unavailable"))
-                }
+                    infoBanner
 
-                Spacer(minLength: 0)
+                    NativeSectionCard {
+                        ForEach(Array(RoutingRulesManager.countryPresets.enumerated()), id: \.element.id) { idx, preset in
+                            countryPresetRow(preset)
+                            if idx < RoutingRulesManager.countryPresets.count - 1 {
+                                HairlineDivider()
+                            }
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        Button(L("settings.split.download.selected"), action: onDownloadSelected)
+                            .buttonStyle(.bordered)
+                            .disabled(selectedCountries.isEmpty)
+                        Spacer()
+                        Text(String(format: L("settings.split.selected.count"), selectedCountries.count))
+                            .font(.footnote.weight(.semibold))
+                            .foregroundColor(C.textDim)
+                    }
+
+                    if let downloadStatus, !downloadStatus.isEmpty {
+                        Text(downloadStatus)
+                            .font(.footnote)
+                            .foregroundColor(C.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    editableRulesCard
+
+                    NativeSectionCard {
+                        infoRow(
+                            L("settings.split.geosite.title"),
+                            L("settings.split.geosite.body")
+                        )
+                    }
+                }
+                .padding(18)
             }
-            .padding(18)
             .background(C.bg.ignoresSafeArea())
             .navigationTitle(L("settings.split.title"))
             .navigationBarTitleDisplayMode(.inline)
@@ -762,6 +871,122 @@ private struct SplitTunnelDialog: View {
         }
     }
 
+    private var infoBanner: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(splitOn ? L("settings.split.mode.bypass") : L("settings.split.mode.all"))
+                .font(.body.weight(.semibold))
+                .foregroundColor(splitOn ? C.signal : C.bone)
+            Text(splitOn ? L("settings.split.bypass.detail") : L("settings.split.all.summary"))
+                .font(.footnote)
+                .foregroundColor(C.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var editableRulesCard: some View {
+        NativeSectionCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(L("settings.split.custom.cidrs"))
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(C.bone)
+                Text(L("settings.split.custom.cidrs.hint"))
+                    .font(.footnote)
+                    .foregroundColor(C.textDim)
+                TextField("8.8.8.0/24\n1.1.1.1/32", text: $manualCidrsText, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.body.monospaced())
+                    .lineLimit(4...8)
+                    .padding(12)
+                    .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                let invalid = RoutePolicySnapshot.normalizedCidrs(from: manualCidrsText).invalid
+                if !invalid.isEmpty {
+                    Text(String(format: L("settings.split.invalid.cidrs"), invalid.joined(separator: ", ")))
+                        .font(.footnote)
+                        .foregroundColor(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HairlineDivider()
+
+                Text(L("settings.split.custom.domains"))
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(C.bone)
+                Text(L("settings.split.custom.domains.hint"))
+                    .font(.footnote)
+                    .foregroundColor(C.textDim)
+                TextField("example.com\ndomain:apple.com", text: $directDomainsText, axis: .vertical)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.body.monospaced())
+                    .lineLimit(4...8)
+                    .padding(12)
+                    .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .padding(.vertical, 12)
+        }
+    }
+
+    private func countryPresetRow(_ preset: RoutingRulePreset) -> some View {
+        let selected = selectedCountries.contains(preset.code)
+        let info = downloadedRules[preset.id]
+        let downloading = downloadingRuleIds.contains(preset.id)
+
+        return HStack(spacing: 12) {
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .font(.title3.weight(.semibold))
+                .foregroundColor(selected ? C.signal : C.textFaint)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L(preset.labelKey))
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(C.bone)
+                Text(countryInfoText(info, source: preset.source))
+                    .font(.footnote)
+                    .foregroundColor(C.textDim)
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                onDownload(preset)
+            } label: {
+                Text(downloadButtonTitle(info: info, downloading: downloading))
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderless)
+            .foregroundColor(info == nil ? C.signal : C.textDim)
+            .disabled(downloading)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if selected {
+                selectedCountries.remove(preset.code)
+            } else {
+                selectedCountries.insert(preset.code)
+            }
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func downloadButtonTitle(info: RoutingRuleInfo?, downloading: Bool) -> String {
+        if downloading { return L("settings.split.downloading") }
+        return info == nil ? L("settings.split.download") : L("settings.split.downloaded")
+    }
+
+    private func countryInfoText(_ info: RoutingRuleInfo?, source: RoutingRuleSource) -> String {
+        guard let info else {
+            return source == .geoip
+                ? L("settings.split.geoip.not.downloaded")
+                : L("settings.split.geosite.not.downloaded")
+        }
+        return String(format: L("settings.split.rule.info"), info.ruleCount, info.sizeKb)
+    }
+
     private func infoRow(_ title: String, _ subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
@@ -774,12 +999,11 @@ private struct SplitTunnelDialog: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
-        .opacity(0.72)
     }
 }
 
 private func L(_ key: String) -> String {
-    NSLocalizedString(key, comment: "")
+    AppStrings.localized(key)
 }
 
 #if DEBUG

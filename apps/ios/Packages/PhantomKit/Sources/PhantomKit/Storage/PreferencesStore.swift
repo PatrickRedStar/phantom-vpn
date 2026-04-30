@@ -10,8 +10,7 @@ import Observation
 /// Semantic notes (iOS vs Android):
 /// - `autoStartOnBoot` — iOS cannot auto-start a VPN from cold boot. The
 ///   flag is retained for UI parity but nothing in the iOS stack reads it.
-/// - `perAppMode` / `perAppList` — iOS does not expose per-app VPN routing
-///   to third-party apps. Retained for schema parity only.
+/// - `perAppMode` / `perAppList` — retained for Android schema parity only.
 @MainActor
 @Observable
 public final class PreferencesStore {
@@ -28,6 +27,8 @@ public final class PreferencesStore {
         static let splitRouting      = "split_routing"
         static let routingMode       = "routing_mode"
         static let manualDirectCidrs = "manual_direct_cidrs"
+        static let directCountries   = "direct_countries"
+        static let customDirectDomains = "custom_direct_domains"
         static let preserveScopedDns = "preserve_scoped_dns"
         static let perAppMode        = "per_app_mode"
         static let perAppList        = "per_app_list"
@@ -212,6 +213,89 @@ public final class PreferencesStore {
         RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).invalid
     }
 
+    public var directCountries: [String] {
+        get {
+            guard let joined = defaults.string(forKey: Key.directCountries),
+                  !joined.isEmpty
+            else { return [] }
+            return joined
+                .split(separator: ",")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        set {
+            let cleaned = newValue
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+                .uniquedPreservingOrder()
+            if cleaned.isEmpty {
+                defaults.removeObject(forKey: Key.directCountries)
+            } else {
+                defaults.set(cleaned.joined(separator: ","), forKey: Key.directCountries)
+            }
+        }
+    }
+
+    public var customDirectDomainsText: String {
+        get { defaults.string(forKey: Key.customDirectDomains) ?? "" }
+        set { defaults.set(newValue, forKey: Key.customDirectDomains) }
+    }
+
+    public var customDirectDomains: [String] {
+        Self.normalizedHostnames(from: customDirectDomainsText)
+    }
+
+    nonisolated public static func normalizedHostnames(from text: String) -> [String] {
+        var output: [String] = []
+        var seen = Set<String>()
+
+        for rawToken in text.split(whereSeparator: { ch in
+            ch.isWhitespace || ch == "," || ch == ";"
+        }) {
+            var token = String(rawToken)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            guard !token.isEmpty else { continue }
+            if token.hasPrefix("#") { continue }
+            if token.hasPrefix("domain:") {
+                token.removeFirst("domain:".count)
+            } else if token.hasPrefix("full:") {
+                token.removeFirst("full:".count)
+            }
+            if token.hasPrefix("http://") || token.hasPrefix("https://") {
+                token = URL(string: token)?.host ?? token
+            }
+            token = token.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            guard isResolvableHostname(token), seen.insert(token).inserted else { continue }
+            output.append(token)
+        }
+
+        return output
+    }
+
+    nonisolated private static func isResolvableHostname(_ value: String) -> Bool {
+        guard value.count <= 253,
+              value.contains("."),
+              !value.contains(":"),
+              !value.hasPrefix("geosite:"),
+              !value.hasPrefix("keyword:"),
+              !value.hasPrefix("regexp:"),
+              !value.hasPrefix("include:")
+        else { return false }
+
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-.")
+        guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            return false
+        }
+
+        return value
+            .split(separator: ".", omittingEmptySubsequences: false)
+            .allSatisfy { part in
+                guard !part.isEmpty, part.count <= 63 else { return false }
+                return part.first != "-" && part.last != "-"
+            }
+    }
+
     // MARK: - Per-app (iOS-ignored — kept for Android schema parity)
 
     /// iOS-ignored; retained for Android schema compatibility.
@@ -268,4 +352,15 @@ public final class PreferencesStore {
 
     // `theme` and `languageOverride` are stored properties declared near
     // init() so `@Observable` can track them for SwiftUI reactivity.
+}
+
+private extension Array where Element == String {
+    func uniquedPreservingOrder() -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for item in self where seen.insert(item).inserted {
+            output.append(item)
+        }
+        return output
+    }
 }

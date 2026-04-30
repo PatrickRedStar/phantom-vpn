@@ -81,6 +81,6 @@ enum DashboardPresentation {
     }
 
     private static func L(_ key: String, _ fallback: String) -> String {
-        NSLocalizedString(key, value: fallback, comment: "")
+        AppStrings.localized(key, fallback: fallback)
     }
 }

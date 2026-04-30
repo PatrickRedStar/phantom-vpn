@@ -3,6 +3,7 @@
 // Tunnel Provider extension.
 
 import Foundation
+import Darwin
 import NetworkExtension
 import PhantomKit
 import os.log
@@ -88,17 +89,21 @@ public final class VpnTunnelController: ObservableObject {
         )
         providerProfile.dnsServers = preferences.dnsServers ?? profile.dnsServers
         providerProfile.splitRouting = effectiveRoutingMode.legacySplitRoutingValue
+        let expandedDirectCidrs = await directCidrsForTunnelStart(
+            preferences: preferences,
+            routingMode: effectiveRoutingMode
+        )
 
         let settings = TunnelSettings(
             dnsLeakProtection: preferences.dnsLeakProtection,
             ipv6Killswitch: preferences.ipv6Killswitch,
             autoReconnect: preferences.autoReconnect,
             routingMode: effectiveRoutingMode,
-            manualDirectCidrs: preferences.manualDirectCidrs,
+            manualDirectCidrs: expandedDirectCidrs,
             preserveScopedDns: preferences.preserveScopedDns,
             routePolicy: RoutePolicySnapshot(
                 mode: effectiveRoutingMode,
-                manualDirectCidrs: preferences.manualDirectCidrs,
+                manualDirectCidrs: expandedDirectCidrs,
                 preserveScopedDns: preferences.preserveScopedDns
             ),
             streams: preferences.streams
@@ -156,6 +161,78 @@ public final class VpnTunnelController: ObservableObject {
             lastError = VpnTunnelError.startFailed(error.localizedDescription).localizedDescription
             throw VpnTunnelError.startFailed(error.localizedDescription)
         }
+    }
+
+    private func directCidrsForTunnelStart(
+        preferences: PreferencesStore,
+        routingMode: RoutingMode
+    ) async -> [String] {
+        guard routingMode != .global else {
+            return preferences.manualDirectCidrs
+        }
+
+        var cidrs = preferences.manualDirectCidrs
+        cidrs.append(contentsOf: RoutingRulesManager.shared.mergedCountryCidrs(
+            countryCodes: preferences.directCountries
+        ))
+        cidrs.append(contentsOf: await Self.resolveDomainCidrs(preferences.customDirectDomains))
+
+        return RoutePolicySnapshot.normalizedCidrs(from: cidrs.joined(separator: "\n")).valid
+    }
+
+    private static func resolveDomainCidrs(_ domains: [String]) async -> [String] {
+        guard !domains.isEmpty else { return [] }
+
+        return await Task.detached(priority: .utility) {
+            var cidrs: [String] = []
+            var seen = Set<String>()
+
+            for domain in domains.prefix(50) {
+                var hints = addrinfo(
+                    ai_flags: AI_ADDRCONFIG,
+                    ai_family: AF_INET,
+                    ai_socktype: SOCK_STREAM,
+                    ai_protocol: IPPROTO_TCP,
+                    ai_addrlen: 0,
+                    ai_canonname: nil,
+                    ai_addr: nil,
+                    ai_next: nil
+                )
+                var result: UnsafeMutablePointer<addrinfo>?
+                guard getaddrinfo(domain, nil, &hints, &result) == 0 else {
+                    continue
+                }
+                defer { freeaddrinfo(result) }
+
+                var cursor = result
+                while let node = cursor {
+                    defer { cursor = node.pointee.ai_next }
+                    guard let addr = node.pointee.ai_addr else { continue }
+
+                    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    let status = host.withUnsafeMutableBufferPointer { buffer in
+                        getnameinfo(
+                            addr,
+                            socklen_t(node.pointee.ai_addrlen),
+                            buffer.baseAddress,
+                            socklen_t(buffer.count),
+                            nil,
+                            0,
+                            NI_NUMERICHOST
+                        )
+                    }
+                    guard status == 0 else { continue }
+
+                    let ip = String(cString: host)
+                    let cidr = "\(ip)/32"
+                    if seen.insert(cidr).inserted {
+                        cidrs.append(cidr)
+                    }
+                }
+            }
+
+            return cidrs
+        }.value
     }
 
     /// Returns the current system VPN status for the installed GhostStream
