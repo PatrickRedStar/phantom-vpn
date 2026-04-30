@@ -39,7 +39,9 @@ fi
 
 declare -a export_provisioning_args=()
 if [[ "$EXPORT_SIGNING_STYLE" != "manual" ]]; then
-  export_provisioning_args=("${archive_provisioning_args[@]}")
+  if [[ ${#archive_provisioning_args[@]} -gt 0 ]]; then
+    export_provisioning_args=("${archive_provisioning_args[@]}")
+  fi
 elif [[ -z "$APP_PROFILE_SPECIFIER" || -z "$TUNNEL_PROFILE_SPECIFIER" ]]; then
   echo "Manual Developer ID export requires GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER and GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER." >&2
   exit 1
@@ -57,19 +59,27 @@ fi
 
 xcodegen generate
 
-xcodebuild -project GhostStream.xcodeproj \
-           -scheme GhostStream \
-           -configuration "$CONFIGURATION" \
-           -destination "$DESTINATION" \
-           -derivedDataPath "$DERIVED_DATA_PATH" \
-           -archivePath "$ARCHIVE_PATH" \
-           "${archive_provisioning_args[@]}" \
-           archive \
-           DEVELOPMENT_TEAM="$TEAM_ID" \
-           CODE_SIGN_STYLE="$CODE_SIGN_STYLE" \
-           CODE_SIGNING_ALLOWED=YES \
-           CODE_SIGNING_REQUIRED=YES \
-           ONLY_ACTIVE_ARCH=NO
+archive_command=(
+  xcodebuild
+  -project GhostStream.xcodeproj
+  -scheme GhostStream
+  -configuration "$CONFIGURATION"
+  -destination "$DESTINATION"
+  -derivedDataPath "$DERIVED_DATA_PATH"
+  -archivePath "$ARCHIVE_PATH"
+)
+if [[ ${#archive_provisioning_args[@]} -gt 0 ]]; then
+  archive_command+=("${archive_provisioning_args[@]}")
+fi
+archive_command+=(
+  archive
+  DEVELOPMENT_TEAM="$TEAM_ID"
+  CODE_SIGN_STYLE="$CODE_SIGN_STYLE"
+  CODE_SIGNING_ALLOWED=YES
+  CODE_SIGNING_REQUIRED=YES
+  ONLY_ACTIVE_ARCH=NO
+)
+"${archive_command[@]}"
 
 cat > "$EXPORT_OPTIONS_PLIST" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -93,11 +103,17 @@ if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
   /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.ghoststream.vpn.tunnel string $TUNNEL_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
 fi
 
-xcodebuild -exportArchive \
-           -archivePath "$ARCHIVE_PATH" \
-           -exportPath "$EXPORT_PATH" \
-           -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
-           "${export_provisioning_args[@]}"
+export_command=(
+  xcodebuild
+  -exportArchive
+  -archivePath "$ARCHIVE_PATH"
+  -exportPath "$EXPORT_PATH"
+  -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
+)
+if [[ ${#export_provisioning_args[@]} -gt 0 ]]; then
+  export_command+=("${export_provisioning_args[@]}")
+fi
+"${export_command[@]}"
 
 if [[ ! -d "$EXPORTED_APP" ]]; then
   echo "Exported app not found: $EXPORTED_APP" >&2
