@@ -143,29 +143,53 @@ struct LogsView: View {
     // MARK: - Filter row
 
     private var filterRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(LogFilter.allCases, id: \.self) { f in
-                    chip(filter: f)
-                }
-                GhostChip(L("chip_clear"), active: false, accent: C.danger) {
-                    showClearConfirmation = true
-                }
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 74), spacing: 6, alignment: .leading)],
+            alignment: .leading,
+            spacing: 6
+        ) {
+            ForEach(LogFilter.allCases, id: \.self) { f in
+                chip(filter: f)
+            }
+            logChip(L("chip_clear"), active: false, accent: C.danger) {
+                showClearConfirmation = true
+            }
 
-                GhostChip(L("chip_share"), active: false, accent: C.signal) {
-                    if let url = vm.shareFileURL(range: 500) {
-                        shareItem = ShareItem(url: url)
-                    }
+            logChip(L("chip_share"), active: false, accent: C.signal) {
+                if let url = vm.shareFileURL(range: 500) {
+                    shareItem = ShareItem(url: url)
                 }
             }
-            .padding(.horizontal, 2)
         }
     }
 
     private func chip(filter f: LogFilter) -> some View {
-        GhostChip(f.rawValue, active: vm.filter == f, accent: C.signal) {
+        logChip(f.rawValue, active: vm.filter == f, accent: C.signal) {
             vm.filter = f
         }
+    }
+
+    private func logChip(
+        _ text: String,
+        active: Bool,
+        accent: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(text.uppercased())
+                .gsFont(.chipText)
+                .foregroundStyle(active ? C.bg : accent)
+                .lineLimit(1)
+                .minimumScaleFactor(0.68)
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .padding(.horizontal, 4)
+                .background(active ? accent : Color.clear)
+                .overlay(
+                    Rectangle()
+                        .stroke(active ? accent : C.hairBold, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Log list

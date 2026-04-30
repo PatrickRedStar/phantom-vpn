@@ -50,6 +50,8 @@ struct DashboardView: View {
                     .padding(.top, 12)
                 }
             }
+
+            bottomTabFade
         }
         .onAppear { vm.onAppear() }
     }
@@ -63,6 +65,19 @@ struct DashboardView: View {
             pulse: shouldPulse(vm.state),
             pulseColor: pulseColor(for: vm.state, colors: C)
         )
+    }
+
+    private var bottomTabFade: some View {
+        VStack {
+            Spacer()
+            LinearGradient(
+                colors: [C.bg.opacity(0), C.bg.opacity(0.92), C.bg],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 132)
+            .allowsHitTesting(false)
+        }
     }
 
     /// Reconnect banner — visible when `statusFrame.state == .reconnecting`.
