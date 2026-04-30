@@ -61,6 +61,47 @@ GHOSTSTREAM_UNSIGNED=1 ./scripts/build-debug.sh
 GHOSTSTREAM_ALLOW_PROVISIONING=1 ./scripts/install-debug.sh
 ```
 
+## Сборка release DMG
+
+Release build собирается как Developer ID signed app, проходит notarization и
+упаковывается в `.dmg` для установки через drag-and-drop в `/Applications`.
+
+Локальная сборка:
+
+```bash
+cd crates/client-apple && ./build-xcframework.sh
+
+cd ../../apps/macos
+GHOSTSTREAM_ALLOW_PROVISIONING=1 ./scripts/build-release.sh
+./scripts/notarize.sh build/Release/export/GhostStream.app
+GHOSTSTREAM_SIGN_DMG=1 ./scripts/package-dmg.sh build/Release/export/GhostStream.app
+./scripts/notarize.sh build/Release/dist/GhostStream-*-macOS.dmg
+```
+
+GitHub Actions делает то же самое в `.github/workflows/release.yml` и
+прикладывает `GhostStream-*-macOS.dmg` к release по тегу `v*`.
+
+Обязательные GitHub Secrets:
+
+- `MACOS_CERTIFICATE_P12_BASE64` — Developer ID Application certificate в `.p12`, закодированный base64.
+- `MACOS_CERTIFICATE_PASSWORD` — пароль от `.p12`.
+- `APPLE_TEAM_ID` — Team ID, по умолчанию используется `UPG896A272`.
+- `APP_STORE_CONNECT_API_KEY_BASE64`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID` — API key для automatic provisioning и notarization.
+
+Если App Store Connect API key не используется, вместо automatic provisioning
+нужно добавить оба profile секрета:
+
+- `MACOS_APP_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.vpn`.
+- `MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.vpn.tunnel`.
+- `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — fallback auth для notarization.
+
+Base64 для GitHub Secret на macOS:
+
+```bash
+base64 -i DeveloperID.p12 | pbcopy
+base64 -i GhostStream.provisionprofile | pbcopy
+```
+
 Альтернативно — открыть в Xcode:
 
 ```bash
