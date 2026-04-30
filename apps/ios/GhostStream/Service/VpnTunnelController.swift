@@ -158,18 +158,36 @@ public final class VpnTunnelController: ObservableObject {
         }
     }
 
+    /// Returns the current system VPN status for the installed GhostStream
+    /// manager. Used by the UI to avoid trusting stale App Group snapshots.
+    public func currentStatus() async -> NEVPNStatus {
+        do {
+            try await loadFromPreferences()
+            return manager?.connection.status ?? .invalid
+        } catch {
+            log.error("reload before status failed: \(error.localizedDescription, privacy: .public)")
+            lastError = error.localizedDescription
+            return .invalid
+        }
+    }
+
     /// Stops the tunnel, if any. No-op when no manager is loaded.
+    public func stopAndWait() async {
+        do {
+            try await loadFromPreferences()
+            manager?.connection.stopVPNTunnel()
+            lastError = nil
+        } catch {
+            log.error("reload before stop failed: \(error.localizedDescription, privacy: .public)")
+            lastError = error.localizedDescription
+            manager?.connection.stopVPNTunnel()
+        }
+    }
+
+    /// Stops the tunnel, if any. Fire-and-forget wrapper for legacy callers.
     public func stop() {
         Task { @MainActor in
-            do {
-                try await loadFromPreferences()
-                manager?.connection.stopVPNTunnel()
-                lastError = nil
-            } catch {
-                log.error("reload before stop failed: \(error.localizedDescription, privacy: .public)")
-                lastError = error.localizedDescription
-                manager?.connection.stopVPNTunnel()
-            }
+            await stopAndWait()
         }
     }
 

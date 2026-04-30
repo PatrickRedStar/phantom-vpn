@@ -82,12 +82,18 @@ public final class VpnStateManager {
 
     private let defaults: UserDefaults
     private let payloadKey = "vpn.state.v1"
+    private let payloadUpdatedAtKey = "vpn.state.updatedAt.v1"
+    private var stateUpdatedAt = Date.distantPast
 
     /// App Group container URL — used to locate snapshot.json.
     private var containerURL: URL? {
         FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn"
         )
+    }
+
+    private var snapshotURL: URL? {
+        containerURL?.appendingPathComponent("snapshot.json")
     }
 
     private init() {
@@ -106,6 +112,18 @@ public final class VpnStateManager {
         DarwinNotifications.post(DarwinNotifications.stateChanged)
     }
 
+    /// Forces the host UI back to a clean disconnected state and removes
+    /// stale extension snapshots that can otherwise outlive the tunnel.
+    public func forceDisconnected(clearSnapshot: Bool = true) {
+        state = .disconnected
+        statusFrame = .disconnected
+        if clearSnapshot, let url = snapshotURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        writePayload(VpnStatePayload(kind: .disconnected))
+        DarwinNotifications.post(DarwinNotifications.stateChanged)
+    }
+
     // MARK: - Internal
 
     private func observeDarwinNotifications() {
@@ -120,6 +138,9 @@ public final class VpnStateManager {
     private func writePayload(_ payload: VpnStatePayload) {
         do {
             let data = try JSONEncoder().encode(payload)
+            let now = Date()
+            stateUpdatedAt = now
+            defaults.set(now.timeIntervalSince1970, forKey: payloadUpdatedAtKey)
             defaults.set(data, forKey: payloadKey)
         } catch {
             // Encoding VpnStatePayload is infallible in practice.
@@ -127,6 +148,9 @@ public final class VpnStateManager {
     }
 
     private func loadPayload() {
+        if let updatedAt = defaults.object(forKey: payloadUpdatedAtKey) as? Double {
+            stateUpdatedAt = Date(timeIntervalSince1970: updatedAt)
+        }
         guard let data = defaults.data(forKey: payloadKey),
               let payload = try? JSONDecoder().decode(VpnStatePayload.self, from: data)
         else { return }
@@ -137,10 +161,18 @@ public final class VpnStateManager {
     /// `statusFrame`. If the snapshot is present and parses successfully,
     /// `state` is also reconciled from it.
     private func loadSnapshot() {
-        guard let url = containerURL?.appendingPathComponent("snapshot.json"),
+        guard let url = snapshotURL,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let snapshotModifiedAt = attrs[.modificationDate] as? Date,
               let data = try? Data(contentsOf: url),
               let frame = try? JSONDecoder().decode(StatusFrame.self, from: data)
         else { return }
+
+        // A local user action (for example Disconnect) must be allowed to
+        // supersede an old snapshot left behind by a dead PacketTunnelProvider.
+        if snapshotModifiedAt.addingTimeInterval(1) < stateUpdatedAt {
+            return
+        }
 
         statusFrame = frame
 

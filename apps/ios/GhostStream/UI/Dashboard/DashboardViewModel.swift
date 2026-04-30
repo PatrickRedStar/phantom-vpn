@@ -7,6 +7,7 @@
 
 import PhantomUI
 import Foundation
+import NetworkExtension
 import Observation
 import PhantomKit
 import os.log
@@ -61,6 +62,9 @@ final class DashboardViewModel {
         self.state = VpnStateManager.shared.state
         observeState()
         restart(for: state)
+        Task { @MainActor in
+            await reconcileSystemStatus()
+        }
     }
 
     deinit {
@@ -72,6 +76,9 @@ final class DashboardViewModel {
     func onAppear() {
         state = VpnStateManager.shared.state
         restart(for: state)
+        Task { @MainActor in
+            await reconcileSystemStatus()
+        }
     }
 
     // MARK: - Actions
@@ -103,7 +110,11 @@ final class DashboardViewModel {
 
     func stop() {
         VpnStateManager.shared.update(.disconnecting)
-        tunnel.stop()
+        Task { @MainActor in
+            await tunnel.stopAndWait()
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            await reconcileSystemStatus()
+        }
     }
 
     func cycleWindow() { window = window.next }
@@ -122,6 +133,29 @@ final class DashboardViewModel {
                     self.restart(for: next)
                 }
             }
+        }
+    }
+
+    private func reconcileSystemStatus() async {
+        let status = await tunnel.currentStatus()
+        switch status {
+        case .invalid, .disconnected:
+            VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
+        case .connecting, .reasserting:
+            VpnStateManager.shared.update(.connecting)
+        case .disconnecting:
+            VpnStateManager.shared.update(.disconnecting)
+        case .connected:
+            break
+        @unknown default:
+            VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
+        }
+
+        let next = VpnStateManager.shared.state
+        let prev = state
+        state = next
+        if !Self.sameKind(prev, next) {
+            restart(for: next)
         }
     }
 

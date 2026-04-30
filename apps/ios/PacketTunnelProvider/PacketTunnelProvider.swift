@@ -30,7 +30,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 try await self.startTunnelAsync(completionHandler: completionHandler)
             } catch {
                 self.log.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
-                self.writeStatePayload(.init(kind: .error, error: error.localizedDescription))
+                self.writeErrorSnapshot(error.localizedDescription)
                 completionHandler(error)
             }
         }
@@ -46,7 +46,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         Task {
             await PhantomBridge.shared.stop()
-            writeStatePayload(VpnStatePayload(kind: .disconnected))
+            writeDisconnectedSnapshot()
             completionHandler()
         }
     }
@@ -86,7 +86,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             outboundTask?.cancel()
             Task {
                 await PhantomBridge.shared.stop()
-                writeStatePayload(VpnStatePayload(kind: .disconnected))
+                writeDisconnectedSnapshot()
                 let response = TunnelIpcBridge.Response.ok
                 completionHandler?(try? JSONEncoder().encode(response))
             }
@@ -517,17 +517,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn") else { return }
         if let data = try? JSONEncoder().encode(payload) {
             defaults.set(data, forKey: "vpn.state.v1")
+            defaults.set(Date().timeIntervalSince1970, forKey: "vpn.state.updatedAt.v1")
         }
         DarwinNotifications.post(DarwinNotifications.stateChanged)
     }
 
     private func writeSnapshot(_ frame: StatusFrame) {
-        guard let url = FileManager.default
+        if let url = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn")?
             .appendingPathComponent("snapshot.json"),
-              let data = try? JSONEncoder().encode(frame)
-        else { return }
-        try? data.write(to: url, options: .atomic)
+           let data = try? JSONEncoder().encode(frame) {
+            try? data.write(to: url, options: .atomic)
+        }
 
         // Also update the legacy state payload for VpnStateManager
         let payload: VpnStatePayload
@@ -546,6 +547,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             payload = VpnStatePayload(kind: .error, error: frame.lastError)
         }
         writeStatePayload(payload)
+    }
+
+    private func writeDisconnectedSnapshot() {
+        lastStatusFrame = .disconnected
+        writeSnapshot(.disconnected)
+    }
+
+    private func writeErrorSnapshot(_ message: String) {
+        var frame = StatusFrame.disconnected
+        frame.state = .error
+        frame.lastError = message
+        lastStatusFrame = frame
+        writeSnapshot(frame)
     }
 
     // MARK: - Helpers
