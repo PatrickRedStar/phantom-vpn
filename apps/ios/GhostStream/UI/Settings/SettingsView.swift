@@ -17,6 +17,7 @@ public struct SettingsView: View {
     @State private var showSplitDialog = false
     @State private var showQRSheet = false
     @State private var pasteDraft = ""
+    @State private var selectedProfileId: String? = nil
     @State private var editorProfileId: String? = nil
     @State private var deleteProfileId: String? = nil
     @State private var importErrorText: String? = nil
@@ -50,6 +51,34 @@ public struct SettingsView: View {
             }
             .background(C.bg.ignoresSafeArea())
             .navigationBarHidden(true)
+            .navigationDestination(isPresented: Binding(
+                get: { selectedProfileId != nil },
+                set: { if !$0 { selectedProfileId = nil } }
+            )) {
+                if let id = selectedProfileId,
+                   let profile = model.profiles.first(where: { $0.id == id }) {
+                    ProfileDetailView(
+                        profile: profile,
+                        isActive: profile.id == model.activeId,
+                        pingMs: model.pingResults[profile.id],
+                        onSetActive: {
+                            model.setActiveProfile(id: profile.id)
+                            selectedProfileId = nil
+                        },
+                        onEdit: {
+                            editorProfileId = profile.id
+                        },
+                        onDelete: {
+                            deleteProfileId = profile.id
+                            selectedProfileId = nil
+                        },
+                        onOpenAdmin: {
+                            guard profile.cachedIsAdmin == true else { return }
+                            adminProfile = profile
+                        }
+                    )
+                }
+            }
             .navigationDestination(isPresented: Binding(
                 get: { adminProfile != nil },
                 set: { if !$0 { adminProfile = nil } }
@@ -195,8 +224,7 @@ public struct SettingsView: View {
                     isPinging: model.pinging.contains(profile.id),
                     expiresAt: profile.cachedExpiresAt,
                     onTap: {
-                        model.setActiveProfile(id: profile.id)
-                        Task { _ = await model.pingProfile(profile) }
+                        selectedProfileId = profile.id
                     },
                     onLongPress: { deleteProfileId = profile.id },
                     actions: profileActions(for: profile)
@@ -408,39 +436,28 @@ public struct SettingsView: View {
 
     private func profileActions(for profile: VpnProfile) -> [ProfileCardAction] {
         let isActive = profile.id == model.activeId
-        var actions: [ProfileCardAction] = []
-
-        if profile.cachedIsAdmin == true {
-            actions.append(ProfileCardAction(label: L("general.admin.panel"), systemImage: "shield.fill") {
-                adminProfile = profile
-            })
-        }
-
-        actions.append(ProfileCardAction(label: L("general.edit"), systemImage: "pencil") {
-            editorProfileId = profile.id
-        })
-
-        actions.append(ProfileCardAction(
-            label: isActive ? L("settings.profile.active") : L("settings.profile.make.active"),
-            systemImage: isActive ? "checkmark.circle.fill" : "checkmark.circle",
-            isEnabled: !isActive
-        ) {
-            model.setActiveProfile(id: profile.id)
-        })
-
-        actions.append(ProfileCardAction(label: L("settings.profile.ping"), systemImage: "speedometer") {
-            Task { _ = await model.pingProfile(profile) }
-        })
-
-        actions.append(ProfileCardAction(
-            label: L("general.delete"),
-            systemImage: "trash",
-            role: .destructive
-        ) {
-            deleteProfileId = profile.id
-        })
-
-        return actions
+        return [
+            ProfileCardAction(
+                label: isActive ? L("settings.profile.active") : L("settings.profile.make.active"),
+                systemImage: isActive ? "checkmark.circle.fill" : "checkmark.circle",
+                isEnabled: !isActive
+            ) {
+                model.setActiveProfile(id: profile.id)
+            },
+            ProfileCardAction(label: L("settings.profile.ping"), systemImage: "speedometer") {
+                Task { _ = await model.pingProfile(profile) }
+            },
+            ProfileCardAction(label: L("general.edit"), systemImage: "pencil") {
+                editorProfileId = profile.id
+            },
+            ProfileCardAction(
+                label: L("general.delete"),
+                systemImage: "trash",
+                role: .destructive
+            ) {
+                deleteProfileId = profile.id
+            }
+        ]
     }
 
     private func hydrate() {

@@ -58,7 +58,7 @@ public struct ProfileCard: View {
     /// Subscription expiry Unix timestamp (seconds). `nil` → no expiry line.
     public let expiresAt: Int64?
 
-    /// Invoked on short tap — typically "set as active".
+    /// Invoked on short tap — typically opens profile details.
     public let onTap: () -> Void
     /// Legacy long-press callback kept for existing call sites.
     public let onLongPress: () -> Void
@@ -114,7 +114,7 @@ public struct ProfileCard: View {
         .accessibilityLabel(profileAccessibilityLabel)
         .accessibilityValue(isActive ? "Активный" : "Не активный")
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction(named: "Сделать активным") { onTap() }
+        .accessibilityAction(named: "Открыть профиль") { onTap() }
     }
 
     private var topRow: some View {

@@ -1,7 +1,7 @@
 import Foundation
 import PhantomKit
 
-enum ProfileActionKind: Equatable {
+enum ProfileActionKind: Hashable {
     case serverControl
     case createClientLink
     case identity
