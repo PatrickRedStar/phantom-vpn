@@ -585,6 +585,13 @@
       border: 1px solid var(--stroke);
     }
 
+    button.native-row {
+      width: 100%;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
     .native-row b {
       display: block;
       font-size: 15px;
@@ -800,7 +807,7 @@
       bottom: 12px;
       height: 66px;
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 2px;
       padding: 6px;
       border-radius: 24px;
@@ -913,6 +920,247 @@
       line-height: 1.42;
     }
 
+    .flow-note {
+      padding: 18px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(182,236,59,0.28);
+      background: linear-gradient(120deg, rgba(182,236,59,0.10), rgba(255,255,255,0.035));
+      margin-bottom: 16px;
+    }
+
+    .flow-note b {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--accent);
+      letter-spacing: -0.01em;
+    }
+
+    .flow-note span {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .catalog-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .mini-phone {
+      min-height: 520px;
+      padding: 10px;
+      border-radius: 30px;
+      border: 1px solid var(--stroke);
+      background: linear-gradient(160deg, rgba(255,255,255,0.105), rgba(255,255,255,0.025));
+      box-shadow: 0 22px 50px -38px rgba(0,0,0,0.85);
+    }
+
+    .mini-screen {
+      height: 100%;
+      min-height: 500px;
+      overflow: hidden;
+      border-radius: 24px;
+      background:
+        radial-gradient(circle at 50% 0, rgba(182,236,59,0.08), transparent 12rem),
+        #10100c;
+      border: 1px solid rgba(255,255,255,0.08);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mini-top {
+      padding: 16px 14px 10px;
+      border-bottom: 1px solid var(--stroke);
+    }
+
+    .mini-top small {
+      display: block;
+      color: var(--muted);
+      font: 700 10px/1 var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 5px;
+    }
+
+    .mini-top b {
+      font-size: 22px;
+      line-height: 1;
+      letter-spacing: -0.035em;
+    }
+
+    .mini-body {
+      flex: 1;
+      padding: 12px;
+      overflow: hidden;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .mini-card {
+      padding: 12px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.052);
+      border: 1px solid var(--stroke);
+    }
+
+    .mini-card.active {
+      border-color: rgba(182,236,59,0.32);
+      background: linear-gradient(90deg, rgba(182,236,59,0.10), rgba(255,255,255,0.045));
+    }
+
+    .mini-card.warn {
+      border-color: rgba(223,119,56,0.35);
+      background: rgba(223,119,56,0.08);
+    }
+
+    .mini-card.danger {
+      border-color: rgba(227,84,73,0.38);
+      background: rgba(227,84,73,0.08);
+    }
+
+    .mini-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .mini-title b {
+      font-size: 14px;
+      letter-spacing: -0.01em;
+    }
+
+    .mini-copy {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.38;
+    }
+
+    .mini-timer {
+      font-size: 34px;
+      font-weight: 760;
+      letter-spacing: -0.05em;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .mini-button {
+      min-height: 40px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-weight: 760;
+      font-size: 14px;
+    }
+
+    .mini-button.secondary {
+      background: rgba(255,255,255,0.07);
+      color: var(--text);
+      border: 1px solid var(--stroke);
+    }
+
+    .mini-button.danger {
+      background: var(--danger);
+      color: #fff4ef;
+    }
+
+    .mini-row {
+      min-height: 46px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 10px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.045);
+      border: 1px solid var(--stroke);
+    }
+
+    .mini-row b {
+      display: block;
+      font-size: 13px;
+      line-height: 1.15;
+    }
+
+    .mini-row small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+
+    .mini-sheet {
+      margin-top: auto;
+      padding: 12px;
+      border-radius: 22px 22px 0 0;
+      background: rgba(245,245,247,0.94);
+      color: #1f1e1a;
+      box-shadow: 0 -18px 44px -32px rgba(0,0,0,0.9);
+    }
+
+    .mini-sheet b {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 17px;
+      letter-spacing: -0.02em;
+    }
+
+    .mini-sheet .sheet-action {
+      min-height: 42px;
+      margin-top: 6px;
+      border-radius: 13px;
+      font-size: 13px;
+    }
+
+    .control-board {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .control-sample {
+      min-height: 82px;
+      padding: 12px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.04);
+      display: grid;
+      align-content: center;
+      gap: 8px;
+    }
+
+    .control-sample small {
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      min-height: 34px;
+      padding: 3px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.07);
+    }
+
+    .segmented span {
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 720;
+    }
+
+    .segmented span:first-child {
+      background: rgba(255,255,255,0.18);
+      color: var(--text);
+    }
+
     @media (max-width: 900px) {
       .page {
         width: min(430px, calc(100% - 18px));
@@ -934,7 +1182,9 @@
       }
 
       .audit-grid,
-      .code-map {
+      .code-map,
+      .catalog-grid,
+      .control-board {
         grid-template-columns: 1fr;
       }
 
@@ -951,8 +1201,9 @@
         <p class="eyebrow">GhostStream iOS audit</p>
         <h1 id="title">Нативный iOS дизайн вместо Android-порта</h1>
         <p class="hero-copy">
-          Android версия задает полезную информационную архитектуру: Stream, Tail, Settings, Admin,
-          live telemetry, фильтры логов и профильные действия. Но iOS не должен выглядеть как Compose
+          Android версия задает полезную информационную архитектуру: Stream, Tail, Settings,
+          live telemetry, фильтры логов и профильные действия. Admin в GhostStream не глобальный раздел,
+          а право конкретного VPN профиля. Но iOS не должен выглядеть как Compose
           внутри SwiftUI. Этот макет сохраняет бренд GhostStream и данные VPN, но строит интерфейс на
           привычных iOS паттернах: NavigationStack, TabView, cards как grouped surfaces, native sheets,
           toolbar actions, крупные touch targets и понятные состояния.
@@ -976,7 +1227,7 @@
               <strong>Навигация</strong>
               <ul>
                 <li>Нижний bar повторяет Android glyph language: ◉, ▤, ⚙. Для iOS лучше SF Symbols + TabView semantics.</li>
-                <li>Admin спрятан в Settings, но выглядит как отдельная Android console page. Нативнее: push/detail с toolbar и стандартной back affordance.</li>
+                <li>Глобальный Admin ломает модель продукта: у обычного покупателя доступа его не должно быть вообще. Нативнее: profile detail -> server control только для admin profile.</li>
                 <li>Swipe between tabs есть, но iOS-пользователь ожидает стабильный TabView без случайных горизонтальных конфликтов со ScrollView.</li>
               </ul>
             </article>
@@ -1017,8 +1268,8 @@
           <ol class="decision-list">
             <li>
               <div>
-                <b>Системная навигация</b>
-                <span>Использовать SwiftUI TabView с labels: Stream, Logs, Settings, SF Symbols: waveform.path.ecg, doc.text, gearshape. Admin открывать через NavigationLink или sheet.</span>
+                <b>Системная навигация без глобального Admin</b>
+                <span>Использовать SwiftUI TabView только для Stream, Logs, Settings. Admin не вкладка и не пункт для всех: он появляется только в карточке конкретного профиля, если у этого профиля есть admin/cert entitlement.</span>
               </div>
             </li>
             <li>
@@ -1061,7 +1312,7 @@
 
           <div class="native-top">
             <div class="toolbar">
-              <button class="icon-button" type="button" aria-label="Profile menu">
+              <button class="icon-button" id="toolbarLeading" type="button" aria-label="Profile menu">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
               </button>
               <span class="toolbar-meta" id="toolbarMeta">Connected</span>
@@ -1150,9 +1401,13 @@
                 <h3>Endpoints</h3>
                 <div class="settings-card">
                   <div class="native-row">
-                    <div><b>tls.nl2.bikini-bottom.com</b><small>Active · 42 ms · 10.7.0.4/24</small></div>
+                    <div><b>tls.nl2.bikini-bottom.com</b><small>Active · 42 ms · user access</small></div>
                     <span class="badge signal">Active</span>
                   </div>
+                  <button class="native-row profile-admin-launch" data-admin-capability="true" data-target="admin" type="button">
+                    <div><b>stockholm-admin</b><small>Admin profile · 38 ms · opens server control</small></div>
+                    <span class="badge signal">Admin</span>
+                  </button>
                   <div class="native-row">
                     <div><b>Add profile</b><small>Scan QR or paste ghs:// connection string</small></div>
                     <span class="chev">›</span>
@@ -1178,7 +1433,7 @@
               </div>
             </section>
 
-            <section class="screen" data-screen="admin" aria-label="Admin screen">
+            <section class="screen" data-screen="admin" aria-label="Profile-scoped admin screen">
               <div class="admin-stat-grid">
                 <div class="admin-stat"><small>Uptime</small><b>4h 18m</b></div>
                 <div class="admin-stat"><small>Sessions</small><b style="color:var(--accent)">7</b></div>
@@ -1220,10 +1475,6 @@
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" stroke="currentColor"/><path d="M4 12h2m12 0h2M12 4v2m0 12v2M6.3 6.3l1.4 1.4m8.6 8.6 1.4 1.4m0-11.4-1.4 1.4m-8.6 8.6-1.4 1.4" stroke="currentColor" stroke-linecap="round"/></svg>
               <span>Settings</span>
             </button>
-            <button class="tab-btn" data-target="admin" type="button" aria-label="Admin">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z" stroke="currentColor" stroke-linejoin="round"/><path d="M9 12l2 2 4-5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              <span>Admin</span>
-            </button>
           </nav>
         </div>
       </aside>
@@ -1247,6 +1498,597 @@
       </div>
     </section>
 
+    <section class="section" aria-labelledby="profile-model-title">
+      <div class="section-head">
+        <div>
+          <h2 id="profile-model-title">Философия профилей</h2>
+          <p>GhostStream продает доступ к конкретным VPN endpoints. Admin — это свойство endpoint/profile, а не свойство приложения.</p>
+        </div>
+      </div>
+      <div class="flow-note">
+        <b>Правило видимости Admin</b>
+        <span>
+          Если активный или сохраненный профиль обычный, пользователь видит только подключение, логи и настройки своего доступа.
+          Если у профиля есть admin certificate/capability, в карточке именно этого профиля появляется action “Server control”.
+          Никакой глобальной вкладки Admin, никаких пустых admin screens для покупателя доступа.
+        </span>
+      </div>
+      <ol class="decision-list">
+        <li>
+          <div>
+            <b>Обычный профиль</b>
+            <span>Card actions: Connect, Edit, Share to device, Delete. Admin affordance отсутствует полностью, не disabled.</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <b>Admin профиль</b>
+            <span>Card actions: Connect, Server control, Edit, Export client config, Delete. Badge “Admin” показывает capability только на этой карточке.</span>
+          </div>
+        </li>
+        <li>
+          <div>
+            <b>Admin screen lifecycle</b>
+            <span>Открывается через NavigationLink из admin profile card. Back возвращает к профилю. Header показывает имя сервера и mTLS identity этого профиля.</span>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="section" aria-labelledby="catalog-title">
+      <div class="section-head">
+        <div>
+          <h2 id="catalog-title">Каталог всех экранов и состояний</h2>
+          <p>Ниже не один “красивый экран”, а полный набор surfaces, которые надо перенести в SwiftUI.</p>
+        </div>
+      </div>
+
+      <div class="catalog-grid">
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Stream</small><b>No profile</b></div>
+            <div class="mini-body">
+              <div class="mini-card">
+                <div class="mini-title"><b>Standby</b><span class="badge">No profile</span></div>
+                <div class="mini-timer" style="color:var(--faint)">--:--:--</div>
+                <p class="mini-copy">Add a connection string before starting VPN.</p>
+              </div>
+              <div class="mini-button secondary">Add profile</div>
+              <div class="mini-row"><div><b>What works here</b><small>Scan QR, paste ghs://, import file</small></div><span class="chev">›</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Stream</small><b>Disconnected</b></div>
+            <div class="mini-body">
+              <div class="mini-card">
+                <div class="mini-title"><b>tls.nl2.bikini-bottom.com</b><span class="badge">User</span></div>
+                <div class="mini-timer" style="color:var(--faint)">--:--:--</div>
+                <p class="mini-copy">Last route: direct. Assigned address is shown only as profile metadata.</p>
+              </div>
+              <div class="mini-button">Connect</div>
+              <div class="mini-button secondary">Change profile</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Stream</small><b>Connecting</b></div>
+            <div class="mini-body">
+              <div class="mini-card warn">
+                <div class="mini-title"><b>Connecting</b><span class="badge">Handshake</span></div>
+                <div class="mini-timer" style="color:var(--warn)">00:00:04</div>
+                <p class="mini-copy">Button becomes Stop attempt. Chart renders skeleton lines, not fake traffic.</p>
+              </div>
+              <div class="mini-button secondary">Stop attempt</div>
+              <div class="mini-row"><div><b>Certificate</b><small>Checking client keychain item</small></div><span class="badge">Step 2</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Stream</small><b>Connected</b></div>
+            <div class="mini-body">
+              <div class="mini-card active">
+                <div class="mini-title"><b>Protected</b><span class="badge signal">6 streams</span></div>
+                <div class="mini-timer">00:07:42</div>
+                <p class="mini-copy">RX 18.6 Mbps · TX 4.2 Mbps · direct route</p>
+              </div>
+              <div class="mini-card"><div class="chart" style="height:74px"></div></div>
+              <div class="mini-button">Disconnect</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Stream</small><b>Reconnecting</b></div>
+            <div class="mini-body">
+              <div class="mini-card warn">
+                <div class="mini-title"><b>Signal recovering</b><span class="badge">Attempt 3</span></div>
+                <div class="mini-timer" style="color:var(--warn)">00:08:16</div>
+                <p class="mini-copy">Next retry in 5 seconds. The user can disconnect immediately.</p>
+              </div>
+              <div class="mini-button secondary">Disconnect</div>
+              <div class="mini-button secondary">View logs</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Stream</small><b>Error</b></div>
+            <div class="mini-body">
+              <div class="mini-card danger">
+                <div class="mini-title"><b>Connection failed</b><span class="badge">Error</span></div>
+                <p class="mini-copy">Profile certificate was not found in the shared keychain group.</p>
+              </div>
+              <div class="mini-button">Retry</div>
+              <div class="mini-button secondary">Open profile</div>
+              <div class="mini-button secondary">Export debug report</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Logs</small><b>Live tail</b></div>
+            <div class="mini-body">
+              <div class="log-toolbar">
+                <span class="chip active">All</span><span class="chip">Warn</span><span class="chip">Share</span>
+              </div>
+              <div class="log-row"><time>09:41:28</time><span class="level">INF</span><span>status frame received</span></div>
+              <div class="log-row"><time>09:41:26</time><span class="level warn">WRN</span><span>route policy changed</span></div>
+              <div class="log-row"><time>09:41:19</time><span class="level err">ERR</span><span>stale snapshot ignored</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Logs</small><b>Offline</b></div>
+            <div class="mini-body">
+              <div class="mini-card">
+                <div class="mini-title"><b>No live tunnel</b><span class="badge">Standby</span></div>
+                <p class="mini-copy">Show cached logs and explain that live IPC is unavailable while VPN is disconnected.</p>
+              </div>
+              <div class="mini-button secondary">Share last 500</div>
+              <div class="mini-button secondary">Clear logs</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Logs</small><b>Search</b></div>
+            <div class="mini-body">
+              <div class="mini-card"><div class="mini-title"><b>Search logs</b><span class="badge">12 hits</span></div><p class="mini-copy">Native searchable modifier or pinned search field. Filters and search combine without hiding level chips.</p></div>
+              <div class="log-toolbar">
+                <span class="chip">All</span><span class="chip active">Error</span><span class="chip">Clear</span>
+              </div>
+              <div class="log-row"><time>09:41:19</time><span class="level err">ERR</span><span>stale snapshot ignored</span></div>
+              <div class="mini-button secondary">Cancel search</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Share</small><b>Logs export</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Share logs</b>
+                <button class="sheet-action" type="button"><span>Last 500 lines</span><span>18 KB</span></button>
+                <button class="sheet-action" type="button"><span>Current filter</span><span>Errors</span></button>
+                <button class="sheet-action" type="button"><span>Debug report</span><span>Config + state</span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Confirm</small><b>Clear logs</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Clear local logs?</b>
+                <p style="margin:0;color:#5d5b54;font-size:13px;line-height:1.35">This clears cached app logs on this iPhone. It does not affect server-side logs.</p>
+                <button class="sheet-action" type="button"><span>Cancel</span><span></span></button>
+                <button class="sheet-action" type="button" style="color:#b91c1c"><span>Clear</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Settings</small><b>Buyer profiles</b></div>
+            <div class="mini-body">
+              <div class="mini-row"><div><b>tls.nl2.bikini-bottom.com</b><small>User access · active · 42 ms</small></div><span class="badge signal">Active</span></div>
+              <div class="mini-row"><div><b>singapore-family</b><small>User access · 93 ms</small></div><span class="chev">›</span></div>
+              <div class="mini-row"><div><b>Add profile</b><small>QR, paste, file import</small></div><span class="chev">›</span></div>
+              <div class="mini-card"><p class="mini-copy">No Admin row, tab, badge, empty state, or locked screen is rendered for a regular paying user.</p></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Settings</small><b>Saved profiles</b></div>
+            <div class="mini-body">
+              <div class="mini-row"><div><b>tls.nl2.bikini-bottom.com</b><small>User access · active · 42 ms</small></div><span class="badge signal">Active</span></div>
+              <div class="mini-row"><div><b>stockholm-admin</b><small>Admin profile · server control available</small></div><span class="badge signal">Admin</span></div>
+              <div class="mini-row"><div><b>Add profile</b><small>QR, paste, file import</small></div><span class="chev">›</span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Profile</small><b>User profile detail</b></div>
+            <div class="mini-body">
+              <div class="mini-card"><div class="mini-title"><b>tls.nl2.bikini-bottom.com</b><span class="badge">User</span></div><p class="mini-copy">No admin controls are present in this screen.</p></div>
+              <div class="mini-button">Set active</div>
+              <div class="mini-button secondary">Rename</div>
+              <div class="mini-button secondary">Share to device</div>
+              <div class="mini-button danger">Delete profile</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Profile</small><b>Identity</b></div>
+            <div class="mini-body">
+              <div class="mini-card active"><div class="mini-title"><b>Подключение</b><span class="badge signal">Valid</span></div><p class="mini-copy">Client certificate, assigned address and expiry for this profile only.</p></div>
+              <div class="mini-row"><div><b>Address</b><small>10.7.0.4/24</small></div><span class="badge">VPN</span></div>
+              <div class="mini-row"><div><b>Certificate</b><small>Expires May 5, 2026</small></div><span class="badge signal">OK</span></div>
+              <div class="mini-button secondary">Copy identity summary</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Profile</small><b>Subscription</b></div>
+            <div class="mini-body">
+              <div class="mini-card"><div class="mini-title"><b>5 days remaining</b><span class="badge">User</span></div><p class="mini-copy">Renewal status is scoped to the selected endpoint. Other servers may have separate terms.</p></div>
+              <div class="mini-row"><div><b>Plan</b><small>Personal access</small></div><span class="chev">›</span></div>
+              <div class="mini-row"><div><b>Expires</b><small>May 5, 2026 14:20</small></div><span class="badge">UTC</span></div>
+              <div class="mini-button secondary">Refresh entitlement</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Profile</small><b>Admin profile detail</b></div>
+            <div class="mini-body">
+              <div class="mini-card active"><div class="mini-title"><b>stockholm-admin</b><span class="badge signal">Admin</span></div><p class="mini-copy">Server control is shown because this profile has admin credentials.</p></div>
+              <div class="mini-button">Open server control</div>
+              <div class="mini-button secondary">Create client link</div>
+              <div class="mini-button secondary">Edit endpoint</div>
+              <div class="mini-button danger">Delete profile</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Admin</small><b>Server control</b></div>
+            <div class="mini-body">
+              <div class="admin-stat-grid">
+                <div class="admin-stat"><small>Uptime</small><b>4h</b></div>
+                <div class="admin-stat"><small>Sessions</small><b>7</b></div>
+                <div class="admin-stat"><small>Egress</small><b>2.4G</b></div>
+              </div>
+              <div class="client-row active-client"><div class="client-top"><b>pavel-iphone-16</b><span class="badge signal">Online</span></div><span class="row-sub">10.7.0.12 · 318 MB</span></div>
+              <div class="mini-button">Create client</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Admin</small><b>Client detail</b></div>
+            <div class="mini-body">
+              <div class="mini-card active"><div class="mini-title"><b>office-mbp</b><span class="badge signal">Enabled</span></div><p class="mini-copy">10.7.0.18 · admin client · last seen 18 min ago</p></div>
+              <div class="mini-row"><div><b>Enabled</b><small>Allow tunnel authentication</small></div><span class="switch on"></span></div>
+              <div class="mini-row"><div><b>Admin rights</b><small>Can manage this server</small></div><span class="switch"></span></div>
+              <div class="mini-button secondary">Copy connection string</div>
+              <div class="mini-button danger">Delete client</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>Add profile</b></div>
+            <div class="mini-body">
+              <div class="mini-card"><p class="mini-copy">Underlying screen dims. Sheet uses medium and large detents.</p></div>
+              <div class="mini-sheet">
+                <b>Add profile</b>
+                <button class="sheet-action" type="button"><span>Scan QR code</span><span>›</span></button>
+                <button class="sheet-action" type="button"><span>Paste ghs:// string</span><span>›</span></button>
+                <button class="sheet-action" type="button"><span>Import file</span><span>›</span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>DNS presets</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>DNS</b>
+                <button class="sheet-action" type="button"><span>Cloudflare</span><span>1.1.1.1</span></button>
+                <button class="sheet-action" type="button"><span>Quad9</span><span>9.9.9.9</span></button>
+                <button class="sheet-action" type="button"><span>Custom</span><span>Comma list</span></button>
+                <button class="sheet-action" type="button"><span>Save</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>Split tunnel</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Routing mode</b>
+                <div class="segmented"><span>All</span><span>Bypass</span><span>Manual</span></div>
+                <button class="sheet-action" type="button"><span>Direct CIDR list</span><span>3 rules</span></button>
+                <button class="sheet-action" type="button"><span>Save</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>Theme</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Appearance</b>
+                <div class="segmented"><span>System</span><span>Dark</span><span>Light</span></div>
+                <button class="sheet-action" type="button"><span>Accent intensity</span><span>Standard</span></button>
+                <button class="sheet-action" type="button"><span>Save</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>Language</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Language</b>
+                <button class="sheet-action" type="button"><span>Русский</span><span>Selected</span></button>
+                <button class="sheet-action" type="button"><span>English</span><span></span></button>
+                <button class="sheet-action" type="button"><span>Use system language</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Settings</small><b>Diagnostics</b></div>
+            <div class="mini-body">
+              <div class="mini-row"><div><b>VPN status</b><small>Connected · provider reachable</small></div><span class="badge signal">OK</span></div>
+              <div class="mini-row"><div><b>Route policy</b><small>Global tunnel · 4 direct CIDRs</small></div><span class="chev">›</span></div>
+              <div class="mini-row"><div><b>Last provider frame</b><small>3 seconds ago</small></div><span class="badge signal">Live</span></div>
+              <div class="mini-button secondary">Export debug report</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Settings</small><b>About</b></div>
+            <div class="mini-body">
+              <div class="mini-card"><div class="mini-title"><b>GhostStream</b><span class="badge">1.0</span></div><p class="mini-copy">Build 46 · iOS NetworkExtension client · user profiles stored locally.</p></div>
+              <div class="mini-row"><div><b>Privacy policy</b><small>Opens browser</small></div><span class="chev">›</span></div>
+              <div class="mini-row"><div><b>Terms</b><small>Opens browser</small></div><span class="chev">›</span></div>
+              <div class="mini-button secondary">Copy build info</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Camera</small><b>QR scanner</b></div>
+            <div class="mini-body">
+              <div class="mini-card" style="height:260px;display:grid;place-items:center;background:linear-gradient(135deg,rgba(255,255,255,0.07),rgba(182,236,59,0.08))">
+                <div style="width:160px;height:160px;border:2px solid var(--accent);border-radius:24px"></div>
+              </div>
+              <div class="mini-button secondary">Cancel</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Confirm</small><b>Delete profile</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Delete profile?</b>
+                <p style="margin:0;color:#5d5b54;font-size:13px;line-height:1.35">This removes local config and keys for this profile only.</p>
+                <button class="sheet-action" type="button"><span>Cancel</span><span></span></button>
+                <button class="sheet-action" type="button" style="color:#b91c1c"><span>Delete</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>Profile picker</b></div>
+            <div class="mini-body">
+              <div class="mini-row"><div><b>tls.nl2.bikini-bottom.com</b><small>User access · current</small></div><span class="badge signal">Active</span></div>
+              <div class="mini-row"><div><b>stockholm-admin</b><small>Admin profile · not active</small></div><span class="badge signal">Admin</span></div>
+              <div class="mini-row"><div><b>singapore-family</b><small>User access · 93 ms</small></div><span class="chev">›</span></div>
+              <div class="mini-button secondary">Manage profiles</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>Edit endpoint</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Edit profile</b>
+                <button class="sheet-action" type="button"><span>Name</span><span>stockholm-admin</span></button>
+                <button class="sheet-action" type="button"><span>Server</span><span>vpn.se1.example</span></button>
+                <button class="sheet-action" type="button"><span>Routing</span><span>Direct exclusions</span></button>
+                <button class="sheet-action" type="button"><span>Save changes</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Sheet</small><b>Debug export</b></div>
+            <div class="mini-body">
+              <div class="mini-card"><div class="mini-title"><b>Report contents</b><span class="badge">Local</span></div><p class="mini-copy">Profile name, current NEVPNStatus, route mode, last 500 log lines, no private keys.</p></div>
+              <div class="mini-sheet">
+                <b>Export debug report</b>
+                <button class="sheet-action" type="button"><span>Share as text</span><span>12 KB</span></button>
+                <button class="sheet-action" type="button"><span>Copy to clipboard</span><span></span></button>
+                <button class="sheet-action" type="button"><span>Cancel</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Admin sheet</small><b>Create client</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>New client</b>
+                <button class="sheet-action" type="button"><span>Label</span><span>iphone-family</span></button>
+                <button class="sheet-action" type="button"><span>Subscription</span><span>30 days</span></button>
+                <button class="sheet-action" type="button"><span>Admin rights</span><span>Off</span></button>
+                <button class="sheet-action" type="button"><span>Create</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Admin sheet</small><b>Connection string</b></div>
+            <div class="mini-body">
+              <div class="mini-card active"><div class="mini-title"><b>client created</b><span class="badge signal">Ready</span></div><p class="mini-copy">ghs:// string is shown once and can be copied or shared with QR.</p></div>
+              <div class="mini-button">Copy ghs:// string</div>
+              <div class="mini-button secondary">Show QR</div>
+              <div class="mini-button secondary">Share</div>
+              <div class="mini-button secondary">Done</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Confirm</small><b>Delete client</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Delete office-mbp?</b>
+                <p style="margin:0;color:#5d5b54;font-size:13px;line-height:1.35">The client loses access to this server. Other profiles are untouched.</p>
+                <button class="sheet-action" type="button"><span>Cancel</span><span></span></button>
+                <button class="sheet-action" type="button" style="color:#b91c1c"><span>Delete client</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Confirm</small><b>Admin rights</b></div>
+            <div class="mini-body">
+              <div class="mini-sheet">
+                <b>Grant admin rights?</b>
+                <p style="margin:0;color:#5d5b54;font-size:13px;line-height:1.35">This client will be able to manage only the stockholm-admin server.</p>
+                <button class="sheet-action" type="button"><span>Cancel</span><span></span></button>
+                <button class="sheet-action" type="button"><span>Grant rights</span><span></span></button>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>System</small><b>VPN permission</b></div>
+            <div class="mini-body">
+              <div class="mini-card warn"><div class="mini-title"><b>iOS permission</b><span class="badge">System</span></div><p class="mini-copy">The app explains why iOS will show “Allow VPN configuration” before opening the system prompt.</p></div>
+              <div class="mini-button">Continue</div>
+              <div class="mini-button secondary">Not now</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="mini-phone">
+          <div class="mini-screen">
+            <div class="mini-top"><small>Toast</small><b>Copied</b></div>
+            <div class="mini-body">
+              <div class="mini-card active" style="margin-top:auto">
+                <div class="mini-title"><b>Copied</b><span class="badge signal">2 sec</span></div>
+                <p class="mini-copy">Short bottom confirmation after copy/share/export. No modal for a successful clipboard action.</p>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="controls-title">
+      <div class="section-head">
+        <div>
+          <h2 id="controls-title">Каждая маленькая кнопка</h2>
+          <p>Матрица controls, чтобы заранее согласовать tap targets, disabled states и destructive actions.</p>
+        </div>
+      </div>
+      <div class="control-board">
+        <div class="control-sample"><div class="mini-button">Connect</div><small>Primary idle action</small></div>
+        <div class="control-sample"><div class="mini-button secondary">Disconnect</div><small>Stop while busy/live</small></div>
+        <div class="control-sample"><div class="mini-button">Retry</div><small>Error recovery</small></div>
+        <div class="control-sample"><div class="mini-button danger">Delete</div><small>Destructive confirm only</small></div>
+        <div class="control-sample"><span class="chip active">All</span><small>Active log filter</small></div>
+        <div class="control-sample"><span class="chip">Info</span><small>Inactive log filter</small></div>
+        <div class="control-sample"><span class="chip">Warn</span><small>Inactive filter</small></div>
+        <div class="control-sample"><span class="chip">Error</span><small>Error-only filter</small></div>
+        <div class="control-sample"><span class="chip">Clear</span><small>Destructive confirm</small></div>
+        <div class="control-sample"><span class="chip">Search</span><small>Search affordance</small></div>
+        <div class="control-sample"><span class="switch on"></span><small>Native Toggle on</small></div>
+        <div class="control-sample"><span class="switch"></span><small>Native Toggle off</small></div>
+        <div class="control-sample"><div class="segmented"><span>Dark</span><span>Light</span><span>System</span></div><small>Theme picker</small></div>
+        <div class="control-sample"><div class="mini-row"><div><b>DNS</b><small>Disclosure</small></div><span class="chev">›</span></div></div>
+        <div class="control-sample"><button class="icon-button" type="button" aria-label="Profile menu"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button><small>Profile picker</small></div>
+        <div class="control-sample"><button class="icon-button" type="button" aria-label="Back"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 18-6-6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><small>Back from server control</small></div>
+        <div class="control-sample"><button class="icon-button" type="button" aria-label="Diagnostics"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/></svg></button><small>Diagnostics</small></div>
+        <div class="control-sample"><span class="badge signal">Admin</span><small>Capability badge per profile</small></div>
+        <div class="control-sample"><span class="badge">iOS limit</span><small>Unavailable platform feature</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button"><span>Set active</span><span>›</span></button><small>Profile action</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button"><span>Edit endpoint</span><span>›</span></button><small>Profile action</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button"><span>Server control</span><span>›</span></button><small>Admin profile only</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button"><span>Share logs</span><span>›</span></button><small>ShareLink row</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button"><span>Copy string</span><span>›</span></button><small>Clipboard action</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button"><span>Export debug</span><span>›</span></button><small>Debug report</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button"><span>Create client</span><span>›</span></button><small>Admin-only action</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button" style="color:#b91c1c"><span>Delete profile</span><span>›</span></button><small>Destructive profile action</small></div>
+        <div class="control-sample"><button class="sheet-action" type="button" style="color:#b91c1c"><span>Delete client</span><span>›</span></button><small>Admin destructive action</small></div>
+      </div>
+    </section>
+
     <section class="section" aria-labelledby="map-title">
       <div class="section-head">
         <div>
@@ -1257,7 +2099,7 @@
       <div class="code-map">
         <article>
           <code>NavigationStack + TabView</code>
-          <span>Root navigation, selected tab persistence, accessibility, predictable iOS gestures.</span>
+          <span>Root navigation for Stream, Logs and Settings only; Admin is pushed from an admin-capable profile.</span>
         </article>
         <article>
           <code>.toolbar + .navigationTitle</code>
@@ -1265,7 +2107,7 @@
         </article>
         <article>
           <code>List / ScrollView + Section</code>
-          <span>Settings and Admin grouped rows with native spacing, disclosure indicators, refreshable support.</span>
+          <span>Settings, profile detail and profile-scoped Admin grouped rows with native spacing and disclosure indicators.</span>
         </article>
         <article>
           <code>sheet(detents:) + confirmationDialog</code>
@@ -1284,23 +2126,49 @@
   </main>
 
   <script>
+    const userIcon = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+    const backIcon = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 18-6-6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     const labels = {
-      stream: ["Stream", "Connected"],
-      logs: ["Logs", "Live · 24 lines"],
-      settings: ["Settings", "1.0 · 46"],
-      admin: ["Admin", "mTLS · you"]
+      stream: { title: "Stream", meta: "Connected", tab: "stream" },
+      logs: { title: "Logs", meta: "Live · 24 lines", tab: "logs" },
+      settings: { title: "Settings", meta: "1.0 · 46", tab: "settings" },
+      admin: { title: "Server", meta: "stockholm-admin · mTLS", tab: "settings" }
     };
 
-    document.querySelectorAll(".tab-btn").forEach((button) => {
-      button.addEventListener("click", () => {
-        const target = button.dataset.target;
-        document.querySelectorAll(".tab-btn").forEach((item) => item.classList.toggle("active", item === button));
-        document.querySelectorAll(".screen").forEach((screen) => {
-          screen.classList.toggle("active", screen.dataset.screen === target);
-        });
-        document.getElementById("toolbarTitle").textContent = labels[target][0];
-        document.getElementById("toolbarMeta").textContent = labels[target][1];
+    const toolbarLeading = document.getElementById("toolbarLeading");
+
+    function showScreen(target) {
+      const label = labels[target];
+      document.querySelectorAll(".screen").forEach((screen) => {
+        screen.classList.toggle("active", screen.dataset.screen === target);
       });
+      document.querySelectorAll(".tab-btn").forEach((item) => {
+        item.classList.toggle("active", item.dataset.target === label.tab);
+      });
+      document.getElementById("toolbarTitle").textContent = label.title;
+      document.getElementById("toolbarMeta").textContent = label.meta;
+      const isAdmin = target === "admin";
+      toolbarLeading.innerHTML = isAdmin ? backIcon : userIcon;
+      toolbarLeading.setAttribute("aria-label", isAdmin ? "Back to profile" : "Profile menu");
+      toolbarLeading.dataset.target = isAdmin ? "settings" : "";
+    }
+
+    document.querySelectorAll(".tab-btn").forEach((button) => {
+      button.addEventListener("click", () => showScreen(button.dataset.target));
+    });
+
+    document.querySelectorAll(".profile-admin-launch").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.dataset.adminCapability === "true") {
+          showScreen(button.dataset.target);
+        }
+      });
+    });
+
+    toolbarLeading.addEventListener("click", () => {
+      if (toolbarLeading.dataset.target) {
+        showScreen(toolbarLeading.dataset.target);
+      }
     });
 
     const connectButton = document.getElementById("connectButton");
