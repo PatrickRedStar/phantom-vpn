@@ -1,0 +1,1339 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GhostStream iOS native design audit</title>
+  <meta name="description" content="Audit and iOS-native redesign proposal for GhostStream mobile UI.">
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #15140f;
+      --panel: #1b1913;
+      --panel-2: #242116;
+      --stroke: rgba(232, 226, 208, 0.12);
+      --stroke-strong: rgba(232, 226, 208, 0.20);
+      --text: #f3eddd;
+      --muted: #a79d84;
+      --faint: #716955;
+      --accent: #b6ec3b;
+      --accent-ink: #172006;
+      --warn: #df7738;
+      --danger: #e35449;
+      --info: #83a1bd;
+      --shadow: rgba(7, 6, 4, 0.42);
+      --radius-xl: 30px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      --radius-sm: 12px;
+      --ios-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+      --mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--page);
+      scroll-behavior: smooth;
+    }
+
+    body {
+      min-height: 100dvh;
+      margin: 0;
+      color: var(--text);
+      font-family: var(--ios-font);
+      background:
+        radial-gradient(circle at 22% 8%, rgba(182, 236, 59, 0.13), transparent 28rem),
+        radial-gradient(circle at 82% 24%, rgba(223, 119, 56, 0.08), transparent 24rem),
+        linear-gradient(180deg, #17150f 0%, #0f0e0b 100%);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.045;
+      background-image:
+        linear-gradient(90deg, rgba(255,255,255,0.36) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255,255,255,0.26) 1px, transparent 1px);
+      background-size: 7px 7px;
+      mix-blend-mode: soft-light;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .page {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 44px 0 72px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(360px, 430px);
+      gap: 42px;
+      align-items: start;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font: 700 12px/1 var(--mono);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin: 0 0 14px;
+    }
+
+    h1 {
+      max-width: 780px;
+      margin: 0;
+      font-size: clamp(38px, 7vw, 76px);
+      line-height: 0.93;
+      letter-spacing: -0.055em;
+      text-wrap: balance;
+    }
+
+    .hero-copy {
+      max-width: 66ch;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.55;
+      text-wrap: pretty;
+    }
+
+    .meta-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .tag {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 11px;
+      border: 1px solid var(--stroke);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.035);
+      color: var(--muted);
+      font: 650 12px/1 var(--mono);
+      letter-spacing: 0.02em;
+    }
+
+    .tag .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 99px;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(182, 236, 59, 0.10);
+    }
+
+    .section {
+      margin-top: 52px;
+      padding-top: 28px;
+      border-top: 1px solid var(--stroke);
+    }
+
+    .section-head {
+      display: flex;
+      gap: 16px;
+      align-items: end;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .section h2 {
+      margin: 0;
+      font-size: clamp(24px, 3.8vw, 38px);
+      line-height: 1.02;
+      letter-spacing: -0.035em;
+    }
+
+    .section p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .audit-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .audit-card {
+      padding: 18px;
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius-lg);
+      background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025));
+      box-shadow: 0 18px 42px -32px var(--shadow);
+    }
+
+    .audit-card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .audit-card ul {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.42;
+    }
+
+    .audit-card li {
+      position: relative;
+      padding-left: 15px;
+    }
+
+    .audit-card li::before {
+      content: "";
+      position: absolute;
+      top: 0.65em;
+      left: 0;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: 0.72;
+    }
+
+    .decision-list {
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      counter-reset: decisions;
+    }
+
+    .decision-list li {
+      counter-increment: decisions;
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,0.035);
+    }
+
+    .decision-list li::before {
+      content: counter(decisions, decimal-leading-zero);
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: rgba(182, 236, 59, 0.12);
+      color: var(--accent);
+      font: 750 12px/1 var(--mono);
+    }
+
+    .decision-list b {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 15px;
+    }
+
+    .decision-list span {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .phone-shell {
+      position: sticky;
+      top: 24px;
+      width: min(430px, 100%);
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 46px;
+      background: linear-gradient(150deg, rgba(255,255,255,0.16), rgba(255,255,255,0.04));
+      box-shadow: 0 32px 90px -42px rgba(0,0,0,0.8);
+    }
+
+    .phone {
+      position: relative;
+      height: 860px;
+      overflow: hidden;
+      border-radius: 38px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background:
+        radial-gradient(circle at 50% 0%, rgba(182,236,59,0.11), transparent 19rem),
+        var(--page);
+    }
+
+    .statusbar {
+      height: 48px;
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      padding: 0 24px 8px;
+      color: rgba(243,237,221,0.84);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .status-icons {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: rgba(243,237,221,0.72);
+    }
+
+    .native-top {
+      padding: 10px 20px 14px;
+      border-bottom: 1px solid var(--stroke);
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 36px;
+      margin-bottom: 8px;
+    }
+
+    .toolbar-title {
+      font-size: 31px;
+      line-height: 1;
+      font-weight: 760;
+      letter-spacing: -0.032em;
+    }
+
+    .toolbar-meta {
+      color: var(--muted);
+      font: 600 12px/1.1 var(--mono);
+    }
+
+    .icon-button {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--stroke);
+      border-radius: 50%;
+      background: rgba(255,255,255,0.045);
+      color: var(--text);
+      cursor: pointer;
+      transition: transform 180ms ease, background 180ms ease;
+    }
+
+    .icon-button:active,
+    .ios-button:active,
+    .sheet-action:active,
+    .tab-btn:active {
+      transform: scale(0.97);
+    }
+
+    .content {
+      height: calc(100% - 48px - 92px - 78px);
+      overflow: auto;
+      padding: 18px 16px 26px;
+      scrollbar-width: none;
+    }
+
+    .content::-webkit-scrollbar {
+      display: none;
+    }
+
+    .screen {
+      display: none;
+      animation: appear 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    }
+
+    .screen.active {
+      display: block;
+    }
+
+    @keyframes appear {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .connection-card {
+      position: relative;
+      padding: 18px;
+      border-radius: 28px;
+      background:
+        radial-gradient(circle at 82% 12%, rgba(182,236,59,0.18), transparent 12rem),
+        linear-gradient(180deg, rgba(255,255,255,0.085), rgba(255,255,255,0.035));
+      border: 1px solid var(--stroke-strong);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 28px 48px -38px rgba(0,0,0,0.8);
+    }
+
+    .connection-card.idle {
+      background: linear-gradient(180deg, rgba(255,255,255,0.065), rgba(255,255,255,0.025));
+    }
+
+    .connection-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 14px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 30px;
+      padding: 7px 10px;
+      border-radius: 99px;
+      background: rgba(182,236,59,0.12);
+      color: var(--accent);
+      font: 760 12px/1 var(--mono);
+    }
+
+    .status-pill.idle {
+      background: rgba(255,255,255,0.06);
+      color: var(--muted);
+    }
+
+    .pulse {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 1.8s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.86); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+
+    .server-name {
+      margin: 16px 0 3px;
+      font-size: 22px;
+      font-weight: 720;
+      letter-spacing: -0.02em;
+    }
+
+    .server-sub {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.35;
+    }
+
+    .timer {
+      margin-top: 18px;
+      font: 700 50px/0.95 var(--ios-font);
+      letter-spacing: -0.055em;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .timer.idle {
+      color: var(--faint);
+    }
+
+    .mini-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .mini-stat {
+      min-height: 74px;
+      padding: 12px;
+      border-radius: 18px;
+      background: rgba(0,0,0,0.16);
+      border: 1px solid var(--stroke);
+    }
+
+    .mini-stat label {
+      display: block;
+      color: var(--faint);
+      font: 700 11px/1 var(--mono);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .mini-stat strong {
+      display: block;
+      margin-top: 10px;
+      font-size: 22px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .graph-card,
+    .group-card {
+      margin-top: 14px;
+      padding: 16px;
+      border-radius: 24px;
+      background: rgba(255,255,255,0.045);
+      border: 1px solid var(--stroke);
+    }
+
+    .card-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+      color: var(--muted);
+      font: 700 12px/1 var(--mono);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .chart {
+      height: 112px;
+      position: relative;
+      overflow: hidden;
+      border-radius: 16px;
+      background:
+        linear-gradient(to bottom, transparent 24%, var(--stroke) 24.5%, transparent 25%),
+        linear-gradient(to bottom, transparent 49%, var(--stroke) 49.5%, transparent 50%),
+        linear-gradient(to bottom, transparent 74%, var(--stroke) 74.5%, transparent 75%);
+    }
+
+    .wave {
+      position: absolute;
+      inset: 16px 0 8px;
+    }
+
+    .wave svg {
+      width: 100%;
+      height: 100%;
+      overflow: visible;
+    }
+
+    .bars {
+      height: 78px;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      align-items: end;
+      padding-top: 12px;
+    }
+
+    .bar {
+      border-radius: 8px 8px 3px 3px;
+      min-height: 18px;
+      background: linear-gradient(180deg, var(--accent), rgba(182,236,59,0.22));
+      opacity: 0.9;
+      animation: bar 2.8s ease-in-out infinite;
+      animation-delay: calc(var(--i) * -0.24s);
+    }
+
+    @keyframes bar {
+      0%, 100% { transform: scaleY(0.72); opacity: 0.62; }
+      50% { transform: scaleY(1); opacity: 1; }
+    }
+
+    .ios-button {
+      min-height: 52px;
+      width: 100%;
+      border: 0;
+      border-radius: 18px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-weight: 760;
+      font-size: 17px;
+      cursor: pointer;
+      transition: transform 180ms ease, filter 180ms ease;
+    }
+
+    .ios-button.secondary {
+      background: rgba(255,255,255,0.065);
+      color: var(--text);
+      border: 1px solid var(--stroke);
+    }
+
+    .safe-action {
+      position: sticky;
+      bottom: 0;
+      padding-top: 14px;
+      background: linear-gradient(180deg, transparent, var(--page) 38%);
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .native-row {
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.045);
+      border: 1px solid var(--stroke);
+    }
+
+    .native-row b {
+      display: block;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .native-row small,
+    .row-sub {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+    }
+
+    .chev {
+      color: var(--faint);
+      font-size: 22px;
+      line-height: 1;
+    }
+
+    .log-toolbar {
+      display: flex;
+      gap: 8px;
+      overflow: auto;
+      padding-bottom: 8px;
+      scrollbar-width: none;
+    }
+
+    .chip {
+      min-height: 34px;
+      white-space: nowrap;
+      padding: 8px 12px;
+      border: 1px solid var(--stroke);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.035);
+      font: 680 12px/1 var(--ios-font);
+    }
+
+    .chip.active {
+      color: var(--accent-ink);
+      background: var(--accent);
+      border-color: transparent;
+    }
+
+    .log-row {
+      display: grid;
+      grid-template-columns: 48px 36px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--stroke);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.42;
+    }
+
+    .log-row time {
+      color: var(--faint);
+      font-size: 10px;
+    }
+
+    .level {
+      width: 32px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      background: rgba(182,236,59,0.10);
+      color: var(--accent);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .level.warn {
+      background: rgba(223,119,56,0.12);
+      color: var(--warn);
+    }
+
+    .level.err {
+      background: rgba(227,84,73,0.12);
+      color: var(--danger);
+    }
+
+    .settings-section {
+      margin-bottom: 22px;
+    }
+
+    .settings-section h3 {
+      margin: 0 0 9px 3px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 760;
+      letter-spacing: -0.01em;
+    }
+
+    .settings-card {
+      overflow: hidden;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.052);
+      border: 1px solid var(--stroke);
+    }
+
+    .settings-card .native-row {
+      border: 0;
+      border-radius: 0;
+      border-bottom: 1px solid var(--stroke);
+      background: transparent;
+    }
+
+    .settings-card .native-row:last-child {
+      border-bottom: 0;
+    }
+
+    .switch {
+      width: 50px;
+      height: 30px;
+      padding: 3px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.16);
+    }
+
+    .switch::after {
+      content: "";
+      display: block;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.88);
+      box-shadow: 0 2px 5px rgba(0,0,0,0.25);
+    }
+
+    .switch.on {
+      background: var(--accent);
+    }
+
+    .switch.on::after {
+      transform: translateX(20px);
+      background: var(--accent-ink);
+    }
+
+    .admin-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .admin-stat {
+      min-height: 76px;
+      padding: 12px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.045);
+      border: 1px solid var(--stroke);
+    }
+
+    .admin-stat small {
+      color: var(--faint);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .admin-stat b {
+      display: block;
+      margin-top: 10px;
+      font-size: 17px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .client-row {
+      display: grid;
+      gap: 8px;
+      padding: 14px;
+      border-radius: 20px;
+      background: rgba(255,255,255,0.045);
+      border: 1px solid var(--stroke);
+    }
+
+    .client-row.active-client {
+      border-color: rgba(182,236,59,0.36);
+      background: linear-gradient(90deg, rgba(182,236,59,0.11), rgba(255,255,255,0.045));
+    }
+
+    .client-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .badge {
+      display: inline-flex;
+      min-height: 22px;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.07);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .badge.signal {
+      background: rgba(182,236,59,0.13);
+      color: var(--accent);
+    }
+
+    .bottom-tab {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      height: 66px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 2px;
+      padding: 6px;
+      border-radius: 24px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(28, 27, 23, 0.78);
+      backdrop-filter: blur(26px) saturate(150%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 18px 36px -24px rgba(0,0,0,0.8);
+    }
+
+    .tab-btn {
+      display: grid;
+      place-items: center;
+      gap: 2px;
+      border: 0;
+      border-radius: 18px;
+      background: transparent;
+      color: var(--faint);
+      cursor: pointer;
+      transition: background 200ms ease, color 200ms ease, transform 180ms ease;
+    }
+
+    .tab-btn.active {
+      color: var(--accent);
+      background: rgba(182,236,59,0.10);
+    }
+
+    .tab-btn svg {
+      width: 21px;
+      height: 21px;
+      stroke-width: 2.1;
+    }
+
+    .tab-btn span {
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .sheet-preview {
+      margin-top: 16px;
+      border-radius: 30px;
+      border: 1px solid var(--stroke);
+      background: rgba(255,255,255,0.04);
+      padding: 16px;
+    }
+
+    .sheet-card {
+      width: min(390px, 100%);
+      margin: 0 auto;
+      padding: 16px;
+      border-radius: 28px;
+      background: rgba(245,245,247,0.92);
+      color: #1e1d19;
+      box-shadow: 0 24px 80px -42px rgba(0,0,0,0.9);
+    }
+
+    .sheet-card h3 {
+      margin: 0 0 10px;
+      font-size: 21px;
+      letter-spacing: -0.025em;
+    }
+
+    .sheet-action {
+      min-height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-radius: 15px;
+      padding: 0 14px;
+      margin-top: 8px;
+      border: 0;
+      width: 100%;
+      background: rgba(0,0,0,0.06);
+      color: #1e1d19;
+      font-weight: 650;
+      text-align: left;
+    }
+
+    .small-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .code-map {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .code-map article {
+      padding: 16px;
+      border: 1px solid var(--stroke);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,0.035);
+    }
+
+    .code-map code {
+      display: block;
+      color: var(--accent);
+      font: 700 12px/1.35 var(--mono);
+      word-break: break-word;
+    }
+
+    .code-map span {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.42;
+    }
+
+    @media (max-width: 900px) {
+      .page {
+        width: min(430px, calc(100% - 18px));
+        padding-top: 22px;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .phone-shell {
+        position: relative;
+        top: auto;
+        order: -1;
+      }
+
+      .phone {
+        height: min(860px, calc(100dvh - 36px));
+      }
+
+      .audit-grid,
+      .code-map {
+        grid-template-columns: 1fr;
+      }
+
+      .section-head {
+        display: block;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero" aria-labelledby="title">
+      <div>
+        <p class="eyebrow">GhostStream iOS audit</p>
+        <h1 id="title">Нативный iOS дизайн вместо Android-порта</h1>
+        <p class="hero-copy">
+          Android версия задает полезную информационную архитектуру: Stream, Tail, Settings, Admin,
+          live telemetry, фильтры логов и профильные действия. Но iOS не должен выглядеть как Compose
+          внутри SwiftUI. Этот макет сохраняет бренд GhostStream и данные VPN, но строит интерфейс на
+          привычных iOS паттернах: NavigationStack, TabView, cards как grouped surfaces, native sheets,
+          toolbar actions, крупные touch targets и понятные состояния.
+        </p>
+        <div class="meta-strip" aria-label="Design constraints">
+          <span class="tag"><span class="dot"></span> SwiftUI-ready</span>
+          <span class="tag">390-430 pt phone first</span>
+          <span class="tag">44 pt minimum tap area</span>
+          <span class="tag">No Android glyph chrome</span>
+        </div>
+
+        <section class="section" aria-labelledby="audit-title">
+          <div class="section-head">
+            <div>
+              <h2 id="audit-title">Что сейчас выглядит не по-iOS</h2>
+              <p>Проблемы найдены по SwiftUI коду iOS и сверке с Android Compose.</p>
+            </div>
+          </div>
+          <div class="audit-grid">
+            <article class="audit-card">
+              <strong>Навигация</strong>
+              <ul>
+                <li>Нижний bar повторяет Android glyph language: ◉, ▤, ⚙. Для iOS лучше SF Symbols + TabView semantics.</li>
+                <li>Admin спрятан в Settings, но выглядит как отдельная Android console page. Нативнее: push/detail с toolbar и стандартной back affordance.</li>
+                <li>Swipe between tabs есть, но iOS-пользователь ожидает стабильный TabView без случайных горизонтальных конфликтов со ScrollView.</li>
+              </ul>
+            </article>
+            <article class="audit-card">
+              <strong>Типографика</strong>
+              <ul>
+                <li>Огромный terminal headline хорошо работает на Android, но на iPhone съедает первый экран.</li>
+                <li>ALL CAPS labels везде создают cockpit feel; iOS лучше читает sentence case + secondary labels.</li>
+                <li>Моноширинный текст нужен для логов и чисел, но не для всего Settings и metadata.</li>
+              </ul>
+            </article>
+            <article class="audit-card">
+              <strong>Controls</strong>
+              <ul>
+                <li>Rectangular GhostToggle и GhostChip выглядят как custom control kit, не как iOS.</li>
+                <li>Dialogs вручную рисуются поверх ZStack; для iOS лучше sheet, confirmationDialog, alert с кастомным content только где реально надо.</li>
+                <li>Connect FAB снизу хороший, но его визуал должен быть iOS primary button, а не Android block button.</li>
+              </ul>
+            </article>
+            <article class="audit-card">
+              <strong>Информационная плотность</strong>
+              <ul>
+                <li>Stream экран одновременно показывает headline, timer, chart, mux, KV и CTA. На iPhone это надо разбить на hero card + раскрываемые sections.</li>
+                <li>Settings уже функционально насыщен, но визуально похож на набор кастомных rows вместо iOS grouped settings.</li>
+                <li>Logs хороши как tail, но на iOS нужен search/filter affordance и более крупная readable row cadence.</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="principles-title">
+          <div class="section-head">
+            <div>
+              <h2 id="principles-title">Решение для реализации</h2>
+              <p>Это не “натянуть Android”, а сохранить parity по функциям.</p>
+            </div>
+          </div>
+          <ol class="decision-list">
+            <li>
+              <div>
+                <b>Системная навигация</b>
+                <span>Использовать SwiftUI TabView с labels: Stream, Logs, Settings, SF Symbols: waveform.path.ecg, doc.text, gearshape. Admin открывать через NavigationLink или sheet.</span>
+              </div>
+            </li>
+            <li>
+              <div>
+                <b>Stream как iOS status card</b>
+                <span>Главный экран: large title, connection card, компактные metrics, chart, route/profile details. Не делать огромный Android headline на половину экрана.</span>
+              </div>
+            </li>
+            <li>
+              <div>
+                <b>Settings как grouped form</b>
+                <span>Grouped cards/sections с native toggles, disclosure rows, confirmationDialog для delete, sheet для import/DNS/split-routing.</span>
+              </div>
+            </li>
+            <li>
+              <div>
+                <b>Logs как читаемый tail</b>
+                <span>Newest-first остается, но filters должны быть iOS capsule chips, ShareLink, Clear confirmation, optional search.</span>
+              </div>
+            </li>
+            <li>
+              <div>
+                <b>Brand без костылей</b>
+                <span>Оставить warm-black, lime accent, graph/mux visuals. Убрать Android text glyphs, custom rectangular switches и hand-built modal chrome.</span>
+              </div>
+            </li>
+          </ol>
+        </section>
+      </div>
+
+      <aside class="phone-shell" aria-label="Interactive iOS native design preview">
+        <div class="phone">
+          <div class="statusbar">
+            <span>9:41</span>
+            <span class="status-icons">
+              <svg width="18" height="12" viewBox="0 0 18 12" fill="none" aria-hidden="true"><path d="M1 5.8C5.8 1.4 12.2 1.4 17 5.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 9.1C7.3 7.2 10.7 7.2 13 9.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              <svg width="25" height="12" viewBox="0 0 25 12" fill="none" aria-hidden="true"><rect x="1" y="2" width="20" height="8" rx="2.5" stroke="currentColor"/><path d="M23 4.5v3" stroke="currentColor" stroke-linecap="round"/><rect x="3" y="4" width="14" height="4" rx="1.2" fill="currentColor"/></svg>
+            </span>
+          </div>
+
+          <div class="native-top">
+            <div class="toolbar">
+              <button class="icon-button" type="button" aria-label="Profile menu">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              </button>
+              <span class="toolbar-meta" id="toolbarMeta">Connected</span>
+              <button class="icon-button" type="button" aria-label="Open diagnostics">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/></svg>
+              </button>
+            </div>
+            <div class="toolbar-title" id="toolbarTitle">Stream</div>
+          </div>
+
+          <div class="content">
+            <section class="screen active" data-screen="stream" aria-label="Stream screen">
+              <article class="connection-card" id="connectionCard">
+                <div class="connection-top">
+                  <span class="status-pill" id="statePill"><span class="pulse"></span><span>Protected</span></span>
+                  <span class="toolbar-meta" id="routeLabel">Direct route</span>
+                </div>
+                <div class="server-name">tls.nl2.bikini-bottom.com</div>
+                <div class="server-sub">Подключение · 10.7.0.4/24 · NL relay disabled</div>
+                <div class="timer" id="timer">00:07:42</div>
+                <div class="mini-stats">
+                  <div class="mini-stat"><label>Download</label><strong>18.6 Mbps</strong></div>
+                  <div class="mini-stat"><label>Upload</label><strong>4.2 Mbps</strong></div>
+                </div>
+              </article>
+
+              <article class="graph-card">
+                <div class="card-row"><span>Traffic</span><span>1 min</span></div>
+                <div class="chart">
+                  <div class="wave">
+                    <svg viewBox="0 0 320 100" preserveAspectRatio="none" aria-hidden="true">
+                      <path d="M0 76 C24 70 35 34 58 39 C89 46 86 84 120 65 C148 49 147 19 178 28 C212 38 209 81 244 64 C277 48 286 34 320 42" fill="none" stroke="rgba(182,236,59,0.95)" stroke-width="3" stroke-linecap="round"/>
+                      <path d="M0 86 C28 80 41 62 66 69 C92 77 98 91 128 72 C157 54 178 81 203 67 C233 51 257 58 320 70" fill="none" stroke="rgba(223,119,56,0.85)" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                </div>
+              </article>
+
+              <article class="group-card">
+                <div class="card-row"><span>Streams</span><span>6 of 6</span></div>
+                <div class="bars" aria-hidden="true">
+                  <div class="bar" style="--i:1;height:62%"></div>
+                  <div class="bar" style="--i:2;height:82%"></div>
+                  <div class="bar" style="--i:3;height:48%"></div>
+                  <div class="bar" style="--i:4;height:75%"></div>
+                  <div class="bar" style="--i:5;height:54%"></div>
+                  <div class="bar" style="--i:6;height:91%"></div>
+                </div>
+              </article>
+
+              <article class="group-card">
+                <div class="native-row">
+                  <div><b>Identity</b><small>Подключение</small></div>
+                  <span class="chev">›</span>
+                </div>
+                <div class="native-row">
+                  <div><b>Subscription</b><small>5 days, 3 hours remaining</small></div>
+                  <span class="chev">›</span>
+                </div>
+              </article>
+
+              <div class="safe-action">
+                <button class="ios-button" id="connectButton" type="button">Disconnect</button>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="logs" aria-label="Logs screen">
+              <div class="log-toolbar">
+                <button class="chip active" type="button">All</button>
+                <button class="chip" type="button">Info</button>
+                <button class="chip" type="button">Warn</button>
+                <button class="chip" type="button">Error</button>
+                <button class="chip" type="button">Share</button>
+              </div>
+              <div class="list">
+                <div class="log-row"><time>09:41:28</time><span class="level">INF</span><span>status frame received, 6 active streams</span></div>
+                <div class="log-row"><time>09:41:26</time><span class="level warn">WRN</span><span>route policy changed, preserving direct CIDR overlap</span></div>
+                <div class="log-row"><time>09:41:23</time><span class="level">INF</span><span>tunnel connected to tls.nl2.bikini-bottom.com</span></div>
+                <div class="log-row"><time>09:41:19</time><span class="level err">ERR</span><span>previous provider snapshot ignored because system status is disconnected</span></div>
+                <div class="log-row"><time>09:41:15</time><span class="level">DBG</span><span>loaded active profile from app group storage</span></div>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="settings" aria-label="Settings screen">
+              <div class="settings-section">
+                <h3>Endpoints</h3>
+                <div class="settings-card">
+                  <div class="native-row">
+                    <div><b>tls.nl2.bikini-bottom.com</b><small>Active · 42 ms · 10.7.0.4/24</small></div>
+                    <span class="badge signal">Active</span>
+                  </div>
+                  <div class="native-row">
+                    <div><b>Add profile</b><small>Scan QR or paste ghs:// connection string</small></div>
+                    <span class="chev">›</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-section">
+                <h3>Routing</h3>
+                <div class="settings-card">
+                  <div class="native-row"><div><b>DNS</b><small>Cloudflare, Quad9, custom presets</small></div><span class="chev">›</span></div>
+                  <div class="native-row"><div><b>Split tunnel</b><small>Manual direct CIDR list</small></div><span class="switch on" aria-hidden="true"></span></div>
+                  <div class="native-row"><div><b>Per-app VPN</b><small>Unavailable on iOS for this tunnel mode</small></div><span class="badge">iOS limit</span></div>
+                </div>
+              </div>
+
+              <div class="settings-section">
+                <h3>Appearance</h3>
+                <div class="settings-card">
+                  <div class="native-row"><div><b>Theme</b><small>System</small></div><span class="chev">›</span></div>
+                  <div class="native-row"><div><b>Language</b><small>Русский</small></div><span class="chev">›</span></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="screen" data-screen="admin" aria-label="Admin screen">
+              <div class="admin-stat-grid">
+                <div class="admin-stat"><small>Uptime</small><b>4h 18m</b></div>
+                <div class="admin-stat"><small>Sessions</small><b style="color:var(--accent)">7</b></div>
+                <div class="admin-stat"><small>Egress</small><b>2.4 GB</b></div>
+              </div>
+              <article class="group-card">
+                <div class="card-row"><span>Clients</span><span>12</span></div>
+                <div class="list">
+                  <div class="client-row active-client">
+                    <div class="client-top"><b>pavel-iphone-16</b><span class="badge signal">Online</span></div>
+                    <span class="row-sub">10.7.0.12 · 318 MB down · 41 MB up</span>
+                  </div>
+                  <div class="client-row">
+                    <div class="client-top"><b>office-mbp</b><span class="badge">Admin</span></div>
+                    <span class="row-sub">10.7.0.18 · last seen 18 min ago</span>
+                  </div>
+                  <div class="client-row">
+                    <div class="client-top"><b>living-room-tv</b><span class="badge">Disabled</span></div>
+                    <span class="row-sub">Subscription expired Apr 29</span>
+                  </div>
+                </div>
+              </article>
+              <div class="safe-action">
+                <button class="ios-button secondary" type="button">Create client</button>
+              </div>
+            </section>
+          </div>
+
+          <nav class="bottom-tab" aria-label="Preview tabs">
+            <button class="tab-btn active" data-target="stream" type="button" aria-label="Stream">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12h3l2-6 4 12 3-8 2 2h4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>Stream</span>
+            </button>
+            <button class="tab-btn" data-target="logs" type="button" aria-label="Logs">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6h12M6 11h12M6 16h8" stroke="currentColor" stroke-linecap="round"/></svg>
+              <span>Logs</span>
+            </button>
+            <button class="tab-btn" data-target="settings" type="button" aria-label="Settings">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Z" stroke="currentColor"/><path d="M4 12h2m12 0h2M12 4v2m0 12v2M6.3 6.3l1.4 1.4m8.6 8.6 1.4 1.4m0-11.4-1.4 1.4m-8.6 8.6-1.4 1.4" stroke="currentColor" stroke-linecap="round"/></svg>
+              <span>Settings</span>
+            </button>
+            <button class="tab-btn" data-target="admin" type="button" aria-label="Admin">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z" stroke="currentColor" stroke-linejoin="round"/><path d="M9 12l2 2 4-5" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>Admin</span>
+            </button>
+          </nav>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section" aria-labelledby="sheet-title">
+      <div class="section-head">
+        <div>
+          <h2 id="sheet-title">Как должны выглядеть iOS sheets</h2>
+          <p>Для import, DNS presets, split routing и destructive actions лучше использовать native sheet/confirmation styles.</p>
+        </div>
+      </div>
+      <div class="sheet-preview">
+        <div class="sheet-card">
+          <h3>Add profile</h3>
+          <p style="margin:0 0 12px;color:#5d5b54;line-height:1.4">Выберите источник подключения. На iOS это будет bottom sheet с detents, а не fullscreen ZStack dialog.</p>
+          <button class="sheet-action" type="button"><span>Scan QR code</span><span>›</span></button>
+          <button class="sheet-action" type="button"><span>Paste ghs:// string</span><span>›</span></button>
+          <button class="sheet-action" type="button"><span>Import file</span><span>›</span></button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="map-title">
+      <div class="section-head">
+        <div>
+          <h2 id="map-title">SwiftUI mapping</h2>
+          <p>Компоненты, которые можно воплотить точно и без “рисования Android руками”.</p>
+        </div>
+      </div>
+      <div class="code-map">
+        <article>
+          <code>NavigationStack + TabView</code>
+          <span>Root navigation, selected tab persistence, accessibility, predictable iOS gestures.</span>
+        </article>
+        <article>
+          <code>.toolbar + .navigationTitle</code>
+          <span>Large titles, profile menu, diagnostics/share actions without custom header duplication.</span>
+        </article>
+        <article>
+          <code>List / ScrollView + Section</code>
+          <span>Settings and Admin grouped rows with native spacing, disclosure indicators, refreshable support.</span>
+        </article>
+        <article>
+          <code>sheet(detents:) + confirmationDialog</code>
+          <span>Import, DNS, split routing, delete profile/client and copy/share flows.</span>
+        </article>
+        <article>
+          <code>ShareLink + Photos/Camera sheet</code>
+          <span>Logs export, debug report, QR import use platform affordances.</span>
+        </article>
+        <article>
+          <code>Canvas or Swift Charts</code>
+          <span>Traffic chart can remain branded but should sit inside an iOS card hierarchy.</span>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const labels = {
+      stream: ["Stream", "Connected"],
+      logs: ["Logs", "Live · 24 lines"],
+      settings: ["Settings", "1.0 · 46"],
+      admin: ["Admin", "mTLS · you"]
+    };
+
+    document.querySelectorAll(".tab-btn").forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = button.dataset.target;
+        document.querySelectorAll(".tab-btn").forEach((item) => item.classList.toggle("active", item === button));
+        document.querySelectorAll(".screen").forEach((screen) => {
+          screen.classList.toggle("active", screen.dataset.screen === target);
+        });
+        document.getElementById("toolbarTitle").textContent = labels[target][0];
+        document.getElementById("toolbarMeta").textContent = labels[target][1];
+      });
+    });
+
+    const connectButton = document.getElementById("connectButton");
+    const connectionCard = document.getElementById("connectionCard");
+    const statePill = document.getElementById("statePill");
+    const timer = document.getElementById("timer");
+    const routeLabel = document.getElementById("routeLabel");
+    let connected = true;
+
+    connectButton.addEventListener("click", () => {
+      connected = !connected;
+      if (connected) {
+        connectButton.textContent = "Disconnect";
+        connectButton.classList.remove("secondary");
+        connectionCard.classList.remove("idle");
+        statePill.classList.remove("idle");
+        statePill.innerHTML = '<span class="pulse"></span><span>Protected</span>';
+        timer.textContent = "00:00:03";
+        timer.classList.remove("idle");
+        routeLabel.textContent = "Direct route";
+        document.getElementById("toolbarMeta").textContent = "Connected";
+      } else {
+        connectButton.textContent = "Connect";
+        connectButton.classList.add("secondary");
+        connectionCard.classList.add("idle");
+        statePill.classList.add("idle");
+        statePill.innerHTML = '<span>Standby</span>';
+        timer.textContent = "--:--:--";
+        timer.classList.add("idle");
+        routeLabel.textContent = "No tunnel";
+        document.getElementById("toolbarMeta").textContent = "Standby";
+      }
+    });
+  </script>
+</body>
+</html>
