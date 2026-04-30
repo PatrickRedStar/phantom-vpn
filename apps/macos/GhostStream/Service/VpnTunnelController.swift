@@ -73,26 +73,37 @@ public final class VpnTunnelController: ObservableObject {
         let effectiveRoutingMode = preferences.effectiveRoutingMode(
             profileSplitRouting: profile.splitRouting
         )
-        providerProfile.dnsServers = preferences.dnsServers ?? profile.dnsServers
+        let dnsServers = preferences.dnsServers
+        let manualDirectCidrs = preferences.manualDirectCidrs
+        let preserveScopedDns = preferences.preserveScopedDns
+        let dnsLeakProtection = preferences.dnsLeakProtection
+        let ipv6Killswitch = preferences.ipv6Killswitch
+        let autoReconnect = preferences.autoReconnect
+        let streams = preferences.streams
+        providerProfile.dnsServers = dnsServers ?? profile.dnsServers
         providerProfile.splitRouting = effectiveRoutingMode.legacySplitRoutingValue
-        let routePolicy = UpstreamVpnRouteDetector().snapshot(
-            profile: providerProfile,
-            preferences: preferences
+        let routePolicyInput = UpstreamVpnRouteDetector.SnapshotInput(
+            mode: effectiveRoutingMode,
+            manualDirectCidrs: manualDirectCidrs,
+            preserveScopedDns: preserveScopedDns,
+            serverAddr: providerProfile.serverAddr,
+            tunAddr: providerProfile.tunAddr
         )
+        let routePolicy = await UpstreamVpnRouteDetector().snapshot(routePolicyInput)
 
         let profileData: Data
         let settingsData: Data
         do {
             profileData = try JSONEncoder().encode(providerProfile)
             let settings = TunnelSettings(
-                dnsLeakProtection: preferences.dnsLeakProtection,
-                ipv6Killswitch: preferences.ipv6Killswitch,
-                autoReconnect: preferences.autoReconnect,
+                dnsLeakProtection: dnsLeakProtection,
+                ipv6Killswitch: ipv6Killswitch,
+                autoReconnect: autoReconnect,
                 routingMode: effectiveRoutingMode,
-                manualDirectCidrs: preferences.manualDirectCidrs,
-                preserveScopedDns: preferences.preserveScopedDns,
+                manualDirectCidrs: manualDirectCidrs,
+                preserveScopedDns: preserveScopedDns,
                 routePolicy: routePolicy,
-                streams: preferences.streams
+                streams: streams
             )
             settingsData = try JSONEncoder().encode(settings)
         } catch {

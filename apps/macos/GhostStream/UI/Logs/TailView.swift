@@ -16,7 +16,6 @@
 //
 
 import AppKit
-import NetworkExtension
 import PhantomKit
 import PhantomUI
 import SwiftUI
@@ -26,17 +25,14 @@ public struct TailView: View {
 
     @Environment(\.gsColors) private var C
     @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(TunnelLogStore.self) private var logStore
 
     @State private var activeFilter: LevelFilter = .all
     @State private var searchText: String = ""
     @State private var regexSearch: Bool = false
-    @State private var logs: [LogFrame] = []
-    @State private var lastLogTsMs: UInt64 = 0
-    @State private var ipcBridge: TunnelIpcBridge?
-    @State private var pollTask: Task<Void, Never>?
-    @State private var pollErrorMessage: String?
     @State private var actionStatus: TailStatus?
-    private let providerBundleId = "com.ghoststream.vpn.tunnel"
+    @State private var keyMonitor: Any?
+    @FocusState private var searchFieldFocused: Bool
 
     public init() {}
 
@@ -52,8 +48,9 @@ public struct TailView: View {
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
-        .onAppear { startPollingLogs() }
-        .onDisappear { stopPollingLogs() }
+        .onAppear { installShortcutMonitor() }
+        .onDisappear { removeShortcutMonitor() }
+        .task { logStore.start(stateManager: stateMgr) }
     }
 
     // MARK: - 1. detail-head
@@ -62,12 +59,12 @@ public struct TailView: View {
     private var detailHead: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("LIVE TAIL")
+                Text("LIVE LOGS")
                     .font(.custom("DepartureMono-Regular", size: 11))
                     .tracking(0.20 * 11)
                     .foregroundStyle(C.textFaint)
                 HStack(spacing: 0) {
-                    Text("tail")
+                    Text("logs")
                         .font(.custom("InstrumentSerif-Italic", size: 38))
                         .foregroundStyle(C.signal)
                     Text(".")
@@ -146,6 +143,7 @@ public struct TailView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .frame(minWidth: 280)
+                    .focused($searchFieldFocused)
                     .overlay(
                         Rectangle().stroke(C.hairBold, lineWidth: 1)
                     )
@@ -162,6 +160,18 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(regexSearch ? C.signalDim : C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .help("Toggle regex search")
+                Button {
+                    clearLogs()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                        .foregroundStyle(C.textDim)
+                        .frame(width: 28, height: 28)
+                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("Clear log buffer")
                 Button {
                     copyVisibleLogs()
                 } label: {
@@ -172,6 +182,7 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .help("Copy visible logs (⌘C)")
                 Button {
                     exportVisibleLogs()
                 } label: {
@@ -182,8 +193,11 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+                .help("Export visible logs (⌘E)")
                 KeyboardShortcutHint("⌘F")
                 KeyboardShortcutHint("⌘L")
+                KeyboardShortcutHint("⌘C")
+                KeyboardShortcutHint("⌘E")
             }
         }
     }
@@ -231,7 +245,7 @@ public struct TailView: View {
                     }
                 }
             }
-            .onChange(of: logs.count) { _, _ in
+            .onChange(of: logStore.logs.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.16)) {
                     proxy.scrollTo("tail-bottom", anchor: .bottom)
                 }
@@ -253,7 +267,7 @@ public struct TailView: View {
                 .frame(width: 86, alignment: .leading)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-            Text(row.level.lowercased())
+            Text(normalizedLevel(row.level))
                 .font(.custom("DepartureMono-Regular", size: 9.5))
                 .tracking(0.14 * 9.5)
                 .foregroundStyle(levelColor(row.level))
@@ -273,9 +287,10 @@ public struct TailView: View {
     // MARK: - Helpers
 
     private var filteredLogs: [LogFrame] {
+        guard regexSearchError == nil else { return [] }
         let regex = activeSearchRegex
-        return logs.filter { row in
-            let levelOk = activeFilter == .all || row.level.lowercased() == activeFilter.matchKey
+        return logStore.logs.filter { row in
+            let levelOk = activeFilter == .all || normalizedLevel(row.level) == activeFilter.matchKey
             let textOk = matchesSearch(row, regex: regex)
             return levelOk && textOk
         }
@@ -303,8 +318,8 @@ public struct TailView: View {
         if let actionStatus, actionStatus.tone != .info {
             return actionStatus
         }
-        if let pollErrorMessage {
-            return TailStatus(message: pollErrorMessage, tone: .danger)
+        if let lastErrorMessage = logStore.lastErrorMessage {
+            return TailStatus(message: lastErrorMessage, tone: .danger)
         }
         return actionStatus
     }
@@ -315,112 +330,9 @@ public struct TailView: View {
         guard regexSearch else {
             return haystack.localizedCaseInsensitiveContains(searchText)
         }
-        guard let regex else { return true }
+        guard let regex else { return false }
         let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
         return regex.firstMatch(in: haystack, range: range) != nil
-    }
-
-    private func startPollingLogs() {
-        guard pollTask == nil else { return }
-        pollTask = Task {
-            while !Task.isCancelled {
-                await pollLogsOnce()
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
-        }
-    }
-
-    private func stopPollingLogs() {
-        pollTask?.cancel()
-        pollTask = nil
-    }
-
-    @MainActor
-    private func pollLogsOnce() async {
-        guard shouldPollLogs else {
-            pollErrorMessage = nil
-            ipcBridge = nil
-            return
-        }
-
-        if ipcBridge == nil {
-            do {
-                ipcBridge = try await makeIpcBridge()
-            } catch {
-                pollErrorMessage = "Log stream setup failed: \(error.localizedDescription)"
-                return
-            }
-        }
-        guard let bridge = ipcBridge else {
-            pollErrorMessage = "Log stream unavailable: tunnel IPC session not found"
-            return
-        }
-
-        do {
-            let response = try await bridge.send(.subscribeLogs(sinceMs: lastLogTsMs))
-            guard case .logs(let frames) = response else {
-                pollErrorMessage = "Log stream returned an unexpected IPC response"
-                return
-            }
-            pollErrorMessage = nil
-            guard !frames.isEmpty else { return }
-            lastLogTsMs = frames.map(\.tsUnixMs).max() ?? lastLogTsMs
-            logs.append(contentsOf: frames)
-            trimLogs()
-        } catch {
-            ipcBridge = nil
-            pollErrorMessage = "Log polling failed: \(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
-    private func makeIpcBridge() async throws -> TunnelIpcBridge? {
-        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-        let manager = selectGhostStreamManager(from: managers)
-        guard let session = manager?.connection as? NETunnelProviderSession else {
-            return nil
-        }
-        return TunnelIpcBridge(session: session)
-    }
-
-    private var shouldPollLogs: Bool {
-        switch stateMgr.statusFrame.state {
-        case .connecting, .reconnecting, .connected, .error:
-            return true
-        case .disconnected:
-            return false
-        }
-    }
-
-    private func selectGhostStreamManager(
-        from managers: [NETunnelProviderManager]
-    ) -> NETunnelProviderManager? {
-        let ghostManagers = managers.filter { candidate in
-            (candidate.protocolConfiguration as? NETunnelProviderProtocol)?
-                .providerBundleIdentifier == providerBundleId
-        }
-
-        return ghostManagers.first { isActiveNetworkExtensionStatus($0.connection.status) }
-            ?? ghostManagers.first(where: \.isEnabled)
-            ?? ghostManagers.first
-    }
-
-    private func isActiveNetworkExtensionStatus(_ status: NEVPNStatus) -> Bool {
-        switch status {
-        case .connecting, .connected, .reasserting, .disconnecting:
-            return true
-        case .disconnected, .invalid:
-            return false
-        @unknown default:
-            return false
-        }
-    }
-
-    private func trimLogs() {
-        let maxEntries = 1000
-        if logs.count > maxEntries {
-            logs.removeFirst(logs.count - maxEntries)
-        }
     }
 
     private func copyVisibleLogs() {
@@ -436,6 +348,62 @@ public struct TailView: View {
             return
         }
         actionStatus = TailStatus(message: "Copied \(filteredLogs.count) visible log lines", tone: .info)
+    }
+
+    private func clearLogs() {
+        logStore.clear()
+        actionStatus = TailStatus(message: "Cleared log buffer", tone: .info)
+    }
+
+    private func clearFilters() {
+        activeFilter = .all
+        searchText = ""
+        regexSearch = false
+        actionStatus = TailStatus(message: "Cleared log filters", tone: .info)
+        focusSearchField()
+    }
+
+    private func focusSearchField() {
+        searchFieldFocused = true
+        DispatchQueue.main.async {
+            searchFieldFocused = true
+        }
+    }
+
+    private func installShortcutMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard isTailCommandShortcut(event) else { return event }
+
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "f":
+                Task { @MainActor in focusSearchField() }
+                return nil
+            case "l":
+                Task { @MainActor in clearFilters() }
+                return nil
+            case "c":
+                Task { @MainActor in copyVisibleLogs() }
+                return nil
+            case "e":
+                Task { @MainActor in exportVisibleLogs() }
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeShortcutMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
+    }
+
+    private func isTailCommandShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return flags == .command
     }
 
     private func exportVisibleLogs() {
@@ -462,18 +430,22 @@ public struct TailView: View {
     }
 
     private func formatLogLine(_ row: LogFrame) -> String {
-        "\(formatTs(row.tsUnixMs)) [\(row.level)] \(row.msg)"
+        "\(formatTs(row.tsUnixMs)) [\(normalizedLevel(row.level))] \(row.msg)"
     }
 
     private func levelColor(_ level: String) -> Color {
-        switch level.lowercased() {
-        case "error", "err":          return C.danger
-        case "warn", "warning":       return C.warn
-        case "info":                  return C.textDim
-        case "ok", "success":         return C.signal
-        case "debug", "dbg":          return C.blueDebug
-        default:                      return C.textDim
+        switch normalizedLevel(level) {
+        case "error": return C.danger
+        case "warn":  return C.warn
+        case "info":  return C.textDim
+        case "ok":    return C.signal
+        case "debug": return C.blueDebug
+        default:      return C.textDim
         }
+    }
+
+    private func normalizedLevel(_ level: String) -> String {
+        TunnelLogStore.normalizedLevel(level)
     }
 
     private func tailStatusColor(_ tone: TailStatusTone) -> Color {

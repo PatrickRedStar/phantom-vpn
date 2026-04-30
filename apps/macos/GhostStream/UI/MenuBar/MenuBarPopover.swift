@@ -38,13 +38,12 @@ public struct MenuBarPopover: View {
     @Environment(\.openWindow) private var openWindow
 
     @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(TrafficSeriesStore.self) private var traffic
     @Environment(ProfilesStore.self) private var profiles
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @Environment(AppRouter.self) private var router
+    @Environment(DockPolicyController.self) private var dock
     @EnvironmentObject private var tunnel: VpnTunnelController
-
-    @State private var miniRxHistory: [Double] = []
-    @State private var miniTxHistory: [Double] = []
 
     public init() {}
 
@@ -59,10 +58,7 @@ public struct MenuBarPopover: View {
         }
         .frame(width: 380, height: 520, alignment: .top)
         .background(C.bg)
-        .onAppear { pushMiniSampleIfLive() }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            pushMiniSampleIfLive()
-        }
+        .task { traffic.start(stateManager: stateMgr) }
     }
 
     // MARK: - Header (1)
@@ -302,11 +298,17 @@ public struct MenuBarPopover: View {
 
     @ViewBuilder
     private var miniScope: some View {
+        let series = traffic.series(capacity: ScopeWindow.m1.rawValue)
+        let isLive = stateMgr.statusFrame.state == .connected
+        let rxSamples = isLive ? series.rxSamples : []
+        let txSamples = isLive ? series.txSamples : []
+
         ZStack(alignment: .topLeading) {
             ScopeChart(
-                rxSamples: stateMgr.statusFrame.state == .connected ? miniRxHistory : [],
-                txSamples: stateMgr.statusFrame.state == .connected ? miniTxHistory : [],
-                height: 64
+                rxSamples: rxSamples,
+                txSamples: txSamples,
+                height: 64,
+                sampleCapacity: series.sampleCapacity
             )
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -327,10 +329,10 @@ public struct MenuBarPopover: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(formatRate(stateMgr.statusFrame.rateRxBps))
+                    Text(formatRate(displayRxRateBps))
                         .font(.custom("DepartureMono-Regular", size: 10.5))
                         .foregroundStyle(C.bone)
-                    Text(formatRate(stateMgr.statusFrame.rateTxBps))
+                    Text(formatRate(displayTxRateBps))
                         .font(.custom("DepartureMono-Regular", size: 10.5))
                         .foregroundStyle(C.textDim)
                 }
@@ -374,8 +376,7 @@ public struct MenuBarPopover: View {
                 kbd: "⌘0",
                 color: C.bone
             ) {
-                openWindow(id: "console")
-                NSApp.activate(ignoringOtherApps: true)
+                openForegroundWindow("console")
             }
             footerRow(
                 systemImage: "command",
@@ -383,8 +384,7 @@ public struct MenuBarPopover: View {
                 kbd: "⌘⇧C",
                 color: C.bone
             ) {
-                openWindow(id: "console")
-                NSApp.activate(ignoringOtherApps: true)
+                openForegroundWindow("console")
                 router.commandPaletteOpen = true
             }
             footerRow(
@@ -394,8 +394,7 @@ public struct MenuBarPopover: View {
                 color: stateMgr.statusFrame.state == .connected ? C.bone : C.danger
             ) {
                 if stateMgr.statusFrame.state == .connected {
-                    openWindow(id: "logs")
-                    NSApp.activate(ignoringOtherApps: true)
+                    openForegroundWindow("logs")
                 } else {
                     NSApplication.shared.terminate(nil)
                 }
@@ -443,8 +442,7 @@ public struct MenuBarPopover: View {
         if let preflightError = connectPreflightError() {
             popoverLog.info("toggleConnect → prerequisites missing, opening Welcome wizard")
             tunnel.lastError = preflightError
-            openWindow(id: "welcome")
-            NSApp.activate(ignoringOtherApps: true)
+            openForegroundWindow("welcome")
             return
         }
 
@@ -457,6 +455,11 @@ public struct MenuBarPopover: View {
             popoverLog.error("installAndStart failed: \(error.localizedDescription, privacy: .public)")
             tunnel.lastError = error.localizedDescription
         }
+    }
+
+    private func openForegroundWindow(_ id: String) {
+        openWindow(id: id)
+        dock.activateForegroundWindow()
     }
 
     private func connectPreflightError() -> String? {
@@ -486,18 +489,14 @@ public struct MenuBarPopover: View {
         return String(format: "%.2f MB/S", kb / 1024.0)
     }
 
-    private func pushMiniSampleIfLive() {
-        let state = stateMgr.statusFrame.state
-        guard state == .connected || state == .connecting else { return }
-        miniRxHistory.append(stateMgr.statusFrame.rateRxBps)
-        miniTxHistory.append(stateMgr.statusFrame.rateTxBps)
-        trimMiniHistory()
+    private var displayRxRateBps: Double {
+        if traffic.currentRxRateBps > 0 { return traffic.currentRxRateBps }
+        return stateMgr.statusFrame.rateRxBps
     }
 
-    private func trimMiniHistory() {
-        let cap = 60
-        if miniRxHistory.count > cap { miniRxHistory.removeFirst(miniRxHistory.count - cap) }
-        if miniTxHistory.count > cap { miniTxHistory.removeFirst(miniTxHistory.count - cap) }
+    private var displayTxRateBps: Double {
+        if traffic.currentTxRateBps > 0 { return traffic.currentTxRateBps }
+        return stateMgr.statusFrame.rateTxBps
     }
 }
 

@@ -26,6 +26,7 @@ public struct WelcomeWindow: View {
 
     @Environment(\.gsColors) private var C
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(ProfilesStore.self) private var profiles
     @Environment(PreferencesStore.self) private var prefs
     @Environment(SystemExtensionInstaller.self) private var sysExt
@@ -52,9 +53,12 @@ public struct WelcomeWindow: View {
                     ConfigureVpnStepView(coordinator: coordinator)
                 case .ready:
                     ReadyStepView(coordinator: coordinator) {
-                        // Close the window via NSApp — `@Environment(\.dismiss)` is unreliable for `Window` scenes.
-                        if let win = NSApp.windows.first(where: { $0.identifier?.rawValue == "welcome" }) {
+                        dismissWindow(id: "welcome")
+                        // Keep direct NSWindow fallback for older/restored windows that are not tracked by SwiftUI.
+                        if let win = NSApp.windows.first(where: { $0.identifier?.rawValue == "welcome" || $0.title == "Welcome" }) {
                             win.close()
+                        } else {
+                            dismiss()
                         }
                     }
                 }
@@ -599,14 +603,8 @@ private struct ConfigureVpnStepView: View {
 private struct ReadyStepView: View {
 
     @Environment(\.gsColors) private var C
-    @Environment(ProfilesStore.self) private var profiles
-    @Environment(PreferencesStore.self) private var prefs
-    @EnvironmentObject private var tunnel: VpnTunnelController
     @Bindable var coordinator: OnboardingCoordinator
     let onClose: () -> Void
-
-    @State private var isConnecting = false
-    @State private var connectError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -635,9 +633,10 @@ private struct ReadyStepView: View {
 
             HStack(spacing: 14) {
                 Button {
-                    Task { await connectAndClose() }
+                    coordinator.finish()
+                    onClose()
                 } label: {
-                    Text(isConnecting ? "ПОДКЛЮЧАЮСЬ…" : "ПОДКЛЮЧИТЬСЯ")
+                    Text("ЗАВЕРШИТЬ")
                         .font(.custom("DepartureMono-Regular", size: 11))
                         .tracking(0.20 * 11)
                         .foregroundStyle(C.bg)
@@ -646,7 +645,6 @@ private struct ReadyStepView: View {
                         .background(C.signal)
                 }
                 .buttonStyle(.plain)
-                .disabled(isConnecting)
 
                 Spacer()
 
@@ -654,15 +652,6 @@ private struct ReadyStepView: View {
                     .font(.custom("DepartureMono-Regular", size: 10))
                     .tracking(0.18 * 10)
                     .foregroundStyle(C.textFaint)
-            }
-
-            if let connectError {
-                Text(connectError)
-                    .font(.custom("JetBrainsMono-Regular", size: 11))
-                    .foregroundStyle(C.danger)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 12)
             }
         }
     }
@@ -678,30 +667,6 @@ private struct ReadyStepView: View {
             Text(text)
                 .font(.custom("JetBrainsMono-Regular", size: 13))
                 .foregroundStyle(C.bone)
-        }
-    }
-
-    private func connectAndClose() async {
-        guard !isConnecting else { return }
-        guard let profile = profiles.activeProfile else {
-            connectError = "Профиль не найден — вернись к шагу импорта."
-            tunnel.lastError = connectError
-            return
-        }
-
-        isConnecting = true
-        connectError = nil
-
-        do {
-            try await tunnel.installAndStart(profile: profile, preferences: prefs)
-            coordinator.finish()
-            tunnel.lastError = nil
-            onClose()
-        } catch {
-            let message = error.localizedDescription
-            tunnel.lastError = message
-            connectError = message
-            isConnecting = false
         }
     }
 }

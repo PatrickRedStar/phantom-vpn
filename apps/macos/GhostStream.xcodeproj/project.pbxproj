@@ -21,6 +21,7 @@
 		3D8504537781E58EF705919E /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 206B1279E7E37C0862FEC03F /* main.swift */; };
 		423A69B5839190D55AD04276 /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
 		44882E92C4B6B7088F24E6BE /* PhantomKit in Frameworks */ = {isa = PBXBuildFile; productRef = 192F28EAB815474C93A38DAF /* PhantomKit */; };
+		449C6816999C68805F28407E /* TrafficSeriesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */; };
 		527186CDE65ED9E37B948D97 /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */; };
 		53CB2B107A76ABC8F70FC547 /* LoginItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BF7582D129D427A55BF228 /* LoginItemController.swift */; };
 		56AF7BE36844517D1135A73B /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */; };
@@ -43,6 +44,7 @@
 		CBAFDA18C57D0B4B1AF9897E /* ServerRosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50B75A842C64C2669ADB7F5 /* ServerRosterView.swift */; };
 		CD7E358B0D6284D85507B910 /* MenuBarPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */; };
 		E19F05F1756F778791751FFB /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
+		E3FDDB6EF72AA2DC2776D647 /* TunnelLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0037F340A53B43B5E67935C7 /* TunnelLogStore.swift */; };
 		EAC8DA3B973E2586286EAD0A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D9D6D7F04B20308F2ECD73AB /* Assets.xcassets */; };
 		F08038F4DB1CA7EF2CE9D6E2 /* PhantomUI in Frameworks */ = {isa = PBXBuildFile; productRef = F139B5EE09A0217BAF3FE780 /* PhantomUI */; };
 		F0D426F0F9644CB018E33171 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */; };
@@ -75,6 +77,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0037F340A53B43B5E67935C7 /* TunnelLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelLogStore.swift; sourceTree = "<group>"; };
 		006F59DB40E1D7DA4D58282A /* PhantomKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PhantomKit; path = ../ios/Packages/PhantomKit; sourceTree = SOURCE_ROOT; };
 		01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		0327D15C33430C284635D42A /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
@@ -90,6 +93,7 @@
 		2C70003712DBB20C5F829D4E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		3872376E08B45829DB3C624D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProfileBlock.swift; sourceTree = "<group>"; };
+		4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrafficSeriesStore.swift; sourceTree = "<group>"; };
 		51F847664C4CCC7651B2AC04 /* MainConsoleWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainConsoleWindow.swift; sourceTree = "<group>"; };
 		62F91C21525DA5CCD33520B0 /* ProfileEditorSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditorSheet.swift; sourceTree = "<group>"; };
 		6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PhantomCore.xcframework; path = ../ios/Frameworks/PhantomCore.xcframework; sourceTree = "<group>"; };
@@ -189,6 +193,8 @@
 				E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */,
 				A1BF7582D129D427A55BF228 /* LoginItemController.swift */,
 				C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */,
+				4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */,
+				0037F340A53B43B5E67935C7 /* TunnelLogStore.swift */,
 				E160F03707922FDAB0058A26 /* UpstreamVpnMonitor.swift */,
 				BE64869C73B206FEB664F6FD /* UpstreamVpnRouteDetector.swift */,
 				0C5FF9F9A7151C391868F6EF /* VpnStateManager.swift */,
@@ -474,6 +480,8 @@
 				8869D0009F207D8CCC8819E0 /* SidebarProfileBlock.swift in Sources */,
 				F926DB0657009EE342DDDACD /* SystemExtensionInstaller.swift in Sources */,
 				FE2128A1C154A27968768E54 /* TailView.swift in Sources */,
+				449C6816999C68805F28407E /* TrafficSeriesStore.swift in Sources */,
+				E3FDDB6EF72AA2DC2776D647 /* TunnelLogStore.swift in Sources */,
 				7FB4E45A66321CF1349AF128 /* UpstreamVpnMonitor.swift in Sources */,
 				2DBD991F4555DDEC913ED143 /* UpstreamVpnRouteDetector.swift in Sources */,
 				9C6A4AA1ADC745AA5A3BE02F /* VpnStateManager.swift in Sources */,

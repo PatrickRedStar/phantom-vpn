@@ -9,40 +9,101 @@ import PhantomKit
 import SystemConfiguration
 
 public struct UpstreamVpnRouteDetector {
+    public struct SnapshotInput: Sendable {
+        public let mode: RoutingMode
+        public let manualDirectCidrs: [String]
+        public let preserveScopedDns: Bool
+        public let serverAddr: String?
+        public let tunAddr: String?
+
+        public init(
+            mode: RoutingMode,
+            manualDirectCidrs: [String],
+            preserveScopedDns: Bool,
+            serverAddr: String?,
+            tunAddr: String?
+        ) {
+            self.mode = mode
+            self.manualDirectCidrs = manualDirectCidrs
+            self.preserveScopedDns = preserveScopedDns
+            self.serverAddr = serverAddr
+            self.tunAddr = tunAddr
+        }
+    }
+
     private struct InterfaceInfo {
         let index: UInt32
         let name: String
         let ipv4Addresses: [String]
     }
 
+    private final class ServerCidrCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String: [String]] = [:]
+
+        func cidrs(for host: String) -> [String]? {
+            lock.lock()
+            defer { lock.unlock() }
+            return values[host]
+        }
+
+        func store(_ cidrs: [String], for host: String) {
+            guard !cidrs.isEmpty else { return }
+            lock.lock()
+            values[host] = cidrs
+            lock.unlock()
+        }
+    }
+
+    private final class ServerResolveCompletion: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didResume = false
+        private let continuation: CheckedContinuation<[String], Never>
+
+        init(_ continuation: CheckedContinuation<[String], Never>) {
+            self.continuation = continuation
+        }
+
+        func resume(_ cidrs: [String]) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !didResume else { return }
+            didResume = true
+            continuation.resume(returning: cidrs)
+        }
+    }
+
+    private static let serverCidrCache = ServerCidrCache()
+    private static let serverResolveTimeout: DispatchTimeInterval = .milliseconds(1500)
+
     public init() {}
 
-    @MainActor
-    public func snapshot(
-        profile: VpnProfile?,
-        preferences: PreferencesStore
-    ) -> RoutePolicySnapshot {
-        let mode = preferences.effectiveRoutingMode(profileSplitRouting: profile?.splitRouting)
-        let manualCidrs = preferences.manualDirectCidrs
-        let ghostTunAddress = profile.flatMap { Self.tunnelAddress(from: $0.tunAddr) }
+    public func snapshot(_ input: SnapshotInput) async -> RoutePolicySnapshot {
+        let serverCidrs = await Self.serverDirectCidrs(for: input.serverAddr)
+        return await Task.detached(priority: .utility) {
+            Self.makeSnapshot(input, serverCidrs: serverCidrs)
+        }.value
+    }
+
+    private static func makeSnapshot(_ input: SnapshotInput, serverCidrs: [String]) -> RoutePolicySnapshot {
+        let ghostTunAddress = input.tunAddr.flatMap { Self.tunnelAddress(from: $0) }
         let interfaces = Self.activeUtunInterfaces(excludingIPv4Address: ghostTunAddress)
         let routes = Self.routes(on: interfaces)
         let dns = Self.dnsSnapshot(forInterfaceNames: Set(interfaces.map(\.name)))
-        let serverCidrs = profile.map { Self.serverDirectCidrs(for: $0.serverAddr) } ?? []
         let providerName = Self.detectCiscoInstall() && !interfaces.isEmpty
             ? "Cisco Secure Client"
             : (!interfaces.isEmpty ? "Upstream VPN" : nil)
 
         return RoutePolicySnapshot(
-            mode: mode,
-            detectedUpstreamCidrs: mode == .layeredAuto ? routes.cidrs : [],
-            manualDirectCidrs: manualCidrs,
+            mode: input.mode,
+            detectedUpstreamCidrs: input.mode == .layeredAuto ? routes.cidrs : [],
+            manualDirectCidrs: input.manualDirectCidrs,
             serverDirectCidrs: serverCidrs,
             upstreamDnsServers: dns.servers,
             upstreamDnsDomains: dns.domains,
             upstreamInterfaceNames: interfaces.map(\.name),
             upstreamProviderName: providerName,
-            preserveScopedDns: preferences.preserveScopedDns
+            preserveScopedDns: input.preserveScopedDns
         )
     }
 
@@ -259,12 +320,30 @@ public struct UpstreamVpnRouteDetector {
         return (unique(servers), unique(domains))
     }
 
-    private static func serverDirectCidrs(for serverAddr: String) -> [String] {
+    private static func serverDirectCidrs(for serverAddr: String?) async -> [String] {
+        guard let serverAddr else { return [] }
         let host = hostPart(of: serverAddr)
         if RoutePolicySnapshot.isValidIPv4Cidr("\(host)/32") {
             return ["\(host)/32"]
         }
+        if let cached = serverCidrCache.cidrs(for: host) {
+            return cached
+        }
 
+        return await withCheckedContinuation { continuation in
+            let completion = ServerResolveCompletion(continuation)
+            DispatchQueue.global(qos: .utility).async {
+                let cidrs = blockingServerDirectCidrs(forHost: host)
+                serverCidrCache.store(cidrs, for: host)
+                completion.resume(cidrs.isEmpty ? (serverCidrCache.cidrs(for: host) ?? []) : cidrs)
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + serverResolveTimeout) {
+                completion.resume(serverCidrCache.cidrs(for: host) ?? [])
+            }
+        }
+    }
+
+    private static func blockingServerDirectCidrs(forHost host: String) -> [String] {
         var hints = addrinfo(
             ai_flags: AI_ADDRCONFIG,
             ai_family: AF_INET,
@@ -291,7 +370,9 @@ public struct UpstreamVpnRouteDetector {
             let sin = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
             output.append("\(ipv4String(sin.sin_addr))/32")
         }
-        return unique(output)
+        let cidrs = unique(output)
+        serverCidrCache.store(cidrs, for: host)
+        return cidrs
     }
 
     private static func hostPart(of serverAddr: String) -> String {

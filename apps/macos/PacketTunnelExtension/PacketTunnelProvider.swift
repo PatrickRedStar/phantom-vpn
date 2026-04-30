@@ -23,6 +23,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
+    private let runtimeStateLock = NSLock()
     private let snapshotPayloadKey = "vpn.statusFrame.v1"
     private let snapshotUpdatedAtKey = "vpn.statusFrame.updatedAt"
     private let telemetryLock = NSLock()
@@ -87,11 +88,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         switch message {
         case .getStatus:
-            let response = TunnelIpcBridge.Response.status(lastStatusFrame)
+            let response = TunnelIpcBridge.Response.status(currentStatusFrame())
             completionHandler?(try? JSONEncoder().encode(response))
 
         case .subscribeLogs(let sinceMs):
-            let filtered = recentLogFrames.filter { $0.tsUnixMs > sinceMs }
+            let filtered = currentLogFrames(sinceMs: sinceMs)
             let response = TunnelIpcBridge.Response.logs(filtered)
             completionHandler?(try? JSONEncoder().encode(response))
 
@@ -196,8 +197,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 settings: settings,
                 onStatus: { [weak self] frame in
                     guard let self else { return }
-                    self.lastStatusFrame = frame
-                    self.writeSnapshot(frame)
+                    self.publishStatusFrame(frame)
                     if frame.state == .connected && !didCallCompletion {
                         didCallCompletion = true
                         completionHandler(nil)
@@ -205,10 +205,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 },
                 onLog: { [weak self] frame in
                     guard let self else { return }
-                    self.recentLogFrames.append(frame)
-                    if self.recentLogFrames.count > 1000 {
-                        self.recentLogFrames.removeFirst(self.recentLogFrames.count - 1000)
-                    }
+                    self.appendProviderLog(frame)
                 },
                 onInbound: { [weak self] data in
                     guard let self else { return }
@@ -595,14 +592,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             reconnectAttempt: nil,
             reconnectNextDelaySecs: nil
         )
-        lastStatusFrame = frame
-        writeSnapshot(frame)
+        publishStatusFrame(frame)
     }
 
     private func writeDisconnectedSnapshot() {
         appendProviderLog(level: "INF", message: "tunnel disconnected")
-        lastStatusFrame = .disconnected
-        writeSnapshot(.disconnected)
+        publishStatusFrame(.disconnected)
     }
 
     private func resetProviderTelemetry(profile: VpnProfile, settings: TunnelSettings) {
@@ -643,8 +638,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func publishProviderStatusFrame(state: ConnState) {
         let frame = makeProviderStatusFrame(state: state)
-        lastStatusFrame = frame
-        writeSnapshot(frame)
+        publishStatusFrame(frame)
     }
 
     private func makeProviderStatusFrame(state: ConnState) -> StatusFrame {
@@ -699,10 +693,38 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             level: level,
             msg: message
         )
+        appendProviderLog(frame)
+    }
+
+    private func publishStatusFrame(_ frame: StatusFrame) {
+        runtimeStateLock.lock()
+        lastStatusFrame = frame
+        runtimeStateLock.unlock()
+
+        writeSnapshot(frame)
+    }
+
+    private func currentStatusFrame() -> StatusFrame {
+        runtimeStateLock.lock()
+        let frame = lastStatusFrame
+        runtimeStateLock.unlock()
+        return frame
+    }
+
+    private func currentLogFrames(sinceMs: UInt64) -> [LogFrame] {
+        runtimeStateLock.lock()
+        let frames = recentLogFrames.filter { $0.tsUnixMs > sinceMs }
+        runtimeStateLock.unlock()
+        return frames
+    }
+
+    private func appendProviderLog(_ frame: LogFrame) {
+        runtimeStateLock.lock()
         recentLogFrames.append(frame)
         if recentLogFrames.count > 1000 {
             recentLogFrames.removeFirst(recentLogFrames.count - 1000)
         }
+        runtimeStateLock.unlock()
     }
 
     // MARK: - Helpers

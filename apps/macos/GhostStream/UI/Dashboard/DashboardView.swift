@@ -25,14 +25,13 @@ public struct DashboardView: View {
     @Environment(\.gsColors) private var C
     @Environment(\.openWindow) private var openWindow
     @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(TrafficSeriesStore.self) private var traffic
     @Environment(ProfilesStore.self) private var profiles
     @Environment(SystemExtensionInstaller.self) private var sysExt
+    @Environment(DockPolicyController.self) private var dock
     @EnvironmentObject private var tunnel: VpnTunnelController
 
     @State private var scopeWindow: ScopeWindow = .m5
-    @State private var rxHistory: [Double] = []
-    @State private var txHistory: [Double] = []
-    @State private var lastRxBytes: UInt64 = 0
 
     public init() {}
 
@@ -50,11 +49,7 @@ public struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
-        .onAppear { pushSampleIfLive() }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
-            pushSampleIfLive()
-        }
-        .onChange(of: scopeWindow) { _, _ in trimHistory() }
+        .task { traffic.start(stateManager: stateMgr) }
     }
 
     // MARK: - 1. detail-head
@@ -255,6 +250,10 @@ public struct DashboardView: View {
 
     @ViewBuilder
     private var scopeCard: some View {
+        let series = traffic.series(capacity: scopeWindow.rawValue)
+        let chartRxSamples = isSamplingState ? series.rxSamples : []
+        let chartTxSamples = isSamplingState ? series.txSamples : []
+
         VStack(spacing: 0) {
             // card header
             HStack {
@@ -283,8 +282,12 @@ public struct DashboardView: View {
                         .tracking(0.12 * 10)
                         .foregroundStyle(C.textFaint)
                         .padding(.leading, 6)
-                    Button {
-                        scopeWindow = scopeWindow.next
+                    Menu {
+                        ForEach(ScopeWindow.allCases, id: \.self) { option in
+                            Button(option.label) {
+                                scopeWindow = option
+                            }
+                        }
                     } label: {
                         HStack(spacing: 2) {
                             Text(scopeWindow.label)
@@ -293,7 +296,8 @@ public struct DashboardView: View {
                             Text("▾").foregroundStyle(C.signal).font(.system(size: 9))
                         }
                     }
-                    .buttonStyle(.plain)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
             }
             .padding(.horizontal, 20)
@@ -306,22 +310,23 @@ public struct DashboardView: View {
             // scope canvas
             ZStack(alignment: .topLeading) {
                 ScopeChart(
-                    rxSamples: rxHistory,
-                    txSamples: txHistory,
-                    height: 240
+                    rxSamples: chartRxSamples,
+                    txSamples: chartTxSamples,
+                    height: 240,
+                    sampleCapacity: series.sampleCapacity
                 )
                 // tag row TL
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Circle().fill(C.signal).frame(width: 6, height: 6)
-                        Text("RX \(formatRate(stateMgr.statusFrame.rateRxBps))")
+                        Text("RX \(formatRate(displayRxRateBps))")
                             .font(.custom("DepartureMono-Regular", size: 9.5))
                             .tracking(0.16 * 9.5)
                             .foregroundStyle(C.textFaint)
                     }
                     HStack(spacing: 6) {
                         Circle().fill(C.warn).frame(width: 6, height: 6)
-                        Text("TX \(formatRate(stateMgr.statusFrame.rateTxBps))")
+                        Text("TX \(formatRate(displayTxRateBps))")
                             .font(.custom("DepartureMono-Regular", size: 9.5))
                             .tracking(0.16 * 9.5)
                             .foregroundStyle(C.textFaint)
@@ -423,13 +428,13 @@ public struct DashboardView: View {
         let active = frame.state == .connected
         HStack(spacing: 0) {
             kvCell(label: "RX · RATE",
-                   value: active ? splitRate(frame.rateRxBps).val : "—",
-                   unit:  active ? splitRate(frame.rateRxBps).unit : "",
+                   value: active ? splitRate(displayRxRateBps).val : "—",
+                   unit:  active ? splitRate(displayRxRateBps).unit : "",
                    highlight: true)
             kvDivider
             kvCell(label: "TX · RATE",
-                   value: active ? splitRate(frame.rateTxBps).val : "—",
-                   unit:  active ? splitRate(frame.rateTxBps).unit : "",
+                   value: active ? splitRate(displayTxRateBps).val : "—",
+                   unit:  active ? splitRate(displayTxRateBps).unit : "",
                    highlight: false)
             kvDivider
             kvCell(label: "RTT",
@@ -488,8 +493,7 @@ public struct DashboardView: View {
         if let preflightError = connectPreflightError() {
             dashLog.info("toggle → prerequisites missing, opening Welcome wizard")
             tunnel.lastError = preflightError
-            openWindow(id: "welcome")
-            NSApp.activate(ignoringOtherApps: true)
+            openForegroundWindow("welcome")
             return
         }
         guard let profile = profiles.activeProfile else { return }
@@ -501,6 +505,11 @@ public struct DashboardView: View {
             dashLog.error("installAndStart failed: \(error.localizedDescription, privacy: .public)")
             tunnel.lastError = error.localizedDescription
         }
+    }
+
+    private func openForegroundWindow(_ id: String) {
+        openWindow(id: id)
+        dock.activateForegroundWindow()
     }
 
     private func connectPreflightError() -> String? {
@@ -523,32 +532,25 @@ public struct DashboardView: View {
     }
 
     private var isSamplingState: Bool {
-        stateMgr.statusFrame.state == .connected || stateMgr.statusFrame.state == .connecting
+        stateMgr.statusFrame.state == .connected
+            || stateMgr.statusFrame.state == .connecting
+            || stateMgr.statusFrame.state == .reconnecting
     }
 
     private var totalRxBytes: UInt64 {
         let bytes = stateMgr.statusFrame.bytesRx
         if bytes > 0 { return bytes }
-        return lastRxBytes
+        return traffic.currentRxBytes
     }
 
-    private func pushSampleIfLive() {
-        guard isSamplingState else { return }
-        pushSample()
+    private var displayRxRateBps: Double {
+        if traffic.currentRxRateBps > 0 { return traffic.currentRxRateBps }
+        return stateMgr.statusFrame.rateRxBps
     }
 
-    private func pushSample() {
-        let cap = scopeWindow.rawValue
-        rxHistory.append(stateMgr.statusFrame.rateRxBps)
-        txHistory.append(stateMgr.statusFrame.rateTxBps)
-        lastRxBytes = max(lastRxBytes, stateMgr.statusFrame.bytesRx)
-        trimHistory(cap: cap)
-    }
-
-    private func trimHistory(cap: Int? = nil) {
-        let cap = cap ?? scopeWindow.rawValue
-        if rxHistory.count > cap { rxHistory.removeFirst(rxHistory.count - cap) }
-        if txHistory.count > cap { txHistory.removeFirst(txHistory.count - cap) }
+    private var displayTxRateBps: Double {
+        if traffic.currentTxRateBps > 0 { return traffic.currentTxRateBps }
+        return stateMgr.statusFrame.rateTxBps
     }
 
     private func formatRate(_ bps: Double) -> String {

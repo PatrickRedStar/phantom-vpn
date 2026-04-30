@@ -74,7 +74,15 @@ public final class UpstreamVpnMonitor {
         preferences: PreferencesStore,
         stateManager: VpnStateManager
     ) async {
-        let next = detector.snapshot(profile: profiles.activeProfile, preferences: preferences)
+        let activeProfile = profiles.activeProfile
+        let input = UpstreamVpnRouteDetector.SnapshotInput(
+            mode: preferences.effectiveRoutingMode(profileSplitRouting: activeProfile?.splitRouting),
+            manualDirectCidrs: preferences.manualDirectCidrs,
+            preserveScopedDns: preferences.preserveScopedDns,
+            serverAddr: activeProfile?.serverAddr,
+            tunAddr: activeProfile?.tunAddr
+        )
+        let next = await detector.snapshot(input)
         snapshot = next
 
         guard shouldApplyPolicy(for: stateManager.statusFrame.state) else {

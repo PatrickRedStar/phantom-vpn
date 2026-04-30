@@ -27,6 +27,7 @@ public struct CommandPalette: View {
     @EnvironmentObject private var tunnel: VpnTunnelController
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(SystemExtensionInstaller.self) private var sysExt
+    @Environment(DockPolicyController.self) private var dock
     @Environment(\.openWindow) private var openWindow
 
     @State private var query: String = ""
@@ -374,13 +375,13 @@ public struct CommandPalette: View {
         actionItems.append(.init(
             id: "act.logs",
             title: "Open detached logs",
-            subtitle: "tail window",
+            subtitle: "logs window",
             section: "ACTIONS",
             icon: "rectangle.on.rectangle",
             kbd: "⇧⌘L",
             action: {
                 router.openDetachedLogs()
-                openWindow(id: "logs")
+                openForegroundWindow("logs")
                 return .close
             }
         ))
@@ -392,7 +393,7 @@ public struct CommandPalette: View {
             icon: "info.circle",
             kbd: nil,
             action: {
-                openWindow(id: "about")
+                openForegroundWindow("about")
                 return .close
             }
         ))
@@ -553,9 +554,13 @@ public struct CommandPalette: View {
     private func openSetupWithError(_ message: String) -> PaletteActionResult {
         tunnel.lastError = message
         statusMessage = .init(text: message, kind: .error)
-        openWindow(id: "welcome")
-        NSApp.activate(ignoringOtherApps: true)
+        openForegroundWindow("welcome")
         return .close
+    }
+
+    private func openForegroundWindow(_ id: String) {
+        openWindow(id: id)
+        dock.activateForegroundWindow()
     }
 
     private func fuzzyScore(query: String, item: PaletteItem) -> Int? {

@@ -89,7 +89,7 @@
       "extractionState" : "manual",
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "TAIL" } },
-        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ХВОСТ" } }
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "ЛОГИ" } }
       }
     },
     "sidebar.setup" : {

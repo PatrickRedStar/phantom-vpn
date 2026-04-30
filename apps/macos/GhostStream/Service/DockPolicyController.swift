@@ -2,9 +2,9 @@
 //  DockPolicyController.swift
 //  GhostStream (macOS)
 //
-//  Toggles `NSApp.activationPolicy` between `.regular` (Dock-visible) and
-//  `.accessory` (menu-bar-only). Persists to App Group UserDefaults so the
-//  pref survives relaunch.
+//  Toggles `NSApp.activationPolicy` between `.regular` (Dock-visible /
+//  foreground windows) and `.accessory` (menu-bar-only). Persists to App Group
+//  UserDefaults so the pref survives relaunch.
 //
 
 import AppKit
@@ -25,6 +25,7 @@ public final class DockPolicyController {
     }
 
     private let defaults: UserDefaults
+    private var foregroundWindowClaims: Set<String> = []
     private static let key = "showInDock"
 
     private init() {
@@ -38,6 +39,24 @@ public final class DockPolicyController {
     }
 
     public func apply() {
-        NSApp.setActivationPolicy(showInDock ? .regular : .accessory)
+        let needsForegroundIdentity = showInDock || !foregroundWindowClaims.isEmpty
+        NSApp.setActivationPolicy(needsForegroundIdentity ? .regular : .accessory)
+    }
+
+    public func foregroundWindowDidAppear(_ claimID: String) {
+        foregroundWindowClaims.insert(claimID)
+        apply()
+    }
+
+    public func foregroundWindowDidDisappear(_ claimID: String) {
+        foregroundWindowClaims.remove(claimID)
+        apply()
+    }
+
+    public func activateForegroundWindow() {
+        NSApp.setActivationPolicy(.regular)
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }
