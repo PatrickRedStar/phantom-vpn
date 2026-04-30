@@ -17,30 +17,39 @@ enum AppTab: Int, CaseIterable, Hashable {
     case logs
     case settings
 
-    /// Short ALL-CAPS label shown under the glyph (mirrors Android).
+    /// Short label shown under the glyph (mirrors Android).
     var label: String {
         switch self {
-        case .dashboard: return "STREAM"
-        case .logs:      return "TAIL"
-        case .settings:  return "SETUP"
+        case .dashboard: return NSLocalizedString("nav_stream", value: "Stream", comment: "")
+        case .logs:      return NSLocalizedString("nav_logs", value: "Logs", comment: "")
+        case .settings:  return NSLocalizedString("nav_settings", value: "Settings", comment: "")
         }
     }
 
-    /// SF Symbol name for the glyph.
-    var systemImage: String {
+    /// Android parity text glyph. Avoids SF Symbols while preserving the
+    /// custom floating capsule visual.
+    var glyph: String {
         switch self {
-        case .dashboard: return "dot.radiowaves.left.and.right"
-        case .logs:      return "list.bullet.rectangle"
-        case .settings:  return "slider.horizontal.3"
+        case .dashboard: return "◉"
+        case .logs:      return "▤"
+        case .settings:  return "⚙"
         }
     }
 
     var accessibilityLabel: String {
-        switch self {
-        case .dashboard: return "Stream"
-        case .logs:      return "Tail"
-        case .settings:  return "Setup"
-        }
+        label
+    }
+
+    var previous: AppTab {
+        let all = AppTab.allCases
+        let index = all.firstIndex(of: self) ?? 0
+        return all[max(index - 1, 0)]
+    }
+
+    var next: AppTab {
+        let all = AppTab.allCases
+        let index = all.firstIndex(of: self) ?? 0
+        return all[min(index + 1, all.count - 1)]
     }
 }
 
@@ -51,6 +60,7 @@ struct AppNavigation: View {
 
     @Environment(\.gsColors) private var C
     @State private var selection: AppTab = .dashboard
+    @GestureState private var dragOffset: CGFloat = 0
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -61,17 +71,22 @@ struct AppNavigation: View {
             ZStack {
                 tabContent(.dashboard)
                     .opacity(selection == .dashboard ? 1 : 0)
+                    .offset(x: selection == .dashboard ? dragOffset * 0.18 : 0)
                     .allowsHitTesting(selection == .dashboard)
                     .accessibilityHidden(selection != .dashboard)
                 tabContent(.logs)
                     .opacity(selection == .logs ? 1 : 0)
+                    .offset(x: selection == .logs ? dragOffset * 0.18 : 0)
                     .allowsHitTesting(selection == .logs)
                     .accessibilityHidden(selection != .logs)
                 tabContent(.settings)
                     .opacity(selection == .settings ? 1 : 0)
+                    .offset(x: selection == .settings ? dragOffset * 0.18 : 0)
                     .allowsHitTesting(selection == .settings)
                     .accessibilityHidden(selection != .settings)
             }
+            .contentShape(Rectangle())
+            .gesture(tabSwipeGesture)
 
             // Gradient fade behind the nav so scrolling content doesn't
             // collide with the floating pill.
@@ -105,12 +120,29 @@ struct AppNavigation: View {
             }
         }
     }
+
+    private var tabSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 18, coordinateSpace: .local)
+            .updating($dragOffset) { value, state, _ in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                state = value.translation.width
+            }
+            .onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height),
+                      abs(value.translation.width) > 56
+                else { return }
+
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                    selection = value.translation.width < 0 ? selection.next : selection.previous
+                }
+            }
+    }
 }
 
 // MARK: - GhostBottomNav
 
-/// Floating pill-shaped bottom navigation. Animated sliding indicator,
-/// glyph scale on active tab, label fade on inactive.
+/// Floating pill-shaped bottom navigation. Text glyphs mirror Android while
+/// keeping the custom iOS capsule shell.
 private struct GhostBottomNav: View {
 
     @Binding var selection: AppTab
@@ -144,23 +176,23 @@ private struct GhostBottomNav: View {
             }
         } label: {
             VStack(spacing: 3) {
-                Image(systemName: tab.systemImage)
-                    .font(.system(size: 16, weight: .medium))
+                Text(tab.glyph)
+                    .font(.system(size: 17, weight: .semibold, design: .monospaced))
                     .scaleEffect(active ? 1.05 : 1.0)
                     .foregroundStyle(active ? C.signal : C.textDim)
                 Text(tab.label)
                     .gsFont(.navItem)
-                    .foregroundStyle(active ? C.signal : C.textDim)
+                    .foregroundStyle(active ? C.bone : C.textFaint)
                     .opacity(active ? 1.0 : 0.55)
             }
             .frame(minWidth: 72)
             .padding(.vertical, 6)
             .padding(.horizontal, 10)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(active ? C.signal.opacity(0.10) : Color.clear)
             )
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(tab.accessibilityLabel)

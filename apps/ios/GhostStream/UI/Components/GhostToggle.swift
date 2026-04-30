@@ -3,7 +3,8 @@
 //  GhostStream
 //
 //  Themed replacement for SwiftUI's default `Toggle`.
-//  OFF: `bgElev2` track, `textFaint` thumb. ON: `signal` track, `bone` thumb.
+//  OFF: transparent track, `textFaint` square knob. ON: signal-dim track,
+//  `signal` square knob with glow.
 //
 
 import PhantomUI
@@ -22,7 +23,7 @@ public struct GhostToggle: View {
 
     private let trackWidth: CGFloat = 40
     private let trackHeight: CGFloat = 22
-    private let thumbSize: CGFloat = 18
+    private let thumbSize: CGFloat = 14
     private let thumbPadding: CGFloat = 2
 
     /// Creates a toggle bound to `isOn`. `onLabel` is an optional accessibility hint.
@@ -33,19 +34,19 @@ public struct GhostToggle: View {
 
     public var body: some View {
         ZStack(alignment: isOn ? .trailing : .leading) {
-            Capsule()
-                .fill(isOn ? C.signal : C.bgElev2)
+            Rectangle()
+                .fill(isOn ? C.signalDim.opacity(0.40) : Color.clear)
                 .overlay(
-                    Capsule()
-                        .stroke(isOn ? C.signalDim : C.hair, lineWidth: 1)
+                    Rectangle()
+                        .stroke(isOn ? C.signal : C.hairBold, lineWidth: 1)
                 )
                 .frame(width: trackWidth, height: trackHeight)
 
-            Circle()
-                .fill(C.bone)
+            Rectangle()
+                .fill(isOn ? C.signal : C.textDim)
                 .frame(width: thumbSize, height: thumbSize)
                 .padding(.horizontal, thumbPadding)
-                .shadow(color: Color.black.opacity(0.25), radius: 1, y: 1)
+                .shadow(color: isOn ? C.signal.opacity(0.45) : Color.clear, radius: 4)
         }
         .animation(.easeInOut(duration: 0.18), value: isOn)
         .contentShape(Rectangle())

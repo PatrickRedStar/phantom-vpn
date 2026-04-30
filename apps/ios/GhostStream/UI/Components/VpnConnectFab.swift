@@ -37,11 +37,15 @@ struct VpnConnectFab: View {
         C: GsColorSet
     ) -> (String, Bool, Color) {
         switch state {
-        case .disconnected:  return ("CONNECT",        true,  C.signal)
-        case .connecting:    return ("CONNECTING…",    false, C.warn)
-        case .connected:     return ("DISCONNECT",     false, C.signal)
-        case .disconnecting: return ("DISCONNECTING…", false, C.warn)
-        case .error:         return ("RETRY",          true,  C.danger)
+        case .disconnected:  return (L("action_connect").uppercased(),        true,  C.signal)
+        case .connecting:    return ("\(L("action_connect").uppercased())…",  false, C.warn)
+        case .connected:     return (L("action_disconnect").uppercased(),     false, C.signal)
+        case .disconnecting: return ("\(L("action_disconnect").uppercased())…", false, C.warn)
+        case .error:         return (L("action_retry").uppercased(),          true,  C.danger)
         }
+    }
+
+    private func L(_ key: String) -> String {
+        NSLocalizedString(key, comment: "")
     }
 }

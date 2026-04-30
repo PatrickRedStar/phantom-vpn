@@ -45,22 +45,33 @@ public struct ClientDetailView: View {
         ZStack {
             C.bg.ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    headerCard
-                    togglesCard
-                    statsCard
-                    subscriptionCard
-                    trafficChartCard
-                    logsCard
-                    connStringButton
-                    deleteButton
+            VStack(spacing: 0) {
+                ScreenHeader(
+                    brand: vm.client.name,
+                    meta: vm.client.connected ? "CLIENT · ACTIVE" : "CLIENT · IDLE",
+                    pulse: vm.client.connected,
+                    pulseColor: vm.client.connected ? C.signal : C.textFaint,
+                    leadingLabel: "‹",
+                    leadingAction: { dismiss() }
+                )
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        headerCard
+                        togglesCard
+                        statsCard
+                        subscriptionCard
+                        trafficChartCard
+                        logsCard
+                        connStringButton
+                        deleteButton
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 20)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 20)
-            }
-            .refreshable {
-                await vm.refresh()
+                .refreshable {
+                    await vm.refresh()
+                }
             }
 
             if let msg = toastMessage {
@@ -79,25 +90,49 @@ public struct ClientDetailView: View {
                 }
                 .transition(.opacity)
             }
-        }
-        .navigationTitle(vm.client.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .task {
-            await vm.refresh()
-        }
-        .alert("Удалить клиента?", isPresented: $showDeleteConfirm) {
-            Button("Отмена", role: .cancel) { }
-            Button("Удалить", role: .destructive) {
-                Task {
-                    await vm.delete()
-                    if vm.error == nil { dismiss() }
+
+            if showDeleteConfirm {
+                GhostDialog(
+                    title: "DELETE CLIENT?",
+                    message: "Клиент «\(vm.client.name)» будет удалён вместе с сертификатами. Действие необратимо.",
+                    primaryTitle: "DELETE",
+                    secondaryTitle: "CANCEL",
+                    primaryAction: {
+                        showDeleteConfirm = false
+                        Task {
+                            await vm.delete()
+                            if vm.error == nil { dismiss() }
+                        }
+                    },
+                    secondaryAction: { showDeleteConfirm = false }
+                ) {
+                    EmptyView()
                 }
             }
-        } message: {
-            Text("Клиент «\(vm.client.name)» будет удалён вместе с сертификатами. Действие необратимо.")
+
+            if showSetDaysSheet {
+                GhostDialog(
+                    title: "SET SUBSCRIPTION",
+                    message: "Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.",
+                    primaryTitle: "OK",
+                    secondaryTitle: "CANCEL",
+                    primaryAction: {
+                        guard let n = Int(customDaysText), n > 0 else { return }
+                        Task {
+                            await vm.subscription(action: "set", days: n)
+                            showSetDaysSheet = false
+                        }
+                    },
+                    secondaryAction: { showSetDaysSheet = false }
+                ) {
+                    GhostTextField("30", text: $customDaysText)
+                        .keyboardType(.numberPad)
+                }
+            }
         }
-        .sheet(isPresented: $showSetDaysSheet) {
-            setDaysSheet
+        .toolbar(.hidden, for: .navigationBar)
+        .task {
+            await vm.refresh()
         }
     }
 
@@ -139,29 +174,33 @@ public struct ClientDetailView: View {
     private var togglesCard: some View {
         GhostCard {
             VStack(spacing: 12) {
-                Toggle(isOn: Binding(
-                    get: { vm.client.enabled },
-                    set: { newValue in Task { await vm.setEnabled(newValue) } }
-                )) {
+                HStack(spacing: 12) {
                     Text("ENABLED")
                         .gsFont(.labelMono)
                         .foregroundColor(C.textDim)
+                    Spacer()
+                    GhostToggle(isOn: Binding(
+                        get: { vm.client.enabled },
+                        set: { newValue in Task { await vm.setEnabled(newValue) } }
+                    ), onLabel: "ENABLED")
                 }
-                .tint(C.signal)
-                .disabled(vm.mutating)
+                .opacity(vm.mutating ? 0.5 : 1)
+                .allowsHitTesting(!vm.mutating)
 
                 Divider().background(C.hair)
 
-                Toggle(isOn: Binding(
-                    get: { vm.client.isAdmin },
-                    set: { newValue in Task { await vm.setAdmin(newValue) } }
-                )) {
+                HStack(spacing: 12) {
                     Text("IS ADMIN")
                         .gsFont(.labelMono)
                         .foregroundColor(C.textDim)
+                    Spacer()
+                    GhostToggle(isOn: Binding(
+                        get: { vm.client.isAdmin },
+                        set: { newValue in Task { await vm.setAdmin(newValue) } }
+                    ), onLabel: "IS ADMIN")
                 }
-                .tint(C.warn)
-                .disabled(vm.mutating)
+                .opacity(vm.mutating ? 0.5 : 1)
+                .allowsHitTesting(!vm.mutating)
             }
         }
     }
@@ -255,41 +294,6 @@ public struct ClientDetailView: View {
         }
         .buttonStyle(.plain)
         .disabled(vm.mutating)
-    }
-
-    private var setDaysSheet: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Дни", text: $customDaysText)
-                        .keyboardType(.numberPad)
-                } header: {
-                    Text("УСТАНОВИТЬ СРОК").gsFont(.labelMono).foregroundColor(C.textDim)
-                } footer: {
-                    Text("Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.")
-                        .gsFont(.body).foregroundColor(C.textDim)
-                }
-            }
-            .navigationTitle("Срок подписки")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Отмена") { showSetDaysSheet = false }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("OK") {
-                        if let n = Int(customDaysText), n > 0 {
-                            Task {
-                                await vm.subscription(action: "set", days: n)
-                                showSetDaysSheet = false
-                            }
-                        }
-                    }
-                    .disabled(Int(customDaysText) ?? 0 <= 0)
-                }
-            }
-        }
-        .presentationDetents([.medium])
     }
 
     // MARK: - Traffic chart

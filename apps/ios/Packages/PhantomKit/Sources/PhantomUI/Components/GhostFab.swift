@@ -8,13 +8,13 @@
 
 import SwiftUI
 
-/// A large pill-shaped primary action button.
+/// A large rectangular primary action button.
 ///
 /// - `text`: label rendered with `GsFont.fabText` (11pt, +0.20em
 ///   spacing, ALL CAPS intended by caller).
 /// - `outline`: when `true`, paints transparent fill + signal border
 ///   (used for the "CONNECT" idle state). When `false`, solid signal
-///   fill + bone text (used for "DISCONNECT" while live).
+///   fill + background-coloured text (used for "DISCONNECT" while live).
 /// - `action`: invoked on tap.
 public struct GhostFab: View {
 
@@ -45,16 +45,16 @@ public struct GhostFab: View {
         } label: {
             Text(text)
                 .gsFont(.fabText)
-                .foregroundStyle(outline ? accent : C.bone)
+                .foregroundStyle(outline ? accent : C.bg)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
                 .padding(.horizontal, 16)
                 .background(
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(outline ? Color.clear : accent)
                 )
                 .overlay(
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .stroke(accent, lineWidth: outline ? 1.5 : 0)
                 )
                 .scaleEffect(pressed ? 0.98 : 1.0)

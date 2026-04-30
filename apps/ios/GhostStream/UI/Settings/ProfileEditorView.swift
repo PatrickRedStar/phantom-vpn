@@ -57,48 +57,61 @@ public struct ProfileEditorView: View {
     // MARK: - Body
 
     public var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if let profile {
-                        idSection(profile: profile)
-                        endpointSection(profile: profile)
-                        reimportSection()
-                        dangerSection()
-                    } else {
-                        Text("Профиль не найден")
-                            .gsFont(.body)
-                            .foregroundColor(C.textDim)
-                            .padding()
+        ZStack {
+            VStack(spacing: 0) {
+                ScreenHeader(
+                    brand: "ПРОФИЛЬ",
+                    meta: profile?.name ?? "OFFLINE",
+                    leadingLabel: "✕",
+                    leadingAction: { close() }
+                )
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        if let profile {
+                            idSection(profile: profile)
+                            endpointSection(profile: profile)
+                            reimportSection()
+                            GhostButton("СОХРАНИТЬ", action: { save(); close() })
+                            dangerSection()
+                        } else {
+                            Text("Профиль не найден")
+                                .gsFont(.body)
+                                .foregroundColor(C.textDim)
+                                .padding()
+                        }
                     }
+                    .padding(18)
                 }
-                .padding(18)
             }
             .background(C.bg.ignoresSafeArea())
-            .navigationTitle("Профиль")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Готово") { save(); close() }
-                        .foregroundColor(C.signal)
+
+            if let errorMessage {
+                GhostDialog(
+                    title: "ОШИБКА",
+                    message: errorMessage,
+                    primaryTitle: "OK",
+                    primaryAction: { self.errorMessage = nil }
+                ) {
+                    EmptyView()
                 }
             }
-            .alert("Ошибка", isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
-            )) {
-                Button("OK", role: .cancel) { errorMessage = nil }
-            } message: {
-                Text(errorMessage ?? "")
-            }
-            .alert("Удалить профиль?", isPresented: $showDeleteConfirm) {
-                Button("Удалить", role: .destructive) {
-                    if let profile { model.deleteProfile(id: profile.id) }
-                    close()
+
+            if showDeleteConfirm {
+                GhostDialog(
+                    title: "УДАЛИТЬ ПРОФИЛЬ?",
+                    message: "Это действие нельзя отменить. Сертификаты и ключи будут удалены.",
+                    primaryTitle: "УДАЛИТЬ",
+                    secondaryTitle: "ОТМЕНА",
+                    primaryAction: {
+                        if let profile { model.deleteProfile(id: profile.id) }
+                        showDeleteConfirm = false
+                        close()
+                    },
+                    secondaryAction: { showDeleteConfirm = false }
+                ) {
+                    EmptyView()
                 }
-                Button("Отмена", role: .cancel) {}
-            } message: {
-                Text("Это действие нельзя отменить. Сертификаты и ключи будут удалены.")
             }
         }
         .onAppear(perform: loadFromProfile)

@@ -26,32 +26,34 @@ struct DashboardView: View {
         ZStack {
             C.bg.ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    stateSection
-                    timerRow
-                    reconnectBanner
-                    emptyHint
-                    preflightBanner
-                    VpnConnectFab(
-                        state: vm.state,
-                        onStart: {
-                            vm.start(
-                                profile: profiles.activeProfile,
-                                preferences: prefs
-                            )
-                        },
-                        onStop: vm.stop
-                    )
-                    scopeCard
-                    statsRow
-                    muxCard
-                    profileKvCard
-                    Spacer(minLength: 120) // bottom nav clearance
+            VStack(spacing: 0) {
+                header
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        stateSection
+                        timerRow
+                        reconnectBanner
+                        emptyHint
+                        preflightBanner
+                        scopeCard
+                        muxCard
+                        profileKvCard
+                        VpnConnectFab(
+                            state: vm.state,
+                            onStart: {
+                                vm.start(
+                                    profile: profiles.activeProfile,
+                                    preferences: prefs
+                                )
+                            },
+                            onStop: vm.stop
+                        )
+                        Spacer(minLength: 120) // bottom nav clearance
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 16)
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 14)
             }
         }
         .onAppear { vm.onAppear() }
@@ -60,27 +62,17 @@ struct DashboardView: View {
     // MARK: - Sections
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("GHOST//STREAM")
-                .gsFont(.brand)
-                .foregroundStyle(C.bone)
-            Spacer()
-            HStack(spacing: 6) {
-                Text(headerMetaText)
-                    .gsFont(.hdrMeta)
-                    .foregroundStyle(C.textFaint)
-                PulseDot(
-                    color: pulseColor(for: vm.state, colors: C),
-                    size: 5,
-                    pulse: shouldPulse(vm.state)
-                )
-            }
-        }
+        ScreenHeader(
+            brand: NSLocalizedString("brand_stream", comment: ""),
+            meta: headerMetaText,
+            pulse: shouldPulse(vm.state),
+            pulseColor: pulseColor(for: vm.state, colors: C)
+        )
     }
 
     private var stateSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("TUNNEL STATE")
+            Text(L("lbl_tunnel_state").uppercased())
                 .gsFont(.labelMono)
                 .foregroundStyle(C.textFaint)
 
@@ -105,7 +97,7 @@ struct DashboardView: View {
                 .gsFont(.ticker)
                 .foregroundStyle(isConnected ? C.bone : C.textFaint)
             Spacer()
-            Text("SESSION")
+            Text(L("lbl_session").uppercased())
                 .gsFont(.labelMonoSmall)
                 .foregroundStyle(C.textFaint)
         }
@@ -141,7 +133,7 @@ struct DashboardView: View {
     private var emptyHint: some View {
         if profiles.activeProfile == nil && !isConnected {
             GhostCard {
-                Text("NO PROFILE // GO TO SETTINGS")
+                Text(L("hint_add_profile").uppercased())
                     .gsFont(.body)
                     .foregroundStyle(C.textDim)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -210,28 +202,12 @@ struct DashboardView: View {
 
                 Divider().background(C.hair).frame(height: 1)
 
-                ScopeChart(rxSamples: vm.rxSamples, txSamples: vm.txSamples)
+                ScopeChart(
+                    rxSamples: vm.rxSamples,
+                    txSamples: vm.txSamples,
+                    sampleCapacity: vm.window.rawValue
+                )
             }
-        }
-    }
-
-    private var statsRow: some View {
-        // Prefer live rates from statusFrame (pushed by the extension every
-        // ~1s); fall back to the VM's computed delta when the frame is stale.
-        let sf = stateMgr.statusFrame
-        let rxMbps = sf.rateRxBps > 0
-            ? formatMbps(rateBps: sf.rateRxBps)
-            : formatMbps(rateBps: vm.rxSamples.last ?? 0)
-        let txMbps = sf.rateTxBps > 0
-            ? formatMbps(rateBps: sf.rateTxBps)
-            : formatMbps(rateBps: vm.txSamples.last ?? 0)
-        let rxTotal = formatBytesShort(Int64(sf.bytesRx > 0 ? sf.bytesRx : UInt64(vm.samples.last?.bytesRx ?? 0)))
-        let txTotal = formatBytesShort(Int64(sf.bytesTx > 0 ? sf.bytesTx : UInt64(vm.samples.last?.bytesTx ?? 0)))
-        return HStack(spacing: 10) {
-            StatCard(title: "RX", value: rxMbps, unit: "Mbps")
-            StatCard(title: "TX", value: txMbps, unit: "Mbps")
-            StatCard(title: "RX TOTAL", value: rxTotal.0, unit: rxTotal.1)
-            StatCard(title: "TX TOTAL", value: txTotal.0, unit: txTotal.1)
         }
     }
 
@@ -253,7 +229,7 @@ struct DashboardView: View {
         return GhostCard {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("STREAM MULTIPLEX")
+                    Text(L("lbl_stream_multiplex").uppercased())
                         .gsFont(.hdrMeta)
                         .foregroundStyle(C.textDim)
                     Spacer()
@@ -271,21 +247,21 @@ struct DashboardView: View {
         }
     }
 
-    @ViewBuilder
     private var profileKvCard: some View {
-        if let p = profiles.activeProfile {
-            GhostCard {
-                VStack(spacing: 0) {
-                    kvRow("IDENTITY",    p.name,    color: C.bone)
-                    dashHair
-                    kvRow("ASSIGNED",    p.tunAddr, color: C.bone)
-                    dashHair
-                    kvRow(
-                        "SUBSCRIPTION",
-                        vm.subscriptionText ?? "—",
-                        color: subscriptionColor
-                    )
-                }
+        let route = routeInfo(for: profiles.activeProfile)
+        return GhostCard {
+            VStack(spacing: 0) {
+                kvRow(L("kv_identity").uppercased(), profiles.activeProfile?.name ?? "—", color: C.bone)
+                dashHair
+                kvRow(L("kv_route").uppercased(), route.value, color: route.color)
+                dashHair
+                kvRow(L("kv_assigned").uppercased(), profiles.activeProfile?.tunAddr ?? "—", color: C.bone)
+                dashHair
+                kvRow(
+                    L("kv_subscription").uppercased(),
+                    vm.subscriptionText ?? "—",
+                    color: subscriptionColor
+                )
             }
         }
     }
@@ -349,21 +325,13 @@ struct DashboardView: View {
     private var subscriptionColor: Color {
         guard let text = vm.subscriptionText else { return C.bone }
         if text.contains("истекл") { return C.danger }
-        return C.bone
+        return C.signal
     }
 
     private func formatMbps(rateBps: Double) -> String {
         // bytes/sec → Mbps = bytes * 8 / 1e6
         let mbps = rateBps * 8.0 / 1_000_000.0
         return String(format: mbps < 10 ? "%.2f" : "%.1f", mbps)
-    }
-
-    private func formatBytesShort(_ bytes: Int64) -> (String, String) {
-        let b = Double(bytes)
-        if b >= 1_000_000_000 { return (String(format: "%.2f", b / 1_000_000_000), "GB") }
-        if b >= 1_000_000     { return (String(format: "%.1f", b / 1_000_000),     "MB") }
-        if b >= 1_000         { return (String(format: "%.1f", b / 1_000),         "KB") }
-        return ("\(bytes)", "B")
     }
 
     private func shouldPulse(_ state: VpnState) -> Bool {
@@ -391,12 +359,43 @@ struct DashboardView: View {
         C: GsColorSet
     ) -> (String, String, Color) {
         switch state {
-        case .connected:     return ("", "TRANSMITTING·", C.signal)
-        case .connecting:    return ("", "TUNING···",      C.warn)
-        case .disconnecting: return ("", "CLOSING···",     C.warn)
-        case .error:         return ("LOST ", "SIGNAL·",   C.danger)
-        case .disconnected:  return ("", "STANDBY·",       C.textDim)
+        case .connected:
+            return ("", "\(L("state_transmitting_verb").uppercased())·", C.signal)
+        case .connecting, .disconnecting:
+            return ("", "\(L("state_tuning_verb").uppercased())···", C.warn)
+        case .error:
+            return ("", "\(L("state_lost_verb").uppercased()) \(L("state_signal_word").uppercased())·", C.danger)
+        case .disconnected:
+            return ("", "\(L("state_standby_verb").uppercased())·", C.textDim)
         }
+    }
+
+    private func routeInfo(for profile: VpnProfile?) -> (value: String, color: Color) {
+        guard let profile else { return (L("kv_route_direct").lowercased(), C.bone) }
+        let relayEnabled: Bool = reflectedProfileValue("relayEnabled", in: profile) ?? false
+        guard relayEnabled else { return (L("kv_route_direct").lowercased(), C.bone) }
+
+        let relayAddr: String? = reflectedProfileValue("relayAddr", in: profile)
+        if let relayAddr, !relayAddr.isEmpty {
+            return ("\(L("kv_route_relay").lowercased()) · \(relayAddr)", C.signal)
+        }
+        return (L("kv_route_relay").lowercased(), C.signal)
+    }
+
+    private func reflectedProfileValue<T>(_ label: String, in profile: VpnProfile) -> T? {
+        for child in Mirror(reflecting: profile).children where child.label == label {
+            if let value = child.value as? T { return value }
+            let mirror = Mirror(reflecting: child.value)
+            if mirror.displayStyle == .optional,
+               let value = mirror.children.first?.value as? T {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func L(_ key: String) -> String {
+        NSLocalizedString(key, comment: "")
     }
 }
 

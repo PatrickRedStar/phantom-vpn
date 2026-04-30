@@ -48,21 +48,27 @@ public struct ScopeChart: View {
     public let rxSamples: [Double]
     public let txSamples: [Double]
     public var height: CGFloat
+    public var sampleCapacity: Int?
 
     public init(
         rxSamples: [Double],
         txSamples: [Double],
-        height: CGFloat = 90
+        height: CGFloat = 90,
+        sampleCapacity: Int? = nil
     ) {
         self.rxSamples = rxSamples
         self.txSamples = txSamples
         self.height = height
+        self.sampleCapacity = sampleCapacity
     }
 
     @Environment(\.gsColors) private var C
 
     public var body: some View {
         Canvas { ctx, size in
+            let rx = sanitizedSamples(rxSamples)
+            let tx = sanitizedSamples(txSamples)
+
             // Grid: 3 horizontal hairlines at 25% intervals.
             let grid = C.hair
             for i in 1...3 {
@@ -76,17 +82,18 @@ public struct ScopeChart: View {
             // Normalise both traces against their combined peak so the
             // two are directly comparable.
             let peak = max(
-                rxSamples.max() ?? 0,
-                txSamples.max() ?? 0,
+                rx.max() ?? 0,
+                tx.max() ?? 0,
                 1.0
             )
 
             // RX trace — fill gradient + stroke + soft glow.
             if let rxPath = makePath(
-                samples: rxSamples,
+                samples: rx,
                 in: size,
                 peak: peak,
-                closedFill: true
+                closedFill: true,
+                sampleCapacity: sampleCapacity
             ) {
                 let fill = Gradient(colors: [
                     C.signal.opacity(0.35),
@@ -102,10 +109,11 @@ public struct ScopeChart: View {
                 )
             }
             if let rxLine = makePath(
-                samples: rxSamples,
+                samples: rx,
                 in: size,
                 peak: peak,
-                closedFill: false
+                closedFill: false,
+                sampleCapacity: sampleCapacity
             ) {
                 // Glow: wide, translucent.
                 ctx.stroke(rxLine, with: .color(C.signal.opacity(0.35)), lineWidth: 3)
@@ -114,10 +122,11 @@ public struct ScopeChart: View {
 
             // TX trace — stroke only, orange.
             if let txLine = makePath(
-                samples: txSamples,
+                samples: tx,
                 in: size,
                 peak: peak,
-                closedFill: false
+                closedFill: false,
+                sampleCapacity: sampleCapacity
             ) {
                 ctx.stroke(txLine, with: .color(C.warn.opacity(0.30)), lineWidth: 3)
                 ctx.stroke(txLine, with: .color(C.warn), lineWidth: 1.0)
@@ -134,15 +143,19 @@ public struct ScopeChart: View {
         samples: [Double],
         in size: CGSize,
         peak: Double,
-        closedFill: Bool
+        closedFill: Bool,
+        sampleCapacity: Int?
     ) -> Path? {
         guard samples.count >= 2 else { return nil }
         let w = size.width
         let h = size.height
-        let denom = max(CGFloat(samples.count - 1), 1)
+        let spanCount = max(sampleCapacity ?? samples.count, samples.count, 2)
+        let offset = max(spanCount - samples.count, 0)
+        let denom = max(CGFloat(spanCount - 1), 1)
+        let startX = CGFloat(offset) / denom * w
         var path = Path()
         for (i, v) in samples.enumerated() {
-            let x = CGFloat(i) / denom * w
+            let x = CGFloat(i + offset) / denom * w
             // Invert y — SwiftUI 0 is top.
             let y = h - CGFloat(v / peak) * h
             if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
@@ -150,10 +163,17 @@ public struct ScopeChart: View {
         }
         if closedFill {
             path.addLine(to: CGPoint(x: w, y: h))
-            path.addLine(to: CGPoint(x: 0, y: h))
+            path.addLine(to: CGPoint(x: startX, y: h))
             path.closeSubpath()
         }
         return path
+    }
+
+    private func sanitizedSamples(_ samples: [Double]) -> [Double] {
+        samples.map { sample in
+            guard sample.isFinite, sample > 0 else { return 0 }
+            return sample
+        }
     }
 }
 

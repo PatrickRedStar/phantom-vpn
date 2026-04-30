@@ -2,30 +2,23 @@
 //  CreateClientSheet.swift
 //  GhostStream
 //
-//  Modal form presented from AdminView's "CREATE CLIENT" CTA.
-//  Collects name / expires-days / is-admin, posts via AdminViewModel.
-//
 
 import PhantomUI
 import SwiftUI
 
 /// Bottom-sheet form for creating a new admin-managed client.
-///
-/// On "Создать" taps `AdminViewModel.createClient(...)`; on success dismisses
-/// the sheet and the parent's refreshed client list shows the new row.
 public struct CreateClientSheet: View {
 
     @Environment(\.gsColors) private var C
     @Environment(\.dismiss) private var dismiss
 
-    /// Shared VM — we call `createClient` on it and rely on its own refresh.
     let viewModel: AdminViewModel
 
-    @State private var name: String = ""
-    @State private var expiresDaysText: String = "30"
-    @State private var isAdmin: Bool = false
-    @State private var perpetual: Bool = false
-    @State private var submitting: Bool = false
+    @State private var name = ""
+    @State private var expiresDaysText = "30"
+    @State private var isAdmin = false
+    @State private var perpetual = false
+    @State private var submitting = false
     @State private var errorMessage: String?
 
     public init(viewModel: AdminViewModel) {
@@ -33,76 +26,99 @@ public struct CreateClientSheet: View {
     }
 
     public var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("например alice", text: $name)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-                } header: {
-                    Text("ИМЯ КЛИЕНТА")
-                        .gsFont(.labelMono)
-                        .foregroundColor(C.textDim)
-                }
+        ZStack {
+            C.bg.ignoresSafeArea()
 
-                Section {
-                    Toggle("Бессрочная подписка", isOn: $perpetual)
-                    if !perpetual {
-                        TextField("дни", text: $expiresDaysText)
-                            .keyboardType(.numberPad)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(L("admin.add.title").uppercased())
+                        .gsFont(.labelMono)
+                        .foregroundColor(C.bone)
+                    Spacer()
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("×")
+                            .gsFont(.valueMono)
+                            .foregroundColor(C.textDim)
                     }
-                } header: {
-                    Text("ПОДПИСКА")
-                        .gsFont(.labelMono)
-                        .foregroundColor(C.textDim)
-                } footer: {
-                    Text("Бессрочная = без expires_at на сервере.")
-                        .gsFont(.body)
-                        .foregroundColor(C.textFaint)
+                    .buttonStyle(.plain)
+                    .disabled(submitting)
                 }
 
-                Section {
-                    Toggle("Админ (is_admin)", isOn: $isAdmin)
-                        .tint(C.warn)
-                } footer: {
-                    Text("Админ может управлять всеми клиентами через Admin API.")
-                        .gsFont(.body)
-                        .foregroundColor(C.textFaint)
+                VStack(alignment: .leading, spacing: 10) {
+                    fieldLabel(L("admin.add.name.hint"))
+                    GhostTextField("alice", text: $name)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    fieldLabel(L("admin.subscription.perpetual"))
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(L("admin.add.days.hint"))
+                                .gsFont(.body)
+                                .foregroundColor(C.textDim)
+                        }
+                        Spacer()
+                        GhostToggle(isOn: $perpetual, onLabel: L("admin.subscription.perpetual"))
+                    }
+                    if !perpetual {
+                        GhostTextField(L("admin.sub.days.hint"), text: $expiresDaysText, keyboardType: .numberPad)
+                    }
+                }
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("ADMIN")
+                            .gsFont(.labelMono)
+                            .foregroundColor(C.textFaint)
+                        Text("is_admin")
+                            .gsFont(.body)
+                            .foregroundColor(C.textDim)
+                    }
+                    Spacer()
+                    GhostToggle(isOn: $isAdmin, onLabel: "Admin")
                 }
 
                 if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .gsFont(.body)
-                            .foregroundColor(C.danger)
-                    }
+                    Text(errorMessage)
+                        .gsFont(.body)
+                        .foregroundColor(C.danger)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }
-            .navigationTitle("Новый клиент")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Отмена") { dismiss() }
+
+                HStack(spacing: 10) {
+                    GhostButton(L("general.cancel"), variant: .secondary) { dismiss() }
                         .disabled(submitting)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Создать") {
+                    GhostButton(L("admin.action.create"), isEnabled: canSubmit && !submitting) {
                         Task { await submit() }
                     }
-                    .disabled(!canSubmit || submitting)
                 }
             }
-            .overlay {
-                if submitting {
-                    Color.black.opacity(0.2).ignoresSafeArea()
-                    ProgressView().tint(C.signal)
-                }
+            .padding(18)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(C.bgElev)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(C.hairBold, lineWidth: 1)
+                    )
+            )
+            .padding(18)
+
+            if submitting {
+                Color.black.opacity(0.25).ignoresSafeArea()
+                ProgressView().tint(C.signal)
             }
         }
         .presentationDetents([.medium, .large])
     }
 
-    // MARK: - Validation & submission
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .gsFont(.labelMonoSmall)
+            .foregroundColor(C.textFaint)
+    }
 
     private var canSubmit: Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -119,11 +135,7 @@ public struct CreateClientSheet: View {
         errorMessage = nil
         defer { submitting = false }
         do {
-            try await viewModel.createClient(
-                name: trimmed,
-                expiresDays: days,
-                isAdmin: isAdmin
-            )
+            try await viewModel.createClient(name: trimmed, expiresDays: days, isAdmin: isAdmin)
             dismiss()
         } catch let err as AdminHttpError {
             errorMessage = err.errorDescription
@@ -133,9 +145,11 @@ public struct CreateClientSheet: View {
     }
 }
 
-// MARK: - Previews
-
 #Preview("CreateClientSheet") {
     CreateClientSheet(viewModel: AdminPreviewData.populatedVM())
         .gsTheme(override: .dark)
+}
+
+private func L(_ key: String) -> String {
+    NSLocalizedString(key, comment: "")
 }

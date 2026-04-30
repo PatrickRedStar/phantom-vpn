@@ -3,7 +3,7 @@
 //  GhostStream
 //
 //  Live log tail view. Filter chip row (ALL/TRACE/DEBUG/INFO/WARN/ERROR +
-//  SHARE + CLEAR), auto-scrolling log list, bottom fade to the nav bar.
+//  CLEAR + SHARE), newest-first log list, bottom fade to the nav bar.
 //
 
 import PhantomKit
@@ -24,9 +24,6 @@ struct LogsView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 header
-                    .padding(.horizontal, 18)
-                    .padding(.top, 14)
-                    .padding(.bottom, 6)
                 filterRow
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
@@ -56,26 +53,31 @@ struct LogsView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("TAIL")
-                .gsFont(.brand)
-                .foregroundStyle(C.bone)
-            Spacer()
-            HStack(spacing: 6) {
-                Text(metaText)
-                    .gsFont(.hdrMeta)
-                    .foregroundStyle(C.textFaint)
-                PulseDot(color: statusColor, size: 5)
-            }
-        }
+        ScreenHeader(
+            brand: NSLocalizedString("brand_tail", comment: ""),
+            meta: metaText,
+            pulse: isLive,
+            pulseColor: statusColor
+        )
     }
 
     private var metaText: String {
         let n = vm.allLogs.count
         if n >= 1000 {
-            return "\(vm.statusLabel) · \(String(format: "%.1fk", Double(n) / 1000)) LINES"
+            return "\(headerStateText) · \(String(format: "%.1fk", Double(n) / 1000)) LINES"
         }
-        return "\(vm.statusLabel) · \(n) LINES"
+        return "\(headerStateText) · \(n) LINES"
+    }
+
+    private var headerStateText: String {
+        if vm.hasIpcError { return "IPC ERROR" }
+        return isLive ? "LIVE" : vm.statusLabel
+    }
+
+    private var isLive: Bool {
+        guard !vm.hasIpcError else { return false }
+        if case .connected = vm.tunnelState { return true }
+        return false
     }
 
     private var statusColor: Color {
@@ -124,49 +126,24 @@ struct LogsView: View {
                 ForEach(LogFilter.allCases, id: \.self) { f in
                     chip(filter: f)
                 }
-                Button {
+                GhostChip(L("chip_clear"), active: false, accent: C.danger) {
                     vm.clear()
-                } label: {
-                    chipBody(text: "CLEAR", active: false, accent: C.danger)
                 }
-                .buttonStyle(.plain)
 
-                Button {
+                GhostChip(L("chip_share"), active: false, accent: C.signal) {
                     if let url = vm.shareFileURL(range: 500) {
                         shareItem = ShareItem(url: url)
                     }
-                } label: {
-                    chipBody(text: "SHARE", active: false, accent: C.signal)
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, 2)
         }
     }
 
     private func chip(filter f: LogFilter) -> some View {
-        Button {
+        GhostChip(f.rawValue, active: vm.filter == f, accent: C.signal) {
             vm.filter = f
-        } label: {
-            chipBody(text: f.rawValue, active: vm.filter == f, accent: C.signal)
         }
-        .buttonStyle(.plain)
-    }
-
-    private func chipBody(text: String, active: Bool, accent: Color) -> some View {
-        Text(text)
-            .gsFont(.chipText)
-            .foregroundStyle(active ? accent : C.textDim)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(active ? accent.opacity(0.20) : Color.clear)
-            )
-            .overlay(
-                Capsule(style: .continuous)
-                    .stroke(active ? accent.opacity(0.5) : C.hair, lineWidth: 1)
-            )
     }
 
     // MARK: - Log list
@@ -175,17 +152,14 @@ struct LogsView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    // Render oldest-first; the list grows downward. We
-                    // auto-scroll to the newest when appended, unless
-                    // the user has scrolled manually.
-                    ForEach(vm.visibleLogs) { entry in
+                    // Render newest-first so appended rows appear at the top.
+                    Color.clear
+                        .frame(height: 1)
+                        .id("__head__")
+                    ForEach(Array(vm.visibleLogs.reversed())) { entry in
                         LogFrameRow(entry: entry)
                             .id(entry.tsUnixMs)
                     }
-                    // Tail sentinel — used for scroll-to-bottom.
-                    Color.clear
-                        .frame(height: 1)
-                        .id("__tail__")
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 6)
@@ -194,7 +168,7 @@ struct LogsView: View {
             .onChange(of: vm.visibleLogs.count) { _, _ in
                 guard !userPinnedScroll else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo("__tail__", anchor: .bottom)
+                    proxy.scrollTo("__head__", anchor: .top)
                 }
             }
             .simultaneousGesture(
@@ -206,6 +180,10 @@ struct LogsView: View {
     }
 }
 
+private func L(_ key: String) -> String {
+    NSLocalizedString(key, comment: "")
+}
+
 // MARK: - LogFrameRow
 
 private struct LogFrameRow: View {
@@ -215,40 +193,66 @@ private struct LogFrameRow: View {
     @Environment(\.gsColors) private var C
 
     var body: some View {
-        HStack(alignment: .top, spacing: 4) {
+        HStack(alignment: .top, spacing: 6) {
+            Rectangle()
+                .fill(levelColor)
+                .frame(width: 2)
             Text(LogsViewModel.formatTs(entry.tsUnixMs))
                 .gsFont(.logTs)
                 .foregroundStyle(C.textFaint)
-                .frame(width: 60, alignment: .leading)
+                .frame(width: 54, alignment: .leading)
             Text(LogsViewModel.levelBadge(entry.level))
-                .gsFont(.logLevel)
+                .gsFont(.labelMonoSmall)
                 .foregroundStyle(levelColor)
-                .frame(width: 36, alignment: .leading)
+                .frame(width: 32, height: 16, alignment: .center)
+                .background(levelColor.opacity(badgeOpacity))
             Text(entry.msg)
                 .gsFont(.logMsg)
                 .foregroundStyle(messageColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 2)
+        .padding(.trailing, 4)
+        .background(rowBackground)
     }
 
     private var levelColor: Color {
         switch entry.level.uppercased() {
         case "ERROR", "ERR", "CRITICAL": return C.danger
         case "WARN", "WARNING":          return C.warn
-        case "INFO", "OK":               return C.textDim
+        case "INFO", "OK":               return C.signal
         case "DEBUG":                    return C.blueDebug
         case "TRACE":                    return C.textFaint
         default:                         return C.textDim
         }
     }
 
+    private var badgeOpacity: Double {
+        switch entry.level.uppercased() {
+        case "ERROR", "ERR", "CRITICAL": return 0.16
+        case "WARN", "WARNING":          return 0.12
+        case "INFO", "OK":               return 0.10
+        case "DEBUG":                    return 0.12
+        case "TRACE":                    return 0.08
+        default:                         return 0.08
+        }
+    }
+
+    private var rowBackground: Color {
+        switch entry.level.uppercased() {
+        case "ERROR", "ERR", "CRITICAL": return C.danger.opacity(0.08)
+        case "WARN", "WARNING":          return C.warn.opacity(0.05)
+        default:                         return Color.clear
+        }
+    }
+
     private var messageColor: Color {
         switch entry.level.uppercased() {
-        case "ERROR", "ERR", "CRITICAL": return C.danger
-        case "WARN", "WARNING":          return C.warn
-        case "DEBUG":                    return C.blueDebug
-        default:                         return C.bone.opacity(0.85)
+        case "ERROR", "ERR", "CRITICAL": return C.danger.opacity(0.85)
+        case "WARN", "WARNING":          return C.warn.opacity(0.80)
+        case "DEBUG":                    return C.blueDebug.opacity(0.70)
+        case "TRACE":                    return C.textFaint
+        default:                         return C.bone
         }
     }
 }
