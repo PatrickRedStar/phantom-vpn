@@ -35,6 +35,7 @@ public final class SettingsViewModel {
 
     private let profilesStore: ProfilesStore
     private let preferencesStore: PreferencesStore
+    private let tunnelController: VpnTunnelController
     private let log = Logger(subsystem: "com.ghoststream.vpn", category: "SettingsViewModel")
 
     // MARK: - Public state
@@ -60,10 +61,12 @@ public final class SettingsViewModel {
 
     public init(
         profilesStore: ProfilesStore = .shared,
-        preferencesStore: PreferencesStore = .shared
+        preferencesStore: PreferencesStore = .shared,
+        tunnelController: VpnTunnelController? = nil
     ) {
         self.profilesStore = profilesStore
         self.preferencesStore = preferencesStore
+        self.tunnelController = tunnelController ?? VpnTunnelController()
         refreshDownloadedRoutingRules()
     }
 
@@ -172,6 +175,37 @@ public final class SettingsViewModel {
 
     public func setCustomDirectDomainsText(_ text: String) {
         preferencesStore.customDirectDomainsText = text
+    }
+
+    public func saveRoutingSettings(
+        splitOn: Bool,
+        selectedCountries: [String],
+        manualCidrsText: String,
+        directDomainsText: String
+    ) async {
+        routingDownloadStatus = "Saving route policy..."
+        preferencesStore.splitRouting = splitOn
+        preferencesStore.directCountries = selectedCountries
+        preferencesStore.manualDirectCidrsText = manualCidrsText
+        preferencesStore.customDirectDomainsText = directDomainsText
+
+        guard let activeProfile else {
+            routingDownloadStatus = "Route policy saved"
+            refreshDownloadedRoutingRules()
+            return
+        }
+
+        do {
+            try await tunnelController.applyRoutePolicy(profile: activeProfile, preferences: preferencesStore)
+            refreshDownloadedRoutingRules()
+            let ipv4Count = preferencesStore.manualDirectCidrs.count
+            let ipv6Count = preferencesStore.manualDirectIpv6Cidrs.count
+            routingDownloadStatus = "Route policy applied · \(ipv4Count) IPv4 · \(ipv6Count) IPv6 manual rules"
+        } catch {
+            refreshDownloadedRoutingRules()
+            routingDownloadStatus = "Route policy update failed: \(error.localizedDescription)"
+            log.error("route policy update failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     public func refreshDownloadedRoutingRules() {

@@ -120,7 +120,7 @@
 "settings.split.geosite.not.downloaded" = "Geosite-список ещё не скачан";
 "settings.split.rule.info" = "%d правил · %d КБ";
 "settings.split.custom.cidrs" = "Свои IP/CIDR";
-"settings.split.custom.cidrs.hint" = "Один IPv4 CIDR на строку. Эти сети пойдут напрямую, вне GhostStream.";
+"settings.split.custom.cidrs.hint" = "Один IPv4 или IPv6 CIDR на строку. Эти сети пойдут напрямую, вне GhostStream.";
 "settings.split.invalid.cidrs" = "Невалидные CIDR проигнорированы: %@";
 "settings.split.custom.domains" = "Свои DNS-имена";
 "settings.split.custom.domains.hint" = "Хосты резолвятся перед подключением и применяются как прямые /32 routes. CDN IP могут меняться.";

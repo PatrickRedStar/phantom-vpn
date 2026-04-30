@@ -18,6 +18,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
+    private var activeProfile: VpnProfile?
+    private var activeSettings: TunnelSettings?
 
     // MARK: - Lifecycle
 
@@ -78,9 +80,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let response = TunnelIpcBridge.Response.ok
             completionHandler?(try? JSONEncoder().encode(response))
 
-        case .updateRoutePolicy:
-            let response = TunnelIpcBridge.Response.ok
-            completionHandler?(try? JSONEncoder().encode(response))
+        case .updateRoutePolicy(let snapshot):
+            Task {
+                do {
+                    try await self.updateRoutePolicy(snapshot)
+                    let response = TunnelIpcBridge.Response.ok
+                    completionHandler?(try? JSONEncoder().encode(response))
+                } catch {
+                    let response = TunnelIpcBridge.Response.error(error.localizedDescription)
+                    completionHandler?(try? JSONEncoder().encode(response))
+                }
+            }
 
         case .disconnect:
             outboundTask?.cancel()
@@ -101,37 +111,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         var profile = try loadProfile()
         let settings = loadSettings()
         profile = applyProviderConfigurationOverrides(to: profile)
+        activeProfile = profile
+        activeSettings = settings
 
-        // Build NEPacketTunnelNetworkSettings.
-        let (tunIp, subnetMask) = try parseCidr(profile.tunAddr)
-        let networkSettings = NEPacketTunnelNetworkSettings(
-            tunnelRemoteAddress: tunnelRemoteAddress(for: profile.serverAddr)
-        )
-        networkSettings.mtu = NSNumber(value: 1350)
-
-        let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
-        configureIPv4Routes(ipv4, for: profile, settings: settings)
-        networkSettings.ipv4Settings = ipv4
-
-        // iOS rejects NEIPv6Settings without at least one tunnel address.
-        // Route IPv6 into the tunnel with a ULA address so unsupported IPv6
-        // traffic is captured and dropped instead of leaking outside the VPN.
-        if settings.ipv6Killswitch {
-            let ipv6 = NEIPv6Settings(
-                addresses: ["fd00:6768:6f73:7473::1"],
-                networkPrefixLengths: [64]
-            )
-            ipv6.includedRoutes = [NEIPv6Route.default()]
-            networkSettings.ipv6Settings = ipv6
-        }
-
-        let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
-        let dns = NEDNSSettings(servers: dnsServers)
-        if settings.dnsLeakProtection && shouldForceDnsMatchDomains(settings: settings) {
-            dns.matchDomains = [""]
-        }
-        networkSettings.dnsSettings = dns
-
+        let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
         try await setTunnelNetworkSettings(networkSettings)
 
         var didCallCompletion = false
@@ -185,6 +168,47 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    private func makeNetworkSettings(
+        profile: VpnProfile,
+        settings: TunnelSettings
+    ) throws -> NEPacketTunnelNetworkSettings {
+        let (tunIp, subnetMask) = try parseCidr(profile.tunAddr)
+        let networkSettings = NEPacketTunnelNetworkSettings(
+            tunnelRemoteAddress: tunnelRemoteAddress(for: profile.serverAddr)
+        )
+        networkSettings.mtu = NSNumber(value: 1350)
+
+        let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
+        configureIPv4Routes(ipv4, for: profile, settings: settings)
+        networkSettings.ipv4Settings = ipv4
+
+        // iOS rejects NEIPv6Settings without at least one tunnel address.
+        // Route IPv6 into the tunnel with a ULA address so unsupported IPv6
+        // traffic is captured and dropped instead of leaking outside the VPN.
+        if settings.ipv6Killswitch {
+            let ipv6 = NEIPv6Settings(
+                addresses: ["fd00:6768:6f73:7473::1"],
+                networkPrefixLengths: [64]
+            )
+            ipv6.includedRoutes = [NEIPv6Route.default()]
+            let excludedRoutes = directIpv6RoutesForRouteComputation(settings: settings)
+                .compactMap(route(forIPv6CIDR:))
+            if !excludedRoutes.isEmpty {
+                ipv6.excludedRoutes = excludedRoutes
+            }
+            networkSettings.ipv6Settings = ipv6
+        }
+
+        let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
+        let dns = NEDNSSettings(servers: dnsServers)
+        if settings.dnsLeakProtection && shouldForceDnsMatchDomains(settings: settings) {
+            dns.matchDomains = [""]
+        }
+        networkSettings.dnsSettings = dns
+
+        return networkSettings
+    }
+
     // MARK: - Profile loading
 
     private struct LastTunnelParams: Decodable {
@@ -199,6 +223,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             case splitRouting = "split_routing"
             case directCidrs = "direct_cidrs"
             case manualDirectCidrs = "manual_direct_cidrs"
+            case manualDirectIpv6Cidrs = "manual_direct_ipv6_cidrs"
             case routingMode = "routing_mode"
             case preserveScopedDns = "preserve_scoped_dns"
             case dnsLeakProtection = "dns_leak_protection"
@@ -225,6 +250,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let manualDirectCidrs = Self.decodeStringArray(.manualDirectCidrs, from: container)
                 ?? Self.decodeStringArray(.directCidrs, from: container)
                 ?? []
+            let manualDirectIpv6Cidrs = Self.decodeStringArray(.manualDirectIpv6Cidrs, from: container) ?? []
 
             self.settings = TunnelSettings(
                 dnsLeakProtection: Self.decodeBool(.dnsLeakProtection, from: container) ?? true,
@@ -232,6 +258,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 autoReconnect: Self.decodeBool(.autoReconnect, from: container) ?? true,
                 routingMode: routingMode,
                 manualDirectCidrs: manualDirectCidrs,
+                manualDirectIpv6Cidrs: manualDirectIpv6Cidrs,
                 preserveScopedDns: Self.decodeBool(.preserveScopedDns, from: container) ?? true,
                 routePolicy: try? container.decode(RoutePolicySnapshot.self, forKey: .routePolicy),
                 streams: Self.decodeInt(.streams, from: container) ?? 8
@@ -379,6 +406,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Route settings
 
+    private func updateRoutePolicy(_ snapshot: RoutePolicySnapshot) async throws {
+        let profile: VpnProfile
+        if let activeProfile {
+            profile = activeProfile
+        } else {
+            profile = applyProviderConfigurationOverrides(to: try loadProfile())
+        }
+
+        var settings = activeSettings ?? loadSettings()
+        settings.routingMode = snapshot.mode
+        settings.manualDirectCidrs = snapshot.manualDirectCidrs
+        settings.manualDirectIpv6Cidrs = snapshot.manualDirectIpv6Cidrs
+        settings.preserveScopedDns = snapshot.preserveScopedDns
+        settings.routePolicy = snapshot
+
+        let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
+        try await setTunnelNetworkSettings(networkSettings)
+
+        activeProfile = profile
+        activeSettings = settings
+        log.info(
+            "updated route policy mode=\(snapshot.mode.rawValue, privacy: .public) ipv4=\(snapshot.manualDirectCidrs.count, privacy: .public) ipv6=\(snapshot.manualDirectIpv6Cidrs.count, privacy: .public)"
+        )
+    }
+
     private func configureIPv4Routes(
         _ ipv4: NEIPv4Settings,
         for profile: VpnProfile,
@@ -433,6 +485,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return RoutePolicySnapshot.normalizedCidrs(from: cidrs.joined(separator: "\n")).valid
     }
 
+    private func directIpv6RoutesForRouteComputation(settings: TunnelSettings) -> [String] {
+        guard settings.routingMode != .global else { return [] }
+        var cidrs = settings.manualDirectIpv6Cidrs
+        cidrs.append(contentsOf: settings.routePolicy?.manualDirectIpv6Cidrs ?? [])
+        return RoutePolicySnapshot.normalizedIPv6Cidrs(from: cidrs.joined(separator: "\n")).valid
+    }
+
     private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {
         let upstreamCidrs = settings.routingMode == .layeredAuto
             ? (settings.routePolicy?.detectedUpstreamCidrs ?? [])
@@ -452,6 +511,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let subnetMask = mask(forIPv4Prefix: prefix)
         else { return nil }
         return NEIPv4Route(destinationAddress: String(parts[0]), subnetMask: subnetMask)
+    }
+
+    private func route(forIPv6CIDR cidr: String) -> NEIPv6Route? {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = Int(parts[1]),
+              (0...128).contains(prefix)
+        else { return nil }
+        return NEIPv6Route(
+            destinationAddress: String(parts[0]),
+            networkPrefixLength: NSNumber(value: prefix)
+        )
     }
 
     private func mask(forIPv4Prefix prefix: UInt8) -> String? {

@@ -7,6 +7,7 @@ final class RoutePolicySnapshotTests: XCTestCase {
             mode: .layeredAuto,
             detectedUpstreamCidrs: ["10.0.0.0/8", "203.0.113.10/32"],
             manualDirectCidrs: ["8.8.8.0/24", "10.0.0.0/8"],
+            manualDirectIpv6Cidrs: ["2a02:6b8::/45", "2a02:6b8::/45"],
             serverDirectCidrs: ["198.51.100.20/32"],
             upstreamDnsServers: ["10.0.0.114"],
             upstreamDnsDomains: ["corp.example"],
@@ -22,6 +23,7 @@ final class RoutePolicySnapshotTests: XCTestCase {
             "8.8.8.0/24",
             "198.51.100.20/32",
         ])
+        XCTAssertEqual(snapshot.directIpv6CidrsForRouteComputation, ["2a02:6b8::/45"])
     }
 
     func testRoutingModeBackcompatWithSplitRouting() {
@@ -44,6 +46,35 @@ final class RoutePolicySnapshotTests: XCTestCase {
         XCTAssertEqual(result.invalid, ["bad", "2001:db8::/32"])
     }
 
+    func testIPv6CidrValidationSeparatesValidAndInvalidEntries() {
+        let result = RoutePolicySnapshot.normalizedIPv6Cidrs(from: """
+        2a02:6b8::/45
+        2A02:6B8::/45
+        2001:db8::1/128
+        10.0.0.0/8
+        bad
+        """ )
+
+        XCTAssertEqual(result.valid, ["2a02:6b8::/45", "2001:db8::1/128"])
+        XCTAssertEqual(result.invalid, ["10.0.0.0/8", "bad"])
+    }
+
+    func testRouteHashIncludesIPv6DirectCidrs() {
+        let ipv4Only = RoutePolicySnapshot(
+            mode: .publicSplit,
+            manualDirectCidrs: ["77.88.0.0/18"],
+            generatedAtUnixMs: 42
+        )
+        let withIPv6 = RoutePolicySnapshot(
+            mode: .publicSplit,
+            manualDirectCidrs: ["77.88.0.0/18"],
+            manualDirectIpv6Cidrs: ["2a02:6b8::/45"],
+            generatedAtUnixMs: 42
+        )
+
+        XCTAssertNotEqual(ipv4Only.routeHash, withIPv6.routeHash)
+    }
+
     func testRoutePolicyDecodeDefaultsPreserveScopedDnsForOlderPayloads() throws {
         let data = """
         {
@@ -58,5 +89,6 @@ final class RoutePolicySnapshotTests: XCTestCase {
 
         XCTAssertTrue(snapshot.preserveScopedDns)
         XCTAssertEqual(snapshot.manualDirectCidrs, ["8.8.8.0/24"])
+        XCTAssertEqual(snapshot.manualDirectIpv6Cidrs, [])
     }
 }

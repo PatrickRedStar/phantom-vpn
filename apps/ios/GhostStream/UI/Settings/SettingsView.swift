@@ -179,11 +179,15 @@ public struct SettingsView: View {
                     Task { await model.downloadCountryRules(Array(directCountrySelections).sorted()) }
                 },
                 onSave: {
-                    model.setSplitRouting(splitOn)
-                    model.setDirectCountries(Array(directCountrySelections).sorted())
-                    model.setManualDirectCidrsText(manualDirectCidrsText)
-                    model.setCustomDirectDomainsText(customDirectDomainsText)
-                    showSplitDialog = false
+                    Task {
+                        await model.saveRoutingSettings(
+                            splitOn: splitOn,
+                            selectedCountries: Array(directCountrySelections).sorted(),
+                            manualCidrsText: manualDirectCidrsText,
+                            directDomainsText: customDirectDomainsText
+                        )
+                        showSplitDialog = false
+                    }
                 },
                 onDismiss: {
                     hydrateRouteDrafts()
@@ -633,6 +637,7 @@ public struct SettingsView: View {
             "split_routing=\(model.splitRouting)",
             "direct_countries=\(directCountrySelections.sorted().joined(separator: ","))",
             "manual_direct_cidrs=\(normalizedManualCidrs.joined(separator: ","))",
+            "manual_direct_ipv6_cidrs=\(normalizedManualIpv6Cidrs.joined(separator: ","))",
             "custom_direct_domains=\(normalizedCustomDomains.joined(separator: ","))",
             "language=\(model.languageOverride ?? "system")",
             "last_logs=unavailable from Settings on iOS"
@@ -641,6 +646,10 @@ public struct SettingsView: View {
 
     private var normalizedManualCidrs: [String] {
         RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).valid
+    }
+
+    private var normalizedManualIpv6Cidrs: [String] {
+        RoutePolicySnapshot.normalizedIPv6Cidrs(from: manualDirectCidrsText).valid
     }
 
     private var normalizedCustomDomains: [String] {
@@ -654,14 +663,14 @@ public struct SettingsView: View {
         return String(
             format: L("settings.route.rules.summary"),
             directCountrySelections.count,
-            normalizedManualCidrs.count,
+            normalizedManualCidrs.count + normalizedManualIpv6Cidrs.count,
             normalizedCustomDomains.count
         )
     }
 
     private var routeRulesValue: String {
         guard splitOn else { return L("settings.value.off") }
-        return "\(directCountrySelections.count + normalizedManualCidrs.count + normalizedCustomDomains.count)"
+        return "\(directCountrySelections.count + normalizedManualCidrs.count + normalizedManualIpv6Cidrs.count + normalizedCustomDomains.count)"
     }
 }
 
@@ -904,6 +913,7 @@ private struct SplitTunnelDialog: View {
                     .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
                 let invalid = RoutePolicySnapshot.normalizedCidrs(from: manualCidrsText).invalid
+                    .filter { !RoutePolicySnapshot.isValidIPv6Cidr($0) }
                 if !invalid.isEmpty {
                     Text(String(format: L("settings.split.invalid.cidrs"), invalid.joined(separator: ", ")))
                         .font(.footnote)

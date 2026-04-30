@@ -120,7 +120,7 @@
 "settings.split.geosite.not.downloaded" = "Geosite list is not downloaded yet";
 "settings.split.rule.info" = "%d rules · %d KB";
 "settings.split.custom.cidrs" = "Custom IP/CIDR";
-"settings.split.custom.cidrs.hint" = "One IPv4 CIDR per line. These networks go directly, outside GhostStream.";
+"settings.split.custom.cidrs.hint" = "One IPv4 or IPv6 CIDR per line. These networks go directly, outside GhostStream.";
 "settings.split.invalid.cidrs" = "Ignored invalid CIDR: %@";
 "settings.split.custom.domains" = "Custom DNS names";
 "settings.split.custom.domains.hint" = "Hostnames are resolved before connect and applied as direct /32 routes. CDN IPs can change.";

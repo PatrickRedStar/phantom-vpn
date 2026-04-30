@@ -41,6 +41,22 @@ public struct RoutingRuleInfo: Equatable, Sendable {
     }
 }
 
+public struct RoutingRuleSet: Equatable, Sendable {
+    public var ipv4Cidrs: [String]
+    public var ipv6Cidrs: [String]
+    public var missingCountryCodes: [String]
+
+    public init(
+        ipv4Cidrs: [String] = [],
+        ipv6Cidrs: [String] = [],
+        missingCountryCodes: [String] = []
+    ) {
+        self.ipv4Cidrs = ipv4Cidrs
+        self.ipv6Cidrs = ipv6Cidrs
+        self.missingCountryCodes = missingCountryCodes
+    }
+}
+
 public enum RoutingRulesError: LocalizedError {
     case badURL
     case badStatus(Int)
@@ -85,6 +101,7 @@ public final class RoutingRulesManager {
     private static let geoipBaseURL = "https://raw.githubusercontent.com/v2fly/geoip/release/text"
     private static let geositeBaseURL = "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data"
     private static let maxIPv4Prefix = 18
+    private static let geoipFormatMarker = "# ghoststream-format: geoip-v2-mixed"
 
     private let baseDirectory: URL
     private let fileManager: FileManager
@@ -162,7 +179,7 @@ public final class RoutingRulesManager {
         }
 
         let normalized = normalize(raw, source: preset.source)
-        guard !normalized.isEmpty else {
+        guard countRules(in: normalized, source: preset.source) > 0 else {
             throw RoutingRulesError.invalidPayload
         }
 
@@ -178,23 +195,50 @@ public final class RoutingRulesManager {
         try? fileManager.removeItem(at: fileURL(for: preset))
     }
 
-    public func mergedCountryCidrs(countryCodes: [String]) -> [String] {
-        var output: [String] = []
-        var seen = Set<String>()
+    public func ensureCountryRules(countryCodes: [String]) async throws {
+        for code in normalizedCountryCodes(countryCodes) {
+            let preset = RoutingRulePreset(source: .geoip, code: code, labelKey: "")
+            guard needsRuleRefresh(for: preset) else { continue }
+            _ = try await downloadRuleList(preset)
+        }
+    }
 
-        for code in countryCodes {
+    public func mergedCountryCidrs(countryCodes: [String]) -> [String] {
+        mergedCountryRules(countryCodes: countryCodes).ipv4Cidrs
+    }
+
+    public func mergedCountryRules(countryCodes: [String]) -> RoutingRuleSet {
+        var output: [String] = []
+        var output6: [String] = []
+        var missing: [String] = []
+        var seen = Set<String>()
+        var seen6 = Set<String>()
+
+        for code in normalizedCountryCodes(countryCodes) {
             let preset = RoutingRulePreset(source: .geoip, code: code, labelKey: "")
             let file = fileURL(for: preset)
-            guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-            for rawLine in text.split(whereSeparator: \.isNewline) {
-                guard let cidr = Self.normalizeIPv4Cidr(String(rawLine)) else { continue }
+            guard let text = try? String(contentsOf: file, encoding: .utf8) else {
+                missing.append(code)
+                continue
+            }
+            let rules = Self.normalizeGeoipCidrs(from: text)
+            for cidr in rules.ipv4Cidrs {
                 if seen.insert(cidr).inserted {
                     output.append(cidr)
                 }
             }
+            for cidr in rules.ipv6Cidrs {
+                if seen6.insert(cidr).inserted {
+                    output6.append(cidr)
+                }
+            }
         }
 
-        return output
+        return RoutingRuleSet(
+            ipv4Cidrs: output,
+            ipv6Cidrs: output6,
+            missingCountryCodes: missing
+        )
     }
 
     public static func normalizeIPv4Cidrs(from text: String) -> [String] {
@@ -209,7 +253,18 @@ public final class RoutingRulesManager {
         return output
     }
 
-    private func fileURL(for preset: RoutingRulePreset) -> URL {
+    public static func normalizeIPv6Cidrs(from text: String) -> [String] {
+        RoutePolicySnapshot.normalizedIPv6Cidrs(from: text).valid
+    }
+
+    public static func normalizeGeoipCidrs(from text: String) -> (ipv4Cidrs: [String], ipv6Cidrs: [String]) {
+        (
+            ipv4Cidrs: normalizeIPv4Cidrs(from: text),
+            ipv6Cidrs: normalizeIPv6Cidrs(from: text)
+        )
+    }
+
+    func fileURL(for preset: RoutingRulePreset) -> URL {
         let folder = baseDirectory.appendingPathComponent(preset.source.rawValue, isDirectory: true)
         let ext = preset.source == .geoip ? "txt" : "list"
         return folder.appendingPathComponent("\(preset.code).\(ext)")
@@ -229,7 +284,9 @@ public final class RoutingRulesManager {
     private func normalize(_ text: String, source: RoutingRuleSource) -> String {
         switch source {
         case .geoip:
-            return Self.normalizeIPv4Cidrs(from: text).joined(separator: "\n")
+            let rules = Self.normalizeGeoipCidrs(from: text)
+            return ([Self.geoipFormatMarker] + rules.ipv4Cidrs + rules.ipv6Cidrs)
+                .joined(separator: "\n")
         case .geosite:
             return text
                 .split(whereSeparator: \.isNewline)
@@ -243,13 +300,32 @@ public final class RoutingRulesManager {
     private func countRules(in text: String, source: RoutingRuleSource) -> Int {
         switch source {
         case .geoip:
-            return Self.normalizeIPv4Cidrs(from: text).count
+            let rules = Self.normalizeGeoipCidrs(from: text)
+            return rules.ipv4Cidrs.count + rules.ipv6Cidrs.count
         case .geosite:
             return text.split(whereSeparator: \.isNewline).filter { raw in
                 let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 return !line.isEmpty && !line.hasPrefix("#")
             }.count
         }
+    }
+
+    private func needsRuleRefresh(for preset: RoutingRulePreset) -> Bool {
+        let file = fileURL(for: preset)
+        guard fileManager.fileExists(atPath: file.path) else { return true }
+        guard preset.source == .geoip else { return false }
+        let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        return !text.contains(Self.geoipFormatMarker)
+    }
+
+    private func normalizedCountryCodes(_ countryCodes: [String]) -> [String] {
+        var output: [String] = []
+        var seen = Set<String>()
+        for code in countryCodes.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }) {
+            guard !code.isEmpty, seen.insert(code).inserted else { continue }
+            output.append(code)
+        }
+        return output
     }
 
     private static func normalizeIPv4Cidr(_ raw: String) -> String? {

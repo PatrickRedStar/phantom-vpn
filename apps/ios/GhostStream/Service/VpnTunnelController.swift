@@ -11,16 +11,21 @@ import os.log
 /// Errors raised by `VpnTunnelController`.
 public enum VpnTunnelError: LocalizedError {
     case noManager
+    case noActiveSession
     case saveFailed(String)
     case startFailed(String)
     case encoding
+    case routePolicyUpdateFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .noManager:            return "VPN configuration not loaded"
+        case .noActiveSession:      return "VPN tunnel session is not active"
         case .saveFailed(let msg):  return "Failed to save VPN configuration: \(msg)"
         case .startFailed(let msg): return "Failed to start VPN tunnel: \(msg)"
         case .encoding:             return "Failed to encode provider configuration"
+        case .routePolicyUpdateFailed(let msg):
+            return "Failed to update VPN route policy: \(msg)"
         }
     }
 }
@@ -50,6 +55,11 @@ public final class VpnTunnelController: ObservableObject {
             case dnsServers = "dns_servers"
             case settings
         }
+    }
+
+    private struct DirectRouteRules: Sendable {
+        let ipv4Cidrs: [String]
+        let ipv6Cidrs: [String]
     }
 
     /// Loads the existing `NETunnelProviderManager` from system
@@ -89,7 +99,7 @@ public final class VpnTunnelController: ObservableObject {
         )
         providerProfile.dnsServers = preferences.dnsServers ?? profile.dnsServers
         providerProfile.splitRouting = effectiveRoutingMode.legacySplitRoutingValue
-        let expandedDirectCidrs = await directCidrsForTunnelStart(
+        let routeRules = try await directRulesForTunnelStart(
             preferences: preferences,
             routingMode: effectiveRoutingMode
         )
@@ -99,11 +109,13 @@ public final class VpnTunnelController: ObservableObject {
             ipv6Killswitch: preferences.ipv6Killswitch,
             autoReconnect: preferences.autoReconnect,
             routingMode: effectiveRoutingMode,
-            manualDirectCidrs: expandedDirectCidrs,
+            manualDirectCidrs: routeRules.ipv4Cidrs,
+            manualDirectIpv6Cidrs: routeRules.ipv6Cidrs,
             preserveScopedDns: preferences.preserveScopedDns,
             routePolicy: RoutePolicySnapshot(
                 mode: effectiveRoutingMode,
-                manualDirectCidrs: expandedDirectCidrs,
+                manualDirectCidrs: routeRules.ipv4Cidrs,
+                manualDirectIpv6Cidrs: routeRules.ipv6Cidrs,
                 preserveScopedDns: preferences.preserveScopedDns
             ),
             streams: preferences.streams
@@ -163,34 +175,150 @@ public final class VpnTunnelController: ObservableObject {
         }
     }
 
-    private func directCidrsForTunnelStart(
-        preferences: PreferencesStore,
-        routingMode: RoutingMode
-    ) async -> [String] {
-        guard routingMode != .global else {
-            return preferences.manualDirectCidrs
+    public func applyRoutePolicy(profile: VpnProfile, preferences: PreferencesStore) async throws {
+        lastError = nil
+        if manager == nil { try await loadFromPreferences() }
+        guard let manager else { throw VpnTunnelError.noManager }
+
+        var providerProfile = profile
+        let effectiveRoutingMode = preferences.effectiveRoutingMode(
+            profileSplitRouting: profile.splitRouting
+        )
+        providerProfile.dnsServers = preferences.dnsServers ?? profile.dnsServers
+        providerProfile.splitRouting = effectiveRoutingMode.legacySplitRoutingValue
+
+        let routeRules = try await directRulesForTunnelStart(
+            preferences: preferences,
+            routingMode: effectiveRoutingMode
+        )
+        let snapshot = RoutePolicySnapshot(
+            mode: effectiveRoutingMode,
+            manualDirectCidrs: routeRules.ipv4Cidrs,
+            manualDirectIpv6Cidrs: routeRules.ipv6Cidrs,
+            preserveScopedDns: preferences.preserveScopedDns
+        )
+        let settings = TunnelSettings(
+            dnsLeakProtection: preferences.dnsLeakProtection,
+            ipv6Killswitch: preferences.ipv6Killswitch,
+            autoReconnect: preferences.autoReconnect,
+            routingMode: effectiveRoutingMode,
+            manualDirectCidrs: routeRules.ipv4Cidrs,
+            manualDirectIpv6Cidrs: routeRules.ipv6Cidrs,
+            preserveScopedDns: preferences.preserveScopedDns,
+            routePolicy: snapshot,
+            streams: preferences.streams
+        )
+
+        guard let settingsData = try? JSONEncoder().encode(settings) else {
+            lastError = VpnTunnelError.encoding.localizedDescription
+            throw VpnTunnelError.encoding
+        }
+        let lastParams = LastTunnelParams(
+            profileId: profile.id,
+            dnsServers: providerProfile.dnsServers,
+            settings: settings
+        )
+        if let data = try? JSONEncoder().encode(lastParams),
+           let json = String(data: data, encoding: .utf8) {
+            preferences.saveLastTunnelParams(json)
         }
 
-        var cidrs = preferences.manualDirectCidrs
-        cidrs.append(contentsOf: RoutingRulesManager.shared.mergedCountryCidrs(
-            countryCodes: preferences.directCountries
-        ))
-        cidrs.append(contentsOf: await Self.resolveDomainCidrs(preferences.customDirectDomains))
+        let status = manager.connection.status
+        if status == .connected || status == .connecting || status == .reasserting {
+            guard let session = manager.connection as? NETunnelProviderSession else {
+                throw VpnTunnelError.noActiveSession
+            }
+            let response = try await TunnelIpcBridge(session: session).send(.updateRoutePolicy(snapshot))
+            switch response {
+            case .ok:
+                break
+            case .error(let message):
+                throw VpnTunnelError.routePolicyUpdateFailed(message)
+            default:
+                throw VpnTunnelError.routePolicyUpdateFailed("Unexpected provider response")
+            }
+        }
 
-        return RoutePolicySnapshot.normalizedCidrs(from: cidrs.joined(separator: "\n")).valid
+        if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol {
+            var providerConfiguration = proto.providerConfiguration ?? [:]
+            providerConfiguration["profileId"] = profile.id
+            providerConfiguration["settings"] = settingsData
+            if let dnsServers = providerProfile.dnsServers, !dnsServers.isEmpty {
+                providerConfiguration["dnsServers"] = dnsServers
+            } else {
+                providerConfiguration.removeValue(forKey: "dnsServers")
+            }
+            proto.providerConfiguration = providerConfiguration
+            proto.serverAddress = providerProfile.serverAddr
+            proto.providerBundleIdentifier = providerBundleId
+            manager.protocolConfiguration = proto
+            manager.localizedDescription = profile.name
+            manager.isEnabled = true
+
+            do {
+                try await manager.saveToPreferences()
+                try await manager.loadFromPreferences()
+            } catch {
+                log.error("route policy saveToPreferences failed: \(error.localizedDescription, privacy: .public)")
+                lastError = VpnTunnelError.saveFailed(error.localizedDescription).localizedDescription
+                throw VpnTunnelError.saveFailed(error.localizedDescription)
+            }
+        }
     }
 
-    private static func resolveDomainCidrs(_ domains: [String]) async -> [String] {
-        guard !domains.isEmpty else { return [] }
+    private func directRulesForTunnelStart(
+        preferences: PreferencesStore,
+        routingMode: RoutingMode
+    ) async throws -> DirectRouteRules {
+        var ipv4Cidrs = preferences.manualDirectCidrs
+        var ipv6Cidrs = preferences.manualDirectIpv6Cidrs
+
+        guard routingMode != .global else {
+            return DirectRouteRules(
+                ipv4Cidrs: RoutePolicySnapshot.normalizedCidrs(
+                    from: ipv4Cidrs.joined(separator: "\n")
+                ).valid,
+                ipv6Cidrs: RoutePolicySnapshot.normalizedIPv6Cidrs(
+                    from: ipv6Cidrs.joined(separator: "\n")
+                ).valid
+            )
+        }
+
+        try await RoutingRulesManager.shared.ensureCountryRules(countryCodes: preferences.directCountries)
+        let countryRules = RoutingRulesManager.shared.mergedCountryRules(
+            countryCodes: preferences.directCountries
+        )
+        ipv4Cidrs.append(contentsOf: countryRules.ipv4Cidrs)
+        ipv6Cidrs.append(contentsOf: countryRules.ipv6Cidrs)
+
+        let domainRules = await Self.resolveDomainRules(preferences.customDirectDomains)
+        ipv4Cidrs.append(contentsOf: domainRules.ipv4Cidrs)
+        ipv6Cidrs.append(contentsOf: domainRules.ipv6Cidrs)
+
+        return DirectRouteRules(
+            ipv4Cidrs: RoutePolicySnapshot.normalizedCidrs(
+                from: ipv4Cidrs.joined(separator: "\n")
+            ).valid,
+            ipv6Cidrs: RoutePolicySnapshot.normalizedIPv6Cidrs(
+                from: ipv6Cidrs.joined(separator: "\n")
+            ).valid
+        )
+    }
+
+    private static func resolveDomainRules(_ domains: [String]) async -> DirectRouteRules {
+        guard !domains.isEmpty else {
+            return DirectRouteRules(ipv4Cidrs: [], ipv6Cidrs: [])
+        }
 
         return await Task.detached(priority: .utility) {
-            var cidrs: [String] = []
+            var ipv4Cidrs: [String] = []
+            var ipv6Cidrs: [String] = []
             var seen = Set<String>()
 
             for domain in domains.prefix(50) {
                 var hints = addrinfo(
                     ai_flags: AI_ADDRCONFIG,
-                    ai_family: AF_INET,
+                    ai_family: AF_UNSPEC,
                     ai_socktype: SOCK_STREAM,
                     ai_protocol: IPPROTO_TCP,
                     ai_addrlen: 0,
@@ -224,14 +352,18 @@ public final class VpnTunnelController: ObservableObject {
                     guard status == 0 else { continue }
 
                     let ip = String(cString: host)
-                    let cidr = "\(ip)/32"
+                    let cidr = ip.contains(":") ? "\(ip)/128" : "\(ip)/32"
                     if seen.insert(cidr).inserted {
-                        cidrs.append(cidr)
+                        if ip.contains(":") {
+                            ipv6Cidrs.append(cidr)
+                        } else {
+                            ipv4Cidrs.append(cidr)
+                        }
                     }
                 }
             }
 
-            return cidrs
+            return DirectRouteRules(ipv4Cidrs: ipv4Cidrs, ipv6Cidrs: ipv6Cidrs)
         }.value
     }
 

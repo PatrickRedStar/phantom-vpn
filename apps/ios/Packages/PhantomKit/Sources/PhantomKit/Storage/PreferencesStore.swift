@@ -209,8 +209,13 @@ public final class PreferencesStore {
         RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).valid
     }
 
+    public var manualDirectIpv6Cidrs: [String] {
+        RoutePolicySnapshot.normalizedIPv6Cidrs(from: manualDirectCidrsText).valid
+    }
+
     public var invalidManualDirectCidrs: [String] {
         RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).invalid
+            .filter { !RoutePolicySnapshot.isValidIPv6Cidr($0) }
     }
 
     public var directCountries: [String] {
