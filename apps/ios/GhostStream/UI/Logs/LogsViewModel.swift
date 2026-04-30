@@ -62,6 +62,9 @@ final class LogsViewModel {
     /// Active filter chip.
     var filter: LogFilter = .info
 
+    /// Native search field text. Applied client-side by `LogsPresentation`.
+    var searchText: String = ""
+
     /// `true` while the view wants live polling.
     private(set) var polling = false
 
@@ -84,9 +87,11 @@ final class LogsViewModel {
     /// `allLogs` reduced to entries at or above the current filter's
     /// priority. Hierarchical: INFO includes WARN + ERROR.
     var visibleLogs: [LogFrame] {
-        let min = filter.priority
-        if min < 0 { return allLogs }
-        return allLogs.filter { LogFilter.priority(of: $0.level) >= min }
+        LogsPresentation.visibleLogs(
+            allLogs: allLogs,
+            filter: filter,
+            searchText: searchText
+        )
     }
 
     var hasIpcError: Bool { lastIpcError != nil }

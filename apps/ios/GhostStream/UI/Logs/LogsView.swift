@@ -16,6 +16,7 @@ struct LogsView: View {
     @Environment(\.gsColors) private var C
     @State private var vm = LogsViewModel()
     @State private var shareItem: ShareItem?
+    @State private var showClearConfirmation = false
     @State private var userPinnedScroll = false
 
     var body: some View {
@@ -42,6 +43,23 @@ struct LogsView: View {
                 .frame(height: 60)
                 .allowsHitTesting(false)
             }
+        }
+        .searchable(
+            text: $vm.searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: L("native.logs.search")
+        )
+        .confirmationDialog(
+            L("native.logs.clear.confirm.title"),
+            isPresented: $showClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L("chip_clear"), role: .destructive) {
+                vm.clear()
+            }
+            Button(L("general.cancel"), role: .cancel) {}
+        } message: {
+            Text(L("native.logs.clear.confirm.message"))
         }
         .onAppear { vm.startPolling() }
         .onDisappear { vm.stopPolling() }
@@ -127,7 +145,7 @@ struct LogsView: View {
                     chip(filter: f)
                 }
                 GhostChip(L("chip_clear"), active: false, accent: C.danger) {
-                    vm.clear()
+                    showClearConfirmation = true
                 }
 
                 GhostChip(L("chip_share"), active: false, accent: C.signal) {
@@ -156,7 +174,7 @@ struct LogsView: View {
                     Color.clear
                         .frame(height: 1)
                         .id("__head__")
-                    ForEach(Array(vm.visibleLogs.reversed())) { entry in
+                    ForEach(vm.visibleLogs) { entry in
                         LogFrameRow(entry: entry)
                             .id(entry.tsUnixMs)
                     }
