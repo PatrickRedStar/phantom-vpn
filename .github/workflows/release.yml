@@ -284,6 +284,7 @@ jobs:
 
       - name: Install provisioning profiles
         env:
+          GHOSTSTREAM_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID || 'UPG896A272' }}
           MACOS_APP_PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_APP_PROVISIONING_PROFILE_BASE64 }}
           MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64 }}
         run: |
@@ -292,6 +293,8 @@ jobs:
           install_profile() {
             local data="$1"
             local name="$2"
+            local bundle_id="$3"
+            local env_name="$4"
             [[ -n "$data" ]] || return 0
             local raw="$RUNNER_TEMP/$name.provisionprofile"
             local plist="$RUNNER_TEMP/$name.plist"
@@ -303,13 +306,22 @@ jobs:
           PY
             security cms -D -i "$raw" > "$plist"
             local uuid
+            local profile_name
+            local app_identifier
             uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$plist")"
+            profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$plist")"
+            app_identifier="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$plist")"
+            if [[ "$app_identifier" != "$GHOSTSTREAM_DEVELOPMENT_TEAM.$bundle_id" ]]; then
+              echo "Provisioning profile $name has App ID '$app_identifier', expected '$GHOSTSTREAM_DEVELOPMENT_TEAM.$bundle_id'." >&2
+              exit 1
+            fi
             cp "$raw" "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.provisionprofile"
-            echo "Installed provisioning profile $name ($uuid)"
+            echo "$env_name=$profile_name" >> "$GITHUB_ENV"
+            echo "Installed provisioning profile $name: $profile_name ($uuid)"
           }
 
-          install_profile "$MACOS_APP_PROVISIONING_PROFILE_BASE64" app
-          install_profile "$MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64" tunnel
+          install_profile "$MACOS_APP_PROVISIONING_PROFILE_BASE64" app com.ghoststream.vpn GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER
+          install_profile "$MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64" tunnel com.ghoststream.vpn.tunnel GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER
 
       - name: Prepare App Store Connect API key
         env:
@@ -342,6 +354,7 @@ jobs:
       - name: Archive and export Developer ID app
         env:
           GHOSTSTREAM_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID || 'UPG896A272' }}
+          GHOSTSTREAM_EXPORT_SIGNING_STYLE: manual
         run: cd apps/macos && ./scripts/build-release.sh
 
       - name: Notarize exported app

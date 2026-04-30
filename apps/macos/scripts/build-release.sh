@@ -16,21 +16,33 @@ EXPORTED_APP="$EXPORT_PATH/GhostStream.app"
 ASC_KEY_PATH="${GHOSTSTREAM_ASC_KEY_PATH:-}"
 ASC_KEY_ID="${GHOSTSTREAM_ASC_KEY_ID:-}"
 ASC_ISSUER_ID="${GHOSTSTREAM_ASC_ISSUER_ID:-}"
+EXPORT_SIGNING_STYLE="${GHOSTSTREAM_EXPORT_SIGNING_STYLE:-manual}"
+EXPORT_SIGNING_CERTIFICATE="${GHOSTSTREAM_EXPORT_SIGNING_CERTIFICATE:-Developer ID Application}"
+APP_PROFILE_SPECIFIER="${GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER:-}"
+TUNNEL_PROFILE_SPECIFIER="${GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER:-}"
 
-declare -a provisioning_args
+declare -a archive_provisioning_args
 if [[ -n "$ASC_KEY_PATH$ASC_KEY_ID$ASC_ISSUER_ID" ]]; then
   if [[ -z "$ASC_KEY_PATH" || -z "$ASC_KEY_ID" || -z "$ASC_ISSUER_ID" ]]; then
     echo "GHOSTSTREAM_ASC_KEY_PATH, GHOSTSTREAM_ASC_KEY_ID and GHOSTSTREAM_ASC_ISSUER_ID must be set together." >&2
     exit 1
   fi
-  provisioning_args=(
+  archive_provisioning_args=(
     -allowProvisioningUpdates
     -authenticationKeyPath "$ASC_KEY_PATH"
     -authenticationKeyID "$ASC_KEY_ID"
     -authenticationKeyIssuerID "$ASC_ISSUER_ID"
   )
 elif [[ "${GHOSTSTREAM_ALLOW_PROVISIONING:-0}" == "1" ]]; then
-  provisioning_args=(-allowProvisioningUpdates)
+  archive_provisioning_args=(-allowProvisioningUpdates)
+fi
+
+declare -a export_provisioning_args=()
+if [[ "$EXPORT_SIGNING_STYLE" != "manual" ]]; then
+  export_provisioning_args=("${archive_provisioning_args[@]}")
+elif [[ -z "$APP_PROFILE_SPECIFIER" || -z "$TUNNEL_PROFILE_SPECIFIER" ]]; then
+  echo "Manual Developer ID export requires GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER and GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER." >&2
+  exit 1
 fi
 
 mkdir -p "$RELEASE_DIR"
@@ -51,7 +63,7 @@ xcodebuild -project GhostStream.xcodeproj \
            -destination "$DESTINATION" \
            -derivedDataPath "$DERIVED_DATA_PATH" \
            -archivePath "$ARCHIVE_PATH" \
-           "${provisioning_args[@]}" \
+           "${archive_provisioning_args[@]}" \
            archive \
            DEVELOPMENT_TEAM="$TEAM_ID" \
            CODE_SIGN_STYLE="$CODE_SIGN_STYLE" \
@@ -59,32 +71,33 @@ xcodebuild -project GhostStream.xcodeproj \
            CODE_SIGNING_REQUIRED=YES \
            ONLY_ACTIVE_ARCH=NO
 
-cat > "$EXPORT_OPTIONS_PLIST" <<PLIST
+cat > "$EXPORT_OPTIONS_PLIST" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict>
-  <key>method</key>
-  <string>developer-id</string>
-  <key>destination</key>
-  <string>export</string>
-  <key>signingStyle</key>
-  <string>${GHOSTSTREAM_EXPORT_SIGNING_STYLE:-automatic}</string>
-  <key>teamID</key>
-  <string>$TEAM_ID</string>
-  <key>stripSwiftSymbols</key>
-  <true/>
-  <key>manageAppVersionAndBuildNumber</key>
-  <false/>
-</dict>
+<dict/>
 </plist>
 PLIST
+
+/usr/libexec/PlistBuddy -c "Add :method string developer-id" "$EXPORT_OPTIONS_PLIST"
+/usr/libexec/PlistBuddy -c "Add :destination string export" "$EXPORT_OPTIONS_PLIST"
+/usr/libexec/PlistBuddy -c "Add :signingStyle string $EXPORT_SIGNING_STYLE" "$EXPORT_OPTIONS_PLIST"
+/usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_OPTIONS_PLIST"
+/usr/libexec/PlistBuddy -c "Add :stripSwiftSymbols bool true" "$EXPORT_OPTIONS_PLIST"
+/usr/libexec/PlistBuddy -c "Add :manageAppVersionAndBuildNumber bool false" "$EXPORT_OPTIONS_PLIST"
+
+if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :signingCertificate string $EXPORT_SIGNING_CERTIFICATE" "$EXPORT_OPTIONS_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.ghoststream.vpn string $APP_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.ghoststream.vpn.tunnel string $TUNNEL_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+fi
 
 xcodebuild -exportArchive \
            -archivePath "$ARCHIVE_PATH" \
            -exportPath "$EXPORT_PATH" \
            -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
-           "${provisioning_args[@]}"
+           "${export_provisioning_args[@]}"
 
 if [[ ! -d "$EXPORTED_APP" ]]; then
   echo "Exported app not found: $EXPORTED_APP" >&2
