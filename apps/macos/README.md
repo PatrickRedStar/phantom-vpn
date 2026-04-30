@@ -87,12 +87,12 @@ GitHub Actions делает то же самое в `.github/workflows/release.y
 - `MACOS_CERTIFICATE_PASSWORD` — пароль от `.p12`.
 - `APPLE_TEAM_ID` — Team ID, по умолчанию используется `UPG896A272`.
 - `APP_STORE_CONNECT_API_KEY_BASE64`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID` — API key для automatic provisioning и notarization.
-
-Если App Store Connect API key не используется, вместо automatic provisioning
-нужно добавить оба profile секрета:
-
 - `MACOS_APP_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.vpn`.
 - `MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.vpn.tunnel`.
+
+Если App Store Connect API key не используется, notarization можно выполнить
+через Apple ID:
+
 - `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` — fallback auth для notarization.
 
 Base64 для GitHub Secret на macOS:

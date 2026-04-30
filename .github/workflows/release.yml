@@ -249,10 +249,8 @@ jobs:
             missing+=("APP_STORE_CONNECT_API_KEY_BASE64/APP_STORE_CONNECT_KEY_ID/APP_STORE_CONNECT_ISSUER_ID or APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD")
           fi
 
-          if [[ "$has_api_key" == "0" ]]; then
-            [[ -n "$MACOS_APP_PROVISIONING_PROFILE_BASE64" ]] || missing+=("MACOS_APP_PROVISIONING_PROFILE_BASE64")
-            [[ -n "$MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64" ]] || missing+=("MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64")
-          fi
+          [[ -n "$MACOS_APP_PROVISIONING_PROFILE_BASE64" ]] || missing+=("MACOS_APP_PROVISIONING_PROFILE_BASE64")
+          [[ -n "$MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64" ]] || missing+=("MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64")
 
           if [[ ${#missing[@]} -gt 0 ]]; then
             printf 'Missing macOS release secret: %s\n' "${missing[@]}" >&2
