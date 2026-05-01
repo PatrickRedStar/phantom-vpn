@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>GhostStream Privacy Policy</title>
+  <style>
+    :root {
+      --bg: #0e0f0d;
+      --panel: #171814;
+      --text: #f3f0e7;
+      --muted: #b8b19f;
+      --line: #34352c;
+      --signal: #b6ff34;
+      --warn: #ffb85c;
+      --link: #d5ff72;
+      --shadow: rgba(0, 0, 0, 0.34);
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f4ec;
+        --panel: #fffdf6;
+        --text: #171814;
+        --muted: #5e5a4f;
+        --line: #d9d4c5;
+        --signal: #557d00;
+        --warn: #8a4b00;
+        --link: #446900;
+        --shadow: rgba(32, 28, 18, 0.12);
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, rgba(182, 255, 52, 0.07), transparent 260px),
+        var(--bg);
+      color: var(--text);
+      font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      width: min(920px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0 72px;
+    }
+
+    header {
+      padding: 28px;
+      border: 1px solid var(--line);
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      box-shadow: 0 22px 80px var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--signal);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 7vw, 64px);
+      line-height: 0.95;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      max-width: 720px;
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .updated {
+      display: inline-flex;
+      margin-top: 22px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    section {
+      margin-top: 18px;
+      padding: 24px 28px;
+      border: 1px solid var(--line);
+      background: color-mix(in srgb, var(--panel) 78%, transparent);
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      color: var(--signal);
+      font-size: 15px;
+      line-height: 1.25;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    p:last-child,
+    ul:last-child {
+      margin-bottom: 0;
+    }
+
+    ul {
+      margin: 10px 0 16px;
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 6px;
+    }
+
+    strong {
+      color: var(--text);
+    }
+
+    a {
+      color: var(--link);
+      text-underline-offset: 3px;
+    }
+
+    .note {
+      border-color: color-mix(in srgb, var(--warn) 52%, var(--line));
+    }
+
+    .note h2 {
+      color: var(--warn);
+    }
+
+    footer {
+      padding: 22px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">Privacy Policy</p>
+      <h1>GhostStream</h1>
+      <p class="summary">
+        GhostStream is a client-only proxy profile and routing utility. It does not
+        provide, sell, rent, or operate VPN services, proxy services, or network tunnel
+        servers. Users connect only with their own GhostStream-compatible server
+        profile, key, certificate, or connection string.
+      </p>
+      <p class="updated">Effective date: May 1, 2026</p>
+    </header>
+
+    <section>
+      <h2>Data We Collect</h2>
+      <p>
+        GhostStream does <strong>not</strong> collect, transmit, sell, rent, or share
+        personal data with the GhostStream developer.
+      </p>
+      <p>The app does not collect:</p>
+      <ul>
+        <li>names, email addresses, phone numbers, or account identifiers;</li>
+        <li>browsing history, DNS queries, destination hosts, or network activity logs;</li>
+        <li>advertising identifiers, tracking data, analytics, or marketing data;</li>
+        <li>precise location, coarse location, contacts, photos, or payment information;</li>
+        <li>network traffic contents or metadata for developer-operated processing.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Local Data Stored On Your Device</h2>
+      <p>GhostStream stores the following data locally so the app can work:</p>
+      <ul>
+        <li>connection profiles and app preferences in the app container or App Group storage;</li>
+        <li>client certificates and private keys in the iOS Keychain;</li>
+        <li>optional routing rules, including user-created rules and downloaded public GeoIP/Geosite presets;</li>
+        <li>local runtime status and diagnostic logs shown inside the app.</li>
+      </ul>
+      <p>
+        This local data is not sent to the GhostStream developer. Users can delete
+        profiles and clear local logs inside the app. Removing the app removes its app
+        container data according to iOS behavior; Keychain items are managed by iOS and
+        may be removed by deleting profiles before uninstalling the app.
+      </p>
+    </section>
+
+    <section class="note">
+      <h2>Network Connections</h2>
+      <p>
+        When you connect, GhostStream sends traffic only to the server configured in
+        your own profile. The operator of that server controls how that server handles
+        traffic and logs. GhostStream does not receive, proxy, inspect, or store that
+        traffic on developer-operated infrastructure.
+      </p>
+      <p>
+        If you use an admin-capable profile, the app may request subscription status,
+        client information, or server diagnostics from that same user-configured server.
+        Those requests are made directly between your device and your configured server.
+      </p>
+      <p>
+        If you choose to download routing presets, GhostStream may request public rule
+        files from GitHub-hosted V2Fly sources. GitHub may receive ordinary request
+        metadata such as IP address and user agent according to GitHub's own privacy
+        practices. GhostStream does not add personal profile data to those requests.
+      </p>
+    </section>
+
+    <section>
+      <h2>Permissions</h2>
+      <p>
+        GhostStream may request camera access only to scan QR codes containing
+        connection profiles. Images are not saved or transmitted by GhostStream.
+      </p>
+      <p>
+        GhostStream uses Apple's Network Extension capability to create a local packet
+        tunnel according to the profile and routing rules chosen by the user. This is
+        used only to provide the client utility functionality.
+      </p>
+    </section>
+
+    <section>
+      <h2>Third-Party Services</h2>
+      <p>
+        GhostStream does not include third-party analytics, advertising, tracking, or
+        crash-reporting SDKs.
+      </p>
+      <p>
+        The app may use platform services provided by Apple, such as TestFlight, App
+        Store distribution, iCloud device backups if enabled by the user, and iOS system
+        networking. Those services are governed by Apple's terms and privacy policy.
+      </p>
+    </section>
+
+    <section>
+      <h2>Debug Reports And Sharing</h2>
+      <p>
+        GhostStream can generate local diagnostic information to help troubleshoot a
+        connection. Debug reports are created on the device and are shared only if the
+        user explicitly chooses to export or share them through the iOS share sheet.
+        Users should review exported files before sending them to anyone.
+      </p>
+    </section>
+
+    <section>
+      <h2>Data Retention And Deletion</h2>
+      <p>
+        Because GhostStream does not collect user data on developer-operated systems,
+        there is no server-side user data for the GhostStream developer to delete.
+        Local profiles, keys, preferences, routing rules, and logs remain on the device
+        until the user deletes them in the app or removes the app, subject to iOS
+        Keychain and backup behavior.
+      </p>
+    </section>
+
+    <section>
+      <h2>Children's Privacy</h2>
+      <p>
+        GhostStream is not directed to children and does not knowingly collect personal
+        information from children.
+      </p>
+    </section>
+
+    <section>
+      <h2>Changes To This Policy</h2>
+      <p>
+        This policy may be updated when GhostStream changes how it handles data. The
+        latest version will be posted at the public Privacy Policy URL used in App Store
+        Connect.
+      </p>
+    </section>
+
+    <section>
+      <h2>Contact</h2>
+      <p>
+        Questions about this policy can be opened at
+        <a href="https://github.com/PatrickRedStar/phantom-vpn/issues">github.com/PatrickRedStar/phantom-vpn/issues</a>.
+      </p>
+    </section>
+
+    <footer>
+      This page is intended for App Store Connect privacy metadata and user review.
+    </footer>
+  </main>
+</body>
+</html>
