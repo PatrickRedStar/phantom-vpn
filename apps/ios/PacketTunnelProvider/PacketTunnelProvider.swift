@@ -20,6 +20,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var recentLogFrames: [LogFrame] = []
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
+    private var statusBroadcastGate = StatusBroadcastGate(minInterval: 1.0)
 
     // MARK: - Lifecycle
 
@@ -106,6 +107,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - Start implementation
 
     private func startTunnelAsync(completionHandler: @escaping (Error?) -> Void) async throws {
+        statusBroadcastGate.reset()
         writeStatePayload(VpnStatePayload(kind: .connecting))
 
         var profile = try loadProfile()
@@ -128,8 +130,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     guard let self else { return }
                     self.lastStatusFrame = frame
 
-                    // Write snapshot for the main app to read
-                    self.writeSnapshot(frame)
+                    if self.statusBroadcastGate.shouldBroadcast(
+                        frame,
+                        now: ProcessInfo.processInfo.systemUptime
+                    ) {
+                        self.writeSnapshot(frame)
+                    }
 
                     // Signal connected to NEPacketTunnelProvider on first .connected
                     if frame.state == .connected && !didCallCompletion {
@@ -638,11 +644,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func writeDisconnectedSnapshot() {
+        statusBroadcastGate.reset()
         lastStatusFrame = .disconnected
         writeSnapshot(.disconnected)
     }
 
     private func writeErrorSnapshot(_ message: String) {
+        statusBroadcastGate.reset()
         var frame = StatusFrame.disconnected
         frame.state = .error
         frame.lastError = message
