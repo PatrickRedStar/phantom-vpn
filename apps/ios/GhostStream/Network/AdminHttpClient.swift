@@ -15,6 +15,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import Foundation
+import NetworkExtension
 import PhantomKit
 import Security
 import CryptoKit
@@ -819,12 +820,42 @@ enum ProfileEntitlementRefresher {
     static func refreshActiveProfileIfConnected(
         profilesStore: ProfilesStore
     ) async -> VpnProfile? {
-        guard case .connected = VpnStateManager.shared.state,
-              let profile = profilesStore.activeProfile
-        else {
+        guard let profile = profilesStore.activeProfile else {
             return nil
         }
+
+        let appState = VpnStateManager.shared.state
+        if !shouldAttemptRefresh(appState: appState) {
+            let systemStatus = await VpnTunnelController().currentStatus()
+            guard shouldAttemptRefresh(appState: appState, systemStatus: systemStatus) else {
+                return nil
+            }
+        }
+
         return await refresh(profile: profile, profilesStore: profilesStore)
+    }
+
+    static func shouldAttemptRefresh(
+        appState: VpnState,
+        systemStatus: NEVPNStatus? = nil
+    ) -> Bool {
+        if case .disconnecting = appState {
+            return false
+        }
+        switch appState {
+        case .connected, .connecting:
+            return true
+        case .disconnected, .disconnecting, .error:
+            break
+        }
+        switch systemStatus {
+        case .connected, .connecting, .reasserting:
+            return true
+        case .invalid, .disconnected, .disconnecting, .none:
+            return false
+        @unknown default:
+            return false
+        }
     }
 
     static func refresh(

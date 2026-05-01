@@ -1,4 +1,5 @@
 import XCTest
+import NetworkExtension
 import Security
 import PhantomKit
 @testable import GhostStream
@@ -72,6 +73,34 @@ final class ProfilePresentationTests: XCTestCase {
         XCTAssertEqual(status.serverAddr, "vpn.example:443")
         XCTAssertEqual(status.serverIp, "203.0.113.7")
         XCTAssertEqual(status.exitIp, "203.0.113.7")
+    }
+
+    @MainActor
+    func testEntitlementRefreshCanUseSystemVpnStatusWhenAppStateIsStale() {
+        XCTAssertTrue(
+            ProfileEntitlementRefresher.shouldAttemptRefresh(
+                appState: .disconnected,
+                systemStatus: .connected
+            )
+        )
+        XCTAssertTrue(
+            ProfileEntitlementRefresher.shouldAttemptRefresh(
+                appState: .connecting,
+                systemStatus: nil
+            )
+        )
+        XCTAssertFalse(
+            ProfileEntitlementRefresher.shouldAttemptRefresh(
+                appState: .disconnecting,
+                systemStatus: .connected
+            )
+        )
+        XCTAssertFalse(
+            ProfileEntitlementRefresher.shouldAttemptRefresh(
+                appState: .disconnected,
+                systemStatus: .disconnected
+            )
+        )
     }
 
     @MainActor

@@ -146,7 +146,18 @@ final class DashboardViewModel {
         case .disconnecting:
             VpnStateManager.shared.update(.disconnecting)
         case .connected:
-            break
+            switch VpnStateManager.shared.state {
+            case .connected, .disconnecting:
+                break
+            default:
+                let profile = ProfilesStore.shared.activeProfile
+                VpnStateManager.shared.update(
+                    .connected(
+                        since: Date(),
+                        serverName: profile?.serverName ?? profile?.serverAddr ?? ""
+                    )
+                )
+            }
         @unknown default:
             VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
         }
@@ -184,6 +195,7 @@ final class DashboardViewModel {
         case .connecting:
             timerText = "--:--:--"
             startSampleLoop()
+            startSubscriptionLoop()
         case .disconnected, .error, .disconnecting:
             timerText = "--:--:--"
             samples.removeAll()
@@ -223,11 +235,12 @@ final class DashboardViewModel {
     private func startSubscriptionLoop() {
         subscriptionTask = Task { @MainActor [weak self] in
             while let self, !self.stopped, !Task.isCancelled {
-                _ = await ProfileEntitlementRefresher.refreshActiveProfileIfConnected(
+                let refreshed = await ProfileEntitlementRefresher.refreshActiveProfileIfConnected(
                     profilesStore: .shared
                 )
                 self.refreshSubscriptionFromCache()
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                let retryDelay: UInt64 = refreshed == nil ? 5_000_000_000 : 60_000_000_000
+                try? await Task.sleep(nanoseconds: retryDelay)
             }
         }
     }
