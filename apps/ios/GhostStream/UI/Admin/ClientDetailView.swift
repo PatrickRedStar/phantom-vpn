@@ -531,9 +531,11 @@ private func L(_ key: String) -> String {
 
 // MARK: - Previews
 
+#if DEBUG
 #Preview("ClientDetailView") {
     NavigationStack {
         ClientDetailView(viewModel: AdminPreviewData.detailVM())
     }
     .gsTheme(override: .dark)
 }
+#endif

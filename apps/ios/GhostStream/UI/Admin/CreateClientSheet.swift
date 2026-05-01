@@ -142,10 +142,12 @@ public struct CreateClientSheet: View {
     }
 }
 
+#if DEBUG
 #Preview("CreateClientSheet") {
     CreateClientSheet(viewModel: AdminPreviewData.populatedVM())
         .gsTheme(override: .dark)
 }
+#endif
 
 private func L(_ key: String) -> String {
     AppStrings.localized(key)

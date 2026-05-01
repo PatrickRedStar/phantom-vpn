@@ -397,6 +397,7 @@ private func L(_ key: String) -> String {
     AppStrings.localized(key)
 }
 
+#if DEBUG
 #Preview("AdminView — populated") {
     NavigationStack {
         AdminView(viewModel: AdminPreviewData.populatedVM())
@@ -410,3 +411,4 @@ private func L(_ key: String) -> String {
     }
     .gsTheme(override: .dark)
 }
+#endif
