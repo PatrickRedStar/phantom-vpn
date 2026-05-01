@@ -75,6 +75,14 @@ final class RoutePolicySnapshotTests: XCTestCase {
         XCTAssertNotEqual(ipv4Only.routeHash, withIPv6.routeHash)
     }
 
+    func testRouteableIPv6CidrsRejectsCountrySizedLists() {
+        let cidrs = (0...RoutePolicySnapshot.maxDirectIPv6RouteCount).map {
+            "2001:db8:\(String($0, radix: 16))::/48"
+        }
+
+        XCTAssertEqual(RoutePolicySnapshot.routeableIPv6Cidrs(cidrs), [])
+    }
+
     func testRoutePolicyDecodeDefaultsPreserveScopedDnsForOlderPayloads() throws {
         let data = """
         {

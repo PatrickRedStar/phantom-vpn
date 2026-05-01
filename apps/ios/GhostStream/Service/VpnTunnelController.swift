@@ -289,7 +289,10 @@ public final class VpnTunnelController: ObservableObject {
             countryCodes: preferences.directCountries
         )
         ipv4Cidrs.append(contentsOf: countryRules.ipv4Cidrs)
-        ipv6Cidrs.append(contentsOf: countryRules.ipv6Cidrs)
+        // iOS NetworkExtension cannot reliably apply country-sized IPv6 route
+        // tables. RU geoip is ~9k IPv6 CIDRs, which can make tunnel startup
+        // fail during setTunnelNetworkSettings. Keep country presets IPv4-only
+        // and allow small manual/domain IPv6 exceptions below.
 
         let domainRules = await Self.resolveDomainRules(preferences.customDirectDomains)
         ipv4Cidrs.append(contentsOf: domainRules.ipv4Cidrs)

@@ -191,8 +191,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 networkPrefixLengths: [64]
             )
             ipv6.includedRoutes = [NEIPv6Route.default()]
-            let excludedRoutes = directIpv6RoutesForRouteComputation(settings: settings)
-                .compactMap(route(forIPv6CIDR:))
+            let directIpv6Cidrs = directIpv6RoutesForRouteComputation(settings: settings)
+            let excludedRoutes = directIpv6Cidrs.compactMap(route(forIPv6CIDR:))
             if !excludedRoutes.isEmpty {
                 ipv6.excludedRoutes = excludedRoutes
             }
@@ -489,7 +489,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard settings.routingMode != .global else { return [] }
         var cidrs = settings.manualDirectIpv6Cidrs
         cidrs.append(contentsOf: settings.routePolicy?.manualDirectIpv6Cidrs ?? [])
-        return RoutePolicySnapshot.normalizedIPv6Cidrs(from: cidrs.joined(separator: "\n")).valid
+        let normalized = RoutePolicySnapshot.normalizedIPv6Cidrs(from: cidrs.joined(separator: "\n")).valid
+        let routeable = RoutePolicySnapshot.routeableIPv6Cidrs(normalized)
+        if normalized.count > RoutePolicySnapshot.maxDirectIPv6RouteCount {
+            log.error(
+                "too many IPv6 direct routes (\(normalized.count, privacy: .public)); skipping IPv6 exceptions to keep tunnel startup reliable"
+            )
+        }
+        return routeable
     }
 
     private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {

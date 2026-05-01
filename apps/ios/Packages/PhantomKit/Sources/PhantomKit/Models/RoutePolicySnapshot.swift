@@ -21,6 +21,8 @@ public enum RoutingMode: String, Codable, CaseIterable, Sendable {
 }
 
 public struct RoutePolicySnapshot: Codable, Equatable, Sendable {
+    public static let maxDirectIPv6RouteCount = 256
+
     public var mode: RoutingMode
     public var detectedUpstreamCidrs: [String]
     public var manualDirectCidrs: [String]
@@ -148,7 +150,7 @@ public struct RoutePolicySnapshot: Codable, Equatable, Sendable {
     }
 
     public var directIpv6CidrsForRouteComputation: [String] {
-        Self.uniqueIPv6Cidrs(manualDirectIpv6Cidrs)
+        Self.routeableIPv6Cidrs(manualDirectIpv6Cidrs)
     }
 
     public static func normalizedCidrs(from text: String) -> (valid: [String], invalid: [String]) {
@@ -235,6 +237,15 @@ public struct RoutePolicySnapshot: Codable, Equatable, Sendable {
         return String(parts[0]).withCString { rawAddress in
             inet_pton(AF_INET6, rawAddress, &address) == 1
         }
+    }
+
+    public static func routeableIPv6Cidrs(
+        _ cidrs: [String],
+        maxRoutes: Int = maxDirectIPv6RouteCount
+    ) -> [String] {
+        let normalized = uniqueIPv6Cidrs(cidrs)
+        guard normalized.count <= maxRoutes else { return [] }
+        return normalized
     }
 
     public static func stableHash(_ parts: [String]) -> String {
