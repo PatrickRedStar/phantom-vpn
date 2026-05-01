@@ -451,9 +451,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let shouldUseSplitRoutes = settings.routingMode != .global
             || !serverDirectCidrs.isEmpty
             || (settings.routePolicy == nil && profile.splitRouting == true)
+        let adminGatewayHost = AdminGateway.host(forTunAddr: profile.tunAddr)
         guard shouldUseSplitRoutes else {
             ipv4.includedRoutes = [NEIPv4Route.default()]
-            ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
+            ipv4.excludedRoutes = physicalServerExcludedRoutes(
+                settings: settings,
+                preservingHost: adminGatewayHost
+            )
             return
         }
 
@@ -464,12 +468,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         let directCidrs = directCidrsForRouteComputation(settings: settings)
-        let routes = PhantomBridge.computeVpnRoutes(directCidrs: directCidrs.joined(separator: "\n"))
+        var routes = PhantomBridge.computeVpnRoutes(directCidrs: directCidrs.joined(separator: "\n"))
             .compactMap { route in
                 mask(forIPv4Prefix: route.prefix).map {
                     NEIPv4Route(destinationAddress: route.addr, subnetMask: $0)
                 }
             }
+        if let adminRoute = route(forIPv4Host: adminGatewayHost),
+           !routes.contains(where: { $0.destinationAddress == adminRoute.destinationAddress }) {
+            routes.append(adminRoute)
+        }
 
         if routes.isEmpty {
             log.error("split routing route computation returned no routes; leaving IPv4 includedRoutes empty")
@@ -477,7 +485,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } else {
             ipv4.includedRoutes = routes
         }
-        ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
+        ipv4.excludedRoutes = physicalServerExcludedRoutes(
+            settings: settings,
+            preservingHost: adminGatewayHost
+        )
     }
 
     private func shouldForceDnsMatchDomains(settings: TunnelSettings) -> Bool {
@@ -515,12 +526,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return !directIpv6Cidrs.isEmpty
     }
 
-    private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {
+    private func physicalServerExcludedRoutes(
+        settings: TunnelSettings,
+        preservingHost host: String? = nil
+    ) -> [NEIPv4Route] {
         let upstreamCidrs = settings.routingMode == .layeredAuto
             ? (settings.routePolicy?.detectedUpstreamCidrs ?? [])
             : []
         return (settings.routePolicy?.serverDirectCidrs ?? []).compactMap { cidr in
             guard !cidrIsContainedInAny(cidr, containers: upstreamCidrs),
+                  !cidrContainsIPv4Host(cidr, host),
                   let route = route(forCIDR: cidr)
             else { return nil }
             return route
@@ -534,6 +549,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let subnetMask = mask(forIPv4Prefix: prefix)
         else { return nil }
         return NEIPv4Route(destinationAddress: String(parts[0]), subnetMask: subnetMask)
+    }
+
+    private func route(forIPv4Host host: String) -> NEIPv4Route? {
+        guard ipv4Integer(host) != nil,
+              let hostMask = mask(forIPv4Prefix: 32)
+        else { return nil }
+        return NEIPv4Route(destinationAddress: host, subnetMask: hostMask)
     }
 
     private func route(forIPv6CIDR cidr: String) -> NEIPv6Route? {
@@ -562,6 +584,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let parent = ipv4Range(forCIDR: container) else { return false }
             return parent.lower <= child.lower && child.upper <= parent.upper
         }
+    }
+
+    private func cidrContainsIPv4Host(_ cidr: String, _ host: String?) -> Bool {
+        guard let host,
+              let range = ipv4Range(forCIDR: cidr),
+              let address = ipv4Integer(host)
+        else { return false }
+        return range.lower <= address && address <= range.upper
     }
 
     private func ipv4Range(forCIDR cidr: String) -> (lower: UInt32, upper: UInt32)? {

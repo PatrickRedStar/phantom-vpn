@@ -906,14 +906,7 @@ enum ProfileEntitlementRefresher {
     }
 
     static func gatewayHost(forTunAddr tunAddr: String) -> String {
-        let ip = tunIP(tunAddr)
-        let parts = ip.split(separator: ".").map(String.init)
-        guard parts.count == 4,
-              parts.allSatisfy({ UInt8($0) != nil })
-        else {
-            return "10.7.0.1"
-        }
-        return "\(parts[0]).\(parts[1]).\(parts[2]).1"
+        AdminGateway.host(forTunAddr: tunAddr)
     }
 
     static func sameTunIP(_ lhs: String, _ rhs: String) -> Bool {
