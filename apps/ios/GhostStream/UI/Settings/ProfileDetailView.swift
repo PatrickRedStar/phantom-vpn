@@ -180,7 +180,11 @@ struct ProfileDetailView: View {
     }
 
     private var subscriptionText: String {
-        guard let expiresAt = profile.cachedExpiresAt else { return L("profile.subscription.no.expiry") }
+        guard let expiresAt = profile.cachedExpiresAt else {
+            return profile.cachedEnabled != nil
+                ? L("profile.subscription.perpetual")
+                : L("profile.subscription.no.expiry")
+        }
         let remaining = expiresAt - Int64(Date().timeIntervalSince1970)
         if remaining <= 0 { return L("profile.subscription.expired") }
         let days = remaining / 86_400

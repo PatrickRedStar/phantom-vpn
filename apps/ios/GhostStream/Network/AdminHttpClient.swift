@@ -18,6 +18,7 @@ import Foundation
 import PhantomKit
 import Security
 import CryptoKit
+import os.log
 
 // MARK: - Models
 
@@ -26,11 +27,51 @@ public struct AdminStatus: Codable {
     public let uptimeSecs: Int64
     public let activeSessions: Int
     public let serverIp: String?
+    public let serverAddr: String?
+    public let exitIp: String?
 
     private enum CodingKeys: String, CodingKey {
         case uptimeSecs = "uptime_secs"
         case activeSessions = "active_sessions"
+        case sessionsActive = "sessions_active"
         case serverIp = "server_ip"
+        case serverAddr = "server_addr"
+        case exitIp = "exit_ip"
+    }
+
+    public init(
+        uptimeSecs: Int64,
+        activeSessions: Int,
+        serverIp: String? = nil,
+        serverAddr: String? = nil,
+        exitIp: String? = nil
+    ) {
+        self.uptimeSecs = uptimeSecs
+        self.activeSessions = activeSessions
+        self.serverIp = serverIp
+        self.serverAddr = serverAddr
+        self.exitIp = exitIp
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        uptimeSecs = try c.decode(Int64.self, forKey: .uptimeSecs)
+        activeSessions = try c.decodeIfPresent(Int.self, forKey: .activeSessions)
+            ?? c.decodeIfPresent(Int.self, forKey: .sessionsActive)
+            ?? 0
+        serverIp = try c.decodeIfPresent(String.self, forKey: .serverIp)
+            ?? c.decodeIfPresent(String.self, forKey: .exitIp)
+        serverAddr = try c.decodeIfPresent(String.self, forKey: .serverAddr)
+        exitIp = try c.decodeIfPresent(String.self, forKey: .exitIp)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(uptimeSecs, forKey: .uptimeSecs)
+        try c.encode(activeSessions, forKey: .sessionsActive)
+        try c.encodeIfPresent(serverIp, forKey: .serverIp)
+        try c.encodeIfPresent(serverAddr, forKey: .serverAddr)
+        try c.encodeIfPresent(exitIp, forKey: .exitIp)
     }
 }
 
@@ -433,14 +474,17 @@ private extension AdminHttpClient {
         }
 
         let keyDer = try decodePemKey(keyPem)
-        let (keyType, rawKey) = try inspectPkcs8(keyDer)
+        let keyMaterial = try inspectPkcs8(keyDer)
 
         var attrs: [CFString: Any] = [
-            kSecAttrKeyType: keyType,
+            kSecAttrKeyType: keyMaterial.keyType,
             kSecAttrKeyClass: kSecAttrKeyClassPrivate,
         ]
+        if let keySizeInBits = keyMaterial.keySizeInBits {
+            attrs[kSecAttrKeySizeInBits] = keySizeInBits
+        }
         var error: Unmanaged<CFError>?
-        guard let secKey = SecKeyCreateWithData(rawKey as CFData, attrs as CFDictionary, &error) else {
+        guard let secKey = SecKeyCreateWithData(keyMaterial.keyData as CFData, attrs as CFDictionary, &error) else {
             let msg = (error?.takeRetainedValue() as Error?)?.localizedDescription ?? "unknown"
             _ = attrs.removeValue(forKey: kSecAttrKeyType)
             throw AdminHttpError.identityCreation("SecKeyCreateWithData failed: \(msg)")
@@ -481,9 +525,15 @@ private extension AdminHttpClient {
         return data
     }
 
+    struct SecKeyMaterial {
+        let keyType: CFString
+        let keyData: Data
+        let keySizeInBits: Int?
+    }
+
     /// Inspects a PKCS8 blob and returns (SecKeyType, raw-key-bytes suitable
     /// for `SecKeyCreateWithData`). Rejects Ed25519 up-front.
-    static func inspectPkcs8(_ der: Data) throws -> (CFString, Data) {
+    static func inspectPkcs8(_ der: Data) throws -> SecKeyMaterial {
         // PKCS8 AlgorithmIdentifier OIDs appear as byte sequences near the
         // start of the structure. We do a coarse substring search rather
         // than a full DER parse.
@@ -504,12 +554,106 @@ private extension AdminHttpClient {
             )
         }
         if containsSubsequence(bytes, rsaOid) {
-            return (kSecAttrKeyTypeRSA, try unwrapPkcs8PrivateKey(der))
+            return SecKeyMaterial(
+                keyType: kSecAttrKeyTypeRSA,
+                keyData: try unwrapPkcs8PrivateKey(der),
+                keySizeInBits: nil
+            )
         }
         if containsSubsequence(bytes, ecOid) {
-            return (kSecAttrKeyTypeECSECPrimeRandom, try unwrapPkcs8PrivateKey(der))
+            let sec1 = try unwrapPkcs8PrivateKey(der)
+            return SecKeyMaterial(
+                keyType: kSecAttrKeyTypeECSECPrimeRandom,
+                keyData: try sec1EcPrivateKeyToSecKeyData(sec1),
+                keySizeInBits: 256
+            )
         }
         throw AdminHttpError.identityCreation("Unrecognised key algorithm in PKCS8 blob")
+    }
+
+    /// Security.framework imports EC private keys as the same external
+    /// representation it exports: X9.63 public point followed by the private
+    /// scalar. rcgen/ring serialize PKCS#8 with an inner SEC1 ECPrivateKey
+    /// ASN.1 sequence, so convert it before calling `SecKeyCreateWithData`.
+    static func sec1EcPrivateKeyToSecKeyData(_ der: Data) throws -> Data {
+        let bytes = [UInt8](der)
+        guard bytes.count > 2, bytes[0] == 0x30 else {
+            throw AdminHttpError.identityCreation("ECPrivateKey missing outer SEQUENCE")
+        }
+
+        var i = 1
+        let (_, outerLenBytes) = try readDerLength(bytes, at: i)
+        i += outerLenBytes
+
+        var privateScalar: Data?
+        var publicPoint: Data?
+
+        while i < bytes.count {
+            let tag = bytes[i]
+            i += 1
+            let (contentLen, lenBytes) = try readDerLength(bytes, at: i)
+            i += lenBytes
+            let contentStart = i
+            let contentEnd = contentStart + contentLen
+            guard contentEnd <= bytes.count else {
+                throw AdminHttpError.identityCreation("ECPrivateKey element overruns buffer")
+            }
+
+            switch tag {
+            case 0x04:
+                privateScalar = Data(bytes[contentStart..<contentEnd])
+            case 0xA1:
+                publicPoint = try ecPublicPointFromExplicitBitString(bytes, start: contentStart, end: contentEnd)
+            default:
+                break
+            }
+
+            i = contentEnd
+        }
+
+        guard let privateScalar, privateScalar.count == 32 else {
+            throw AdminHttpError.identityCreation("ECPrivateKey missing P-256 private scalar")
+        }
+
+        let point: Data
+        if let publicPoint {
+            point = publicPoint
+        } else {
+            let privateKey = try P256.Signing.PrivateKey(rawRepresentation: privateScalar)
+            point = privateKey.publicKey.x963Representation
+        }
+
+        guard point.count == 65, point.first == 0x04 else {
+            throw AdminHttpError.identityCreation("ECPrivateKey missing uncompressed P-256 public point")
+        }
+
+        var keyData = Data()
+        keyData.append(point)
+        keyData.append(privateScalar)
+        return keyData
+    }
+
+    static func ecPublicPointFromExplicitBitString(
+        _ bytes: [UInt8],
+        start: Int,
+        end: Int
+    ) throws -> Data {
+        guard start < end, bytes[start] == 0x03 else {
+            throw AdminHttpError.identityCreation("ECPrivateKey public key missing BIT STRING")
+        }
+        var i = start + 1
+        let (bitStringLen, lenBytes) = try readDerLength(bytes, at: i)
+        i += lenBytes
+        let bitStringEnd = i + bitStringLen
+        guard bitStringEnd <= end, i < bitStringEnd else {
+            throw AdminHttpError.identityCreation("ECPrivateKey public key BIT STRING invalid")
+        }
+        let unusedBits = bytes[i]
+        guard unusedBits == 0 else {
+            throw AdminHttpError.identityCreation("ECPrivateKey public key has unsupported unused bits")
+        }
+        i += 1
+        return Data(bytes[i..<bitStringEnd])
     }
 
     /// Pulls the inner `OCTET STRING` (the actual private key bytes) out of
@@ -594,7 +738,7 @@ private extension AdminHttpClient {
             kSecValueRef as String: certificate,
             kSecAttrLabel as String: label,
         ]
-        var certStatus = SecItemAdd(certAttrs as CFDictionary, nil)
+        let certStatus = SecItemAdd(certAttrs as CFDictionary, nil)
         if certStatus != errSecSuccess && certStatus != errSecDuplicateItem {
             throw AdminHttpError.identityCreation("SecItemAdd(cert) = \(certStatus)")
         }
@@ -604,7 +748,7 @@ private extension AdminHttpClient {
             kSecValueRef as String: privateKey,
             kSecAttrLabel as String: label,
         ]
-        var keyStatus = SecItemAdd(keyAttrs as CFDictionary, nil)
+        let keyStatus = SecItemAdd(keyAttrs as CFDictionary, nil)
         if keyStatus != errSecSuccess && keyStatus != errSecDuplicateItem {
             // Clean up the cert we just added before bailing.
             SecItemDelete(certAttrs as CFDictionary)
@@ -634,6 +778,16 @@ private extension AdminHttpClient {
     }
 }
 
+#if DEBUG
+enum AdminIdentityTestSupport {
+    @MainActor
+    static func inspectPkcs8(_ der: Data) throws -> (CFString, Data, Int?) {
+        let keyMaterial = try AdminHttpClient.inspectPkcs8(der)
+        return (keyMaterial.keyType, keyMaterial.keyData, keyMaterial.keySizeInBits)
+    }
+}
+#endif
+
 // MARK: - Hashing helper
 
 private func sha256Hex(_ data: Data) -> String {
@@ -660,6 +814,8 @@ private struct AnyEncodable: Encodable {
 /// profile is refreshed automatically.
 @MainActor
 enum ProfileEntitlementRefresher {
+    private static let log = Logger(subsystem: "com.ghoststream.vpn", category: "entitlements")
+
     static func refreshActiveProfileIfConnected(
         profilesStore: ProfilesStore
     ) async -> VpnProfile? {
@@ -709,6 +865,7 @@ enum ProfileEntitlementRefresher {
             profilesStore.update(updated)
             return updated
         } catch {
+            log.error("Admin entitlement refresh failed for profile \(profile.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -733,15 +890,43 @@ enum ProfileEntitlementRefresher {
     }
 
     static func subscriptionText(for profile: VpnProfile) -> String? {
-        guard profile.cachedEnabled != false else { return "Клиент отключён" }
-        guard let expiresAt = profile.cachedExpiresAt else { return nil }
+        guard profile.cachedEnabled != false else {
+            return AppStrings.localized("dashboard.subscription.client_disabled", fallback: "Client disabled")
+        }
+        guard let expiresAt = profile.cachedExpiresAt else {
+            return profile.cachedEnabled != nil
+                ? AppStrings.localized("dashboard.subscription.unlimited", fallback: "Unlimited subscription")
+                : nil
+        }
         let remaining = expiresAt - Int64(Date().timeIntervalSince1970)
-        guard remaining > 0 else { return "Подписка истекла" }
+        guard remaining > 0 else {
+            return AppStrings.localized("dashboard.subscription.expired", fallback: "Subscription expired")
+        }
         let days = remaining / 86_400
         let hours = (remaining % 86_400) / 3_600
-        if days > 0 { return "Подписка: \(days)д \(hours)ч" }
-        if hours > 0 { return "Подписка: \(hours)ч" }
-        return "Подписка: < 1ч"
+        if days > 0 {
+            return String(
+                format: AppStrings.localized(
+                    "native.dashboard.subscription.remaining.format",
+                    fallback: "Subscription: %lldd %lldh"
+                ),
+                days,
+                hours
+            )
+        }
+        if hours > 0 {
+            return String(
+                format: AppStrings.localized(
+                    "native.dashboard.subscription.hours.format",
+                    fallback: "Subscription: %lldh"
+                ),
+                hours
+            )
+        }
+        return AppStrings.localized(
+            "native.dashboard.subscription.less_than_hour",
+            fallback: "Subscription: < 1h"
+        )
     }
 
     private static func matchingClient(

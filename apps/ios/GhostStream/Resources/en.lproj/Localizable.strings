@@ -11,6 +11,7 @@
 "dashboard.subscription.expires" = "Subscription until %@";
 "dashboard.subscription.expired" = "Subscription expired";
 "dashboard.subscription.unlimited" = "Unlimited subscription";
+"dashboard.subscription.client_disabled" = "Client disabled";
 
 // Logs
 "logs.title" = "Logs";
@@ -217,6 +218,8 @@
 "native.dashboard.reconnecting" = "Reconnecting";
 "native.dashboard.reconnect.detail.format" = "Attempt %d · next in %ds";
 "native.dashboard.subscription.remaining.format" = "Subscription: %lldd %lldh";
+"native.dashboard.subscription.hours.format" = "Subscription: %lldh";
+"native.dashboard.subscription.less_than_hour" = "Subscription: < 1h";
 "native.dashboard.meta.connecting" = "connecting";
 "native.dashboard.meta.disconnecting" = "disconnecting";
 "native.dashboard.meta.error" = "error";
@@ -249,6 +252,7 @@
 "profile.certificate.keychain" = "Stored in shared keychain";
 "profile.certificate.loaded" = "Loaded for this session";
 "profile.subscription.no.expiry" = "No expiry data";
+"profile.subscription.perpetual" = "Perpetual";
 "profile.subscription.expired" = "Expired";
 "profile.subscription.remaining.format" = "%lldd %lldh remaining";
 "profile.value.unavailable" = "Not available";

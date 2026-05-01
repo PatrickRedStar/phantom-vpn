@@ -233,20 +233,11 @@ final class DashboardViewModel {
     }
 
     private func refreshSubscriptionFromCache() {
-        guard let profile = ProfilesStore.shared.activeProfile,
-              let expiresAt = profile.cachedExpiresAt else {
+        guard let profile = ProfilesStore.shared.activeProfile else {
             subscriptionText = nil
             return
         }
-        let now = Int64(Date().timeIntervalSince1970)
-        let remaining = expiresAt - now
-        if remaining <= 0 {
-            subscriptionText = "Подписка истекла"
-        } else {
-            let days = remaining / 86_400
-            let hours = (remaining % 86_400) / 3_600
-            subscriptionText = "Подписка: \(days)д \(hours)ч"
-        }
+        subscriptionText = ProfileEntitlementRefresher.subscriptionText(for: profile)
     }
 
     static func format(duration: TimeInterval) -> String {

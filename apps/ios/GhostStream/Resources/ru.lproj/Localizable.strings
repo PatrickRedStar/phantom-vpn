@@ -11,6 +11,7 @@
 "dashboard.subscription.expires" = "Подписка до %@";
 "dashboard.subscription.expired" = "Подписка истекла";
 "dashboard.subscription.unlimited" = "Подписка бессрочна";
+"dashboard.subscription.client_disabled" = "Клиент отключён";
 
 // Logs
 "logs.title" = "Логи";
@@ -217,6 +218,8 @@
 "native.dashboard.reconnecting" = "Переподключение";
 "native.dashboard.reconnect.detail.format" = "Попытка %d · след. через %dс";
 "native.dashboard.subscription.remaining.format" = "Подписка: %lldд %lldч";
+"native.dashboard.subscription.hours.format" = "Подписка: %lldч";
+"native.dashboard.subscription.less_than_hour" = "Подписка: < 1ч";
 "native.dashboard.meta.connecting" = "подключение";
 "native.dashboard.meta.disconnecting" = "отключение";
 "native.dashboard.meta.error" = "ошибка";
@@ -249,6 +252,7 @@
 "profile.certificate.keychain" = "Хранится в общем keychain";
 "profile.certificate.loaded" = "Загружен для этой сессии";
 "profile.subscription.no.expiry" = "Нет данных о сроке";
+"profile.subscription.perpetual" = "Бессрочно";
 "profile.subscription.expired" = "Истекла";
 "profile.subscription.remaining.format" = "осталось %lldд %lldч";
 "profile.value.unavailable" = "Недоступно";

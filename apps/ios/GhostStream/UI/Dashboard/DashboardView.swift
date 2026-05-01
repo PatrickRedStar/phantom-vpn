@@ -402,12 +402,8 @@ struct DashboardView: View {
     }
 
     private var subscriptionSummaryText: String? {
-        guard let expiresAt = profiles.activeProfile?.cachedExpiresAt else { return nil }
-        let remaining = expiresAt - Int64(Date().timeIntervalSince1970)
-        if remaining <= 0 { return L("dashboard.subscription.expired") }
-        let days = remaining / 86_400
-        let hours = (remaining % 86_400) / 3_600
-        return String(format: L("native.dashboard.subscription.remaining.format"), days, hours)
+        guard let profile = profiles.activeProfile else { return nil }
+        return ProfileEntitlementRefresher.subscriptionText(for: profile)
     }
 
     private func handlePrimaryAction() {
