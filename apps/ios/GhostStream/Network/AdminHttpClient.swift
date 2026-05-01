@@ -1,5 +1,5 @@
 // AdminHttpClient — URLSession client for the phantom-server admin API
-// (mTLS to https://10.7.0.1:8080 over the VPN tunnel).
+// (mTLS to https://<tunnel-gateway>:8080 over the VPN tunnel).
 //
 // ═══════════════════════════════════════════════════════════════════════
 // Ed25519 client-certificate limitation on iOS
@@ -206,9 +206,10 @@ final class MTLSDelegate: NSObject, URLSessionDelegate {
 
 /// URLSession-backed admin HTTP client with mTLS + TOFU cert pinning.
 ///
-/// - Note: `baseURL` is typically `https://10.7.0.1:8080` — routable only
-///   through the VPN tunnel. No hostname verification is performed; trust
-///   is anchored on the TOFU SHA-256 pin.
+/// - Note: `baseURL` is typically `https://10.7.0.1:8080` or the gateway
+///   derived from `VpnProfile.tunAddr` — routable only through the VPN tunnel.
+///   No hostname verification is performed; trust is anchored on the TOFU
+///   SHA-256 pin.
 @MainActor
 public final class AdminHttpClient {
 
@@ -650,4 +651,124 @@ private struct AnyEncodable: Encodable {
         self.encodeFn = wrapped.encode
     }
     func encode(to encoder: Encoder) throws { try encodeFn(encoder) }
+}
+
+// MARK: - Active profile entitlements
+
+/// Refreshes per-profile admin/subscription cache through the currently
+/// connected tunnel. Admin state is identity-specific, so only the active
+/// profile is refreshed automatically.
+@MainActor
+enum ProfileEntitlementRefresher {
+    static func refreshActiveProfileIfConnected(
+        profilesStore: ProfilesStore
+    ) async -> VpnProfile? {
+        guard case .connected = VpnStateManager.shared.state,
+              let profile = profilesStore.activeProfile
+        else {
+            return nil
+        }
+        return await refresh(profile: profile, profilesStore: profilesStore)
+    }
+
+    static func refresh(
+        profile: VpnProfile,
+        profilesStore: ProfilesStore
+    ) async -> VpnProfile? {
+        guard let certPem = profile.certPem, !certPem.isEmpty,
+              let keyPem = profile.keyPem, !keyPem.isEmpty,
+              let baseURL = adminBaseURL(for: profile)
+        else {
+            return nil
+        }
+
+        do {
+            let client = try AdminHttpClient(
+                baseURL: baseURL,
+                clientCertPem: certPem,
+                clientKeyPem: keyPem,
+                pinnedServerCertFp: profile.cachedAdminServerCertFp
+            )
+            let me = try await client.getMe()
+            var updated = currentProfile(for: profile, in: profilesStore)
+            updated.cachedIsAdmin = me.isAdmin
+            if let fp = client.lastServerCertFp {
+                updated.cachedAdminServerCertFp = fp
+            }
+
+            if me.isAdmin,
+               let match = try? await matchingClient(
+                    client: client,
+                    profile: profile,
+                    selfInfo: me
+               ) {
+                updated.cachedExpiresAt = match.expiresAt
+                updated.cachedEnabled = match.enabled
+            }
+
+            profilesStore.update(updated)
+            return updated
+        } catch {
+            return nil
+        }
+    }
+
+    static func adminBaseURL(for profile: VpnProfile) -> URL? {
+        URL(string: "https://\(gatewayHost(forTunAddr: profile.tunAddr)):8080")
+    }
+
+    static func gatewayHost(forTunAddr tunAddr: String) -> String {
+        let ip = tunIP(tunAddr)
+        let parts = ip.split(separator: ".").map(String.init)
+        guard parts.count == 4,
+              parts.allSatisfy({ UInt8($0) != nil })
+        else {
+            return "10.7.0.1"
+        }
+        return "\(parts[0]).\(parts[1]).\(parts[2]).1"
+    }
+
+    static func sameTunIP(_ lhs: String, _ rhs: String) -> Bool {
+        tunIP(lhs) == tunIP(rhs)
+    }
+
+    static func subscriptionText(for profile: VpnProfile) -> String? {
+        guard profile.cachedEnabled != false else { return "Клиент отключён" }
+        guard let expiresAt = profile.cachedExpiresAt else { return nil }
+        let remaining = expiresAt - Int64(Date().timeIntervalSince1970)
+        guard remaining > 0 else { return "Подписка истекла" }
+        let days = remaining / 86_400
+        let hours = (remaining % 86_400) / 3_600
+        if days > 0 { return "Подписка: \(days)д \(hours)ч" }
+        if hours > 0 { return "Подписка: \(hours)ч" }
+        return "Подписка: < 1ч"
+    }
+
+    private static func matchingClient(
+        client: AdminHttpClient,
+        profile: VpnProfile,
+        selfInfo: AdminSelfInfo
+    ) async throws -> AdminClient? {
+        let clients = try await client.listClients()
+        return clients.first { sameTunIP($0.tunAddr, profile.tunAddr) }
+            ?? clients.first { $0.name == selfInfo.name }
+    }
+
+    private static func currentProfile(
+        for profile: VpnProfile,
+        in profilesStore: ProfilesStore
+    ) -> VpnProfile {
+        var current = profilesStore.profiles.first(where: { $0.id == profile.id }) ?? profile
+        current.certPem = current.certPem ?? profile.certPem
+        current.keyPem = current.keyPem ?? profile.keyPem
+        return current
+    }
+
+    private static func tunIP(_ tunAddr: String) -> String {
+        tunAddr
+            .split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
 }

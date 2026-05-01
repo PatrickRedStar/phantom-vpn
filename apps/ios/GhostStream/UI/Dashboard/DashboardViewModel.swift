@@ -223,6 +223,9 @@ final class DashboardViewModel {
     private func startSubscriptionLoop() {
         subscriptionTask = Task { @MainActor [weak self] in
             while let self, !self.stopped, !Task.isCancelled {
+                _ = await ProfileEntitlementRefresher.refreshActiveProfileIfConnected(
+                    profilesStore: .shared
+                )
                 self.refreshSubscriptionFromCache()
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
             }

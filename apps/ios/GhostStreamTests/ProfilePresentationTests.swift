@@ -31,4 +31,20 @@ final class ProfilePresentationTests: XCTestCase {
         XCTAssertTrue(actions.contains(.createClientLink))
         XCTAssertTrue(actions.contains(.setActive))
     }
+
+    @MainActor
+    func testAdminGatewayIsDerivedFromProfileTunAddress() {
+        let profile = VpnProfile(tunAddr: "10.42.9.77/24")
+
+        XCTAssertEqual(
+            ProfileEntitlementRefresher.adminBaseURL(for: profile)?.absoluteString,
+            "https://10.42.9.1:8080"
+        )
+    }
+
+    @MainActor
+    func testTunMatchingIgnoresPrefixLength() {
+        XCTAssertTrue(ProfileEntitlementRefresher.sameTunIP("10.7.0.2/24", "10.7.0.2"))
+        XCTAssertFalse(ProfileEntitlementRefresher.sameTunIP("10.7.0.3/24", "10.7.0.2"))
+    }
 }

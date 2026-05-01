@@ -102,6 +102,7 @@ public final class ProfilesStore {
             throw ConnStringError.invalid
         }
         let profile = VpnProfile(
+            name: ProfileNameDeriver.defaultName(for: parsed),
             serverAddr: parsed.serverAddr,
             serverName: parsed.serverName,
             insecure: false,

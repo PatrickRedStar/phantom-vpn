@@ -273,15 +273,28 @@ public final class SettingsViewModel {
         }
     }
 
-    /// Refreshes cached subscription strings. On iOS the admin endpoint
-    /// (10.7.0.1:8080) is only reachable when the VPN is up — when the
-    /// tunnel is down we leave the cached values untouched.
-    ///
-    /// - TODO: Wire up once `VpnStateManager.current.state` is observable
-    ///   from here; skipped in the current revision to keep this ViewModel
-    ///   usable without the tunnel's live state.
+    /// Refreshes cached admin/subscription state for the active connected
+    /// profile. The admin API is reachable only through that tunnel, so this
+    /// intentionally does not probe inactive profiles.
     public func refreshSubscriptions() async {
-        // Intentionally a no-op right now — see doc comment.
+        if let profile = await ProfileEntitlementRefresher.refreshActiveProfileIfConnected(
+            profilesStore: profilesStore
+        ) {
+            if let text = ProfileEntitlementRefresher.subscriptionText(for: profile) {
+                profileSubscriptions[profile.id] = text
+            } else {
+                profileSubscriptions.removeValue(forKey: profile.id)
+            }
+            return
+        }
+
+        for profile in profilesStore.profiles {
+            if let text = ProfileEntitlementRefresher.subscriptionText(for: profile) {
+                profileSubscriptions[profile.id] = text
+            } else {
+                profileSubscriptions.removeValue(forKey: profile.id)
+            }
+        }
     }
 
     // MARK: - Helpers

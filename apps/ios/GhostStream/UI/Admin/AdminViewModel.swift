@@ -2,8 +2,8 @@
 //  AdminViewModel.swift
 //  GhostStream
 //
-//  ViewModel for the Admin screen. Wraps an `AdminHttpClient` talking to
-//  `https://10.7.0.1:8080` through the VPN tunnel, and exposes server-wide
+//  ViewModel for the Admin screen. Wraps an `AdminHttpClient` talking to the
+//  admin gateway derived from the profile tunnel address, and exposes server-wide
 //  client management (list / create / delete / enable / admin-flag /
 //  subscription / conn-string).
 //
@@ -73,7 +73,7 @@ public final class AdminViewModel {
         guard
             let certPem = profile.certPem,
             let keyPem = profile.keyPem,
-            let baseURL = URL(string: "https://10.7.0.1:8080")
+            let baseURL = ProfileEntitlementRefresher.adminBaseURL(for: profile)
         else {
             self.client = nil
             self.mtlsUnavailable = true
@@ -108,6 +108,7 @@ public final class AdminViewModel {
         defer { loading = false }
 
         do {
+            let selfInfo = try await client.getMe()
             async let statusTask = client.getStatus()
             async let clientsTask = client.listClients()
             let (fetchedStatus, fetchedClients) = try await (statusTask, clientsTask)
@@ -115,12 +116,17 @@ public final class AdminViewModel {
             self.clients = fetchedClients
 
             // TOFU persistence — only after a successful handshake.
-            if profile.cachedAdminServerCertFp == nil,
-               let fp = client.lastServerCertFp {
-                var updated = profile
-                updated.cachedAdminServerCertFp = fp
-                profilesStore.update(updated)
+            var updated = profilesStore.profiles.first(where: { $0.id == profile.id }) ?? profile
+            updated.cachedIsAdmin = selfInfo.isAdmin
+            if let match = fetchedClients.first(where: { ProfileEntitlementRefresher.sameTunIP($0.tunAddr, profile.tunAddr) })
+                ?? fetchedClients.first(where: { $0.name == selfInfo.name }) {
+                updated.cachedExpiresAt = match.expiresAt
+                updated.cachedEnabled = match.enabled
             }
+            if let fp = client.lastServerCertFp {
+                updated.cachedAdminServerCertFp = fp
+            }
+            profilesStore.update(updated)
         } catch let err as AdminHttpError {
             self.error = err.errorDescription
         } catch {

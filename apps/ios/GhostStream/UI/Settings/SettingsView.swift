@@ -98,9 +98,11 @@ public struct SettingsView: View {
         .task {
             hydrate()
             await model.refreshPings()
+            await model.refreshSubscriptions()
         }
         .refreshable {
             await model.refreshPings()
+            await model.refreshSubscriptions()
         }
         .confirmationDialog(L("settings.add.profile"), isPresented: $showAddDialog, titleVisibility: .visible) {
             Button(L("settings.scan.qr")) {
