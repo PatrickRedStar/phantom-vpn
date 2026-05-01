@@ -10,6 +10,7 @@
 import PhantomKit
 import PhantomUI
 import SwiftUI
+import os.log
 
 /// Tab identifier for the native tab bar.
 enum AppTab: Int, CaseIterable, Hashable {
@@ -44,8 +45,15 @@ enum AppTab: Int, CaseIterable, Hashable {
 struct AppNavigation: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(ProfilesStore.self) private var profiles
     @Environment(PreferencesStore.self) private var prefs
     @State private var selection: AppTab = .dashboard
+    @State private var routePolicyReconciled = false
+
+    private let routePolicyLog = Logger(
+        subsystem: "com.ghoststream.vpn",
+        category: "RoutePolicyLaunch"
+    )
 
     var body: some View {
         TabView(selection: $selection) {
@@ -79,10 +87,36 @@ struct AppNavigation: View {
         .tint(C.signal)
         .toolbarBackground(C.bg, for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
+        .task {
+            await reconcileRoutePolicyOnLaunch()
+        }
     }
 
     private var languageIdentity: String {
         prefs.languageOverride ?? "system"
+    }
+
+    @MainActor
+    private func reconcileRoutePolicyOnLaunch() async {
+        guard !routePolicyReconciled else { return }
+        routePolicyReconciled = true
+
+        guard let profile = profiles.activeProfile else { return }
+        let routingMode = prefs.effectiveRoutingMode(
+            profileSplitRouting: profile.splitRouting
+        )
+        guard routingMode != .global else { return }
+
+        do {
+            try await VpnTunnelController().applyRoutePolicy(
+                profile: profile,
+                preferences: prefs
+            )
+        } catch {
+            routePolicyLog.warning(
+                "launch route policy reconcile failed: \(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 }
 

@@ -190,11 +190,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 addresses: ["fd00:6768:6f73:7473::1"],
                 networkPrefixLengths: [64]
             )
-            ipv6.includedRoutes = [NEIPv6Route.default()]
             let directIpv6Cidrs = directIpv6RoutesForRouteComputation(settings: settings)
-            let excludedRoutes = directIpv6Cidrs.compactMap(route(forIPv6CIDR:))
-            if !excludedRoutes.isEmpty {
-                ipv6.excludedRoutes = excludedRoutes
+            if shouldTunnelIPv6Traffic(settings: settings, directIpv6Cidrs: directIpv6Cidrs) {
+                ipv6.includedRoutes = [NEIPv6Route.default()]
+                let excludedRoutes = directIpv6Cidrs.compactMap(route(forIPv6CIDR:))
+                if !excludedRoutes.isEmpty {
+                    ipv6.excludedRoutes = excludedRoutes
+                }
+            } else {
+                ipv6.excludedRoutes = [NEIPv6Route.default()]
+                log.warning("split routing leaves IPv6 outside tunnel because no routeable IPv6 direct rules are available")
             }
             networkSettings.ipv6Settings = ipv6
         }
@@ -497,6 +502,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         }
         return routeable
+    }
+
+    private func shouldTunnelIPv6Traffic(settings: TunnelSettings, directIpv6Cidrs: [String]) -> Bool {
+        if settings.routingMode == .global { return true }
+        return !directIpv6Cidrs.isEmpty
     }
 
     private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {

@@ -13,7 +13,7 @@ final class RoutingRulesManagerTests: XCTestCase {
 
         XCTAssertEqual(
             RoutingRulesManager.normalizeIPv4Cidrs(from: text),
-            ["8.8.0.0/18", "2.16.0.0/18"]
+            ["8.8.0.0/13", "2.16.0.0/13"]
         )
     }
 
@@ -28,7 +28,7 @@ final class RoutingRulesManagerTests: XCTestCase {
 
         let rules = RoutingRulesManager.normalizeGeoipCidrs(from: text)
 
-        XCTAssertEqual(rules.ipv4Cidrs, ["5.255.192.0/18", "77.88.0.0/18"])
+        XCTAssertEqual(rules.ipv4Cidrs, ["5.248.0.0/13", "77.88.0.0/13"])
         XCTAssertEqual(rules.ipv6Cidrs, ["2a02:6b8::/45"])
     }
 
@@ -51,7 +51,7 @@ final class RoutingRulesManagerTests: XCTestCase {
 
         let rules = manager.mergedCountryRules(countryCodes: ["ru", "ru"])
 
-        XCTAssertEqual(rules.ipv4Cidrs, ["5.255.192.0/18", "77.88.0.0/18"])
+        XCTAssertEqual(rules.ipv4Cidrs, ["5.248.0.0/13", "77.88.0.0/13"])
         XCTAssertEqual(rules.ipv6Cidrs, ["2a02:6b8::/45"])
         XCTAssertEqual(rules.missingCountryCodes, [])
     }
