@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-27
+updated: 2026-05-02
 ---
 
 # Timeline проекта
@@ -188,6 +188,7 @@ Sparkle integration → Brand polish → Release pipeline).
 | Коммит | Событие |
 |--------|---------|
 | _в работе_ | Документация macOS платформы — `platforms/macos.md`, `apps/macos/README.md`. |
+| `v0.23.1` | Android hotfix: UI синхронизируется с native status-frame `connected` после смены сети. |
 
 ---
 

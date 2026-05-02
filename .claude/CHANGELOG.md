@@ -2,6 +2,20 @@
 
 > Линейная история релизов PhantomVPN / GhostStream. Для перформанс-замеров см. [ROADMAP.md](ROADMAP.md), для архитектурного контекста — [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## v0.23.1 — 2026-05-02
+
+### Fixed
+- Android: UI больше не зависает на экране «Настройка» после штатного переподключения
+  туннеля при смене сети Wi-Fi/Cellular, если native runtime уже прислал статус
+  `connected`.
+- Android: watchdog не переиздаёт состояние `Connected`, когда UI уже подключён,
+  чтобы не сбрасывать таймер/подписку лишним обновлением.
+
+### Validation
+- Добавлены unit-тесты на продвижение `Connecting → Connected` только по реальному
+  status-frame `connected` и запрет «оживлять» `Disconnected`, `Disconnecting`,
+  `Error` или уже `Connected`.
+
 ## v0.19.4 — 2026-04-15
 
 ### Removed

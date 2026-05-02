@@ -1,6 +1,7 @@
 package com.ghoststream.vpn.ui.components
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -253,6 +254,7 @@ private fun ViewfinderCorners() {
 
 @Composable
 @Suppress("DEPRECATION")
+@SuppressLint("UnsafeOptInUsageError")
 private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -276,7 +278,6 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
                     val scanner = BarcodeScanning.getClient()
 
                     imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(ctx)) { imageProxy ->
-                        @androidx.camera.core.ExperimentalGetImage
                         val mediaImage = imageProxy.image
                         if (mediaImage == null) {
                             imageProxy.close()

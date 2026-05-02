@@ -37,6 +37,11 @@ interface PhantomListener {
     fun onLogFrame(json: String)
 }
 
+internal fun shouldPromoteStatusFrameToConnected(
+    currentState: VpnState,
+    frame: StatusFrameData,
+): Boolean = currentState is VpnState.Connecting && frame.state == "connected"
+
 class GhostStreamVpnService : VpnService(), PhantomListener {
 
     private data class StartExtras(
@@ -239,6 +244,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // Push to home screen widgets.
         val frame = StatusFrameData.fromJson(json)
         if (frame != null) {
+            syncLifecycleStateFromStatusFrame(frame)
             serviceScope.launch {
                 val isConn = frame.state == "connected"
                 val isConning = frame.state == "connecting"
@@ -254,6 +260,15 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     streamsTotal = frame.nStreams,
                 )
             }
+        }
+    }
+
+    private fun syncLifecycleStateFromStatusFrame(frame: StatusFrameData) {
+        if (!shouldPromoteStatusFrameToConnected(VpnStateManager.state.value, frame)) return
+        val serverName = savedParams?.serverName ?: ""
+        mainHandler.post {
+            if (!shouldPromoteStatusFrameToConnected(VpnStateManager.state.value, frame)) return@post
+            VpnStateManager.update(VpnState.Connected(serverName = serverName))
         }
     }
 
@@ -510,7 +525,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                         timeoutSecs = Int.MAX_VALUE
                         Log.i(TAG, "Tunnel connected to $serverAddr")
                         mainHandler.post {
-                            VpnStateManager.update(VpnState.Connected(serverName = serverName))
+                            if (VpnStateManager.state.value !is VpnState.Connected) {
+                                VpnStateManager.update(VpnState.Connected(serverName = serverName))
+                            }
                             val nm = getSystemService(NotificationManager::class.java)
                             nm?.notify(
                                 NOTIFICATION_ID,

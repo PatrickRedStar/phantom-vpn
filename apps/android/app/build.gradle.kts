@@ -12,9 +12,9 @@ android {
         applicationId = "io.ghoststream.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 61
-        versionName = "0.22.6"
-        buildConfigField("String", "GIT_TAG", "\"v0.22.6\"")
+        versionCode = 62
+        versionName = "0.23.1"
+        buildConfigField("String", "GIT_TAG", "\"v0.23.1\"")
     }
 
     signingConfigs {
@@ -101,6 +101,8 @@ dependencies {
     implementation("androidx.glance:glance:1.1.1")
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.glance:glance-material3:1.1.1")
+
+    testImplementation("junit:junit:4.13.2")
 }
 
 val cargoWorkspaceDir = file("${rootProject.rootDir}/../..")
