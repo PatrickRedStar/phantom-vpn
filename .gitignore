@@ -17,6 +17,15 @@ __pycache__/
 .env
 .env.*
 
+# Apple signing / App Store Connect secrets
+AuthKey_*.p8
+*.p8
+*.p12
+*.mobileprovision
+*.provisionprofile
+*.xcarchive
+*.xcdistributionlogs/
+
 # Runtime/local client configs (keep template instead)
 server/config/client.toml
 server/config/clients.json
