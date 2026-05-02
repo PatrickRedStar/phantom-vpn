@@ -104,6 +104,7 @@ targets:
     info:
       path: PacketTunnelProvider/Info.plist
       properties:
+        CFBundleDisplayName: GhostStream Tunnel
         CFBundlePackageType: XPC!
         NSExtension:
           NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
