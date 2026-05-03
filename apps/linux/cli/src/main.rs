@@ -261,8 +261,13 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         let tun_fd = tun_file.as_raw_fd();
         std::mem::forget(tun_file);
 
-        // Default route
-        let _cleanup_guard = if cfg.network.default_gw.is_some() {
+        // Default route. PHANTOM_NO_DEFAULT_ROUTE=1 disables the global hijack
+        // — for headless boxes that only proxy a single uid through tun0
+        // (e.g. SOCKS5 bridge for 3x-ui, where main egress must stay on eth0).
+        let no_default_route = std::env::var("PHANTOM_NO_DEFAULT_ROUTE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let _cleanup_guard = if cfg.network.default_gw.is_some() && !no_default_route {
             match add_default_route(tun_name, &server_addr) {
                 Ok(guard) => Some(guard),
                 Err(e) => {
@@ -271,6 +276,9 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
                 }
             }
         } else {
+            if no_default_route {
+                tracing::info!("PHANTOM_NO_DEFAULT_ROUTE=1 — skipping default-route hijack; only TUN interface is created");
+            }
             None
         };
 

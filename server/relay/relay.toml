@@ -1,0 +1,24 @@
+# phantom-relay on vps_balancer (158.160.135.140), behind nginx stream.
+#
+# Public traffic flow:
+#   client TLS w/ SNI=tls.nl2.bikini-bottom.com  (NL phantom-server cert SAN)
+#     → :443 nginx (ssl_preread; map matches both relay.* and tls.nl2.*)
+#       → 127.0.0.1:5443 phantom-relay
+#         → 89.110.109.128:443 phantom-server (NL exit)
+#
+# expected_sni MUST equal the SNI clients send. Clients pin the cert chain
+# of the NL phantom-server, whose cert is for tls.nl2.bikini-bottom.com — so
+# that's the SNI they put in ClientHello, even when the TCP destination is
+# the relay host.
+#
+# Fallback (cert/key) — LE cert for relay.bikini-bottom.com, served only
+# when something hits relay with the wrong SNI (probe, scanner). Real
+# clients never trigger fallback because nginx already gates the SNIs that
+# reach relay.
+
+listen_addr  = "127.0.0.1:5443"
+upstream_addr = "89.110.109.128:443"
+expected_sni = "tls.nl2.bikini-bottom.com"
+
+cert_path = "/etc/letsencrypt/live/relay.bikini-bottom.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/relay.bikini-bottom.com/privkey.pem"

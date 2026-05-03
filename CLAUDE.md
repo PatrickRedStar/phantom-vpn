@@ -82,9 +82,10 @@ gstack CLI (обязателен): [docs/knowledge/tools/gstack.md](docs/knowled
 | Алиас | IP | Роль |
 |---|---|---|
 | `vdsina` | 89.110.109.128 | NL exit — phantom-server + nginx frontend |
-| — | 193.187.95.128 | RU relay — phantom-relay (SNI passthrough, НЕ терминирует TLS) |
+| `vps_balancer` | 158.160.135.140 | RU relay (за nginx SNI map :443→:5443) + phantom-client → microsocks SOCKS5:10808 для 3x-ui outbound. **Также: 3x-ui панель + xray** — менять nginx/iptables только через reload, не restart. |
+| — | 193.187.95.128 | Прежний RU relay — выводится из ротации после v0.22.x. |
 
-SSH: `~/.ssh/bot` (алиасы в `~/.ssh/config`). Claude Code обычно запущен на vdsina — сборка server/linux/android идёт локально.
+SSH: алиасы в `~/.ssh/config`. Claude Code обычно запущен на vdsina — сборка server/linux/android идёт локально.
 
 ## Текущая версия
 

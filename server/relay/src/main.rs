@@ -29,31 +29,31 @@ use tokio::io::Interest;
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, Default)]
 struct RelayConfig {
-    /// Address to listen on (e.g. "0.0.0.0:443")
-    listen_addr: String,
+    /// Address to listen on (e.g. "0.0.0.0:443" or "127.0.0.1:5443" behind nginx)
+    listen_addr: Option<String>,
 
     /// Upstream exit server address (e.g. "tls.nl2.bikini-bottom.com:443")
-    upstream_addr: String,
+    upstream_addr: Option<String>,
 
     /// SNI that a real client will send. If the peeked ClientHello carries
-    /// this hostname → passthrough. Anything else → fallback.
-    expected_sni: String,
+    /// this hostname → passthrough. Anything else → fallback (or drop, if
+    /// no fallback cert/key configured).
+    expected_sni: Option<String>,
 
-    /// TLS cert for the fallback HTTPS endpoint (Let's Encrypt fullchain)
-    cert_path: String,
+    /// TLS cert for the fallback HTTPS endpoint (Let's Encrypt fullchain).
+    /// If both cert_path and key_path are absent, fallback is disabled and
+    /// SNI mismatches simply close the connection — useful when running
+    /// behind an nginx stream that already routes only the right SNI to us.
+    cert_path: Option<String>,
 
     /// TLS key for the fallback HTTPS endpoint (Let's Encrypt privkey)
-    key_path: String,
+    key_path: Option<String>,
 
-    /// Fallback hostname shown to unauthenticated probes
-    #[serde(default = "default_fallback_host")]
-    fallback_host: String,
-}
-
-fn default_fallback_host() -> String {
-    "hostkey.bikini-bottom.com".into()
+    /// Fallback hostname shown to unauthenticated probes (defaults to
+    /// `expected_sni` if absent).
+    fallback_host: Option<String>,
 }
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -61,13 +61,85 @@ fn default_fallback_host() -> String {
 #[derive(Parser, Debug)]
 #[command(name = "phantom-relay", about = "PhantomVPN SNI passthrough relay")]
 struct Args {
-    /// Path to TOML config file
-    #[arg(short, long, default_value = "/opt/phantom-relay/config/relay.toml")]
-    config: String,
+    /// Path to TOML config file (optional; CLI flags can supply everything)
+    #[arg(short, long)]
+    config: Option<String>,
+
+    /// Override listen address, e.g. "0.0.0.0:443" or "127.0.0.1:5443"
+    #[arg(long)]
+    listen: Option<String>,
+
+    /// Override upstream exit server, e.g. "tls.nl2.bikini-bottom.com:443"
+    #[arg(long)]
+    upstream: Option<String>,
+
+    /// Override expected SNI of real clients
+    #[arg(long)]
+    expected_sni: Option<String>,
+
+    /// Override fallback TLS cert path (PEM fullchain)
+    #[arg(long)]
+    cert: Option<String>,
+
+    /// Override fallback TLS key path (PEM)
+    #[arg(long)]
+    key: Option<String>,
+
+    /// Override fallback hostname shown in HTML probe response
+    #[arg(long)]
+    fallback_host: Option<String>,
 
     /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+}
+
+/// Effective relay configuration after merging TOML + CLI overrides.
+struct EffectiveConfig {
+    listen_addr: SocketAddr,
+    upstream_addr: String,
+    expected_sni: String,
+    fallback_host: String,
+    fallback: Option<(String, String)>, // (cert_path, key_path)
+}
+
+impl EffectiveConfig {
+    fn from_args(args: &Args) -> anyhow::Result<Self> {
+        let mut cfg = RelayConfig::default();
+        if let Some(path) = &args.config {
+            let raw = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read config: {}", path))?;
+            cfg = toml::from_str(&raw)
+                .with_context(|| format!("Failed to parse config: {}", path))?;
+        }
+
+        let listen_str = args.listen.clone().or(cfg.listen_addr)
+            .ok_or_else(|| anyhow::anyhow!("listen_addr is required (config or --listen)"))?;
+        let listen_addr: SocketAddr = listen_str.parse()
+            .with_context(|| format!("Invalid listen_addr: {}", listen_str))?;
+
+        let upstream_addr = args.upstream.clone().or(cfg.upstream_addr)
+            .ok_or_else(|| anyhow::anyhow!("upstream_addr is required (config or --upstream)"))?;
+
+        let expected_sni = args.expected_sni.clone().or(cfg.expected_sni)
+            .ok_or_else(|| anyhow::anyhow!("expected_sni is required (config or --expected-sni)"))?
+            .to_ascii_lowercase();
+
+        let fallback_host = args.fallback_host.clone()
+            .or(cfg.fallback_host)
+            .unwrap_or_else(|| expected_sni.clone());
+
+        let cert_path = args.cert.clone().or(cfg.cert_path);
+        let key_path  = args.key.clone().or(cfg.key_path);
+
+        let fallback = match (cert_path, key_path) {
+            (Some(c), Some(k)) => Some((c, k)),
+            (None, None) => None,
+            _ => anyhow::bail!("cert_path and key_path must both be set or both unset"),
+        };
+
+        Ok(Self { listen_addr, upstream_addr, expected_sni, fallback_host, fallback })
+    }
 }
 
 // ─── PEM loading ─────────────────────────────────────────────────────────────
@@ -92,9 +164,9 @@ fn load_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
 
 // ─── Fallback TLS acceptor ───────────────────────────────────────────────────
 
-fn build_fallback_acceptor(cfg: &RelayConfig) -> anyhow::Result<Arc<rustls::ServerConfig>> {
-    let certs = load_certs(Path::new(&cfg.cert_path))?;
-    let key = load_key(Path::new(&cfg.key_path))?;
+fn build_fallback_acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<Arc<rustls::ServerConfig>> {
+    let certs = load_certs(Path::new(cert_path))?;
+    let key = load_key(Path::new(key_path))?;
 
     let mut tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -280,33 +352,35 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("PhantomVPN Relay (SNI passthrough) starting...");
 
-    let config_str = std::fs::read_to_string(&args.config)
-        .with_context(|| format!("Failed to read config: {}", args.config))?;
-    let cfg: RelayConfig = toml::from_str(&config_str)
-        .with_context(|| format!("Failed to parse config: {}", args.config))?;
+    let cfg = EffectiveConfig::from_args(&args)?;
 
-    let listen_addr: SocketAddr = cfg.listen_addr.parse()
-        .context("Invalid listen_addr")?;
+    let fallback_acceptor = match &cfg.fallback {
+        Some((cert, key)) => {
+            let acc = TlsAcceptor::from(build_fallback_acceptor(cert, key)?);
+            tracing::info!("Fallback TLS enabled (cert={}, key={})", cert, key);
+            Some(acc)
+        }
+        None => {
+            tracing::info!("Fallback disabled — SNI mismatches will close the connection");
+            None
+        }
+    };
 
-    let fallback_config = build_fallback_acceptor(&cfg)?;
-    let fallback_acceptor = TlsAcceptor::from(fallback_config);
-
-    let upstream_addr_str = cfg.upstream_addr.clone();
-    let expected_sni = cfg.expected_sni.to_ascii_lowercase();
-    let fallback_host = cfg.fallback_host.clone();
-
-    let listener = TcpListener::bind(listen_addr).await
-        .with_context(|| format!("Failed to bind on {}", listen_addr))?;
-    tracing::info!("Relay listening on {}", listen_addr);
-    tracing::info!("Passthrough upstream: {} (expected SNI: {})", upstream_addr_str, expected_sni);
-    tracing::info!("Fallback host: {}", fallback_host);
+    let listener = TcpListener::bind(cfg.listen_addr).await
+        .with_context(|| format!("Failed to bind on {}", cfg.listen_addr))?;
+    tracing::info!("Relay listening on {}", cfg.listen_addr);
+    tracing::info!("Passthrough upstream: {} (expected SNI: {})", cfg.upstream_addr, cfg.expected_sni);
+    tracing::info!("Fallback host: {}", cfg.fallback_host);
 
     // Resolve upstream once at startup
-    let upstream_addr: SocketAddr = tokio::net::lookup_host(&upstream_addr_str).await
-        .with_context(|| format!("DNS lookup failed for {}", upstream_addr_str))?
+    let upstream_addr: SocketAddr = tokio::net::lookup_host(&cfg.upstream_addr).await
+        .with_context(|| format!("DNS lookup failed for {}", cfg.upstream_addr))?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", upstream_addr_str))?;
+        .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", cfg.upstream_addr))?;
     tracing::info!("Upstream resolved to {}", upstream_addr);
+
+    let expected_sni = cfg.expected_sni;
+    let fallback_host = cfg.fallback_host;
 
     loop {
         let (tcp, remote) = listener.accept().await?;
@@ -330,7 +404,7 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_connection(
     tcp: TcpStream,
     remote: SocketAddr,
-    fallback_acceptor: TlsAcceptor,
+    fallback_acceptor: Option<TlsAcceptor>,
     upstream_addr: SocketAddr,
     expected_sni: String,
     fallback_host: String,
@@ -383,12 +457,18 @@ async fn handle_connection(
             passthrough(tcp, remote, upstream_addr).await
         }
         Some(ref s) => {
-            tracing::debug!("SNI mismatch from {} ({}) → fallback", remote, s);
-            run_fallback(tcp, remote, fallback_acceptor, fallback_host).await
+            tracing::debug!("SNI mismatch from {} ({})", remote, s);
+            match fallback_acceptor {
+                Some(acc) => run_fallback(tcp, remote, acc, fallback_host).await,
+                None => Ok(()), // drop
+            }
         }
         None => {
-            tracing::debug!("Unparseable ClientHello from {} ({} bytes) → fallback", remote, have);
-            run_fallback(tcp, remote, fallback_acceptor, fallback_host).await
+            tracing::debug!("Unparseable ClientHello from {} ({} bytes)", remote, have);
+            match fallback_acceptor {
+                Some(acc) => run_fallback(tcp, remote, acc, fallback_host).await,
+                None => Ok(()),
+            }
         }
     }
 }

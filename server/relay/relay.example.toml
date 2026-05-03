@@ -1,0 +1,33 @@
+# phantom-relay configuration
+#
+# Two deployment modes are supported:
+#
+# (a) Standalone on :443  — relay owns the public TCP/443 listener, peeks SNI,
+#     and either passes through to upstream or terminates a fallback HTTPS
+#     handshake itself (cert_path/key_path required for this).
+#
+# (b) Behind nginx stream — nginx already does ssl_preread + SNI routing,
+#     and only forwards the right SNI to relay on a loopback port. In that
+#     case the fallback inside relay is dead code; you can omit cert_path /
+#     key_path entirely and SNI mismatches will simply close.
+
+# Address relay binds to.
+#   Standalone:        "0.0.0.0:443"
+#   Behind nginx stream: "127.0.0.1:5443"
+listen_addr  = "127.0.0.1:5443"
+
+# Upstream exit (the NL phantom-server). Hostname or IP, must include port.
+upstream_addr = "tls.nl2.bikini-bottom.com:443"
+
+# SNI that real clients send. ClientHellos with this exact hostname are
+# passed through; everything else hits the fallback (or is dropped).
+expected_sni = "relay.bikini-bottom.com"
+
+# Fallback HTTPS endpoint (Let's Encrypt cert) shown to probes that hit
+# us without the right SNI. Both fields must be set together; omit both
+# to disable fallback (drop on mismatch).
+cert_path     = "/etc/letsencrypt/live/relay.bikini-bottom.com/fullchain.pem"
+key_path      = "/etc/letsencrypt/live/relay.bikini-bottom.com/privkey.pem"
+
+# Hostname shown in the fallback HTML page. Defaults to expected_sni.
+# fallback_host = "relay.bikini-bottom.com"

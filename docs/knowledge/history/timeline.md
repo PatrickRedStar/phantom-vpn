@@ -1,5 +1,5 @@
 ---
-updated: 2026-05-02
+updated: 2026-05-03
 ---
 
 # Timeline проекта
@@ -189,6 +189,8 @@ Sparkle integration → Brand polish → Release pipeline).
 |--------|---------|
 | _в работе_ | Документация macOS платформы — `platforms/macos.md`, `apps/macos/README.md`. |
 | `v0.23.1` | Android hotfix: UI синхронизируется с native status-frame `connected` после смены сети. |
+| _2026-05-03_ | **Relay переехал** на `vps_balancer` (158.160.135.140) под nginx-stream SNI map (`relay.bikini-bottom.com` + `tls.nl2.bikini-bottom.com` → `127.0.0.1:5443`). 3x-ui панель / xray Reality на этом же боксе не задеты — nginx делает атомарный reload. Старый relay `193.187.95.128 / hostkey.bikini-bottom.com` остаётся для legacy conn_string'ов до миграции. Новый `server/scripts/deploy-relay.sh` (whitelist rsync, remote build). `phantom-relay` cert/key теперь опциональны (за nginx fallback не нужен). |
+| _2026-05-03_ | **`PHANTOM_NO_DEFAULT_ROUTE=1`** env-флаг в `apps/linux/cli/src/main.rs` — отключает global route-hijack клиента (rules 32764/32765 + iptables CONNMARK). Нужен для headless-боксов где phantom-client сосуществует с другими egress-сервисами (xray/nginx). На vps_balancer запускается так + ip rule для uid 996 (phantom-proxy → microsocks 127.0.0.1:10808 → outbound для 3x-ui). |
 
 ---
 
