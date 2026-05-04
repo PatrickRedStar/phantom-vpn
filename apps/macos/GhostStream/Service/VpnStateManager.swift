@@ -2,9 +2,20 @@
 //  VpnStateManager.swift
 //  GhostStream (macOS)
 //
-//  Cross-process VPN state. Mirrors the iOS implementation —
-//  observes `snapshot.json` in the App Group container plus Darwin
-//  notifications, exposes an `@Observable` `statusFrame` for SwiftUI.
+//  Single source of truth for VPN state. The only public observable is
+//  `statusFrame` — the same StatusFrame that the system extension publishes
+//  through `snapshot.json`. There is no separate `state` field, so views
+//  cannot accidentally desync from the runtime.
+//
+//  Refresh cascade (event-driven, no per-second polling):
+//    1. NEVPNStatusDidChange  — primary trigger after any tunnel state shift
+//    2. Darwin notifications  — extension calls these when it writes snapshot
+//    3. 10s safety-net poll   — covers the rare case where (1)/(2) misfire
+//
+//  The active NETunnelProviderManager is cached on the actor so other stores
+//  (TunnelLogStore, UpstreamVpnMonitor) don't each call
+//  `loadAllFromPreferences` on every tick — that XPC call was the source of
+//  the "Loading all configurations" log spam visible in Console.
 //
 
 import Foundation
@@ -13,59 +24,26 @@ import NetworkExtension
 import Observation
 import PhantomKit
 
-public enum VpnState: Equatable {
-    case disconnected
-    case connecting
-    case connected(since: Date, serverName: String)
-    case disconnecting
-    case error(String)
-}
-
-extension VpnStatePayload {
-    public static func from(_ state: VpnState) -> VpnStatePayload {
-        switch state {
-        case .disconnected:
-            return .init(kind: .disconnected)
-        case .connecting:
-            return .init(kind: .connecting)
-        case .connected(let since, let name):
-            return .init(kind: .connected, since: since.timeIntervalSince1970, serverName: name)
-        case .disconnecting:
-            return .init(kind: .disconnecting)
-        case .error(let msg):
-            return .init(kind: .error, error: msg)
-        }
-    }
-
-    public var asState: VpnState {
-        switch kind {
-        case .disconnected:  return .disconnected
-        case .connecting:    return .connecting
-        case .connected:
-            let date = Date(timeIntervalSince1970: since ?? Date().timeIntervalSince1970)
-            return .connected(since: date, serverName: serverName ?? "")
-        case .disconnecting: return .disconnecting
-        case .error:         return .error(error ?? "unknown")
-        }
-    }
-}
-
 @MainActor
 @Observable
 public final class VpnStateManager {
 
     public static let shared = VpnStateManager()
 
-    public private(set) var state: VpnState = .disconnected
     public private(set) var statusFrame: StatusFrame = .disconnected
 
     private let defaults: UserDefaults
-    private let payloadKey = "vpn.state.v1"
     private let snapshotPayloadKey = "vpn.statusFrame.v1"
     private let snapshotUpdatedAtKey = "vpn.statusFrame.updatedAt"
     private let providerBundleId = "com.ghoststream.vpn.tunnel"
     private let snapshotFreshnessInterval: TimeInterval = 3
+    private let safetyNetInterval: UInt64 = 10_000_000_000
+
     private var lastInterfaceSample: InterfaceSample?
+
+    private var cachedManager: NETunnelProviderManager?
+    private var statusObserver: NSObjectProtocol?
+    private var safetyNetTask: Task<Void, Never>?
 
     private var containerURL: URL? {
         FileManager.default.containerURL(
@@ -79,61 +57,79 @@ public final class VpnStateManager {
 
     private init() {
         self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
-        self.loadPayload()
         self.loadSnapshot()
         self.observeDarwinNotifications()
-        self.startNetworkExtensionStatusPolling()
+        Task { @MainActor [weak self] in
+            await self?.bootstrap()
+        }
+        self.startSafetyNetPolling()
     }
 
-    public func update(_ newState: VpnState) {
-        state = newState
-        writePayload(VpnStatePayload.from(newState))
-        DarwinNotifications.post(DarwinNotifications.stateChanged)
+    /// Returns the cached manager handle, loading it on demand. Used by other
+    /// stores (logs, upstream monitor) so they don't each fire XPC into
+    /// `nesessionmanager` on every tick.
+    public func cachedOrLoadManager() async -> NETunnelProviderManager? {
+        if let cachedManager { return cachedManager }
+        return await refreshCachedManager()
+    }
+
+    private func bootstrap() async {
+        await refreshCachedManager()
+        await refreshLiveTunnelStatus()
     }
 
     private func observeDarwinNotifications() {
         DarwinNotifications.observe(DarwinNotifications.stateChanged) { [weak self] in
             Task { @MainActor in
-                self?.loadPayload()
                 self?.loadSnapshot()
-                await self?.refreshNetworkExtensionStatusFallback()
+                await self?.refreshLiveTunnelStatus()
             }
         }
     }
 
-    private func startNetworkExtensionStatusPolling() {
-        Task { [weak self] in
+    @discardableResult
+    private func refreshCachedManager() async -> NETunnelProviderManager? {
+        do {
+            let managers = try await NETunnelProviderManager.loadAllFromPreferences()
+            let manager = selectGhostStreamManager(from: managers)
+            cachedManager = manager
+            if statusObserver == nil, let manager {
+                installStatusObserver(for: manager)
+            }
+            return manager
+        } catch {
+            return cachedManager
+        }
+    }
+
+    private func installStatusObserver(for manager: NETunnelProviderManager) {
+        statusObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNStatusDidChange,
+            object: manager.connection,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.refreshLiveTunnelStatus()
+            }
+        }
+    }
+
+    private func startSafetyNetPolling() {
+        safetyNetTask?.cancel()
+        safetyNetTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.pollNetworkExtensionStatus()
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                guard !Task.isCancelled else { break }
+                await self?.safetyNetTick()
             }
         }
     }
 
-    private func pollNetworkExtensionStatus() async {
-        if await refreshLiveTunnelStatus() {
-            return
+    private func safetyNetTick() async {
+        if cachedManager == nil {
+            await refreshCachedManager()
         }
-
-        if hasRecentRuntimeSnapshot() {
-            loadSnapshot()
-            return
-        }
-
-        await refreshNetworkExtensionStatusFallback()
-    }
-
-    private func writePayload(_ payload: VpnStatePayload) {
-        if let data = try? JSONEncoder().encode(payload) {
-            defaults.set(data, forKey: payloadKey)
-        }
-    }
-
-    private func loadPayload() {
-        guard let data = defaults.data(forKey: payloadKey),
-              let payload = try? JSONDecoder().decode(VpnStatePayload.self, from: data)
-        else { return }
-        state = payload.asState
+        await refreshLiveTunnelStatus()
     }
 
     @discardableResult
@@ -146,62 +142,48 @@ public final class VpnStateManager {
         else { return false }
 
         statusFrame = frame
-        applyStatusFrame(frame)
         return true
     }
 
-    private func applyStatusFrame(_ frame: StatusFrame) {
-        switch frame.state {
-        case .disconnected:
-            state = .disconnected
-        case .connecting:
-            state = .connecting
-        case .reconnecting:
-            state = .connecting
-        case .connected:
-            let since = Date().addingTimeInterval(-Double(frame.sessionSecs))
-            let serverName = frame.sni ?? frame.serverAddr ?? ""
-            state = .connected(since: since, serverName: serverName)
-        case .error:
-            state = .error(frame.lastError ?? "unknown")
-        }
-    }
-
+    @discardableResult
     private func refreshLiveTunnelStatus() async -> Bool {
+        guard let manager = await cachedOrLoadManager() else {
+            if !hasRecentRuntimeSnapshot() {
+                statusFrame = .disconnected
+            }
+            return false
+        }
+
+        guard isActiveNetworkExtensionStatus(manager.connection.status),
+              let session = manager.connection as? NETunnelProviderSession
+        else {
+            applyNetworkExtensionFallback(manager: manager)
+            return false
+        }
+
         do {
-            guard let manager = try await loadGhostStreamManager(),
-                  isActiveNetworkExtensionStatus(manager.connection.status),
-                  let session = manager.connection as? NETunnelProviderSession
-            else { return false }
-
             let response = try await TunnelIpcBridge(session: session).send(.getStatus)
-            guard case .status(let frame) = response else { return false }
-
+            guard case .status(let frame) = response else {
+                loadSnapshot()
+                return false
+            }
             statusFrame = frame
-            applyStatusFrame(frame)
             return true
         } catch {
+            if !hasRecentRuntimeSnapshot() {
+                applyNetworkExtensionFallback(manager: manager)
+            } else {
+                loadSnapshot()
+            }
             return false
         }
     }
 
-    private func refreshNetworkExtensionStatusFallback() async {
-        guard !hasRecentRuntimeSnapshot() else { return }
-
-        do {
-            guard let manager = try await loadGhostStreamManager(),
-                  let proto = manager.protocolConfiguration as? NETunnelProviderProtocol
-            else { return }
-
-            applyNetworkExtensionStatus(manager.connection.status, manager: manager, protocol: proto)
-        } catch {
+    private func applyNetworkExtensionFallback(manager: NETunnelProviderManager) {
+        guard let proto = manager.protocolConfiguration as? NETunnelProviderProtocol else {
             return
         }
-    }
-
-    private func loadGhostStreamManager() async throws -> NETunnelProviderManager? {
-        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-        return selectGhostStreamManager(from: managers)
+        applyNetworkExtensionStatus(manager.connection.status, manager: manager, protocol: proto)
     }
 
     private func hasRecentRuntimeSnapshot(now: Date = Date()) -> Bool {
@@ -247,63 +229,32 @@ public final class VpnStateManager {
         manager: NETunnelProviderManager,
         protocol proto: NETunnelProviderProtocol
     ) {
+        let frameState: ConnState
+        let connectedDate: Date?
         switch status {
         case .connected:
-            let connectedDate = manager.connection.connectedDate ?? Date()
-            let profile = profile(from: proto)
-            let serverName = nonEmpty(profile?.serverName)
-                ?? nonEmpty(profile?.serverAddr)
-                ?? nonEmpty(proto.serverAddress)
-                ?? ""
-
-            state = .connected(since: connectedDate, serverName: serverName)
-            statusFrame = makeNetworkExtensionStatusFrame(
-                state: .connected,
-                connectedDate: connectedDate,
-                profile: profile,
-                protocol: proto
-            )
+            frameState = .connected
+            connectedDate = manager.connection.connectedDate ?? Date()
         case .connecting:
-            state = .connecting
-            statusFrame = makeNetworkExtensionStatusFrame(
-                state: .connecting,
-                connectedDate: nil,
-                profile: profile(from: proto),
-                protocol: proto
-            )
+            frameState = .connecting
+            connectedDate = nil
         case .reasserting:
-            state = .connecting
-            statusFrame = makeNetworkExtensionStatusFrame(
-                state: .reconnecting,
-                connectedDate: nil,
-                profile: profile(from: proto),
-                protocol: proto
-            )
-        case .disconnecting:
-            state = .disconnecting
-            statusFrame = makeNetworkExtensionStatusFrame(
-                state: .disconnected,
-                connectedDate: nil,
-                profile: profile(from: proto),
-                protocol: proto
-            )
-        case .disconnected, .invalid:
-            state = .disconnected
-            statusFrame = makeNetworkExtensionStatusFrame(
-                state: .disconnected,
-                connectedDate: nil,
-                profile: profile(from: proto),
-                protocol: proto
-            )
+            frameState = .reconnecting
+            connectedDate = nil
+        case .disconnecting, .disconnected, .invalid:
+            frameState = .disconnected
+            connectedDate = nil
         @unknown default:
-            state = .disconnected
-            statusFrame = makeNetworkExtensionStatusFrame(
-                state: .disconnected,
-                connectedDate: nil,
-                profile: profile(from: proto),
-                protocol: proto
-            )
+            frameState = .disconnected
+            connectedDate = nil
         }
+
+        statusFrame = makeNetworkExtensionStatusFrame(
+            state: frameState,
+            connectedDate: connectedDate,
+            profile: profile(from: proto),
+            protocol: proto
+        )
     }
 
     private func makeNetworkExtensionStatusFrame(

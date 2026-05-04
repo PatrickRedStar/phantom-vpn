@@ -31,9 +31,9 @@ public final class UpstreamVpnMonitor {
     public private(set) var lastError: String?
 
     private let detector = UpstreamVpnRouteDetector()
-    private let providerBundleId = "com.ghoststream.vpn.tunnel"
     private var task: Task<Void, Never>?
     private var lastAppliedHash: String?
+    private weak var stateManager: VpnStateManager?
 
     private init() {}
 
@@ -42,6 +42,7 @@ public final class UpstreamVpnMonitor {
         preferences: PreferencesStore,
         stateManager: VpnStateManager
     ) {
+        self.stateManager = stateManager
         guard task == nil else { return }
         task = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -125,14 +126,10 @@ public final class UpstreamVpnMonitor {
     }
 
     private func activeSession() async throws -> NETunnelProviderSession? {
-        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-        let manager = managers
-            .filter {
-                ($0.protocolConfiguration as? NETunnelProviderProtocol)?
-                    .providerBundleIdentifier == providerBundleId
-            }
-            .first { isActive($0.connection.status) }
-        return manager?.connection as? NETunnelProviderSession
+        guard let manager = await stateManager?.cachedOrLoadManager(),
+              isActive(manager.connection.status)
+        else { return nil }
+        return manager.connection as? NETunnelProviderSession
     }
 
     private func isActive(_ status: NEVPNStatus) -> Bool {

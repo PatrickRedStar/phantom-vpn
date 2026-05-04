@@ -21,7 +21,6 @@ public final class TunnelLogStore {
     public private(set) var lastErrorMessage: String?
 
     private let maxEntries = 50_000
-    private let providerBundleId = "com.ghoststream.vpn.tunnel"
     private var lastLogTsMs: UInt64 = 0
     private var ipcBridge: TunnelIpcBridge?
     private var pollTask: Task<Void, Never>?
@@ -38,7 +37,7 @@ public final class TunnelLogStore {
             guard let self else { return }
             while !Task.isCancelled {
                 await self.pollLogsOnce()
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
             self.polling = false
         }
@@ -130,36 +129,13 @@ public final class TunnelLogStore {
     }
 
     private func makeIpcBridge() async throws -> TunnelIpcBridge? {
-        let managers = try await NETunnelProviderManager.loadAllFromPreferences()
-        let manager = selectGhostStreamManager(from: managers)
-        guard let session = manager?.connection as? NETunnelProviderSession else {
+        guard let manager = await stateManager?.cachedOrLoadManager() else {
+            return nil
+        }
+        guard let session = manager.connection as? NETunnelProviderSession else {
             return nil
         }
         return TunnelIpcBridge(session: session)
-    }
-
-    private func selectGhostStreamManager(
-        from managers: [NETunnelProviderManager]
-    ) -> NETunnelProviderManager? {
-        let ghostManagers = managers.filter { candidate in
-            (candidate.protocolConfiguration as? NETunnelProviderProtocol)?
-                .providerBundleIdentifier == providerBundleId
-        }
-
-        return ghostManagers.first { isActiveNetworkExtensionStatus($0.connection.status) }
-            ?? ghostManagers.first(where: \.isEnabled)
-            ?? ghostManagers.first
-    }
-
-    private func isActiveNetworkExtensionStatus(_ status: NEVPNStatus) -> Bool {
-        switch status {
-        case .connecting, .connected, .reasserting, .disconnecting:
-            return true
-        case .disconnected, .invalid:
-            return false
-        @unknown default:
-            return false
-        }
     }
 
     private func trimLogs() {
