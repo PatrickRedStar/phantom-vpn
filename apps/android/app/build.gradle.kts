@@ -12,9 +12,9 @@ android {
         applicationId = "io.ghoststream.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 62
-        versionName = "0.23.1"
-        buildConfigField("String", "GIT_TAG", "\"v0.23.1\"")
+        versionCode = 63
+        versionName = "0.23.2"
+        buildConfigField("String", "GIT_TAG", "\"v0.23.2\"")
     }
 
     signingConfigs {
@@ -42,6 +42,12 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            // Distinct applicationId so debug builds can coexist with the
+            // Play Store release on the same device (used for perf testing).
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
         }
     }
 

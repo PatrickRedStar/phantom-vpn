@@ -910,8 +910,28 @@ private fun IconSwitch(
             "bone" to R.mipmap.ic_launcher,
             "scope" to R.mipmap.ic_launcher_scope,
         )
+        val ctx = LocalContext.current
         entries.forEachIndexed { idx, (value, iconRes) ->
             val active = selected == value
+            // Mipmap launcher icons are adaptive-icon XML (background+foreground)
+            // since API 26 — `painterResource` rejects them. Rasterize via
+            // Canvas to a Bitmap so any Drawable type renders.
+            val iconBitmap = remember(iconRes) {
+                val drawable = ctx.getDrawable(iconRes)
+                if (drawable == null) {
+                    null
+                } else {
+                    val w = drawable.intrinsicWidth.coerceAtLeast(1)
+                    val h = drawable.intrinsicHeight.coerceAtLeast(1)
+                    val bm = android.graphics.Bitmap.createBitmap(
+                        w, h, android.graphics.Bitmap.Config.ARGB_8888,
+                    )
+                    val canvas = android.graphics.Canvas(bm)
+                    drawable.setBounds(0, 0, w, h)
+                    drawable.draw(canvas)
+                    bm.asImageBitmap()
+                }
+            }
             Box(
                 modifier = Modifier
                     .size(36.dp)
@@ -922,11 +942,13 @@ private fun IconSwitch(
                     .padding(2.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Image(
-                    painter = painterResource(iconRes),
-                    contentDescription = value,
-                    modifier = Modifier.size(28.dp),
-                )
+                if (iconBitmap != null) {
+                    Image(
+                        bitmap = iconBitmap,
+                        contentDescription = value,
+                        modifier = Modifier.size(28.dp),
+                    )
+                }
             }
         }
     }

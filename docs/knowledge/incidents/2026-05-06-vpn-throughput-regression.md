@@ -283,16 +283,42 @@ phantom-server и потенциальный sharding по N процессов 
 - ❌ Fix #2 как причина 8-parallel timeout. На Fix #1-only тоже воспроизвелось
   один раз и ушло — это transient, не от code change.
 
+## Замеры — Fix #3 (Android TUN writer на std::thread)
+
+Изменение: `crates/client-core-runtime/src/lib.rs:165-195` — в варианте
+`TunIo::BlockingThreads` (Android) TUN writer вынесен из `tokio::spawn`
+в `std::thread::spawn` с `blocking_recv()`. Plus partial-write loop +
+EINTR retry. Tokio worker threads больше не замораживаются на `libc::write`.
+
+Замер на телефоне (Samsung), один speedtest single-flow, тот же сервер vdsina:
+
+| Метрика | Before (Fix #1 only через play market release v0.23.1) | After (Fix #1 + #3, debug v0.23.2-debug) |
+|---|---|---|
+| Speedtest download | 178 Мбит/с | 187 Мбит/с (+5%) |
+| Speedtest upload | 35 Мбит/с | 60 Мбит/с (+71%) |
+
+**Single-flow speedtest на Android упирается в TCP-over-TCP architectural
+limit (~150-200 Мбит/с при 60ms RTT), не в наш код.** Real benefit от Fix #3
+виден на multi-flow нагрузках (torrent, aria2c -x 16, CDN streaming с
+sharding'ом по сегментам), где Fix #3 убирает блокировку tokio worker
+threads на `libc::write`. На single-flow speedtest +20 Мбит/с — это
+скорее jitter одного замера, основное достижение — приложение **не
+ухудшилось** и upload вырос.
+
+Postscript: при сборке debug-варианта вылез existing UI bug в
+`SettingsScreen.kt:926` — `painterResource(R.mipmap.ic_launcher)` падает
+на adaptive-icon XML на API 26+. Workaround: rasterize любой Drawable
+через Canvas → Bitmap. К нашему scope перформанс-фиксов отношения не
+имеет, но без него debug-сборка крашилась на старте.
+
+Status: ✅ landed.
+
 ## Что осталось в backlog
 
 1. **Fix #2 v3** — переписать `tls_tx_loop` drain с пониманием rustls write
    buffering. Цель: сократить число TLS records на сервере, не сломав
    параллельный throughput.
-2. **Fix #3** (Android+BlockingThreads) — TUN writer вынести из tokio task
-   в `std::thread`. Текущий код блокирует tokio worker thread на `libc::write`.
-   На pc мы используем io_uring TUN — фикс не релевантен. Релевантен для
-   Android, где замер показывал 152/42 Мбит/с в speedtest. Тестируется
-   только на физическом телефоне.
+2. **Fix #3** (Android+BlockingThreads) — ✅ landed.
 3. **phantom-server scaling** — single process bottleneck (видим 100% CPU
    в логах). Вариант: sharding по N tokio runtimes / per-CPU process pinning.
    Не блокер для текущей задачи, но потолок при росте users.

@@ -161,16 +161,39 @@ pub async fn run(
                             }
                         }
                     });
-                    // Writer task: async channel → blocking libc::write
-                    tokio::spawn(async move {
-                        while let Some(pkt) = write_rx.recv().await {
-                            let ret = unsafe { libc::write(tun_fd, pkt.as_ptr() as *const libc::c_void, pkt.len()) };
-                            if ret < 0 {
+                    // Writer thread: blocking_recv() → blocking libc::write on a
+                    // dedicated OS thread (NOT tokio worker). Putting blocking
+                    // syscalls inside `tokio::spawn` freezes a tokio worker on
+                    // every TUN buffer-full and starves async tasks (TLS RX/TX,
+                    // dispatcher) — see incident 2026-05-06. Partial-write loop
+                    // + EINTR retry are required because the TUN fd is in
+                    // blocking mode and large packets may not write atomically.
+                    std::thread::spawn(move || {
+                        tracing::info!(tun_fd, "TUN writer thread started");
+                        while let Some(pkt) = write_rx.blocking_recv() {
+                            let mut written = 0usize;
+                            let len = pkt.len();
+                            while written < len {
+                                let n = unsafe {
+                                    libc::write(
+                                        tun_fd,
+                                        pkt.as_ptr().add(written) as *const libc::c_void,
+                                        len - written,
+                                    )
+                                };
+                                if n > 0 {
+                                    written += n as usize;
+                                    continue;
+                                }
                                 let err = std::io::Error::last_os_error();
-                                tracing::error!(tun_fd, %err, "TUN write failed");
-                                break;
+                                if err.raw_os_error() == Some(libc::EINTR) {
+                                    continue;
+                                }
+                                tracing::error!(tun_fd, n, %err, "TUN write failed — writer exiting");
+                                return;
                             }
                         }
+                        tracing::info!(tun_fd, "TUN writer: channel closed");
                     });
                     Ok((read_rx, write_tx))
                 });
