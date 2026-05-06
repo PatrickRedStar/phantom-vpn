@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **phantom-vpn** (7221 symbols, 24792 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ghoststream** (7418 symbols, 26172 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -17,7 +17,7 @@ This project is indexed by GitNexus as **phantom-vpn** (7221 symbols, 24792 rela
 
 1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
-3. `READ gitnexus://repo/phantom-vpn/process/{processName}` — trace the full execution flow step by step
+3. `READ gitnexus://repo/ghoststream/process/{processName}` — trace the full execution flow step by step
 4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
 
 ## When Refactoring
@@ -56,10 +56,10 @@ This project is indexed by GitNexus as **phantom-vpn** (7221 symbols, 24792 rela
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/phantom-vpn/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/phantom-vpn/clusters` | All functional areas |
-| `gitnexus://repo/phantom-vpn/processes` | All execution flows |
-| `gitnexus://repo/phantom-vpn/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/ghoststream/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/ghoststream/clusters` | All functional areas |
+| `gitnexus://repo/ghoststream/processes` | All execution flows |
+| `gitnexus://repo/ghoststream/process/{name}` | Step-by-step execution trace |
 
 ## Self-Check Before Finishing
 
