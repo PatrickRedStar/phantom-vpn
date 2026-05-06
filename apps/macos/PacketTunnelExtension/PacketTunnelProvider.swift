@@ -658,7 +658,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         telemetryLock.unlock()
 
         let live = state == .connected
-        let streamCount = live ? UInt8(max(1, min(16, settings?.streams ?? 1))) : 0
+        let streamCount = live ? providerStreamCount(settings: settings) : 0
         let activityLevel: Float = (rateRx + rateTx) > 0 ? 1.0 : (live ? 0.12 : 0)
         var streamActivity = Array(repeating: Float(0), count: 16)
         if streamCount > 0 {
@@ -685,6 +685,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             reconnectAttempt: nil,
             reconnectNextDelaySecs: nil
         )
+    }
+
+    private func providerStreamCount(settings: TunnelSettings?) -> UInt8 {
+        if let streamOverride = settings?.streams {
+            return UInt8(max(1, min(16, streamOverride)))
+        }
+
+        runtimeStateLock.lock()
+        let runtimeStreams = lastStatusFrame.nStreams
+        runtimeStateLock.unlock()
+
+        return runtimeStreams > 0 ? runtimeStreams : 1
     }
 
     private func appendProviderLog(level: String, message: String) {

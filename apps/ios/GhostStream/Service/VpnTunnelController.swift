@@ -118,7 +118,7 @@ public final class VpnTunnelController: ObservableObject {
                 manualDirectIpv6Cidrs: routeRules.ipv6Cidrs,
                 preserveScopedDns: preferences.preserveScopedDns
             ),
-            streams: preferences.streams
+            streams: preferences.streamOverride
         )
 
         let settingsData: Data
@@ -206,7 +206,7 @@ public final class VpnTunnelController: ObservableObject {
             manualDirectIpv6Cidrs: routeRules.ipv6Cidrs,
             preserveScopedDns: preferences.preserveScopedDns,
             routePolicy: snapshot,
-            streams: preferences.streams
+            streams: preferences.streamOverride
         )
 
         guard let settingsData = try? JSONEncoder().encode(settings) else {

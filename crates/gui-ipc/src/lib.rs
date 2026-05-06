@@ -41,6 +41,9 @@ pub struct TunnelSettings {
     pub ipv6_killswitch: bool,
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
+    /// None = automatic CPU-derived stream count; Some(n) is clamped by runtime.
+    #[serde(default)]
+    pub streams: Option<usize>,
 }
 
 fn default_true() -> bool { true }
@@ -51,7 +54,27 @@ impl Default for TunnelSettings {
             dns_leak_protection: true,
             ipv6_killswitch: true,
             auto_reconnect: true,
+            streams: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tunnel_settings_streams_default_to_auto() {
+        let settings: TunnelSettings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.streams, None);
+    }
+
+    #[test]
+    fn tunnel_settings_accept_manual_stream_override() {
+        let settings: TunnelSettings = serde_json::from_str(r#"{"streams":12}"#).unwrap();
+
+        assert_eq!(settings.streams, Some(12));
     }
 }
 

@@ -20,6 +20,7 @@ import SwiftUI
 /// - `activityLevels`: optional per-bar real activity (0.0–1.0, 16 elements
 ///   from `StatusFrame.streamActivity`). When non-nil the synthetic shimmer
 ///   is replaced with the actual per-stream values.
+/// - `reduceMotion`: disables synthetic shimmer and height animations.
 /// - `height`: total strip height (default 70pt).
 public struct MuxBars: View {
 
@@ -28,17 +29,20 @@ public struct MuxBars: View {
     /// Real per-stream activity from `StatusFrame.streamActivity`. When
     /// supplied the synthetic random shimmer is bypassed.
     public var activityLevels: [Float]?
+    public var reduceMotion: Bool
     public var height: CGFloat
 
     public init(
         active: Bool = true,
         barCount: Int = 8,
         activityLevels: [Float]? = nil,
+        reduceMotion: Bool = false,
         height: CGFloat = 70
     ) {
         self.active = active
         self.barCount = barCount
         self.activityLevels = activityLevels
+        self.reduceMotion = reduceMotion
         self.height = height
     }
 
@@ -71,15 +75,16 @@ public struct MuxBars: View {
         .frame(maxWidth: .infinity)
         .onAppear(perform: resetHeights)
         .onChange(of: active) { _, _ in resetHeights() }
+        .onChange(of: reduceMotion) { _, _ in resetHeights() }
         .onChange(of: activityLevels) { _, _ in
             // When real data arrives, update without animation to reflect
             // the true per-stream state immediately.
             if activityLevels != nil { resetHeights() }
         }
-        .task(id: active) {
+        .task(id: "\(active)|\(reduceMotion)") {
             // 700ms shimmer tick while active — skipped when real levels
             // are provided (the onChange above handles updates).
-            guard activityLevels == nil else { return }
+            guard activityLevels == nil, !reduceMotion else { return }
             while active && !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 if Task.isCancelled { break }
@@ -91,8 +96,12 @@ public struct MuxBars: View {
     }
 
     private func resetHeights() {
-        withAnimation(.easeInOut(duration: 0.4)) {
+        if reduceMotion {
             heights = makeHeights(active: active)
+        } else {
+            withAnimation(.easeInOut(duration: 0.4)) {
+                heights = makeHeights(active: active)
+            }
         }
     }
 

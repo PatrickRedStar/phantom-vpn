@@ -10,10 +10,8 @@ public struct TunnelSettings: Codable {
     public var manualDirectIpv6Cidrs: [String]
     public var preserveScopedDns: Bool
     public var routePolicy: RoutePolicySnapshot?
-    /// Requested TLS stream count from the UI. Current Rust runtime derives
-    /// stream count internally, so this is carried for forward compatibility
-    /// until the FFI/runtime consumes it.
-    public var streams: Int
+    /// nil keeps the runtime's CPU-derived automatic stream count.
+    public var streams: Int?
 
     enum CodingKeys: String, CodingKey {
         case dnsLeakProtection = "dns_leak_protection"
@@ -36,7 +34,7 @@ public struct TunnelSettings: Codable {
         manualDirectIpv6Cidrs: [String] = [],
         preserveScopedDns: Bool = true,
         routePolicy: RoutePolicySnapshot? = nil,
-        streams: Int = 8
+        streams: Int? = nil
     ) {
         self.dnsLeakProtection = dnsLeakProtection
         self.ipv6Killswitch = ipv6Killswitch
@@ -50,7 +48,7 @@ public struct TunnelSettings: Codable {
         ).valid
         self.preserveScopedDns = preserveScopedDns
         self.routePolicy = routePolicy
-        self.streams = max(2, min(16, streams))
+        self.streams = streams.map { max(2, min(16, $0)) }
     }
 
     public init(from decoder: Decoder) throws {
@@ -67,7 +65,7 @@ public struct TunnelSettings: Codable {
         ).valid
         preserveScopedDns = try container.decodeIfPresent(Bool.self, forKey: .preserveScopedDns) ?? true
         routePolicy = try container.decodeIfPresent(RoutePolicySnapshot.self, forKey: .routePolicy)
-        let rawStreams = try container.decodeIfPresent(Int.self, forKey: .streams) ?? 8
-        streams = max(2, min(16, rawStreams))
+        let rawStreams = try container.decodeIfPresent(Int.self, forKey: .streams)
+        streams = rawStreams.map { max(2, min(16, $0)) }
     }
 }

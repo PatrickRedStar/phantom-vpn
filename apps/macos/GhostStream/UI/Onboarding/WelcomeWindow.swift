@@ -410,6 +410,7 @@ private struct InstallExtStepView: View {
 private struct AwaitingApprovalStepView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(PreferencesStore.self) private var prefs
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @Bindable var coordinator: OnboardingCoordinator
 
@@ -441,7 +442,7 @@ private struct AwaitingApprovalStepView: View {
 
             // Live status panel
             HStack(spacing: 14) {
-                PulseDot(color: C.warn, size: 10, pulse: true)
+                PulseDot(color: C.warn, size: 10, pulse: !prefs.reduceMotion)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("ОЖИДАНИЕ ДЕЙСТВИЯ ПОЛЬЗОВАТЕЛЯ")
                         .font(.custom("DepartureMono-Regular", size: 10))
@@ -523,6 +524,7 @@ private struct AwaitingApprovalStepView: View {
 private struct ConfigureVpnStepView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(PreferencesStore.self) private var prefs
     @Bindable var coordinator: OnboardingCoordinator
 
     var body: some View {
@@ -549,7 +551,7 @@ private struct ConfigureVpnStepView: View {
 
             if coordinator.awaitingVpnApproval {
                 HStack(spacing: 14) {
-                    PulseDot(color: C.warn, size: 10, pulse: true)
+                    PulseDot(color: C.warn, size: 10, pulse: !prefs.reduceMotion)
                     Text("Жду подтверждения VPN-конфигурации…")
                         .font(.custom("JetBrainsMono-Regular", size: 12.5))
                         .foregroundStyle(C.bone)

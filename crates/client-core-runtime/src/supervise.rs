@@ -14,7 +14,7 @@ use std::sync::Arc;
 use client_common::helpers;
 use client_common::{tls_connect, tls_connect_with_tcp, tls_rx_loop, tls_tx_loop, write_handshake};
 use ghoststream_gui_ipc::{ConnState, ConnectProfile, StatusFrame, TunnelSettings};
-use phantom_core::wire::{flow_stream_idx, n_data_streams};
+use phantom_core::wire::{flow_stream_idx, n_data_streams_with_override};
 use tokio::sync::{watch, Mutex};
 
 use crate::telemetry::{spawn_telem_task, Telemetry};
@@ -117,7 +117,7 @@ pub async fn supervise(
 
         let tun_addr = cfg.network.tun_addr.clone().unwrap_or_default();
         let sni = cfg.network.server_name.clone().unwrap_or_default();
-        let n_streams = n_data_streams();
+        let n_streams = n_data_streams_with_override(settings.streams);
 
         let telemetry = Arc::new(Telemetry::new(
             n_streams,
@@ -155,6 +155,7 @@ pub async fn supervise(
             status_tx.clone(),
             telemetry.clone(),
             tun_channels,
+            n_streams,
             protect_socket.clone(),
             cancel.clone(),
         )
@@ -278,14 +279,13 @@ async fn drive_tunnel(
         tokio::sync::mpsc::Receiver<Bytes>,
         tokio::sync::mpsc::Sender<Bytes>,
     ),
+    n_streams: usize,
     protect_socket: Option<ProtectSocket>,
     cancel: Arc<tokio::sync::Notify>,
 ) -> anyhow::Result<()> {
     let client_tls =
         phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
             .context("build TLS client config")?;
-    let n_streams = n_data_streams();
-
     let server_name = cfg
         .network
         .server_name

@@ -272,7 +272,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 manualDirectIpv6Cidrs: manualDirectIpv6Cidrs,
                 preserveScopedDns: Self.decodeBool(.preserveScopedDns, from: container) ?? true,
                 routePolicy: try? container.decode(RoutePolicySnapshot.self, forKey: .routePolicy),
-                streams: Self.decodeInt(.streams, from: container) ?? 8
+                streams: Self.decodeInt(.streams, from: container)
             )
         }
 

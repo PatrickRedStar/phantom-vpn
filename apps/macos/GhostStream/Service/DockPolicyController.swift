@@ -25,7 +25,6 @@ public final class DockPolicyController {
     }
 
     private let defaults: UserDefaults
-    private var foregroundWindowClaims: Set<String> = []
     private static let key = "showInDock"
 
     private init() {
@@ -39,22 +38,19 @@ public final class DockPolicyController {
     }
 
     public func apply() {
-        let needsForegroundIdentity = showInDock || !foregroundWindowClaims.isEmpty
-        NSApp.setActivationPolicy(needsForegroundIdentity ? .regular : .accessory)
+        NSApp.setActivationPolicy(showInDock ? .regular : .accessory)
     }
 
-    public func foregroundWindowDidAppear(_ claimID: String) {
-        foregroundWindowClaims.insert(claimID)
+    public func foregroundWindowDidAppear(_: String) {
         apply()
     }
 
-    public func foregroundWindowDidDisappear(_ claimID: String) {
-        foregroundWindowClaims.remove(claimID)
+    public func foregroundWindowDidDisappear(_: String) {
         apply()
     }
 
     public func activateForegroundWindow() {
-        NSApp.setActivationPolicy(.regular)
+        apply()
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
         }

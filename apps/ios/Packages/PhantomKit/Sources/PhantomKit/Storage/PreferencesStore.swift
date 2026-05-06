@@ -89,15 +89,22 @@ public final class PreferencesStore {
         didSet { defaults.set(autoUpdate, forKey: Key.autoUpdate) }
     }
 
-    public var streams: Int = 8 {
+    public var streamOverride: Int? = nil {
         didSet {
-            let clamped = max(2, min(16, streams))
-            if streams != clamped {
-                streams = clamped
+            let clamped = Self.clampedStreamOverride(streamOverride)
+            if streamOverride != clamped {
+                streamOverride = clamped
+            } else if let streamOverride {
+                defaults.set(streamOverride, forKey: Key.streams)
             } else {
-                defaults.set(streams, forKey: Key.streams)
+                defaults.removeObject(forKey: Key.streams)
             }
         }
+    }
+
+    public var streams: Int {
+        get { streamOverride ?? 8 }
+        set { streamOverride = newValue }
     }
 
     public var routingMode: RoutingMode = .global {
@@ -134,8 +141,7 @@ public final class PreferencesStore {
         self.notifyStateChanges = defaults.object(forKey: Key.notifyStateChanges) as? Bool ?? true
         self.reduceMotion = defaults.object(forKey: Key.reduceMotion) as? Bool ?? false
         self.autoUpdate = defaults.object(forKey: Key.autoUpdate) as? Bool ?? false
-        let storedStreams = defaults.object(forKey: Key.streams) as? Int ?? 8
-        self.streams = max(2, min(16, storedStreams))
+        self.streamOverride = Self.clampedStreamOverride(defaults.object(forKey: Key.streams) as? Int)
         let legacySplitRouting = defaults.object(forKey: Key.splitRouting) as? Bool
         if let storedRoutingMode = defaults.string(forKey: Key.routingMode),
            let mode = RoutingMode(rawValue: storedRoutingMode) {
@@ -150,6 +156,10 @@ public final class PreferencesStore {
         }
         self.manualDirectCidrsText = defaults.string(forKey: Key.manualDirectCidrs) ?? ""
         self.preserveScopedDns = defaults.object(forKey: Key.preserveScopedDns) as? Bool ?? true
+    }
+
+    private static func clampedStreamOverride(_ value: Int?) -> Int? {
+        value.map { max(2, min(16, $0)) }
     }
 
     // MARK: - DNS

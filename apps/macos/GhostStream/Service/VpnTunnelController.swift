@@ -79,7 +79,7 @@ public final class VpnTunnelController: ObservableObject {
         let dnsLeakProtection = preferences.dnsLeakProtection
         let ipv6Killswitch = preferences.ipv6Killswitch
         let autoReconnect = preferences.autoReconnect
-        let streams = preferences.streams
+        let streamOverride = preferences.streamOverride
         providerProfile.dnsServers = dnsServers ?? profile.dnsServers
         providerProfile.splitRouting = effectiveRoutingMode.legacySplitRoutingValue
         let routePolicyInput = UpstreamVpnRouteDetector.SnapshotInput(
@@ -103,7 +103,7 @@ public final class VpnTunnelController: ObservableObject {
                 manualDirectCidrs: manualDirectCidrs,
                 preserveScopedDns: preserveScopedDns,
                 routePolicy: routePolicy,
-                streams: streams
+                streams: streamOverride
             )
             settingsData = try JSONEncoder().encode(settings)
         } catch {

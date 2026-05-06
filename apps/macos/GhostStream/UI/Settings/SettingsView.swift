@@ -14,17 +14,26 @@
 //          · "diagnostics"      — export bundle.
 //
 
+import AppKit
 import PhantomKit
 import PhantomUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct SettingsView: View {
 
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
+    @Environment(ProfilesStore.self) private var profiles
+    @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(TunnelLogStore.self) private var logStore
     @Environment(LoginItemController.self) private var login
     @Environment(DockPolicyController.self) private var dock
     @Environment(UpstreamVpnMonitor.self) private var upstream
+
+    @State private var exportStatusMessage: String?
+    @State private var exportingDiagnostics = false
+    @State private var settingsAppeared = false
 
     public init() {}
 
@@ -32,7 +41,9 @@ public struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 detailHead
+                    .settingsReveal(settingsAppeared, delay: 0.00, reduceMotion: prefs.reduceMotion)
                 grid
+                    .settingsReveal(settingsAppeared, delay: 0.06, reduceMotion: prefs.reduceMotion)
             }
             .padding(.horizontal, 28)
             .padding(.top, 22)
@@ -40,6 +51,11 @@ public struct SettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
+        .onAppear {
+            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+                settingsAppeared = true
+            }
+        }
     }
 
     // MARK: - detail-head
@@ -86,8 +102,10 @@ public struct SettingsView: View {
         HStack(alignment: .top, spacing: 18) {
             tunnelCard
                 .frame(maxWidth: .infinity)
+                .settingsReveal(settingsAppeared, delay: 0.10, reduceMotion: prefs.reduceMotion)
             macColumn
                 .frame(maxWidth: .infinity)
+                .settingsReveal(settingsAppeared, delay: 0.16, reduceMotion: prefs.reduceMotion)
         }
     }
 
@@ -96,7 +114,7 @@ public struct SettingsView: View {
         @Bindable var p = prefs
         SettingsCard(header: "TUNNEL", trailing: {
             HStack(spacing: 6) {
-                PulseDot(color: C.signal, size: 6, pulse: true)
+                PulseDot(color: C.signal, size: 6, pulse: !prefs.reduceMotion)
                 Text("SAVED")
                     .font(.custom("DepartureMono-Regular", size: 10.5))
                     .tracking(0.12 * 10.5)
@@ -123,27 +141,30 @@ public struct SettingsView: View {
                 RoutingPill()
             }
             if p.routingMode == .layeredAuto {
-                cardSubHeader("WORK VPN")
-                settingRow(title: "Cisco/work VPN first",
-                           description: routeDiagnosticText) {
-                    VStack(alignment: .trailing, spacing: 3) {
-                        Text("\(upstream.snapshot.detectedUpstreamCidrs.count)")
-                            .font(.custom("DepartureMono-Regular", size: 13))
-                            .tracking(0.10 * 13)
-                            .foregroundStyle(C.signal)
-                        Text("routes")
-                            .font(.custom("DepartureMono-Regular", size: 9.5))
-                            .tracking(0.14 * 9.5)
-                            .foregroundStyle(C.textFaint)
+                Group {
+                    cardSubHeader("WORK VPN")
+                    settingRow(title: "Cisco/work VPN first",
+                               description: routeDiagnosticText) {
+                        VStack(alignment: .trailing, spacing: 3) {
+                            Text("\(upstream.snapshot.detectedUpstreamCidrs.count)")
+                                .font(.custom("DepartureMono-Regular", size: 13))
+                                .tracking(0.10 * 13)
+                                .foregroundStyle(C.signal)
+                            Text("routes")
+                                .font(.custom("DepartureMono-Regular", size: 9.5))
+                                .tracking(0.14 * 9.5)
+                                .foregroundStyle(C.textFaint)
+                        }
                     }
+                    HairlineDivider()
+                    settingRow(title: "Preserve scoped DNS",
+                               description: dnsDiagnosticText) {
+                        SettingsToggle(on: $p.preserveScopedDns)
+                    }
+                    HairlineDivider()
+                    manualDirectCidrsEditor
                 }
-                HairlineDivider()
-                settingRow(title: "Preserve scoped DNS",
-                           description: dnsDiagnosticText) {
-                    SettingsToggle(on: $p.preserveScopedDns)
-                }
-                HairlineDivider()
-                manualDirectCidrsEditor
+                .transition(SettingsMotion.sectionTransition(reduceMotion: p.reduceMotion))
             }
             HairlineDivider()
             settingRow(title: "DNS",
@@ -152,10 +173,11 @@ public struct SettingsView: View {
             }
             HairlineDivider()
             settingRow(title: "Streams",
-                       description: "Количество H2 streams в туннеле (2…16)") {
-                StreamStepper(streams: $p.streams)
+                       description: streamDescription) {
+                StreamControl(streamOverride: $p.streamOverride)
             }
         }
+        .animation(SettingsMotion.layout(reduceMotion: p.reduceMotion), value: p.routingMode)
     }
 
     @ViewBuilder
@@ -171,13 +193,10 @@ public struct SettingsView: View {
                 @Bindable var dockBinding = dock
                 settingRow(title: String(localized: "settings.launch_at_login"),
                            description: "SMAppService.mainApp · login item") {
-                    Toggle("", isOn: Binding(
+                    SettingsToggle(on: Binding(
                         get: { loginBinding.enabled },
                         set: { loginBinding.setEnabled($0) }
                     ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
                 }
                 HairlineDivider()
                 settingRow(title: "Стартовать свернутым в menu bar",
@@ -187,10 +206,7 @@ public struct SettingsView: View {
                 HairlineDivider()
                 settingRow(title: String(localized: "settings.show_in_dock"),
                            description: "Если выключено — app живёт только в menu bar") {
-                    Toggle("", isOn: $dockBinding.showInDock)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
+                    SettingsToggle(on: $dockBinding.showInDock)
                 }
                 HairlineDivider()
                 settingRow(title: "Notification на смену состояния",
@@ -211,8 +227,10 @@ public struct SettingsView: View {
 
                 cardSubHeader("UPDATES")
                 settingRow(title: "Auto-update",
-                           description: p.autoUpdate ? "Sparkle не подключен в этой сборке · настройка сохранена" : "Sparkle не подключен в этой сборке") {
-                    SettingsToggle(on: $p.autoUpdate)
+                           description: "Недоступно: Sparkle updater не подключен") {
+                    SettingsToggle(on: .constant(false))
+                        .opacity(0.45)
+                        .allowsHitTesting(false)
                 }
                 HairlineDivider()
                 settingRow(title: "Проверить сейчас",
@@ -222,8 +240,15 @@ public struct SettingsView: View {
 
                 cardSubHeader("DIAGNOSTICS")
                 settingRow(title: "Экспорт bundle",
-                           description: "Недоступно: export bundle не реализован в этой сборке") {
-                    actionButton(label: "EXPORT", color: C.bone, borderColor: C.hairBold, disabled: true)
+                           description: exportStatusMessage ?? "Snapshot, настройки и последние логи без PEM/conn string") {
+                    actionButton(
+                        label: exportingDiagnostics ? "EXPORT..." : "EXPORT",
+                        color: C.bone,
+                        borderColor: C.hairBold,
+                        disabled: exportingDiagnostics
+                    ) {
+                        Task { await exportDiagnostics() }
+                    }
                 }
             }
         }
@@ -255,42 +280,28 @@ public struct SettingsView: View {
     private func settingRow<Trailing: View>(
         title: String,
         description: String?,
-        @ViewBuilder trailing: () -> Trailing
+        @ViewBuilder trailing: @escaping () -> Trailing
     ) -> some View {
-        HStack(alignment: .center, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.custom("JetBrainsMono-Regular", size: 13))
-                    .foregroundStyle(C.bone)
-                if let description {
-                    Text(description)
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
-                        .foregroundStyle(C.textFaint)
-                        .lineLimit(2)
-                }
-            }
-            Spacer()
+        SettingRow(title: title, description: description) {
             trailing()
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
     }
 
     @ViewBuilder
-    private func actionButton(label: String, color: Color, borderColor: Color? = nil, disabled: Bool = false) -> some View {
-        Button { } label: {
-            Text(label)
-                .font(.custom("DepartureMono-Regular", size: 10.5))
-                .tracking(0.16 * 10.5)
-                .foregroundStyle(disabled ? C.textFaint : color)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .overlay(
-                    Rectangle().stroke(disabled ? C.hair : (borderColor ?? color), lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
+    private func actionButton(
+        label: String,
+        color: Color,
+        borderColor: Color? = nil,
+        disabled: Bool = false,
+        action: @escaping () -> Void = {}
+    ) -> some View {
+        SettingsActionButton(
+            label: label,
+            color: color,
+            borderColor: borderColor,
+            disabled: disabled,
+            action: action
+        )
     }
 
     @ViewBuilder
@@ -327,10 +338,12 @@ public struct SettingsView: View {
                     .font(.custom("JetBrainsMono-Regular", size: 10.5))
                     .foregroundStyle(C.danger)
                     .lineLimit(2)
+                    .transition(SettingsMotion.sectionTransition(reduceMotion: prefs.reduceMotion))
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
+        .animation(SettingsMotion.layout(reduceMotion: prefs.reduceMotion), value: prefs.invalidManualDirectCidrs)
     }
 
     private var routeDiagnosticText: String {
@@ -350,6 +363,53 @@ public struct SettingsView: View {
         let domainCount = snapshot.upstreamDnsDomains.count
         let serverCount = snapshot.upstreamDnsServers.count
         return "\(domainCount) domains · \(serverCount) DNS servers stay with work VPN"
+    }
+
+    private var streamDescription: String {
+        if let streamOverride = prefs.streamOverride {
+            return "Manual override: \(streamOverride) streams, применяется при следующем старте"
+        }
+        return "Auto: runtime выбирает по CPU; вручную можно поставить 2…16"
+    }
+
+    @MainActor
+    private func exportDiagnostics() async {
+        exportingDiagnostics = true
+        defer { exportingDiagnostics = false }
+
+        guard let destination = chooseDiagnosticsBundleURL() else { return }
+
+        do {
+            try DiagnosticsBundleExporter.export(
+                to: destination,
+                preferences: prefs,
+                profiles: profiles,
+                stateManager: stateMgr,
+                logs: logStore
+            )
+            exportStatusMessage = "Saved: \(destination.lastPathComponent)"
+        } catch {
+            exportStatusMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func chooseDiagnosticsBundleURL() -> URL? {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = defaultDiagnosticsBundleName()
+        if let bundleType = UTType(filenameExtension: "ghoststream-diagnostics") {
+            panel.allowedContentTypes = [bundleType]
+        }
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func defaultDiagnosticsBundleName() -> String {
+        let stamp = ISO8601DateFormatter()
+            .string(from: Date())
+            .replacingOccurrences(of: ":", with: "")
+        return "GhostStream-Diagnostics-\(stamp).ghoststream-diagnostics"
     }
 }
 
@@ -394,29 +454,202 @@ private struct SettingsCard<Header: View, Content: View>: View {
     }
 }
 
+// MARK: - Motion
+
+private enum SettingsMotion {
+    static func interactive(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .timingCurve(0.22, 1.0, 0.36, 1.0, duration: 0.22)
+    }
+
+    static func layout(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .timingCurve(0.22, 1.0, 0.36, 1.0, duration: 0.28)
+    }
+
+    static func reveal(delay: Double, reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .timingCurve(0.16, 1.0, 0.30, 1.0, duration: 0.38).delay(delay)
+    }
+
+    static func sectionTransition(reduceMotion: Bool) -> AnyTransition {
+        reduceMotion
+            ? .identity
+            : .asymmetric(
+                insertion: .opacity.combined(with: .move(edge: .top)),
+                removal: .opacity
+            )
+    }
+
+    static func perform(reduceMotion: Bool, _ updates: () -> Void) {
+        if reduceMotion {
+            updates()
+        } else {
+            withAnimation(interactive(reduceMotion: false)) {
+                updates()
+            }
+        }
+    }
+}
+
+private struct SettingsRevealModifier: ViewModifier {
+    let appeared: Bool
+    let delay: Double
+    let reduceMotion: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(appeared ? 1 : 0)
+            .offset(y: reduceMotion || appeared ? 0 : 10)
+            .animation(SettingsMotion.reveal(delay: delay, reduceMotion: reduceMotion), value: appeared)
+    }
+}
+
+private extension View {
+    func settingsReveal(_ appeared: Bool, delay: Double, reduceMotion: Bool) -> some View {
+        modifier(SettingsRevealModifier(appeared: appeared, delay: delay, reduceMotion: reduceMotion))
+    }
+}
+
+// MARK: - Setting row
+
+private struct SettingRow<Trailing: View>: View {
+    @Environment(\.gsColors) private var C
+    @Environment(PreferencesStore.self) private var prefs
+
+    let title: String
+    let description: String?
+    @ViewBuilder var trailing: () -> Trailing
+
+    @State private var hovering = false
+    @State private var appeared = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 18) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.custom("JetBrainsMono-Regular", size: 13))
+                    .foregroundStyle(C.bone)
+                if let description {
+                    Text(description)
+                        .font(.custom("JetBrainsMono-Regular", size: 11))
+                        .foregroundStyle(C.textFaint)
+                        .lineLimit(2)
+                }
+            }
+            Spacer()
+            trailing()
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(C.signal.opacity(hovering ? 0.035 : 0))
+        .contentShape(Rectangle())
+        .opacity(appeared ? 1 : 0)
+        .offset(y: prefs.reduceMotion || appeared ? 0 : 6)
+        .onHover { isHovering in
+            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+                hovering = isHovering
+            }
+        }
+        .onAppear {
+            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+                appeared = true
+            }
+        }
+        .animation(SettingsMotion.interactive(reduceMotion: prefs.reduceMotion), value: hovering)
+    }
+}
+
 // MARK: - Settings toggle
 
 private struct SettingsToggle: View {
     @Environment(\.gsColors) private var C
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(PreferencesStore.self) private var prefs
+
     @Binding var on: Bool
+    var disabled = false
+
+    @State private var hovering = false
 
     var body: some View {
-        Button { on.toggle() } label: {
-            ZStack(alignment: on ? .trailing : .leading) {
+        let reduce = prefs.reduceMotion || systemReduceMotion
+
+        Button {
+            guard !disabled else { return }
+            SettingsMotion.perform(reduceMotion: reduce) {
+                on.toggle()
+            }
+        } label: {
+            ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(on ? C.signal.opacity(0.18) : C.hair)
-                    .frame(width: 36, height: 20)
-                    .overlay(
-                        Capsule().stroke(on ? C.signal : C.hair, lineWidth: 1)
-                    )
+                    .fill(on ? C.signal.opacity(hovering ? 0.24 : 0.18) : C.hair)
+                    .overlay(Capsule().stroke(borderColor, lineWidth: 1))
+                    .shadow(color: C.signal.opacity(on && hovering ? 0.20 : 0), radius: 8, x: 0, y: 0)
                 Circle()
                     .fill(on ? C.signal : C.bone)
-                    .frame(width: 16, height: 16)
-                    .padding(.horizontal, 2)
+                    .frame(width: 18, height: 18)
+                    .overlay(
+                        Circle()
+                            .stroke(on ? C.bone.opacity(0.22) : C.hairBold, lineWidth: 1)
+                    )
+                    .shadow(color: on ? C.signal.opacity(0.28) : .clear, radius: 4, x: 0, y: 0)
+                    .offset(x: on ? 22 : 2)
             }
-            .frame(width: 36, height: 20)
+            .frame(width: 42, height: 24)
+            .scaleEffect(hovering && !disabled ? 1.04 : 1.0)
+            .opacity(disabled ? 0.45 : 1.0)
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { isHovering in
+            SettingsMotion.perform(reduceMotion: reduce) {
+                hovering = isHovering
+            }
+        }
+        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: on)
+        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
+        .accessibilityLabel(on ? "On" : "Off")
+    }
+
+    private var borderColor: Color {
+        if disabled { return C.hair }
+        if on { return C.signal }
+        return hovering ? C.hairBold : C.hair
+    }
+}
+
+private struct SettingsActionButton: View {
+    @Environment(\.gsColors) private var C
+    @Environment(PreferencesStore.self) private var prefs
+
+    let label: String
+    let color: Color
+    let borderColor: Color?
+    let disabled: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.custom("DepartureMono-Regular", size: 10.5))
+                .tracking(0.16 * 10.5)
+                .foregroundStyle(disabled ? C.textFaint : color)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(C.signal.opacity(hovering && !disabled ? 0.045 : 0))
+                .overlay(
+                    Rectangle().stroke(disabled ? C.hair : (borderColor ?? color), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .scaleEffect(hovering && !disabled ? 1.03 : 1.0)
+        .onHover { isHovering in
+            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+                hovering = isHovering
+            }
+        }
+        .animation(SettingsMotion.interactive(reduceMotion: prefs.reduceMotion), value: hovering)
     }
 }
 
@@ -424,8 +657,11 @@ private struct SettingsToggle: View {
 
 private struct MenuPill: View {
     @Environment(\.gsColors) private var C
+    @Environment(PreferencesStore.self) private var prefs
     let label: String   // e.g. "all"
     let value: String   // e.g. "global"
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -445,8 +681,16 @@ private struct MenuPill: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(C.bgElev2)
-        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+        .background(hovering ? C.signal.opacity(0.045) : C.bgElev2)
+        .overlay(Rectangle().stroke(hovering ? C.signalDim : C.hairBold, lineWidth: 1))
+        .scaleEffect(hovering ? 1.02 : 1.0)
+        .contentShape(Rectangle())
+        .onHover { isHovering in
+            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+                hovering = isHovering
+            }
+        }
+        .animation(SettingsMotion.interactive(reduceMotion: prefs.reduceMotion), value: hovering)
     }
 }
 
@@ -456,9 +700,9 @@ private struct RoutingPill: View {
     var body: some View {
         @Bindable var p = prefs
         Menu {
-            Button("Global tunnel") { p.routingMode = .global }
-            Button("Public split") { p.routingMode = .publicSplit }
-            Button("Cisco/work VPN first") { p.routingMode = .layeredAuto }
+            Button("Global tunnel") { setRouting(.global) }
+            Button("Public split") { setRouting(.publicSplit) }
+            Button("Cisco/work VPN first") { setRouting(.layeredAuto) }
         } label: {
             MenuPill(
                 label: routingLabel(mode: p.routingMode),
@@ -467,6 +711,12 @@ private struct RoutingPill: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    private func setRouting(_ mode: RoutingMode) {
+        SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            prefs.routingMode = mode
+        }
     }
 
     private func routingLabel(mode: RoutingMode) -> String {
@@ -490,16 +740,21 @@ private struct DNSPill: View {
     @Environment(PreferencesStore.self) private var prefs
 
     var body: some View {
-        @Bindable var p = prefs
         Menu {
-            Button("Server push") { p.dnsServers = nil }
-            Button("Cloudflare") { p.dnsServers = ["1.1.1.1", "1.0.0.1"] }
-            Button("Quad9") { p.dnsServers = ["9.9.9.9", "149.112.112.112"] }
+            Button("Server push") { setDNS(nil) }
+            Button("Cloudflare") { setDNS(["1.1.1.1", "1.0.0.1"]) }
+            Button("Quad9") { setDNS(["9.9.9.9", "149.112.112.112"]) }
         } label: {
             MenuPill(label: "dns", value: dnsLabel)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    private func setDNS(_ servers: [String]?) {
+        SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            prefs.dnsServers = servers
+        }
     }
 
     private var dnsLabel: String {
@@ -510,20 +765,48 @@ private struct DNSPill: View {
     }
 }
 
-private struct StreamStepper: View {
-    @Environment(\.gsColors) private var C
-    @Binding var streams: Int
+private struct StreamControl: View {
+    @Environment(PreferencesStore.self) private var prefs
+    @Binding var streamOverride: Int?
 
     var body: some View {
-        Stepper(value: $streams, in: 2...16) {
-            Text("\(streams)")
-                .font(.custom("DepartureMono-Regular", size: 11))
-                .tracking(0.14 * 11)
-                .foregroundStyle(C.signal)
-                .frame(width: 24, alignment: .trailing)
+        HStack(spacing: 8) {
+            Menu {
+                Button("Auto") { setStreams(nil) }
+                Button("Manual") { setStreams(streamOverride ?? 8) }
+                Divider()
+                ForEach([2, 4, 8, 12, 16], id: \.self) { value in
+                    Button("\(value) streams") { setStreams(value) }
+                }
+            } label: {
+                MenuPill(label: "mux", value: streamOverride.map(String.init) ?? "auto")
+            }
+            .menuStyle(.borderlessButton)
+
+            if streamOverride != nil {
+                Stepper(value: manualValue, in: 2...16) {
+                    EmptyView()
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .transition(SettingsMotion.sectionTransition(reduceMotion: prefs.reduceMotion))
+            }
         }
-        .labelsHidden()
         .fixedSize()
+        .animation(SettingsMotion.layout(reduceMotion: prefs.reduceMotion), value: streamOverride)
+    }
+
+    private var manualValue: Binding<Int> {
+        Binding(
+            get: { streamOverride ?? 8 },
+            set: { setStreams(max(2, min(16, $0))) }
+        )
+    }
+
+    private func setStreams(_ value: Int?) {
+        SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            streamOverride = value
+        }
     }
 }
 
@@ -537,11 +820,13 @@ private struct ThemePill: View {
         @Bindable var p = prefs
         let cur = ThemeOverride(rawValue: p.theme) ?? .system
         Button {
-            // Cycle system → dark → light → system
-            switch cur {
-            case .system: p.theme = ThemeOverride.dark.rawValue
-            case .dark:   p.theme = ThemeOverride.light.rawValue
-            case .light:  p.theme = ThemeOverride.system.rawValue
+            SettingsMotion.perform(reduceMotion: p.reduceMotion) {
+                // Cycle system → dark → light → system
+                switch cur {
+                case .system: p.theme = ThemeOverride.dark.rawValue
+                case .dark:   p.theme = ThemeOverride.light.rawValue
+                case .light:  p.theme = ThemeOverride.system.rawValue
+                }
             }
         } label: {
             HStack(spacing: 6) {
@@ -559,5 +844,153 @@ private struct ThemePill: View {
             .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
         }
         .buttonStyle(.plain)
+    }
+}
+
+@MainActor
+private enum DiagnosticsBundleExporter {
+    static func export(
+        to destination: URL,
+        preferences: PreferencesStore,
+        profiles: ProfilesStore,
+        stateManager: VpnStateManager,
+        logs: TunnelLogStore
+    ) throws {
+        let scoped = destination.startAccessingSecurityScopedResource()
+        defer {
+            if scoped {
+                destination.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fm = FileManager.default
+        if fm.fileExists(atPath: destination.path) {
+            try fm.removeItem(at: destination)
+        }
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        let summary = DiagnosticsSummary(
+            generatedAt: ISO8601DateFormatter().string(from: Date()),
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            build: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown",
+            macOS: ProcessInfo.processInfo.operatingSystemVersionString
+        )
+        try writeJSON(summary, to: destination.appendingPathComponent("summary.json"))
+        try writeJSON(
+            DiagnosticsPreferencesSnapshot(preferences: preferences),
+            to: destination.appendingPathComponent("preferences.json")
+        )
+        try writeJSON(
+            stateManager.statusFrame,
+            to: destination.appendingPathComponent("status-frame.json")
+        )
+        try writeJSON(
+            profiles.profiles.map(DiagnosticsProfileSnapshot.init(profile:)),
+            to: destination.appendingPathComponent("profiles.json")
+        )
+        try writeLogs(
+            Array(logs.logs.suffix(2_000)),
+            to: destination.appendingPathComponent("logs.jsonl")
+        )
+
+        if let snapshotURL = fm
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn")?
+            .appendingPathComponent("snapshot.json"),
+           fm.fileExists(atPath: snapshotURL.path) {
+            try? fm.copyItem(
+                at: snapshotURL,
+                to: destination.appendingPathComponent("snapshot-file.json")
+            )
+        }
+    }
+
+    private static func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(value).write(to: url, options: .atomic)
+    }
+
+    private static func writeLogs(_ frames: [LogFrame], to url: URL) throws {
+        let encoder = JSONEncoder()
+        let lines = try frames.map { frame in
+            let data = try encoder.encode(frame)
+            return String(data: data, encoding: .utf8) ?? "{}"
+        }
+        .joined(separator: "\n")
+        try (lines + "\n").data(using: .utf8)?.write(to: url, options: .atomic)
+    }
+}
+
+private struct DiagnosticsSummary: Codable {
+    let generatedAt: String
+    let appVersion: String
+    let build: String
+    let macOS: String
+}
+
+private struct DiagnosticsPreferencesSnapshot: Codable {
+    let theme: String
+    let dnsLeakProtection: Bool
+    let ipv6Killswitch: Bool
+    let autoReconnect: Bool
+    let startInMenuBar: Bool
+    let notifyStateChanges: Bool
+    let reduceMotion: Bool
+    let autoUpdate: Bool
+    let streamOverride: Int?
+    let routingMode: String
+    let dnsServers: [String]?
+    let preserveScopedDns: Bool
+    let manualDirectCidrs: [String]
+    let invalidManualDirectCidrs: [String]
+
+    @MainActor
+    init(preferences: PreferencesStore) {
+        theme = preferences.theme
+        dnsLeakProtection = preferences.dnsLeakProtection
+        ipv6Killswitch = preferences.ipv6Killswitch
+        autoReconnect = preferences.autoReconnect
+        startInMenuBar = preferences.startInMenuBar
+        notifyStateChanges = preferences.notifyStateChanges
+        reduceMotion = preferences.reduceMotion
+        autoUpdate = preferences.autoUpdate
+        streamOverride = preferences.streamOverride
+        routingMode = preferences.routingMode.rawValue
+        dnsServers = preferences.dnsServers
+        preserveScopedDns = preferences.preserveScopedDns
+        manualDirectCidrs = preferences.manualDirectCidrs
+        invalidManualDirectCidrs = preferences.invalidManualDirectCidrs
+    }
+}
+
+private struct DiagnosticsProfileSnapshot: Codable {
+    let id: String
+    let name: String
+    let serverAddr: String
+    let serverName: String
+    let insecure: Bool
+    let tunAddr: String
+    let dnsServers: [String]?
+    let splitRouting: Bool?
+    let directCountries: [String]?
+    let cachedExpiresAt: Int64?
+    let cachedEnabled: Bool?
+    let cachedIsAdmin: Bool?
+    let cachedAdminServerCertFp: String?
+
+    init(profile: VpnProfile) {
+        id = profile.id
+        name = profile.name
+        serverAddr = profile.serverAddr
+        serverName = profile.serverName
+        insecure = profile.insecure
+        tunAddr = profile.tunAddr
+        dnsServers = profile.dnsServers
+        splitRouting = profile.splitRouting
+        directCountries = profile.directCountries
+        cachedExpiresAt = profile.cachedExpiresAt
+        cachedEnabled = profile.cachedEnabled
+        cachedIsAdmin = profile.cachedIsAdmin
+        cachedAdminServerCertFp = profile.cachedAdminServerCertFp
     }
 }

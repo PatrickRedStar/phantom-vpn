@@ -40,6 +40,7 @@ public struct MenuBarPopover: View {
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(TrafficSeriesStore.self) private var traffic
     @Environment(ProfilesStore.self) private var profiles
+    @Environment(PreferencesStore.self) private var prefs
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @Environment(AppRouter.self) private var router
     @Environment(DockPolicyController.self) private var dock
@@ -102,7 +103,7 @@ public struct MenuBarPopover: View {
         let pulses = isLive || isWarn
 
         HStack(spacing: 7) {
-            PulseDot(color: color, size: 6, pulse: pulses)
+            PulseDot(color: color, size: 6, pulse: !prefs.reduceMotion && pulses)
             Text(label)
                 .font(.custom("DepartureMono-Regular", size: 9.5))
                 .tracking(0.16 * 9.5)
@@ -356,6 +357,7 @@ public struct MenuBarPopover: View {
                 active: stateMgr.statusFrame.state == .connected,
                 barCount: 8,
                 activityLevels: stateMgr.statusFrame.streamActivity,
+                reduceMotion: prefs.reduceMotion,
                 height: 28
             )
         }

@@ -24,6 +24,7 @@ import UniformTypeIdentifiers
 public struct TailView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(PreferencesStore.self) private var prefs
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(TunnelLogStore.self) private var logStore
 
@@ -74,7 +75,11 @@ public struct TailView: View {
             }
             Spacer()
             HStack(spacing: 6) {
-                PulseDot(color: C.signal, size: 8, pulse: true)
+                PulseDot(
+                    color: C.signal,
+                    size: 8,
+                    pulse: !prefs.reduceMotion && stateMgr.statusFrame.state == .connected
+                )
                 Text("\(filteredLogs.count) LINES · \(stateMgr.statusFrame.state == .connected ? "STREAMING" : "STANDBY")")
                     .font(.custom("DepartureMono-Regular", size: 10.5))
                     .tracking(0.16 * 10.5)

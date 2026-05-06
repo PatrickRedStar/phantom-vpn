@@ -33,14 +33,20 @@ public struct PulseDot: View {
             .frame(width: size, height: size)
             .opacity(pulse ? (dim ? 0.25 : 1.0) : 1.0)
             .onAppear {
-                guard pulse else { return }
-                withAnimation(
-                    .easeInOut(duration: 0.8)
-                    .repeatForever(autoreverses: true)
-                ) {
-                    dim = true
-                }
+                if pulse { startPulse() }
             }
+            .onChange(of: pulse) { _, pulse in
+                pulse ? startPulse() : (dim = false)
+            }
+    }
+
+    private func startPulse() {
+        withAnimation(
+            .easeInOut(duration: 0.8)
+            .repeatForever(autoreverses: true)
+        ) {
+            dim = true
+        }
     }
 }
 

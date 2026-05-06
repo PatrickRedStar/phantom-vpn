@@ -27,6 +27,7 @@ public struct DashboardView: View {
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(TrafficSeriesStore.self) private var traffic
     @Environment(ProfilesStore.self) private var profiles
+    @Environment(PreferencesStore.self) private var prefs
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @Environment(DockPolicyController.self) private var dock
     @EnvironmentObject private var tunnel: VpnTunnelController
@@ -70,8 +71,9 @@ public struct DashboardView: View {
                     PulseDot(
                         color: pulseColor,
                         size: 8,
-                        pulse: stateMgr.statusFrame.state == .connected
+                        pulse: !prefs.reduceMotion && (stateMgr.statusFrame.state == .connected
                             || stateMgr.statusFrame.state == .connecting
+                            || stateMgr.statusFrame.state == .reconnecting)
                     )
                     Text("SESSION")
                         .font(.custom("DepartureMono-Regular", size: 10.5))
@@ -384,7 +386,11 @@ public struct DashboardView: View {
                     .foregroundStyle(C.textDim)
                 Spacer()
                 HStack(spacing: 6) {
-                    PulseDot(color: pulseColor, size: 6, pulse: stateMgr.statusFrame.state == .connected)
+                    PulseDot(
+                        color: pulseColor,
+                        size: 6,
+                        pulse: !prefs.reduceMotion && stateMgr.statusFrame.state == .connected
+                    )
                     Text("\(stateMgr.statusFrame.streamsUp) ↑ \(stateMgr.statusFrame.nStreams)")
                         .font(.custom("DepartureMono-Regular", size: 10.5))
                         .tracking(0.12 * 10.5)
@@ -403,6 +409,7 @@ public struct DashboardView: View {
                     active: stateMgr.statusFrame.state == .connected,
                     barCount: 8,
                     activityLevels: stateMgr.statusFrame.streamActivity,
+                    reduceMotion: prefs.reduceMotion,
                     height: 84
                 )
                 HStack {

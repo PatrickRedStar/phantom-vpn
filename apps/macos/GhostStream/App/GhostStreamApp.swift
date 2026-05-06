@@ -15,6 +15,7 @@ import PhantomUI
 import Foundation
 import NetworkExtension
 import SwiftUI
+import UserNotifications
 
 @main
 struct GhostStreamApp: App {
@@ -33,6 +34,7 @@ struct GhostStreamApp: App {
     @State private var upstream = UpstreamVpnMonitor.shared
     @State private var traffic  = TrafficSeriesStore.shared
     @State private var logs     = TunnelLogStore.shared
+    @State private var notifications = VpnNotificationController.shared
 
     @State private var tunnel = VpnTunnelController()
     @State private var startupHandled = false
@@ -56,10 +58,17 @@ struct GhostStreamApp: App {
         } label: {
             MenuBarStatusItem(state: state.statusFrame.state)
                 .task {
+                    notifications.configure()
                     await openSetupIfNeeded()
                     upstream.start(profiles: profiles, preferences: prefs, stateManager: state)
                     traffic.start(stateManager: state)
                     logs.start(stateManager: state)
+                }
+                .onChange(of: notificationToken(from: state.statusFrame)) { _, _ in
+                    notifications.handle(frame: state.statusFrame, preferences: prefs)
+                }
+                .onChange(of: prefs.notifyStateChanges) { _, _ in
+                    notifications.requestAuthorizationIfNeeded(preferences: prefs)
                 }
         }
         .menuBarExtraStyle(.window)
@@ -117,6 +126,7 @@ struct GhostStreamApp: App {
         Window("Logs", id: "logs") {
             ForegroundWindowClaim("logs", dock: dock) {
                 TailView()
+                    .environment(prefs)
                     .environment(state)
                     .environment(logs)
                     .gsTheme(override: themeOverride(from: prefs.theme))
@@ -161,6 +171,8 @@ struct GhostStreamApp: App {
                 SettingsView()
                     .environment(prefs)
                     .environment(profiles)
+                    .environment(state)
+                    .environment(logs)
                     .environment(login)
                     .environment(dock)
                     .environment(upstream)
@@ -180,15 +192,22 @@ struct GhostStreamApp: App {
         startupHandled = true
 
         try? await tunnel.loadFromPreferences()
-        if isGhostStreamManagerConfigured(tunnel.manager) {
+        let decision = MacStartupPolicy.decide(
+            managerConfigured: isGhostStreamManagerConfigured(tunnel.manager),
+            hasActiveProfile: profiles.activeProfile != nil,
+            startInMenuBar: prefs.startInMenuBar
+        )
+
+        if decision.shouldActivateSystemExtension {
             sysExt.activate()
-            return
         }
 
-        if profiles.activeProfile != nil {
-            sysExt.activate()
+        switch decision.foregroundWindow {
+        case .welcome:
+            openForegroundWindow("welcome")
+        case .none:
+            break
         }
-        openForegroundWindow("welcome")
     }
 
     @MainActor
@@ -203,6 +222,15 @@ struct GhostStreamApp: App {
         else { return false }
 
         return proto.providerBundleIdentifier == "com.ghoststream.vpn.tunnel" && manager.isEnabled
+    }
+
+    private func notificationToken(from frame: StatusFrame) -> String {
+        [
+            frame.state.rawValue,
+            frame.reconnectAttempt.map(String.init) ?? "",
+            frame.reconnectNextDelaySecs.map(String.init) ?? "",
+            frame.lastError ?? "",
+        ].joined(separator: "|")
     }
 }
 
@@ -227,5 +255,59 @@ private struct ForegroundWindowClaim<Content: View>: View {
             .onDisappear {
                 dock.foregroundWindowDidDisappear("\(windowID):\(claimID)")
             }
+    }
+}
+
+@MainActor
+private final class VpnNotificationController: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = VpnNotificationController()
+
+    private var configured = false
+    private var previousFrame: StatusFrame?
+
+    func configure() {
+        guard !configured else { return }
+        UNUserNotificationCenter.current().delegate = self
+        configured = true
+    }
+
+    func requestAuthorizationIfNeeded(preferences: PreferencesStore) {
+        guard preferences.notifyStateChanges else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func handle(frame: StatusFrame, preferences: PreferencesStore) {
+        configure()
+        let notification = VpnStateNotificationPolicy.notification(
+            previous: previousFrame,
+            current: frame,
+            enabled: preferences.notifyStateChanges
+        )
+        previousFrame = frame
+
+        guard let notification else { return }
+
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+
+            let content = UNMutableNotificationContent()
+            content.title = notification.title
+            content.body = notification.body
+            content.sound = .default
+
+            let request = UNNotificationRequest(
+                identifier: "ghoststream.state.\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+            UNUserNotificationCenter.current().add(request)
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 }

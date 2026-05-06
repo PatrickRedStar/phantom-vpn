@@ -43,6 +43,14 @@ pub fn n_data_streams() -> usize {
     })
 }
 
+/// Resolve stream count with an optional user override. `None` preserves the
+/// historical automatic CPU-derived behavior.
+pub fn n_data_streams_with_override(streams: Option<usize>) -> usize {
+    streams
+        .map(|value| value.clamp(MIN_N_STREAMS, MAX_N_STREAMS))
+        .unwrap_or_else(n_data_streams)
+}
+
 /// Server-side alias retained for call-site ergonomics.
 #[inline]
 pub fn n_streams() -> usize {
@@ -230,6 +238,18 @@ pub fn first_heartbeat_delay() -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_override_preserves_automatic_default_when_absent() {
+        assert_eq!(n_data_streams_with_override(None), n_data_streams());
+    }
+
+    #[test]
+    fn stream_override_is_clamped_to_supported_range() {
+        assert_eq!(n_data_streams_with_override(Some(1)), MIN_N_STREAMS);
+        assert_eq!(n_data_streams_with_override(Some(12)), 12);
+        assert_eq!(n_data_streams_with_override(Some(99)), MAX_N_STREAMS);
+    }
 
     #[test]
     fn test_batch_roundtrip_single() {
