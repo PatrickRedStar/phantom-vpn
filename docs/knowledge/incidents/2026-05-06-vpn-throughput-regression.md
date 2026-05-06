@@ -223,6 +223,80 @@ single-shot теста на upload-ограниченном канале (asymme
 
 Status: ✅ landed, commit on `perf/throughput-fixes-v0.24`.
 
+## Замеры — Fix #2 (tls_tx drain coalescing) — REVERTED
+
+Попытка 1 (commit local, не запушено): полностью убрать `drain` цикл, сделать
+один `build_batch_plaintext` + один `write_all` + flush. **Регрессия:**
+4 parallel упал с 745 до 394 Мбит/с, speedtest download с 153 до 117. Похоже
+что drain имел роль "secondary opportunistic batch" — подбирал пакеты,
+накопившиеся в канале пока шёл encrypt + flush первого batch'а.
+
+Попытка 2: вернуть drain, но коалесцировать его в **один** batch (а не 31
+single-packet writes). 4 parallel восстановился до 671, но **8 parallel
+поломался — timeout, 74 Мбит/с**. То есть была локальная регрессия в
+другом edge-case.
+
+**Откат.** В обеих попытках цена больше выгоды: оба варианта дают локальные
+улучшения (CPU на сервере, более похожий H/2 паттерн), но ломают
+параллельный throughput где-то ещё. Корневой механизм (как rustls
+буферизует write_all'ы при отсутствии flush'а, как кооперируется с TLS record
+sizing и TCP segment coalescing) требует более глубокого исследования —
+профайлера на сервере, tcpdump на клиенте, и понимания что именно случилось
+с 8 parallel. На текущий момент Fix #1 даёт огромный win (×13 на 4 parallel,
++8% speedtest), и ломать его ради потенциальных оптимизаций тут — плохой
+размен.
+
+В backlog: разобраться с rustls write buffering поведением, прежде чем
+менять `tls_tx_loop`. Посмотреть на `tokio_rustls::TlsStream` напрямую — есть
+ли там Nagle-like coalescing или каждый write_all действительно flush'ит
+отдельный TLS record?
+
+Status: ⏸ backlog.
+
+## Замеры — Final (Fix #1 only, повторный замер)
+
+Один час спустя, повторный прогон того же сценария:
+
+| Сценарий | Before any fix | Fix #1 final |
+|---|---|---|
+| Single curl avg | 1.5–385 (флапает) | ~390 Мбит/с (стабильно) |
+| 4 parallel | 55 (2 timeout) | **745 Мбит/с** |
+| 8 parallel | 745 (flaky) | **789 Мбит/с** |
+| 16 parallel | не замерялось | **639 Мбит/с** |
+| Speedtest down | 141 Мбит/с | 177 Мбит/с |
+| Speedtest up | 51 Мбит/с | 45 Мбит/с |
+| iperf3 baseline 8↓ no VPN | 668 Мбит/с | 701 Мбит/с (jitter канала) |
+
+В одном из ранних прогонов 8 parallel показал 74 Мбит/с с timeout, но повторный
+прогон через несколько минут — 789 Мбит/с. Это **transient** на стороне сервера
+(скорее всего phantom-server CPU saturation от другого клиента — он делит одно
+ядро на всех). Не воспроизводится стабильно. В backlog: профилирование
+phantom-server и потенциальный sharding по N процессов / threads.
+
+## Что НЕ воспроизвелось (отвергнутые гипотезы)
+
+- ❌ Регрессия в коде после v0.22.0 (Phase 4) → плавный спад. Объяснение:
+  плавный спад был от провайдерского shaping, не код.
+- ❌ DPI fingerprinting клиента (rustls JA3 палится). HTTPS direct без VPN
+  тоже резался — провайдер режет по сетевому уровню. Решено пользователем
+  с провайдером.
+- ❌ Fix #2 как причина 8-parallel timeout. На Fix #1-only тоже воспроизвелось
+  один раз и ушло — это transient, не от code change.
+
+## Что осталось в backlog
+
+1. **Fix #2 v3** — переписать `tls_tx_loop` drain с пониманием rustls write
+   buffering. Цель: сократить число TLS records на сервере, не сломав
+   параллельный throughput.
+2. **Fix #3** (Android+BlockingThreads) — TUN writer вынести из tokio task
+   в `std::thread`. Текущий код блокирует tokio worker thread на `libc::write`.
+   На pc мы используем io_uring TUN — фикс не релевантен. Релевантен для
+   Android, где замер показывал 152/42 Мбит/с в speedtest. Тестируется
+   только на физическом телефоне.
+3. **phantom-server scaling** — single process bottleneck (видим 100% CPU
+   в логах). Вариант: sharding по N tokio runtimes / per-CPU process pinning.
+   Не блокер для текущей задачи, но потолок при росте users.
+
 ## Sources
 
 - Симптомы наблюдались на v0.23.1 (текущий master, commit `d6b8213`).

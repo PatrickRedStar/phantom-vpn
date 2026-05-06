@@ -1,5 +1,5 @@
 ---
-updated: 2026-05-03
+updated: 2026-05-06
 ---
 
 # Timeline проекта
@@ -191,6 +191,7 @@ Sparkle integration → Brand polish → Release pipeline).
 | `v0.23.1` | Android hotfix: UI синхронизируется с native status-frame `connected` после смены сети. |
 | _2026-05-03_ | **Relay переехал** на `vps_balancer` (158.160.135.140) под nginx-stream SNI map (`relay.bikini-bottom.com` + `tls.nl2.bikini-bottom.com` → `127.0.0.1:5443`). 3x-ui панель / xray Reality на этом же боксе не задеты — nginx делает атомарный reload. Старый relay `193.187.95.128 / hostkey.bikini-bottom.com` остаётся для legacy conn_string'ов до миграции. Новый `server/scripts/deploy-relay.sh` (whitelist rsync, remote build). `phantom-relay` cert/key теперь опциональны (за nginx fallback не нужен). |
 | _2026-05-03_ | **`PHANTOM_NO_DEFAULT_ROUTE=1`** env-флаг в `apps/linux/cli/src/main.rs` — отключает global route-hijack клиента (rules 32764/32765 + iptables CONNMARK). Нужен для headless-боксов где phantom-client сосуществует с другими egress-сервисами (xray/nginx). На vps_balancer запускается так + ip rule для uid 996 (phantom-proxy → microsocks 127.0.0.1:10808 → outbound для 3x-ui). |
+| _2026-05-06_ | **Throughput regression fix** — диспетчер `supervise.rs` использовал `try_send` и тихо ронял пакеты при переполнении per-stream channel (cap=2048). На быстрых каналах (>500 Мбит/с) это вызывало TCP retransmit-storm + CWND collapse → random stalls и каскадную деградацию параллельной нагрузки. Фикс: `send().await` для backpressure до TUN reader. На pc измерили рост 4-parallel × 13.5 (55 → 745 Мбит/с), single-flow stalls устранены. Постмортем: `incidents/2026-05-06-vpn-throughput-regression.md`. |
 
 ---
 
