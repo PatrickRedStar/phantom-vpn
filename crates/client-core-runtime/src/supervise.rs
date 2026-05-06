@@ -360,16 +360,22 @@ async fn drive_tunnel(
     let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
 
     // Dispatcher: TUN → per-stream channel with per-stream TX byte counting.
+    // Backpressure: `send().await` propagates pressure upstream to the TUN
+    // reader instead of silently dropping packets when a per-stream channel
+    // overflows. A silent drop turns into TCP retransmit-storm + CWND collapse
+    // inside the tunnel and looks like a "stuck flow" from outside.
     let tx_senders_clone = tx_senders.clone();
     let tele = telemetry.clone();
     let dispatcher = tokio::spawn(async move {
         while let Some(pkt) = tun_pkt_rx.recv().await {
             let idx = flow_stream_idx(&pkt, n_streams);
             let len = pkt.len() as u64;
-            if tx_senders_clone[idx].try_send(pkt).is_ok() {
-                tele.bytes_tx.fetch_add(len, Ordering::Relaxed);
-                tele.stream_tx_bytes[idx].fetch_add(len, Ordering::Relaxed);
+            if tx_senders_clone[idx].send(pkt).await.is_err() {
+                // Stream RX dropped — supervisor is tearing down. Exit.
+                break;
             }
+            tele.bytes_tx.fetch_add(len, Ordering::Relaxed);
+            tele.stream_tx_bytes[idx].fetch_add(len, Ordering::Relaxed);
         }
     });
     drop(tx_senders);
