@@ -400,11 +400,9 @@
 				TargetAttributes = {
 					93AD8F0CB8AA9463D2963FEA = {
 						DevelopmentTeam = UPG896A272;
-						ProvisioningStyle = Automatic;
 					};
 					B35EDFDA2761F34D0AA9E4E7 = {
 						DevelopmentTeam = UPG896A272;
-						ProvisioningStyle = Automatic;
 					};
 				};
 			};
@@ -507,7 +505,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 14;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -516,7 +514,7 @@
 				INFOPLIST_FILE = GhostStream/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.23.2;
+				MARKETING_VERSION = 0.23.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn;
 				PROVISIONING_PROFILE_SPECIFIER = "$(GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = macosx;
@@ -528,8 +526,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 14;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -538,8 +537,9 @@
 				INFOPLIST_FILE = GhostStream/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.23.2;
+				MARKETING_VERSION = 0.23.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn;
+				PROVISIONING_PROFILE_SPECIFIER = ghoststream;
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -620,7 +620,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 14;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -629,7 +629,7 @@
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.23.2;
+				MARKETING_VERSION = 0.23.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn.tunnel;
 				PRODUCT_MODULE_NAME = PacketTunnelExtension;
 				PRODUCT_NAME = com.ghoststream.vpn.tunnel;
@@ -643,8 +643,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 14;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -653,10 +654,11 @@
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.23.2;
+				MARKETING_VERSION = 0.23.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.vpn.tunnel;
 				PRODUCT_MODULE_NAME = PacketTunnelExtension;
 				PRODUCT_NAME = com.ghoststream.vpn.tunnel;
+				PROVISIONING_PROFILE_SPECIFIER = "ghoststream-2";
 				SDKROOT = macosx;
 				WRAPPER_EXTENSION = systemextension;
 			};

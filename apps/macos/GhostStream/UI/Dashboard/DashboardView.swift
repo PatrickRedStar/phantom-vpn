@@ -404,16 +404,20 @@ public struct DashboardView: View {
                 Rectangle().fill(C.hair).frame(height: 1)
             }
 
+            // Per ADR 0007 the runtime is the only source of truth for
+            // `nStreams`. The UI follows whatever the runtime reports,
+            // clamped to [1, 16] so the widget never collapses.
+            let bars = TelemetryDisplayHelpers.barCountFromStreams(stateMgr.statusFrame.nStreams)
             VStack(spacing: 10) {
                 MuxBars(
                     active: stateMgr.statusFrame.state == .connected,
-                    barCount: 8,
+                    barCount: bars,
                     activityLevels: stateMgr.statusFrame.streamActivity,
                     reduceMotion: prefs.reduceMotion,
                     height: 84
                 )
                 HStack {
-                    ForEach(1...8, id: \.self) { idx in
+                    ForEach(1...bars, id: \.self) { idx in
                         Text(String(format: "S%02d", idx))
                             .font(.custom("DepartureMono-Regular", size: 9.5))
                             .tracking(0.18 * 9.5)
@@ -550,14 +554,19 @@ public struct DashboardView: View {
         return traffic.currentRxBytes
     }
 
+    /// Throughput exposed to the UI is bytes/sec. The wire contract of
+    /// `StatusFrame.rate_rx_bps` is bits/sec, so the fallback path divides
+    /// by 8. `TrafficSeriesStore.currentRxRateBps` is already bytes/sec.
     private var displayRxRateBps: Double {
         if traffic.currentRxRateBps > 0 { return traffic.currentRxRateBps }
-        return stateMgr.statusFrame.rateRxBps
+        return TelemetryDisplayHelpers
+            .bytesPerSecondFromBitsPerSecond(stateMgr.statusFrame.rateRxBps)
     }
 
     private var displayTxRateBps: Double {
         if traffic.currentTxRateBps > 0 { return traffic.currentTxRateBps }
-        return stateMgr.statusFrame.rateTxBps
+        return TelemetryDisplayHelpers
+            .bytesPerSecondFromBitsPerSecond(stateMgr.statusFrame.rateTxBps)
     }
 
     private func formatRate(_ bps: Double) -> String {

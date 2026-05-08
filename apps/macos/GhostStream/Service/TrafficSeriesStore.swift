@@ -137,6 +137,13 @@ public final class TrafficSeriesStore {
         }
     }
 
+    /// Returns a rate in **bytes/sec** for downstream consumers (graph store,
+    /// UI labels). The `reported` argument is the runtime-supplied
+    /// `rate_rx_bps` / `rate_tx_bps`, which the wire contract specifies as
+    /// **bits/sec** — convert here so everything downstream can stay in
+    /// bytes/sec without double-conversion. Falls back to byte-delta /
+    /// elapsed-seconds (already bytes/sec) when the runtime hasn't reported
+    /// a non-zero rate.
     private func resolvedRate(
         reported: Double,
         currentBytes: UInt64,
@@ -144,22 +151,18 @@ public final class TrafficSeriesStore {
         previousDate: Date?,
         now: Date
     ) -> Double {
-        let reported = sanitizeRate(reported)
-        guard reported == 0,
+        let reportedBytesPerSecond = TelemetryDisplayHelpers
+            .bytesPerSecondFromBitsPerSecond(reported)
+        guard reportedBytesPerSecond == 0,
               let previousBytes,
               let previousDate,
               currentBytes >= previousBytes
         else {
-            return reported
+            return reportedBytesPerSecond
         }
 
         let elapsed = max(now.timeIntervalSince(previousDate), 0.001)
         return Double(currentBytes - previousBytes) / elapsed
-    }
-
-    private func sanitizeRate(_ value: Double) -> Double {
-        guard value.isFinite, value > 0 else { return 0 }
-        return value
     }
 
     private func trimSamples() {

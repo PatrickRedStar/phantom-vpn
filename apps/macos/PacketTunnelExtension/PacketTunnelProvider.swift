@@ -18,25 +18,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private let log = Logger(subsystem: "com.ghoststream.vpn.tunnel", category: "tunnel")
     private var outboundTask: Task<Void, Never>?
-    private var providerTelemetryTask: Task<Void, Never>?
     private var routeSettingsTask: Task<Void, Never>?
 
+    /// Last `StatusFrame` received from the runtime (or the synthetic state-only
+    /// frame published while connecting). Single source of truth for IPC
+    /// `getStatus` responses and snapshot fan-out.
+    ///
+    /// Per ADR 0007 the extension never recomputes telemetry — it only relays
+    /// frames coming through `onStatus` and `onLog` callbacks plus a tiny
+    /// state-only frame on connecting / error / disconnect.
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
     private let runtimeStateLock = NSLock()
     private let snapshotPayloadKey = "vpn.statusFrame.v1"
     private let snapshotUpdatedAtKey = "vpn.statusFrame.updatedAt"
-    private let telemetryLock = NSLock()
-    private var telemetryStartedAt: Date?
-    private var telemetryProfile: VpnProfile?
-    private var telemetrySettings: TunnelSettings?
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
-    private var telemetryRxBytes: UInt64 = 0
-    private var telemetryTxBytes: UInt64 = 0
-    private var telemetryLastRxBytes: UInt64 = 0
-    private var telemetryLastTxBytes: UInt64 = 0
-    private var telemetryLastSampleAt = Date()
 
     // MARK: - Lifecycle
 
@@ -62,8 +59,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
         outboundTask?.cancel()
         outboundTask = nil
-        providerTelemetryTask?.cancel()
-        providerTelemetryTask = nil
         routeSettingsTask?.cancel()
         routeSettingsTask = nil
         activeProfile = nil
@@ -115,8 +110,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         case .disconnect:
             outboundTask?.cancel()
-            providerTelemetryTask?.cancel()
-            providerTelemetryTask = nil
             routeSettingsTask?.cancel()
             routeSettingsTask = nil
             activeProfile = nil
@@ -179,9 +172,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let settings = loadSettings()
         activeProfile = profile
         activeSettings = settings
-        resetProviderTelemetry(profile: profile, settings: settings)
         appendProviderLog(level: "INF", message: "starting tunnel profile=\(profile.name)")
-        publishProviderStatusFrame(state: .connecting)
+        publishStatusFrame(makeStateOnlyFrame(state: .connecting, profile: profile))
 
         let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
 
@@ -197,6 +189,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 settings: settings,
                 onStatus: { [weak self] frame in
                     guard let self else { return }
+                    // Per ADR 0007 the runtime frame is authoritative — relay
+                    // verbatim. No mutation, no enrichment.
                     self.publishStatusFrame(frame)
                     if frame.state == .connected && !didCallCompletion {
                         didCallCompletion = true
@@ -209,7 +203,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 },
                 onInbound: { [weak self] data in
                     guard let self else { return }
-                    self.addRxBytes(UInt64(data.count))
                     self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
                 }
             )
@@ -220,8 +213,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         appendProviderLog(level: "OK", message: "runtime started")
-        publishProviderStatusFrame(state: .connected)
-        startProviderTelemetryLoop()
 
         if !didCallCompletion {
             didCallCompletion = true
@@ -502,16 +493,40 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Packet loop
 
+    /// Continuously drain TUN packets and forward them to the Rust runtime.
+    ///
+    /// Implementation note (continuation-leak fix): the previous version
+    /// wrapped `packetFlow.readPackets` in a single `withCheckedContinuation`
+    /// per iteration. When `outboundTask.cancel()` ran while we were waiting
+    /// on `readPackets` (always the case on stopTunnel), the continuation
+    /// never resumed — `readPackets` has no cancel API — and Swift logged
+    /// `SWIFT TASK CONTINUATION MISUSE: outboundLoop() leaked its
+    /// continuation`. The leak left the extension in a half-dead state
+    /// where subsequent `startTunnel` requests hung.
+    ///
+    /// Switching to an `AsyncStream` makes cancellation correct: `for await`
+    /// terminates as soon as the parent task is cancelled, the stream
+    /// finishes, and any late `readPackets` callback yields into a finished
+    /// stream (no-op, no leak).
     private func outboundLoop() async {
-        while !Task.isCancelled {
-            let packets: [Data] = await withCheckedContinuation { cont in
+        let packetsStream = AsyncStream<[Data]> { continuation in
+            @Sendable func scheduleRead() {
                 self.packetFlow.readPackets { packets, _ in
-                    cont.resume(returning: packets)
+                    let result = continuation.yield(packets)
+                    switch result {
+                    case .terminated:
+                        return
+                    default:
+                        scheduleRead()
+                    }
                 }
             }
+            scheduleRead()
+        }
+
+        for await packets in packetsStream {
             if Task.isCancelled { break }
             for pkt in packets {
-                addTxBytes(UInt64(pkt.count))
                 await PhantomBridge.shared.submitInbound(pkt)
             }
         }
@@ -600,103 +615,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         publishStatusFrame(.disconnected)
     }
 
-    private func resetProviderTelemetry(profile: VpnProfile, settings: TunnelSettings) {
-        telemetryLock.lock()
-        telemetryStartedAt = Date()
-        telemetryProfile = profile
-        telemetrySettings = settings
-        telemetryRxBytes = 0
-        telemetryTxBytes = 0
-        telemetryLastRxBytes = 0
-        telemetryLastTxBytes = 0
-        telemetryLastSampleAt = Date()
-        telemetryLock.unlock()
-    }
-
-    private func addRxBytes(_ count: UInt64) {
-        telemetryLock.lock()
-        telemetryRxBytes = telemetryRxBytes &+ count
-        telemetryLock.unlock()
-    }
-
-    private func addTxBytes(_ count: UInt64) {
-        telemetryLock.lock()
-        telemetryTxBytes = telemetryTxBytes &+ count
-        telemetryLock.unlock()
-    }
-
-    private func startProviderTelemetryLoop() {
-        providerTelemetryTask?.cancel()
-        providerTelemetryTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled else { break }
-                self?.publishProviderStatusFrame(state: .connected)
-            }
-        }
-    }
-
-    private func publishProviderStatusFrame(state: ConnState) {
-        let frame = makeProviderStatusFrame(state: state)
-        publishStatusFrame(frame)
-    }
-
-    private func makeProviderStatusFrame(state: ConnState) -> StatusFrame {
-        telemetryLock.lock()
-        let now = Date()
-        let startedAt = telemetryStartedAt ?? now
-        let profile = telemetryProfile
-        let settings = telemetrySettings
-        let rxBytes = telemetryRxBytes
-        let txBytes = telemetryTxBytes
-        let dt = max(0.001, now.timeIntervalSince(telemetryLastSampleAt))
-        let rateRx = Double(rxBytes >= telemetryLastRxBytes ? rxBytes - telemetryLastRxBytes : 0) / dt
-        let rateTx = Double(txBytes >= telemetryLastTxBytes ? txBytes - telemetryLastTxBytes : 0) / dt
-        telemetryLastRxBytes = rxBytes
-        telemetryLastTxBytes = txBytes
-        telemetryLastSampleAt = now
-        telemetryLock.unlock()
-
-        let live = state == .connected
-        let streamCount = live ? providerStreamCount(settings: settings) : 0
-        let activityLevel: Float = (rateRx + rateTx) > 0 ? 1.0 : (live ? 0.12 : 0)
-        var streamActivity = Array(repeating: Float(0), count: 16)
-        if streamCount > 0 {
-            for idx in 0..<Int(streamCount) {
-                streamActivity[idx] = activityLevel
-            }
-        }
-
+    /// Build a minimal `StatusFrame` carrying only `state` plus the endpoint
+    /// identity already known from the profile. Used while connecting (before
+    /// the runtime emits its first frame), on disconnect and on hard error.
+    /// All telemetry fields stay at their zero/default values — the runtime
+    /// owns those numbers per ADR 0007.
+    private func makeStateOnlyFrame(state: ConnState, profile: VpnProfile? = nil) -> StatusFrame {
+        let p = profile ?? activeProfile
         return StatusFrame(
             state: state,
-            sessionSecs: UInt64(max(0, now.timeIntervalSince(startedAt))),
-            bytesRx: rxBytes,
-            bytesTx: txBytes,
-            rateRxBps: rateRx,
-            rateTxBps: rateTx,
-            nStreams: streamCount,
-            streamsUp: streamCount,
-            streamActivity: streamActivity,
+            sessionSecs: 0,
+            bytesRx: 0,
+            bytesTx: 0,
+            rateRxBps: 0,
+            rateTxBps: 0,
+            nStreams: 0,
+            streamsUp: 0,
+            streamActivity: Array(repeating: 0, count: 16),
             rttMs: nil,
-            tunAddr: profile?.tunAddr,
-            serverAddr: profile?.serverAddr,
-            sni: profile?.serverName,
+            tunAddr: p?.tunAddr,
+            serverAddr: p?.serverAddr,
+            sni: p?.serverName,
             lastError: nil,
             reconnectAttempt: nil,
             reconnectNextDelaySecs: nil
         )
-    }
-
-    private func providerStreamCount(settings: TunnelSettings?) -> UInt8 {
-        if let streamOverride = settings?.streams {
-            return UInt8(max(1, min(16, streamOverride)))
-        }
-
-        runtimeStateLock.lock()
-        let runtimeStreams = lastStatusFrame.nStreams
-        runtimeStateLock.unlock()
-
-        return runtimeStreams > 0 ? runtimeStreams : 1
     }
 
     private func appendProviderLog(level: String, message: String) {

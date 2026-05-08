@@ -91,7 +91,7 @@ public struct WelcomeWindow: View {
                 .tracking(-0.02 * 22)
                 .foregroundStyle(C.bone)
             Spacer()
-            Text("v0.23.0 · macOS · setup")
+            Text("\(AppVersion.short) · macOS · setup")
                 .font(.custom("DepartureMono-Regular", size: 10.5))
                 .tracking(0.18 * 10.5)
                 .foregroundStyle(C.textFaint)

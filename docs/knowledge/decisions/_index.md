@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-30
+updated: 2026-05-09
 ---
 
 # Architecture Decision Records (ADR)
@@ -16,6 +16,7 @@ updated: 2026-04-30
 | [0004](0004-ghs-url-conn-string.md) | accepted | `ghs://` URL conn_string + dynamic admin mTLS | 2026-04-15 |
 | [0005](0005-client-core-runtime.md) | accepted | Унифицированный tunnel runtime через `client-core-runtime` | 2026-04-17 |
 | [0006](0006-layered-macos-vpn-routing.md) | accepted | Layered macOS routing для корпоративного VPN + GhostStream | 2026-04-30 |
+| [0007](0007-macos-statusframe-passthrough.md) | accepted | macOS PacketTunnel должен пробрасывать StatusFrame от runtime | 2026-05-09 |
 
 ## Когда писать новый ADR
 

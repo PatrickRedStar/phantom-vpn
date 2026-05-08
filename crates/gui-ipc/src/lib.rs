@@ -76,6 +76,113 @@ mod tests {
 
         assert_eq!(settings.streams, Some(12));
     }
+
+    /// ADR 0007 invariant: `rtt_ms == None` MUST round-trip through JSON
+    /// (and NOT come back as `Some(0)`). The Swift dashboard distinguishes
+    /// "no measurement" from "measurement of zero".
+    #[test]
+    fn test_status_frame_json_roundtrip_preserves_rtt_none() {
+        let frame = StatusFrame {
+            rtt_ms: None,
+            ..StatusFrame::default()
+        };
+
+        let json = serde_json::to_string(&frame).expect("serialize");
+        let parsed: StatusFrame = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed.rtt_ms, None, "rtt_ms must remain None across JSON round-trip");
+
+        // Bit-exact equality on every other field.
+        assert_eq!(parsed.state, frame.state);
+        assert_eq!(parsed.session_secs, frame.session_secs);
+        assert_eq!(parsed.bytes_rx, frame.bytes_rx);
+        assert_eq!(parsed.bytes_tx, frame.bytes_tx);
+        assert_eq!(parsed.rate_rx_bps.to_bits(), frame.rate_rx_bps.to_bits());
+        assert_eq!(parsed.rate_tx_bps.to_bits(), frame.rate_tx_bps.to_bits());
+        assert_eq!(parsed.n_streams, frame.n_streams);
+        assert_eq!(parsed.streams_up, frame.streams_up);
+        for i in 0..16 {
+            assert_eq!(
+                parsed.stream_activity[i].to_bits(),
+                frame.stream_activity[i].to_bits(),
+                "stream_activity[{}] must round-trip bit-exact",
+                i
+            );
+        }
+        assert_eq!(parsed.tun_addr, frame.tun_addr);
+        assert_eq!(parsed.server_addr, frame.server_addr);
+        assert_eq!(parsed.sni, frame.sni);
+        assert_eq!(parsed.last_error, frame.last_error);
+        assert_eq!(parsed.reconnect_attempt, frame.reconnect_attempt);
+        assert_eq!(parsed.reconnect_next_delay_secs, frame.reconnect_next_delay_secs);
+    }
+
+    /// Fully-populated telemetry frame must round-trip without loss — covers
+    /// the typical Connected-state payload Swift consumes.
+    #[test]
+    fn test_status_frame_json_roundtrip_with_full_telemetry() {
+        let mut activity = [0.0_f32; 16];
+        // Mix: floor, mid, max, ..., trailing zeros (dead streams).
+        activity[0] = 0.1;
+        activity[1] = 0.5;
+        activity[2] = 1.0;
+        activity[3] = 0.12;
+        activity[4] = 0.34;
+        activity[5] = 0.56;
+        activity[6] = 0.78;
+        activity[7] = 0.9;
+        activity[8] = 0.05;
+        activity[9] = 0.23;
+        // 10..16 stay 0.0 (dead streams past streams_up).
+
+        let frame = StatusFrame {
+            state: ConnState::Connected,
+            session_secs: 12345,
+            bytes_rx: 1_048_576,
+            bytes_tx: 524_288,
+            // ~16 KB/s expressed as bits/sec: 16384 * 8 = 131072 bps.
+            rate_rx_bps: 131072.0,
+            rate_tx_bps: 65536.0,
+            n_streams: 10,
+            streams_up: 10,
+            stream_activity: activity,
+            rtt_ms: Some(42),
+            tun_addr: Some("10.42.0.2/24".to_string()),
+            server_addr: Some("89.110.109.128:443".to_string()),
+            sni: Some("cdn.example.com".to_string()),
+            last_error: None,
+            reconnect_attempt: None,
+            reconnect_next_delay_secs: None,
+        };
+
+        let json = serde_json::to_string(&frame).expect("serialize");
+        let parsed: StatusFrame = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed.state, ConnState::Connected);
+        assert_eq!(parsed.session_secs, 12345);
+        assert_eq!(parsed.bytes_rx, 1_048_576);
+        assert_eq!(parsed.bytes_tx, 524_288);
+        // bit-exact float comparison
+        assert_eq!(parsed.rate_rx_bps.to_bits(), 131072.0_f64.to_bits());
+        assert_eq!(parsed.rate_tx_bps.to_bits(), 65536.0_f64.to_bits());
+        assert_eq!(parsed.n_streams, 10);
+        assert_eq!(parsed.streams_up, 10);
+        for i in 0..16 {
+            assert_eq!(
+                parsed.stream_activity[i].to_bits(),
+                activity[i].to_bits(),
+                "stream_activity[{}] must round-trip bit-exact",
+                i
+            );
+        }
+        assert_eq!(parsed.rtt_ms, Some(42));
+        assert_eq!(parsed.tun_addr.as_deref(), Some("10.42.0.2/24"));
+        assert_eq!(parsed.server_addr.as_deref(), Some("89.110.109.128:443"));
+        assert_eq!(parsed.sni.as_deref(), Some("cdn.example.com"));
+        assert_eq!(parsed.last_error, None);
+        assert_eq!(parsed.reconnect_attempt, None);
+        assert_eq!(parsed.reconnect_next_delay_secs, None);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

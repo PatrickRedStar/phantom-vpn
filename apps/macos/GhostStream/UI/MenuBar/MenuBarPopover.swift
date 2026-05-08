@@ -348,6 +348,9 @@ public struct MenuBarPopover: View {
 
     @ViewBuilder
     private var muxRow: some View {
+        // Per ADR 0007 the runtime is the only source of truth for
+        // `nStreams`. UI follows the runtime, clamped to [1, 16].
+        let bars = TelemetryDisplayHelpers.barCountFromStreams(stateMgr.statusFrame.nStreams)
         HStack(spacing: 14) {
             Text("MUX · \(stateMgr.statusFrame.streamsUp)↑\(stateMgr.statusFrame.nStreams)")
                 .font(.custom("DepartureMono-Regular", size: 9.5))
@@ -355,7 +358,7 @@ public struct MenuBarPopover: View {
                 .foregroundStyle(C.textFaint)
             MuxBars(
                 active: stateMgr.statusFrame.state == .connected,
-                barCount: 8,
+                barCount: bars,
                 activityLevels: stateMgr.statusFrame.streamActivity,
                 reduceMotion: prefs.reduceMotion,
                 height: 28
@@ -491,14 +494,19 @@ public struct MenuBarPopover: View {
         return String(format: "%.2f MB/S", kb / 1024.0)
     }
 
+    /// Throughput exposed to the UI is bytes/sec. The wire contract of
+    /// `StatusFrame.rate_rx_bps` is bits/sec, so the fallback path divides
+    /// by 8. `TrafficSeriesStore.currentRxRateBps` is already bytes/sec.
     private var displayRxRateBps: Double {
         if traffic.currentRxRateBps > 0 { return traffic.currentRxRateBps }
-        return stateMgr.statusFrame.rateRxBps
+        return TelemetryDisplayHelpers
+            .bytesPerSecondFromBitsPerSecond(stateMgr.statusFrame.rateRxBps)
     }
 
     private var displayTxRateBps: Double {
         if traffic.currentTxRateBps > 0 { return traffic.currentTxRateBps }
-        return stateMgr.statusFrame.rateTxBps
+        return TelemetryDisplayHelpers
+            .bytesPerSecondFromBitsPerSecond(stateMgr.statusFrame.rateTxBps)
     }
 }
 
