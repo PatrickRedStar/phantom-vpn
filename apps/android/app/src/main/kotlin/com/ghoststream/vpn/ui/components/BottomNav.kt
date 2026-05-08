@@ -18,10 +18,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,17 +39,19 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.sp
+import androidx.annotation.DrawableRes
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsText
 
 data class NavEntry(
     val route: String,
-    val glyph: String,
+    @DrawableRes val iconRes: Int,
     val label: String,
 )
 
@@ -174,11 +178,13 @@ fun GhostBottomNav(
                             .padding(vertical = 2.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(
-                            text = entry.glyph,
-                            modifier = Modifier.scale(scale),
-                            color = if (active) C.signal else C.textDim,
-                            fontSize = 20.sp,
+                        Icon(
+                            painter = painterResource(id = entry.iconRes),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .scale(scale),
+                            tint = if (active) C.signal else C.textDim,
                         )
                         Spacer(Modifier.height(1.dp))
                         Text(

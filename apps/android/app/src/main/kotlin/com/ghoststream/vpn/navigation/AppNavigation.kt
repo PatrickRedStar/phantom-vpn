@@ -47,9 +47,9 @@ fun AppNavigation() {
     val bottomRoutes = listOf("dashboard", "logs", "settings")
 
     val entries = listOf(
-        NavEntry(route = "dashboard",   glyph = "◉", label = stringResource(R.string.nav_stream)),
-        NavEntry(route = "logs",        glyph = "▤", label = stringResource(R.string.nav_logs)),
-        NavEntry(route = "settings",    glyph = "⚙", label = stringResource(R.string.nav_settings)),
+        NavEntry(route = "dashboard", iconRes = R.drawable.ic_nav_stream,   label = stringResource(R.string.nav_stream)),
+        NavEntry(route = "logs",      iconRes = R.drawable.ic_nav_logs,     label = stringResource(R.string.nav_logs)),
+        NavEntry(route = "settings",  iconRes = R.drawable.ic_nav_settings, label = stringResource(R.string.nav_settings)),
     )
 
     val pagerState = rememberPagerState(pageCount = { 3 })
