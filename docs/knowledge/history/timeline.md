@@ -1,5 +1,5 @@
 ---
-updated: 2026-05-06
+updated: 2026-05-09
 ---
 
 # Timeline проекта
@@ -193,6 +193,8 @@ Sparkle integration → Brand polish → Release pipeline).
 | _2026-05-03_ | **`PHANTOM_NO_DEFAULT_ROUTE=1`** env-флаг в `apps/linux/cli/src/main.rs` — отключает global route-hijack клиента (rules 32764/32765 + iptables CONNMARK). Нужен для headless-боксов где phantom-client сосуществует с другими egress-сервисами (xray/nginx). На vps_balancer запускается так + ip rule для uid 996 (phantom-proxy → microsocks 127.0.0.1:10808 → outbound для 3x-ui). |
 | _2026-05-06_ | **Throughput regression fix** — диспетчер `supervise.rs` использовал `try_send` и тихо ронял пакеты при переполнении per-stream channel (cap=2048). На быстрых каналах (>500 Мбит/с) это вызывало TCP retransmit-storm + CWND collapse → random stalls и каскадную деградацию параллельной нагрузки. Фикс: `send().await` для backpressure до TUN reader. На pc измерили рост 4-parallel × 13.5 (55 → 745 Мбит/с), single-flow stalls устранены. Постмортем: `incidents/2026-05-06-vpn-throughput-regression.md`. |
 | `v0.23.2` | **Android: TUN writer на dedicated OS thread.** В `TunIo::BlockingThreads` writer был внутри `tokio::spawn` с blocking `libc::write` — занимал tokio worker'ы и тормозил TLS RX/TX/dispatcher async-таски. Фикс: `std::thread::spawn` + `blocking_recv` + partial-write loop + EINTR retry (как было в pre-Phase-4 Android коде). Бамп `versionCode 62 → 63`, `versionName 0.23.2`. Также UI workaround в `SettingsScreen.kt::IconSwitch` — `painterResource()` падал на adaptive-icon mipmap'ах в debug-сборке, переключили на canvas-rasterized Bitmap. Замер на телефоне fast.com: **280 / 120 Мбит/с** (было baseline 178/35 в Speedtest). |
+| `v0.23.3` | **Android: фикс краша при смене иконки приложения.** `SettingsViewModel::switchLauncherIcon` собирал `ComponentName(packageName, "$packageName.IconBone")` — но activity-alias классы лежат в `namespace` (`com.ghoststream.vpn`), а не в `applicationId` (`io.ghoststream.vpn[.debug]`). `setComponentEnabledSetting` бросал `IllegalArgumentException: Component class … does not exist` → краш и иконка не менялась. Фикс: использовать `BuildConfig::class.java.package` как источник namespace. На release-сборках 0.23.x фича бы тоже падала, до этого не успели выпустить. `versionCode 63 → 64`. |
+| `v0.23.4` | **Android: иконки нижней навигации — vector drawables вместо Unicode-глифов.** `Streams/Logs/Settings` использовали `◉ ▤ ⚙` из трёх разных Unicode-блоков, рендерились системным шрифтом с разной толщиной/массой. Заменили на vector drawables: Stream — pulse waveform 1.5px, Logs — terminal с `>` 2px, Settings — Lucide-style 6-tooth gear 1.5px. `NavEntry.glyph: String → iconRes: Int`, `Icon(painter=…)` вместо `Text(glyph)`. `versionCode 64 → 65`. |
 
 ---
 
