@@ -93,8 +93,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val pm = ctx.packageManager
         val pkg = ctx.packageName
 
-        val boneAlias = android.content.ComponentName(pkg, "$pkg.IconBone")
-        val scopeAlias = android.content.ComponentName(pkg, "$pkg.IconScope")
+        // alias-классы живут в namespace (com.ghoststream.vpn), не в applicationId
+        val classNs = com.ghoststream.vpn.BuildConfig::class.java.`package`!!.name
+        val boneAlias = android.content.ComponentName(pkg, "$classNs.IconBone")
+        val scopeAlias = android.content.ComponentName(pkg, "$classNs.IconScope")
 
         val (enable, disable) = when (icon) {
             "scope" -> scopeAlias to boneAlias
