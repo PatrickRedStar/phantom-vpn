@@ -22,9 +22,10 @@
 //!
 //! let (handles, join) = run(
 //!     profile,
-//!     TunIo::Uring(3), // tun fd
+//!     TunIo::BlockingThreads(3), // tun fd
 //!     status_tx,
 //!     log_tx,
+//!     None,                      // protect_socket — Linux/iOS pass None
 //! ).await?;
 //!
 //! // Disconnect later:
@@ -34,6 +35,7 @@
 //! # }
 //! ```
 
+pub mod log_bridge;
 pub mod logsink;
 pub mod supervise;
 pub mod telemetry;
@@ -137,26 +139,26 @@ pub async fn run(
                     }
                 }
                 tun_fd_to_close = Some(raw_fd);
-                tracing::info!(tun_fd = raw_fd, "BlockingThreads: dup'd TUN fd (blocking mode)");
+                tracing::info!(category = "tun", name = "blocking", mtu = 0, addr = "", tun_fd = raw_fd, "created");
                 let factory: supervise::TunFactory = Arc::new(move || {
                     let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
                     let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
                     let tun_fd = raw_fd;
-                    tracing::info!(tun_fd, "TUN factory: spawning reader+writer");
+                    tracing::debug!(category = "tun", tun_fd, "factory spawning reader+writer");
                     // Reader thread: blocking libc::read → async channel
                     std::thread::spawn(move || {
-                        tracing::info!(tun_fd, "TUN reader thread started");
+                        tracing::debug!(category = "tun", tun_fd, "reader thread started");
                         let mut buf = vec![0u8; 4096];
                         loop {
                             let n = unsafe { libc::read(tun_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
                             if n <= 0 {
                                 let err = std::io::Error::last_os_error();
-                                tracing::error!(tun_fd, n, %err, "TUN read failed — reader exiting");
+                                tracing::error!(category = "tun", tun_fd, n, %err, "read failed");
                                 break;
                             }
                             let pkt = Bytes::copy_from_slice(&buf[..n as usize]);
                             if read_tx.blocking_send(pkt).is_err() {
-                                tracing::info!(tun_fd, "TUN reader: channel closed");
+                                tracing::debug!(category = "tun", tun_fd, "reader: channel closed");
                                 break;
                             }
                         }
@@ -169,7 +171,7 @@ pub async fn run(
                     // + EINTR retry are required because the TUN fd is in
                     // blocking mode and large packets may not write atomically.
                     std::thread::spawn(move || {
-                        tracing::info!(tun_fd, "TUN writer thread started");
+                        tracing::debug!(category = "tun", tun_fd, "writer thread started");
                         while let Some(pkt) = write_rx.blocking_recv() {
                             let mut written = 0usize;
                             let len = pkt.len();
@@ -189,11 +191,11 @@ pub async fn run(
                                 if err.raw_os_error() == Some(libc::EINTR) {
                                     continue;
                                 }
-                                tracing::error!(tun_fd, n, %err, "TUN write failed — writer exiting");
+                                tracing::error!(category = "tun", tun_fd, n, %err, "write failed");
                                 return;
                             }
                         }
-                        tracing::info!(tun_fd, "TUN writer: channel closed");
+                        tracing::debug!(category = "tun", tun_fd, "writer: channel closed");
                     });
                     Ok((read_rx, write_tx))
                 });
@@ -246,6 +248,7 @@ pub async fn run(
     let settings = cfg.settings.clone();
 
     let join = tokio::spawn(async move {
+        let shutdown_started_at = std::time::Instant::now();
         supervise::supervise(
             cfg,
             settings,
@@ -256,13 +259,16 @@ pub async fn run(
             protect_socket,
         )
         .await;
+        tracing::info!(category = "runtime", "shutdown.start");
         // Close the dup'd TUN fd so Android can tear down the VPN interface.
         // Without this, the dup'd fd keeps the TUN device alive even after
         // VpnService closes its ParcelFileDescriptor.
         if let Some(fd) = tun_fd_to_close {
-            tracing::info!(tun_fd = fd, "closing dup'd TUN fd");
+            tracing::info!(category = "tun", name = "blocking", tun_fd = fd, "torn_down");
             unsafe { libc::close(fd); }
         }
+        let duration_ms = shutdown_started_at.elapsed().as_millis() as u64;
+        tracing::info!(category = "runtime", duration_ms, "shutdown.complete");
         Ok(())
     });
 

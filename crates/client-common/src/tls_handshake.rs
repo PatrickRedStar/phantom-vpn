@@ -16,11 +16,27 @@ pub async fn connect(
     server_name: String,
     tls_config: Arc<rustls::ClientConfig>,
 ) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
-    tracing::info!("Connecting to {} (SNI: {}) via TCP/TLS...", server_addr, server_name);
+    tracing::debug!(
+        category = "handshake",
+        peer = %server_addr,
+        local = "",
+        "tcp.connect"
+    );
 
     let tcp = tokio::net::TcpStream::connect(server_addr)
         .await
         .context("TCP connect failed")?;
+
+    let local = tcp
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    tracing::debug!(
+        category = "handshake",
+        peer = %server_addr,
+        local = %local,
+        "tcp.connected"
+    );
 
     do_connect(tcp, server_name, tls_config).await
 }
@@ -45,6 +61,13 @@ async fn do_connect(
     // Do NOT set SO_RCVBUF/SO_SNDBUF — disables TCP auto-tuning.
     let _ = tcp.set_nodelay(true);
 
+    let sni_str = server_name.clone();
+    tracing::debug!(
+        category = "handshake",
+        sni = %sni_str,
+        alpn = "",
+        "tls.client_hello"
+    );
     let server_name = rustls::pki_types::ServerName::try_from(server_name)
         .context("Invalid server name")?;
     let tls_connector = tokio_rustls::TlsConnector::from(tls_config);
@@ -53,6 +76,11 @@ async fn do_connect(
         .await
         .context("TLS handshake failed")?;
 
-    tracing::info!("TLS connected");
+    tracing::debug!(
+        category = "handshake",
+        proto = "tls1.3",
+        sni = %sni_str,
+        "tls.alpn_negotiated"
+    );
     Ok(tokio::io::split(tls_stream))
 }

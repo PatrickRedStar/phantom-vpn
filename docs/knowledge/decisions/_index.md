@@ -17,6 +17,7 @@ updated: 2026-05-09
 | [0005](0005-client-core-runtime.md) | accepted | Унифицированный tunnel runtime через `client-core-runtime` | 2026-04-17 |
 | [0006](0006-layered-macos-vpn-routing.md) | accepted | Layered macOS routing для корпоративного VPN + GhostStream | 2026-04-30 |
 | [0007](0007-macos-statusframe-passthrough.md) | accepted | macOS PacketTunnel должен пробрасывать StatusFrame от runtime | 2026-05-09 |
+| [0008](0008-verbose-debug-observability.md) | accepted | Verbose debug observability: structured logging для каждого микро-события | 2026-05-09 |
 
 ## Когда писать новый ADR
 

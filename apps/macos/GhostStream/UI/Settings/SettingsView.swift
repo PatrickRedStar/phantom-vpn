@@ -250,8 +250,70 @@ public struct SettingsView: View {
                         Task { await exportDiagnostics() }
                     }
                 }
+
+                cardSubHeader("ADVANCED")
+                settingRow(
+                    title: "Verbose logging (TRACE)",
+                    description: "Records every packet batch and micro-event. Adds ~10 MB/min to \(LogPathResolver.displayPath.replacingOccurrences(of: "/runtime.log", with: "/")). Reduce if disk-constrained."
+                ) {
+                    SettingsToggle(on: $p.verboseLog)
+                }
+                HairlineDivider()
+                settingRow(
+                    title: "Runtime log file",
+                    description: "\(LogPathResolver.displayPath) · NDJSON, daily rotation, 7-day retention"
+                ) {
+                    actionButton(
+                        label: "REVEAL",
+                        color: C.bone,
+                        borderColor: C.hairBold
+                    ) {
+                        revealRuntimeLogFile()
+                    }
+                }
+                HairlineDivider()
+                settingRow(
+                    title: "Log directory",
+                    description: "Open the rotation directory in a Finder window"
+                ) {
+                    actionButton(
+                        label: "OPEN",
+                        color: C.bone,
+                        borderColor: C.hairBold
+                    ) {
+                        openRuntimeLogDirectory()
+                    }
+                }
             }
         }
+    }
+
+    /// Single source of truth for the runtime log path — see
+    /// `PhantomKit.LogPathResolver` (ADR 0008 §4).
+    private func runtimeLogDirectoryURL() -> URL {
+        LogPathResolver.defaultDirectory()
+    }
+
+    private func revealRuntimeLogFile() {
+        let file = LogPathResolver.defaultRuntimeLogURL()
+        if FileManager.default.fileExists(atPath: file.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([file])
+            return
+        }
+        // No log yet — at least open the parent directory if it exists.
+        let dir = file.deletingLastPathComponent()
+        if FileManager.default.fileExists(atPath: dir.path) {
+            NSWorkspace.shared.open(dir)
+        }
+    }
+
+    private func openRuntimeLogDirectory() {
+        let dir = runtimeLogDirectoryURL()
+        try? FileManager.default.createDirectory(
+            at: dir,
+            withIntermediateDirectories: true
+        )
+        NSWorkspace.shared.open(dir)
     }
 
     // MARK: - Sub-header inside the right column
@@ -937,6 +999,7 @@ private struct DiagnosticsPreferencesSnapshot: Codable {
     let notifyStateChanges: Bool
     let reduceMotion: Bool
     let autoUpdate: Bool
+    let verboseLog: Bool
     let streamOverride: Int?
     let routingMode: String
     let dnsServers: [String]?
@@ -954,6 +1017,7 @@ private struct DiagnosticsPreferencesSnapshot: Codable {
         notifyStateChanges = preferences.notifyStateChanges
         reduceMotion = preferences.reduceMotion
         autoUpdate = preferences.autoUpdate
+        verboseLog = preferences.verboseLog
         streamOverride = preferences.streamOverride
         routingMode = preferences.routingMode.rawValue
         dnsServers = preferences.dnsServers

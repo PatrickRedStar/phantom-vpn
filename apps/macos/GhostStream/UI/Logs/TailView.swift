@@ -31,6 +31,8 @@ public struct TailView: View {
     @State private var activeFilter: LevelFilter = .all
     @State private var searchText: String = ""
     @State private var regexSearch: Bool = false
+    @State private var followTail: Bool = true
+    @State private var selectedCategories: Set<String> = []
     @State private var actionStatus: TailStatus?
     @State private var keyMonitor: Any?
     @FocusState private var searchFieldFocused: Bool
@@ -41,6 +43,7 @@ public struct TailView: View {
         VStack(alignment: .leading, spacing: 14) {
             detailHead
             toolbar
+            categoryStrip
             tailStatusStrip
             tailTable
         }
@@ -199,6 +202,31 @@ public struct TailView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Export visible logs (⌘E)")
+                Button {
+                    revealRuntimeLogFile()
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 12))
+                        .foregroundStyle(C.textDim)
+                        .frame(width: 28, height: 28)
+                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("Reveal runtime.log in Finder")
+                Button {
+                    followTail.toggle()
+                } label: {
+                    Text(followTail ? "FOLLOW" : "PAUSED")
+                        .font(.custom("DepartureMono-Regular", size: 10))
+                        .tracking(0.16 * 10)
+                        .foregroundStyle(followTail ? C.signal : C.textDim)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(followTail ? C.signal.opacity(0.06) : C.bgElev)
+                        .overlay(Rectangle().stroke(followTail ? C.signalDim : C.hairBold, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("Toggle follow tail")
                 KeyboardShortcutHint("⌘F")
                 KeyboardShortcutHint("⌘L")
                 KeyboardShortcutHint("⌘C")
@@ -206,6 +234,79 @@ public struct TailView: View {
             }
         }
     }
+
+    // MARK: - 2b. Category strip
+
+    @ViewBuilder
+    private var categoryStrip: some View {
+        let allCategories = TailView.knownCategories
+        HStack(spacing: 6) {
+            Text("CATEGORY")
+                .font(.custom("DepartureMono-Regular", size: 9.5))
+                .tracking(0.18 * 9.5)
+                .foregroundStyle(C.textFaint)
+            ForEach(allCategories, id: \.self) { category in
+                let isOn = selectedCategories.isEmpty || selectedCategories.contains(category)
+                Button {
+                    toggleCategory(category, total: allCategories)
+                } label: {
+                    Text(category)
+                        .font(.custom("DepartureMono-Regular", size: 9.5))
+                        .tracking(0.14 * 9.5)
+                        .foregroundStyle(isOn ? C.signal : C.textFaint)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(isOn ? C.signal.opacity(0.06) : C.bgElev)
+                        .overlay(Rectangle().stroke(isOn ? C.signalDim : C.hairBold, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help(isOn ? "Hide \(category) events" : "Show \(category) events")
+            }
+            Spacer(minLength: 0)
+            if !selectedCategories.isEmpty {
+                Button {
+                    selectedCategories = []
+                } label: {
+                    Text("ALL")
+                        .font(.custom("DepartureMono-Regular", size: 9.5))
+                        .tracking(0.14 * 9.5)
+                        .foregroundStyle(C.textDim)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("Reset category filter")
+            }
+        }
+    }
+
+    private func toggleCategory(_ category: String, total: [String]) {
+        if selectedCategories.isEmpty {
+            // First click — invert: select all except the clicked one.
+            selectedCategories = Set(total).subtracting([category])
+            if selectedCategories.count == total.count {
+                selectedCategories = []
+            }
+            return
+        }
+        if selectedCategories.contains(category) {
+            selectedCategories.remove(category)
+        } else {
+            selectedCategories.insert(category)
+        }
+        if selectedCategories.count == total.count {
+            selectedCategories = []
+        }
+    }
+
+    /// Canonical category list per ADR 0008. Listed here so the strip
+    /// renders in a stable order regardless of which categories actually
+    /// have frames in the buffer.
+    static let knownCategories: [String] = [
+        "tunnel", "handshake", "stream", "packet",
+        "telemetry", "tun", "ipc", "settings", "runtime", "ffi",
+    ]
 
     @ViewBuilder
     private var tailStatusStrip: some View {
@@ -242,50 +343,241 @@ public struct TailView: View {
                             .padding(40)
                             .frame(maxWidth: .infinity)
                     } else {
-                        ForEach(filteredLogs) { row in
-                            tailRow(row)
-                            Rectangle().fill(C.hair).frame(height: 1)
+                        ForEach(Array(filteredLogs.enumerated()), id: \.element.id) { idx, row in
+                            tailRow(row, index: idx)
+                            Rectangle().fill(C.hair.opacity(0.5)).frame(height: 1)
                         }
-                        Color.clear.frame(height: 1).id("tail-bottom")
                     }
+                    // Anchor sits OUTSIDE the conditional + AFTER the
+                    // ForEach. LazyVStack only materialises the bottom
+                    // anchor when it is at the tail of the layout — not
+                    // wrapped inside the empty-state branch. Height is
+                    // explicitly small (not 0) so SwiftUI keeps it in the
+                    // layout pass even when filteredLogs is empty.
+                    Color.clear
+                        .frame(height: 2)
+                        .id("tail-bottom")
                 }
             }
+            // Follow-tail: scrolling to a fixed bottom anchor is more
+            // reliable than scrolling to the last row's `id` because the
+            // anchor is always materialised. Defer one runloop tick so
+            // the LazyVStack has actually inserted the new row first.
             .onChange(of: logStore.logs.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.16)) {
-                    proxy.scrollTo("tail-bottom", anchor: .bottom)
-                }
+                guard followTail else { return }
+                scrollToBottom(proxy: proxy, animated: true)
             }
             .onChange(of: filteredLogs.count) { _, _ in
-                proxy.scrollTo("tail-bottom", anchor: .bottom)
+                guard followTail else { return }
+                scrollToBottom(proxy: proxy, animated: false)
+            }
+            .onChange(of: followTail) { _, isOn in
+                // When the user re-enables follow tail, snap to bottom
+                // immediately — otherwise the next inbound event is the
+                // only thing that triggers a scroll.
+                guard isOn else { return }
+                scrollToBottom(proxy: proxy, animated: true)
+            }
+            .onAppear {
+                // First reveal — jump to bottom so the user lands on the
+                // freshest events even after switching tabs back.
+                scrollToBottom(proxy: proxy, animated: false)
             }
         }
         .background(C.bgElev2)
         .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
     }
 
+    /// Scroll the tail table to the bottom anchor. Deferred via
+    /// `DispatchQueue.main.async` so the new row is laid out before the
+    /// scroll command runs (otherwise the LazyVStack hasn't inserted it
+    /// yet and the anchor lands above the latest event).
+    private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.12)) {
+                    proxy.scrollTo("tail-bottom", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("tail-bottom", anchor: .bottom)
+            }
+        }
+    }
+
     @ViewBuilder
-    private func tailRow(_ row: LogFrame) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            Text(formatTs(row.tsUnixMs))
-                .font(.custom("JetBrainsMono-Regular", size: 10.5))
-                .foregroundStyle(C.textFaint)
-                .frame(width: 86, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-            Text(normalizedLevel(row.level))
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.14 * 9.5)
-                .foregroundStyle(levelColor(row.level))
-                .frame(width: 60, alignment: .leading)
-                .padding(.vertical, 8)
-            Text(row.msg)
-                .font(.custom("JetBrainsMono-Regular", size: 11))
-                .foregroundStyle(C.bone)
-                .lineSpacing(4)
+    private func tailRow(_ row: LogFrame, index: Int) -> some View {
+        let levelKey = normalizedLevel(row.level)
+        let levelChip = levelChipStyle(levelKey)
+        let categoryKey = row.category ?? ""
+        let categoryAccent = categoryChipColor(categoryKey)
+        let zebra = (index.isMultiple(of: 2)) ? Color.clear : C.bgElev.opacity(0.35)
+
+        Button {
+            copyRowAsJson(row)
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                // Left accent strip — colored by category (or transparent).
+                // Avoid `firstTextBaseline` alignment for the parent HStack:
+                // a strip / chip without an intrinsic text baseline collapses
+                // the row when paired with `Color.clear`. `.top` keeps the
+                // row at its natural multi-line height.
+                Rectangle()
+                    .fill(categoryAccent.opacity(categoryKey.isEmpty ? 0 : 0.85))
+                    .frame(width: 3)
+
+                // Time column.
+                Text(formatTs(row.timestampUs))
+                    .font(.custom("JetBrainsMono-Regular", size: 10.5))
+                    .foregroundStyle(C.textFaint)
+                    .frame(width: 92, alignment: .leading)
+                    .padding(.top, 1)
+
+                // Level chip — solid bg, easy to spot.
+                Text(levelKey.uppercased())
+                    .font(.custom("DepartureMono-Regular", size: 9))
+                    .tracking(0.18 * 9)
+                    .foregroundStyle(levelChip.fg)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(levelChip.bg)
+                    .frame(minWidth: 38, alignment: .leading)
+
+                // Category chip — outlined, color-coded by domain.
+                Text(categoryKey.isEmpty ? "—" : categoryKey.uppercased())
+                    .font(.custom("DepartureMono-Regular", size: 9))
+                    .tracking(0.16 * 9)
+                    .foregroundStyle(categoryKey.isEmpty ? C.textFaint : categoryAccent)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .overlay(
+                        Rectangle()
+                            .stroke(
+                                categoryKey.isEmpty
+                                    ? C.hairBold.opacity(0.6)
+                                    : categoryAccent.opacity(0.55),
+                                lineWidth: 1
+                            )
+                    )
+                    .frame(minWidth: 84, alignment: .leading)
+
+                // Message + fields.
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(row.msg)
+                        .font(.custom("JetBrainsMono-Regular", size: 11))
+                        .foregroundStyle(messageColor(levelKey))
+                        .textSelection(.enabled)
+                    if let summary = renderFields(row.fields), !summary.isEmpty {
+                        Text(summary)
+                            .font(.custom("JetBrainsMono-Regular", size: 10))
+                            .foregroundStyle(C.textFaint)
+                            .lineLimit(2)
+                            .textSelection(.enabled)
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .textSelection(.enabled)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(zebra)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Click to copy this row as JSON")
+    }
+
+    /// Solid level badge — high contrast for ERR/WRN, soft tint for the
+    /// rest. Mapping covers normalised keys produced by
+    /// `TunnelLogStore.normalizedLevel`.
+    private func levelChipStyle(_ level: String) -> (fg: Color, bg: Color) {
+        switch level {
+        case "error": return (Color.white,         C.danger)
+        case "warn":  return (Color.black.opacity(0.88), C.warn)
+        case "ok":    return (C.signal,            C.signal.opacity(0.18))
+        case "info":  return (C.signal,            C.signal.opacity(0.10))
+        case "debug": return (C.blueDebug,         C.blueDebug.opacity(0.16))
+        case "trace": return (C.textFaint,         C.bgElev)
+        default:      return (C.textDim,           C.bgElev)
+        }
+    }
+
+    /// Stable colour per ADR-0008 category. Picked for distinguishability
+    /// at small chip size on both dark and light palettes — none of these
+    /// duplicate the level palette (signal/warn/danger) so message and
+    /// category never read the same colour.
+    private func categoryChipColor(_ category: String) -> Color {
+        switch category {
+        case "tunnel":    return C.signal
+        case "handshake": return C.warn
+        case "stream":    return C.blueDebug
+        case "packet":    return Color(hex: 0xFF8B7AC0)   // lavender
+        case "telemetry": return Color(hex: 0xFF4DB6AC)   // teal
+        case "tun":       return Color(hex: 0xFFFF8A65)   // coral
+        case "ipc":       return C.textDim
+        case "settings":  return C.bone
+        case "runtime":   return C.danger
+        case "ffi":       return C.textFaint
+        default:          return C.textDim
+        }
+    }
+
+    /// Slightly tone down the message colour for low-priority levels so
+    /// the eye stays on warn/error rows. Bone for everything ≥ INF, dim
+    /// for DBG, faint for TRC.
+    private func messageColor(_ level: String) -> Color {
+        switch level {
+        case "trace": return C.textFaint
+        case "debug": return C.textDim
+        default:      return C.bone
+        }
+    }
+
+    private func renderFields(_ fields: [String: String]?) -> String? {
+        guard let fields, !fields.isEmpty else { return nil }
+        return fields.keys.sorted()
+            .map { "\($0)=\(fields[$0] ?? "")" }
+            .joined(separator: " ")
+    }
+
+    private func copyRowAsJson(_ row: LogFrame) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(row),
+              let json = String(data: data, encoding: .utf8) else {
+            actionStatus = TailStatus(message: "Could not encode row to JSON", tone: .danger)
+            return
+        }
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(json, forType: .string) else {
+            actionStatus = TailStatus(message: "Pasteboard rejected the copy", tone: .danger)
+            return
+        }
+        actionStatus = TailStatus(message: "Copied 1 log row as JSON", tone: .info)
+    }
+
+    private func revealRuntimeLogFile() {
+        // ADR 0008 §4: resolve through `PhantomKit.LogPathResolver` —
+        // the same source the extension's `LogFileWriter` writes to,
+        // so this button always lands on the file the writer produces.
+        let url = LogPathResolver.defaultRuntimeLogURL()
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            actionStatus = TailStatus(message: "Revealed runtime.log in Finder", tone: .info)
+            return
+        }
+
+        let dirUrl = url.deletingLastPathComponent()
+        if FileManager.default.fileExists(atPath: dirUrl.path) {
+            NSWorkspace.shared.open(dirUrl)
+            actionStatus = TailStatus(
+                message: "runtime.log not yet created — opened log folder",
+                tone: .warning
+            )
+        } else {
+            actionStatus = TailStatus(
+                message: "Log folder not yet created — start the tunnel first",
+                tone: .warning
+            )
         }
     }
 
@@ -293,12 +585,13 @@ public struct TailView: View {
 
     private var filteredLogs: [LogFrame] {
         guard regexSearchError == nil else { return [] }
-        let regex = activeSearchRegex
-        return logStore.logs.filter { row in
-            let levelOk = activeFilter == .all || normalizedLevel(row.level) == activeFilter.matchKey
-            let textOk = matchesSearch(row, regex: regex)
-            return levelOk && textOk
-        }
+        return TailViewFilter.filter(
+            frames: logStore.logs,
+            level: activeFilter,
+            categories: selectedCategories,
+            search: searchText,
+            useRegex: regexSearch
+        )
     }
 
     private var activeSearchRegex: NSRegularExpression? {
@@ -435,7 +728,9 @@ public struct TailView: View {
     }
 
     private func formatLogLine(_ row: LogFrame) -> String {
-        "\(formatTs(row.tsUnixMs)) [\(normalizedLevel(row.level))] \(row.msg)"
+        let categoryPart = (row.category?.isEmpty ?? true) ? "" : " [\(row.category!)]"
+        let fieldsPart = renderFields(row.fields).map { " {\($0)}" } ?? ""
+        return "\(formatTs(row.timestampUs)) [\(normalizedLevel(row.level))]\(categoryPart) \(row.msg)\(fieldsPart)"
     }
 
     private func levelColor(_ level: String) -> Color {
@@ -461,11 +756,87 @@ public struct TailView: View {
         }
     }
 
-    private func formatTs(_ tsMs: UInt64) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(tsMs) / 1000.0)
+    private func formatTs(_ tsUs: UInt64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(tsUs) / 1_000_000.0)
         let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SS"
+        formatter.dateFormat = "HH:mm:ss.SSS"
         return formatter.string(from: date)
+    }
+}
+
+/// Pure filter logic extracted for testability. Keeps the SwiftUI view
+/// state-free of business rules — see `LogFrameFilterTests` (when a
+/// macOS-app test target lands).
+enum TailViewFilter {
+    static func filter(
+        frames: [LogFrame],
+        level: LevelFilter,
+        categories: Set<String>,
+        search: String,
+        useRegex: Bool
+    ) -> [LogFrame] {
+        let regex: NSRegularExpression?
+        if useRegex && !search.isEmpty {
+            regex = try? NSRegularExpression(pattern: search, options: [.caseInsensitive])
+            if regex == nil { return [] }
+        } else {
+            regex = nil
+        }
+
+        return frames.filter { frame in
+            let normalized = normalize(level: frame.level)
+            let levelOk = level == .all || normalized == level.matchKey
+            let categoryOk = categories.isEmpty
+                || (frame.category.map { categories.contains($0) } ?? false)
+            let textOk = matches(frame: frame, search: search, regex: regex, useRegex: useRegex)
+            return levelOk && categoryOk && textOk
+        }
+    }
+
+    /// Pure, isolation-free copy of `TunnelLogStore.normalizedLevel` so
+    /// the filter compiles outside the main actor. Both implementations
+    /// share the same mapping table — keep them in sync.
+    static func normalize(level: String) -> String {
+        switch level.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "inf", "info":
+            return "info"
+        case "wrn", "warn", "warning":
+            return "warn"
+        case "err", "error":
+            return "error"
+        case "dbg", "debug", "trc", "trace":
+            return "debug"
+        case "ok", "success":
+            return "ok"
+        default:
+            return "info"
+        }
+    }
+
+    private static func matches(
+        frame: LogFrame,
+        search: String,
+        regex: NSRegularExpression?,
+        useRegex: Bool
+    ) -> Bool {
+        guard !search.isEmpty else { return true }
+
+        var haystack = "\(frame.level) \(frame.msg)"
+        if let category = frame.category {
+            haystack.append(" \(category)")
+        }
+        if let fields = frame.fields, !fields.isEmpty {
+            for (k, v) in fields {
+                haystack.append(" \(k)=\(v)")
+            }
+        }
+
+        guard useRegex else {
+            return haystack.localizedCaseInsensitiveContains(search)
+        }
+        guard let regex else { return false }
+        let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
+        return regex.firstMatch(in: haystack, range: range) != nil
     }
 }
 
@@ -488,7 +859,7 @@ private enum TailStatusTone: Equatable {
     case danger
 }
 
-private enum LevelFilter: String, CaseIterable {
+enum LevelFilter: String, CaseIterable {
     case all, info, warn, error, debug
 
     var label: String {

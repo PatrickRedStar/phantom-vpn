@@ -183,6 +183,62 @@ mod tests {
         assert_eq!(parsed.reconnect_attempt, None);
         assert_eq!(parsed.reconnect_next_delay_secs, None);
     }
+
+    /// ADR 0008: a v1 LogFrame payload (no category, no fields, no
+    /// microsecond timestamp) MUST deserialize cleanly and yield safe
+    /// defaults for the new v2 fields. Backward compat for Linux /
+    /// Android / older helpers.
+    #[test]
+    fn test_log_frame_v1_payload_deserializes_with_defaults() {
+        let v1 = r#"{"ts_unix_ms":1715200000000,"level":"INF","msg":"hello"}"#;
+        let parsed: LogFrame =
+            serde_json::from_str(v1).expect("v1 LogFrame must deserialize");
+        assert_eq!(parsed.ts_unix_ms, 1715200000000);
+        assert_eq!(parsed.ts_unix_us, 0); // default
+        assert_eq!(parsed.level, "INF");
+        assert_eq!(parsed.msg, "hello");
+        assert_eq!(parsed.category, None);
+        assert!(parsed.fields.is_none());
+        // Convenience fallback returns ms*1000 when us is missing.
+        assert_eq!(parsed.timestamp_us(), 1715200000000 * 1_000);
+    }
+
+    /// ADR 0008: a v2 LogFrame round-trip preserves microsecond
+    /// timestamp, category, and structured fields bit-exact.
+    #[test]
+    fn test_log_frame_v2_structured_roundtrip() {
+        let event = LogFrame::structured(
+            "DBG",
+            "stream",
+            "stream opened",
+            [
+                ("stream_id".to_string(), "3".to_string()),
+                ("priority".to_string(), "high".to_string()),
+            ],
+        );
+
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: LogFrame =
+            serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed, event);
+        assert_eq!(parsed.level, "DBG");
+        assert_eq!(parsed.category.as_deref(), Some("stream"));
+        let fields = parsed.fields.as_ref().expect("fields present");
+        assert_eq!(fields.get("stream_id").map(String::as_str), Some("3"));
+        assert_eq!(fields.get("priority").map(String::as_str), Some("high"));
+        assert!(parsed.ts_unix_us >= parsed.ts_unix_ms.saturating_mul(1_000));
+    }
+
+    /// `LogFrame::structured` with empty fields collapses to `None`,
+    /// keeping JSON compact and equal to a v1-shape (apart from the
+    /// new microsecond timestamp).
+    #[test]
+    fn test_log_frame_structured_empty_fields_collapse_to_none() {
+        let event =
+            LogFrame::structured("INF", "tunnel", "started", std::iter::empty());
+        assert!(event.fields.is_none());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,20 +353,99 @@ impl Default for StatusFrame {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Structured log event. v2 (per ADR 0008) extends v1 with
+/// microsecond timestamp, optional `category` label, and an optional
+/// `fields` map of stringified key-value attributes. Old consumers
+/// continue to read `ts_unix_ms` + `level` + `msg`; the new fields use
+/// `#[serde(default)]` for backward compat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LogFrame {
+    /// Legacy millisecond timestamp. Kept as the primary field for v1
+    /// compatibility; new code prefers `ts_unix_us` when present.
     pub ts_unix_ms: u64,
-    /// "OK"/"INF"/"DBG"/"WRN"/"ERR"
+
+    /// Microsecond Unix timestamp. New in v2. Defaults to 0 when
+    /// missing — consumers should fall back to `ts_unix_ms * 1_000`.
+    #[serde(default)]
+    pub ts_unix_us: u64,
+
+    /// 3-char level code: "ERR" / "WRN" / "INF" / "DBG" / "TRC".
+    /// "OK" is accepted as a legacy alias for INF.
     pub level: String,
+
+    /// Free-form human-readable message.
     pub msg: String,
+
+    /// Logical category. New in v2. One of: "tunnel", "handshake",
+    /// "stream", "packet", "telemetry", "tun", "ipc", "settings",
+    /// "runtime", "ffi". `None` = uncategorized.
+    #[serde(default)]
+    pub category: Option<String>,
+
+    /// Structured fields: small map (<10 entries typical) of stringified
+    /// values. New in v2.
+    #[serde(default)]
+    pub fields: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl LogFrame {
+    /// v1 constructor. Builds a `LogFrame` with current timestamp and no
+    /// category/fields. Prefer `LogFrame::structured` for new code.
     pub fn now(level: &str, msg: impl Into<String>) -> Self {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        Self { ts_unix_ms: ts, level: level.to_string(), msg: msg.into() }
+        let (ms, us) = current_timestamps();
+        Self {
+            ts_unix_ms: ms,
+            ts_unix_us: us,
+            level: level.to_string(),
+            msg: msg.into(),
+            category: None,
+            fields: None,
+        }
     }
+
+    /// v2 constructor: structured event with category and key-value
+    /// fields. Use this from `tracing` subscribers and any new event
+    /// site. See ADR 0008 for the canonical category/event taxonomy.
+    pub fn structured<S, F>(
+        level: &str,
+        category: &str,
+        msg: S,
+        fields: F,
+    ) -> Self
+    where
+        S: Into<String>,
+        F: IntoIterator<Item = (String, String)>,
+    {
+        let (ms, us) = current_timestamps();
+        let map: std::collections::BTreeMap<String, String> =
+            fields.into_iter().collect();
+        let fields = if map.is_empty() { None } else { Some(map) };
+        Self {
+            ts_unix_ms: ms,
+            ts_unix_us: us,
+            level: level.to_string(),
+            msg: msg.into(),
+            category: Some(category.to_string()),
+            fields,
+        }
+    }
+
+    /// Convenience: microsecond timestamp, falling back to ms*1000 for
+    /// v1 frames where the field defaulted to 0.
+    pub fn timestamp_us(&self) -> u64 {
+        if self.ts_unix_us != 0 {
+            self.ts_unix_us
+        } else {
+            self.ts_unix_ms.saturating_mul(1_000)
+        }
+    }
+}
+
+fn current_timestamps() -> (u64, u64) {
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let ms = dur.as_millis() as u64;
+    let us = (dur.as_micros() as u64).max(ms.saturating_mul(1_000));
+    (ms, us)
 }

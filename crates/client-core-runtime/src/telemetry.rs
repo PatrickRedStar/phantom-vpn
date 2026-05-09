@@ -145,6 +145,18 @@ pub fn spawn_telem_task(
             cur.streams_up = up;
             cur.stream_activity = act;
             let _ = status_tx.send(cur);
+
+            // telemetry.publish — per ADR 0008 §2. TRACE level so it's
+            // off by default; flip on with verboseLog or
+            // GHOSTSTREAM_LOG=client_core_runtime=trace.
+            tracing::trace!(
+                category = "telemetry",
+                n_streams = telemetry.n_streams as u64,
+                streams_up = up as u64,
+                rate_rx_bps = ema_rx,
+                rate_tx_bps = ema_tx,
+                "publish"
+            );
         }
     })
 }
