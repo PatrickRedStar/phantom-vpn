@@ -12,6 +12,9 @@ import Foundation
 private func c_phantom_runtime_start(
     _ cfg_json: UnsafePointer<CChar>?,
     _ settings_json: UnsafePointer<CChar>?,
+    /// ADR 0008: when `true`, Rust runtime applies `RUST_LOG=trace`
+    /// (overriding build defaults but yielding to `GHOSTSTREAM_LOG` env).
+    _ verbose_log: Bool,
     _ status_cb: @convention(c) (UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Void,
     _ log_cb: @convention(c) (UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Void,
     _ outbound_cb: @convention(c) (UnsafePointer<UInt8>?, Int, UnsafeMutableRawPointer?) -> Void,
@@ -90,6 +93,10 @@ public actor PhantomBridge {
     /// - Parameters:
     ///   - profile: Active VPN profile (conn string + server metadata).
     ///   - settings: Runtime settings forwarded to Rust.
+    ///   - verboseLog: ADR 0008 — when `true`, Rust applies TRACE-level
+    ///     filter unless overridden by env `GHOSTSTREAM_LOG`. Defaults
+    ///     to `false`; the host reads `UserDefaults.verbose_log` and
+    ///     passes it here at tunnel start.
     ///   - onStatus: Invoked on each `StatusFrame` from Rust.
     ///   - onLog: Invoked on each `LogFrame` from Rust.
     ///   - onInbound: Invoked with each raw inbound IP packet from Rust.
@@ -98,6 +105,7 @@ public actor PhantomBridge {
     public func start(
         profile: VpnProfile,
         settings: TunnelSettings,
+        verboseLog: Bool = false,
         onStatus:  @escaping StatusCallback,
         onLog:     @escaping LogCallback,
         onInbound: @escaping InboundCallback
@@ -136,6 +144,7 @@ public actor PhantomBridge {
                 c_phantom_runtime_start(
                     cfgPtr,
                     setPtr,
+                    verboseLog,
                     { buf, len, ctx in
                         guard let ctx, let buf, len > 0 else { return }
                         let data = Data(bytes: buf, count: len)

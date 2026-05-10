@@ -76,10 +76,18 @@ public struct MuxBars: View {
         .onAppear(perform: resetHeights)
         .onChange(of: active) { _, _ in resetHeights() }
         .onChange(of: reduceMotion) { _, _ in resetHeights() }
+        .onChange(of: barCount) { _, _ in resetHeights() }
         .onChange(of: activityLevels) { _, _ in
-            // When real data arrives, update without animation to reflect
-            // the true per-stream state immediately.
-            if activityLevels != nil { resetHeights() }
+            // Real per-stream activity arrives every 250ms from the
+            // runtime telemetry task. Update WITHOUT `withAnimation` so
+            // overlapping 0.4s ease-in-outs do not stack into a constant
+            // shimmer (visible as "endless collapse/expand" inside the
+            // menu-bar popover). The runtime already EWMA-smooths the
+            // values; SwiftUI's implicit animation on a frame-height
+            // change is enough.
+            if activityLevels != nil {
+                heights = makeHeights(active: active)
+            }
         }
         .task(id: "\(active)|\(reduceMotion)") {
             // 700ms shimmer tick while active — skipped when real levels

@@ -14,29 +14,36 @@ import NetworkExtension
 import PhantomKit
 import os.log
 
+/// Bridge `PhantomKit.LogFrame` to the writer's protocol without leaking
+/// PhantomKit into LogFileWriter itself. Ring-buffer ↔ file ↔ UI all read
+/// the same struct.
+extension LogFrame: LogFrameLike {}
+
 final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private let log = Logger(subsystem: "com.ghoststream.vpn.tunnel", category: "tunnel")
+    private let osLogPool = OSLogCategoryPool()
     private var outboundTask: Task<Void, Never>?
-    private var providerTelemetryTask: Task<Void, Never>?
     private var routeSettingsTask: Task<Void, Never>?
+    /// ADR 0008 — verbose logging is sourced from the host App Group
+    /// preferences at `startTunnel` time and pinned for the lifetime of
+    /// the tunnel.
+    private var verboseLog: Bool = false
 
+    /// Last `StatusFrame` received from the runtime (or the synthetic state-only
+    /// frame published while connecting). Single source of truth for IPC
+    /// `getStatus` responses and snapshot fan-out.
+    ///
+    /// Per ADR 0007 the extension never recomputes telemetry — it only relays
+    /// frames coming through `onStatus` and `onLog` callbacks plus a tiny
+    /// state-only frame on connecting / error / disconnect.
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
     private let runtimeStateLock = NSLock()
     private let snapshotPayloadKey = "vpn.statusFrame.v1"
     private let snapshotUpdatedAtKey = "vpn.statusFrame.updatedAt"
-    private let telemetryLock = NSLock()
-    private var telemetryStartedAt: Date?
-    private var telemetryProfile: VpnProfile?
-    private var telemetrySettings: TunnelSettings?
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
-    private var telemetryRxBytes: UInt64 = 0
-    private var telemetryTxBytes: UInt64 = 0
-    private var telemetryLastRxBytes: UInt64 = 0
-    private var telemetryLastTxBytes: UInt64 = 0
-    private var telemetryLastSampleAt = Date()
 
     // MARK: - Lifecycle
 
@@ -62,16 +69,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
         outboundTask?.cancel()
         outboundTask = nil
-        providerTelemetryTask?.cancel()
-        providerTelemetryTask = nil
         routeSettingsTask?.cancel()
         routeSettingsTask = nil
         activeProfile = nil
         activeSettings = nil
-        appendProviderLog(level: "INF", message: "stopTunnel reason=\(reason.rawValue)")
+        emitProviderEvent(
+            level: "INF",
+            category: "tunnel",
+            event: "disconnect",
+            fields: ["reason": String(reason.rawValue)]
+        )
 
         Task {
             await PhantomBridge.shared.stop()
+            LogFileWriter.shared.flush()
             writeDisconnectedSnapshot()
             completionHandler()
         }
@@ -81,24 +92,61 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         guard let message = decodeIpcMessage(messageData) else {
-            appendProviderLog(level: "WRN", message: "unable to decode app IPC message")
+            // ADR 0008 §2: ipc.request emitted before any decode-success path
+            // so we still see malformed messages in the structured stream.
+            emitProviderEvent(
+                level: "WRN",
+                category: "ipc",
+                event: "request",
+                fields: ["op": "decode_failure"]
+            )
             completionHandler?(nil)
             return
         }
+
+        let opName = ipcOpName(message)
+        emitProviderEvent(
+            level: "DBG",
+            category: "ipc",
+            event: "request",
+            fields: ["op": opName]
+        )
 
         switch message {
         case .getStatus:
             let response = TunnelIpcBridge.Response.status(currentStatusFrame())
             completionHandler?(try? JSONEncoder().encode(response))
+            emitProviderEvent(
+                level: "DBG",
+                category: "ipc",
+                event: "response",
+                fields: ["op": opName, "status": "ok"]
+            )
 
         case .subscribeLogs(let sinceMs):
             let filtered = currentLogFrames(sinceMs: sinceMs)
             let response = TunnelIpcBridge.Response.logs(filtered)
             completionHandler?(try? JSONEncoder().encode(response))
+            emitProviderEvent(
+                level: "DBG",
+                category: "ipc",
+                event: "response",
+                fields: [
+                    "op": opName,
+                    "status": "ok",
+                    "n_logs": String(filtered.count),
+                ]
+            )
 
         case .getCurrentProfile:
             let response = TunnelIpcBridge.Response.ok
             completionHandler?(try? JSONEncoder().encode(response))
+            emitProviderEvent(
+                level: "DBG",
+                category: "ipc",
+                event: "response",
+                fields: ["op": opName, "status": "ok"]
+            )
 
         case .updateRoutePolicy(let snapshot):
             Task {
@@ -106,8 +154,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     try await self.updateRoutePolicy(snapshot)
                     let response = TunnelIpcBridge.Response.ok
                     completionHandler?(try? JSONEncoder().encode(response))
+                    self.emitProviderEvent(
+                        level: "INF",
+                        category: "ipc",
+                        event: "response",
+                        fields: ["op": opName, "status": "ok"]
+                    )
                 } catch {
-                    self.appendProviderLog(level: "ERR", message: "route policy update failed: \(error.localizedDescription)")
+                    self.emitProviderEvent(
+                        level: "ERR",
+                        category: "ipc",
+                        event: "response",
+                        fields: [
+                            "op": opName,
+                            "status": "error",
+                            "error": error.localizedDescription,
+                        ]
+                    )
                     let response = TunnelIpcBridge.Response.error(error.localizedDescription)
                     completionHandler?(try? JSONEncoder().encode(response))
                 }
@@ -115,19 +178,42 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         case .disconnect:
             outboundTask?.cancel()
-            providerTelemetryTask?.cancel()
-            providerTelemetryTask = nil
             routeSettingsTask?.cancel()
             routeSettingsTask = nil
             activeProfile = nil
             activeSettings = nil
-            appendProviderLog(level: "INF", message: "disconnect requested by host app")
+            emitProviderEvent(
+                level: "INF",
+                category: "tunnel",
+                event: "disconnect",
+                fields: ["reason": "ipc"]
+            )
             Task {
                 await PhantomBridge.shared.stop()
+                LogFileWriter.shared.flush()
                 writeDisconnectedSnapshot()
                 let response = TunnelIpcBridge.Response.ok
                 completionHandler?(try? JSONEncoder().encode(response))
+                emitProviderEvent(
+                    level: "DBG",
+                    category: "ipc",
+                    event: "response",
+                    fields: ["op": opName, "status": "ok"]
+                )
             }
+        }
+    }
+
+    /// Stable op-label for IPC events. Mirrors the case names in
+    /// `TunnelIpcBridge.Message` so `category="ipc"` rows are easy to
+    /// filter by op in the Logs tab.
+    private func ipcOpName(_ message: TunnelIpcBridge.Message) -> String {
+        switch message {
+        case .getStatus:          return "get_status"
+        case .subscribeLogs:      return "subscribe_logs"
+        case .getCurrentProfile:  return "get_current_profile"
+        case .updateRoutePolicy:  return "update_route_policy"
+        case .disconnect:         return "disconnect"
         }
     }
 
@@ -179,14 +265,34 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let settings = loadSettings()
         activeProfile = profile
         activeSettings = settings
-        resetProviderTelemetry(profile: profile, settings: settings)
-        appendProviderLog(level: "INF", message: "starting tunnel profile=\(profile.name)")
-        publishProviderStatusFrame(state: .connecting)
+        verboseLog = readVerboseLogPreference()
+
+        emitProviderEvent(
+            level: "INF",
+            category: "tunnel",
+            event: "start",
+            fields: [
+                "profile_id": profile.id,
+                "profile_name": profile.name,
+                "server": profile.serverAddr,
+                "sni": profile.serverName,
+                "verbose_log": verboseLog ? "true" : "false",
+            ]
+        )
+        publishStatusFrame(makeStateOnlyFrame(state: .connecting, profile: profile))
 
         let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
 
         try await setTunnelNetworkSettings(networkSettings)
-        appendProviderLog(level: "INF", message: "network settings applied tun=\(profile.tunAddr)")
+        emitProviderEvent(
+            level: "INF",
+            category: "tun",
+            event: "created",
+            fields: [
+                "tun_addr": profile.tunAddr,
+                "mtu": "1350",
+            ]
+        )
         let runtimeProfile = profileForRuntime(profile: profile, settings: settings)
 
         var didCallCompletion = false
@@ -195,11 +301,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try await PhantomBridge.shared.start(
                 profile: runtimeProfile,
                 settings: settings,
+                verboseLog: verboseLog,
                 onStatus: { [weak self] frame in
                     guard let self else { return }
+                    // Per ADR 0007 the runtime frame is authoritative — relay
+                    // verbatim. No mutation, no enrichment.
                     self.publishStatusFrame(frame)
                     if frame.state == .connected && !didCallCompletion {
                         didCallCompletion = true
+                        self.emitProviderEvent(
+                            level: "INF",
+                            category: "tunnel",
+                            event: "connected",
+                            fields: [
+                                "session_secs": String(frame.sessionSecs),
+                                "n_streams": String(frame.nStreams),
+                                "streams_up": String(frame.streamsUp),
+                            ]
+                        )
                         completionHandler(nil)
                     }
                 },
@@ -209,19 +328,29 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 },
                 onInbound: { [weak self] data in
                     guard let self else { return }
-                    self.addRxBytes(UInt64(data.count))
                     self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
                 }
             )
         } catch {
             await PhantomBridge.shared.stop()
-            appendProviderLog(level: "ERR", message: "runtime start failed: \(error.localizedDescription)")
+            emitProviderEvent(
+                level: "ERR",
+                category: "tunnel",
+                event: "error",
+                fields: [
+                    "phase": "runtime_start",
+                    "error": error.localizedDescription,
+                ]
+            )
             throw error
         }
 
-        appendProviderLog(level: "OK", message: "runtime started")
-        publishProviderStatusFrame(state: .connected)
-        startProviderTelemetryLoop()
+        emitProviderEvent(
+            level: "INF",
+            category: "runtime",
+            event: "started",
+            fields: nil
+        )
 
         if !didCallCompletion {
             didCallCompletion = true
@@ -231,6 +360,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         outboundTask = Task.detached { [weak self] in
             await self?.outboundLoop()
         }
+    }
+
+    /// Read the `verbose_log` toggle from the App Group `UserDefaults`
+    /// the host writes via `PreferencesStore.verboseLog`. Defaults to
+    /// `false` when unset or the suite is unreachable.
+    private func readVerboseLogPreference() -> Bool {
+        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn") else {
+            return false
+        }
+        return defaults.object(forKey: "verbose_log") as? Bool ?? false
     }
 
     // MARK: - Profile loading
@@ -502,16 +641,40 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Packet loop
 
+    /// Continuously drain TUN packets and forward them to the Rust runtime.
+    ///
+    /// Implementation note (continuation-leak fix): the previous version
+    /// wrapped `packetFlow.readPackets` in a single `withCheckedContinuation`
+    /// per iteration. When `outboundTask.cancel()` ran while we were waiting
+    /// on `readPackets` (always the case on stopTunnel), the continuation
+    /// never resumed — `readPackets` has no cancel API — and Swift logged
+    /// `SWIFT TASK CONTINUATION MISUSE: outboundLoop() leaked its
+    /// continuation`. The leak left the extension in a half-dead state
+    /// where subsequent `startTunnel` requests hung.
+    ///
+    /// Switching to an `AsyncStream` makes cancellation correct: `for await`
+    /// terminates as soon as the parent task is cancelled, the stream
+    /// finishes, and any late `readPackets` callback yields into a finished
+    /// stream (no-op, no leak).
     private func outboundLoop() async {
-        while !Task.isCancelled {
-            let packets: [Data] = await withCheckedContinuation { cont in
+        let packetsStream = AsyncStream<[Data]> { continuation in
+            @Sendable func scheduleRead() {
                 self.packetFlow.readPackets { packets, _ in
-                    cont.resume(returning: packets)
+                    let result = continuation.yield(packets)
+                    switch result {
+                    case .terminated:
+                        return
+                    default:
+                        scheduleRead()
+                    }
                 }
             }
+            scheduleRead()
+        }
+
+        for await packets in packetsStream {
             if Task.isCancelled { break }
             for pkt in packets {
-                addTxBytes(UInt64(pkt.count))
                 await PhantomBridge.shared.submitInbound(pkt)
             }
         }
@@ -573,7 +736,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func writeErrorSnapshot(_ message: String) {
-        appendProviderLog(level: "ERR", message: message)
+        emitProviderEvent(
+            level: "ERR",
+            category: "tunnel",
+            event: "error",
+            fields: ["error": message]
+        )
         let frame = StatusFrame(
             state: .error,
             sessionSecs: 0,
@@ -596,114 +764,87 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func writeDisconnectedSnapshot() {
-        appendProviderLog(level: "INF", message: "tunnel disconnected")
+        emitProviderEvent(
+            level: "INF",
+            category: "tunnel",
+            event: "disconnected",
+            fields: nil
+        )
         publishStatusFrame(.disconnected)
     }
 
-    private func resetProviderTelemetry(profile: VpnProfile, settings: TunnelSettings) {
-        telemetryLock.lock()
-        telemetryStartedAt = Date()
-        telemetryProfile = profile
-        telemetrySettings = settings
-        telemetryRxBytes = 0
-        telemetryTxBytes = 0
-        telemetryLastRxBytes = 0
-        telemetryLastTxBytes = 0
-        telemetryLastSampleAt = Date()
-        telemetryLock.unlock()
-    }
-
-    private func addRxBytes(_ count: UInt64) {
-        telemetryLock.lock()
-        telemetryRxBytes = telemetryRxBytes &+ count
-        telemetryLock.unlock()
-    }
-
-    private func addTxBytes(_ count: UInt64) {
-        telemetryLock.lock()
-        telemetryTxBytes = telemetryTxBytes &+ count
-        telemetryLock.unlock()
-    }
-
-    private func startProviderTelemetryLoop() {
-        providerTelemetryTask?.cancel()
-        providerTelemetryTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled else { break }
-                self?.publishProviderStatusFrame(state: .connected)
-            }
-        }
-    }
-
-    private func publishProviderStatusFrame(state: ConnState) {
-        let frame = makeProviderStatusFrame(state: state)
-        publishStatusFrame(frame)
-    }
-
-    private func makeProviderStatusFrame(state: ConnState) -> StatusFrame {
-        telemetryLock.lock()
-        let now = Date()
-        let startedAt = telemetryStartedAt ?? now
-        let profile = telemetryProfile
-        let settings = telemetrySettings
-        let rxBytes = telemetryRxBytes
-        let txBytes = telemetryTxBytes
-        let dt = max(0.001, now.timeIntervalSince(telemetryLastSampleAt))
-        let rateRx = Double(rxBytes >= telemetryLastRxBytes ? rxBytes - telemetryLastRxBytes : 0) / dt
-        let rateTx = Double(txBytes >= telemetryLastTxBytes ? txBytes - telemetryLastTxBytes : 0) / dt
-        telemetryLastRxBytes = rxBytes
-        telemetryLastTxBytes = txBytes
-        telemetryLastSampleAt = now
-        telemetryLock.unlock()
-
-        let live = state == .connected
-        let streamCount = live ? providerStreamCount(settings: settings) : 0
-        let activityLevel: Float = (rateRx + rateTx) > 0 ? 1.0 : (live ? 0.12 : 0)
-        var streamActivity = Array(repeating: Float(0), count: 16)
-        if streamCount > 0 {
-            for idx in 0..<Int(streamCount) {
-                streamActivity[idx] = activityLevel
-            }
-        }
-
+    /// Build a minimal `StatusFrame` carrying only `state` plus the endpoint
+    /// identity already known from the profile. Used while connecting (before
+    /// the runtime emits its first frame), on disconnect and on hard error.
+    /// All telemetry fields stay at their zero/default values — the runtime
+    /// owns those numbers per ADR 0007.
+    private func makeStateOnlyFrame(state: ConnState, profile: VpnProfile? = nil) -> StatusFrame {
+        let p = profile ?? activeProfile
         return StatusFrame(
             state: state,
-            sessionSecs: UInt64(max(0, now.timeIntervalSince(startedAt))),
-            bytesRx: rxBytes,
-            bytesTx: txBytes,
-            rateRxBps: rateRx,
-            rateTxBps: rateTx,
-            nStreams: streamCount,
-            streamsUp: streamCount,
-            streamActivity: streamActivity,
+            sessionSecs: 0,
+            bytesRx: 0,
+            bytesTx: 0,
+            rateRxBps: 0,
+            rateTxBps: 0,
+            nStreams: 0,
+            streamsUp: 0,
+            streamActivity: Array(repeating: 0, count: 16),
             rttMs: nil,
-            tunAddr: profile?.tunAddr,
-            serverAddr: profile?.serverAddr,
-            sni: profile?.serverName,
+            tunAddr: p?.tunAddr,
+            serverAddr: p?.serverAddr,
+            sni: p?.serverName,
             lastError: nil,
             reconnectAttempt: nil,
             reconnectNextDelaySecs: nil
         )
     }
 
-    private func providerStreamCount(settings: TunnelSettings?) -> UInt8 {
-        if let streamOverride = settings?.streams {
-            return UInt8(max(1, min(16, streamOverride)))
-        }
-
-        runtimeStateLock.lock()
-        let runtimeStreams = lastStatusFrame.nStreams
-        runtimeStateLock.unlock()
-
-        return runtimeStreams > 0 ? runtimeStreams : 1
-    }
-
+    /// Legacy helper retained for diagnostic call-sites that don't yet
+    /// have a category/event mapping. New code should prefer
+    /// `emitProviderEvent` which produces a v2 LogFrame.
     private func appendProviderLog(level: String, message: String) {
         let frame = LogFrame(
             tsUnixMs: UInt64(Date().timeIntervalSince1970 * 1000),
             level: level,
             msg: message
+        )
+        appendProviderLog(frame)
+    }
+
+    /// ADR 0008 — the canonical Provider-side event emitter. Builds a
+    /// structured v2 `LogFrame` (category + fields), stamps it onto the
+    /// ring buffer, mirrors it to OSLog with a category-aware logger, and
+    /// hands it to `LogFileWriter` for NDJSON persistence.
+    private func emitProviderEvent(
+        level: String,
+        category: String,
+        event: String,
+        fields: [String: String]?
+    ) {
+        var prepared: [String: String] = [:]
+        if let fields {
+            for (k, v) in fields {
+                prepared[k] = v
+            }
+        }
+        prepared["event"] = event
+
+        let summary: String
+        if !prepared.isEmpty {
+            let pairs = prepared.keys.sorted()
+                .map { "\($0)=\(prepared[$0] ?? "")" }
+                .joined(separator: " ")
+            summary = pairs
+        } else {
+            summary = event
+        }
+
+        let frame = LogFrame.structured(
+            level: level,
+            category: category,
+            msg: summary,
+            fields: prepared
         )
         appendProviderLog(frame)
     }
@@ -730,13 +871,45 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return frames
     }
 
+    /// Maximum number of `LogFrame`s retained in the in-memory ring
+    /// buffer. ADR 0008 raises this from 200 → 10 000 so the UI can
+    /// surface a meaningful trace without round-tripping to disk.
+    private static let maxRecentLogFrames = 10_000
+
     private func appendProviderLog(_ frame: LogFrame) {
         runtimeStateLock.lock()
         recentLogFrames.append(frame)
-        if recentLogFrames.count > 1000 {
-            recentLogFrames.removeFirst(recentLogFrames.count - 1000)
+        if recentLogFrames.count > Self.maxRecentLogFrames {
+            recentLogFrames.removeFirst(recentLogFrames.count - Self.maxRecentLogFrames)
         }
         runtimeStateLock.unlock()
+
+        // Mirror to OSLog for live `log stream` consumers — one logger
+        // per category keeps the predicate filter clean. The level
+        // mapping follows ADR 0008 §3.
+        osLogPool.logger(for: frame.category).log(
+            level: Self.osLogType(for: frame.level),
+            "\(frame.msg, privacy: .public)"
+        )
+
+        // Persist to the NDJSON runtime log. Non-blocking — the writer
+        // queue absorbs back-pressure for us.
+        LogFileWriter.shared.append(frame)
+    }
+
+    private static func osLogType(for level: String) -> OSLogType {
+        switch level.uppercased() {
+        case "ERR", "ERROR":
+            return .fault
+        case "WRN", "WARN", "WARNING":
+            return .error
+        case "INF", "INFO", "OK":
+            return .info
+        case "DBG", "DEBUG", "TRC", "TRACE":
+            return .debug
+        default:
+            return .info
+        }
     }
 
     // MARK: - Helpers
@@ -819,5 +992,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return host
         }
         return "127.0.0.1"
+    }
+}
+
+/// Lazy pool of `os.Logger`s, one per logical category. Mirrors LogFrame
+/// events to the unified Apple logging facility so `log stream
+/// --predicate 'subsystem == "com.ghoststream.vpn.tunnel"'` lets a
+/// developer follow events live without parsing the runtime log file.
+private final class OSLogCategoryPool {
+    private let subsystem = "com.ghoststream.vpn.tunnel"
+    private let lock = NSLock()
+    private var cache: [String: Logger] = [:]
+
+    func logger(for category: String?) -> Logger {
+        let key = category?.isEmpty == false ? category! : "uncategorized"
+        lock.lock()
+        if let cached = cache[key] {
+            lock.unlock()
+            return cached
+        }
+        let logger = Logger(subsystem: subsystem, category: key)
+        cache[key] = logger
+        lock.unlock()
+        return logger
     }
 }

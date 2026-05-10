@@ -39,6 +39,64 @@ const ERR_QUEUE_FULL: i32 = -10;
 const ERR_NO_TUNNEL: i32 = -11;
 const ERR_PANIC: i32 = -99;
 
+// ─── Log filter gating (ADR 0008 §3) ─────────────────────────────────────────
+
+/// Default `tracing` filter spec when no env override and `verbose_log == false`.
+///
+/// Debug builds default to DBG for our own crates (so engineers see handshake /
+/// stream lifecycle without flipping the toggle). Release builds default to INF
+/// to keep the file lean unless the operator explicitly opts in.
+fn default_log_spec() -> &'static str {
+    if cfg!(debug_assertions) {
+        "info,client_core_runtime=debug,client_common=debug,phantom_client_apple=debug"
+    } else {
+        "info"
+    }
+}
+
+/// Resolve and apply the active filter spec for this `phantom_runtime_start`
+/// invocation, per the ADR 0008 §3 priority chain. Idempotent — safe to call
+/// multiple times across sessions.
+fn apply_log_filter(verbose: bool) {
+    // 1. env `GHOSTSTREAM_LOG` wins over everything (engineers can pin a spec
+    //    while debugging without rebuilding).
+    let from_env = std::env::var("GHOSTSTREAM_LOG").ok().filter(|s| !s.is_empty());
+
+    // 2. Swift verbose toggle.
+    // 3. Build-config default.
+    let spec = match (from_env, verbose) {
+        (Some(s), _) => s,
+        (None, true) => "trace".to_string(),
+        (None, false) => default_log_spec().to_string(),
+    };
+
+    // Mirror into `RUST_LOG` *before* the first `logsink::install()` so the
+    // initial filter matches. SAFETY: `set_var` is unsafe in Rust 2024 due to
+    // multi-threaded races on env. We call this once per session from the FFI
+    // entry, before any worker threads consult the env. Keep it in a small
+    // unsafe block to make the contract explicit.
+    // NOTE: phantom_runtime_start is the only writer; readers are the
+    // `logsink::install()` call below and `tracing-subscriber::EnvFilter`
+    // internals, which run on the same thread we just spawned from.
+    std::env::set_var("RUST_LOG", &spec);
+
+    // Force-install the global subscriber now (no-op on second call) so
+    // `set_level` below has a `FILTER_HANDLE` to drive.
+    client_core_runtime::logsink::install();
+
+    // For reload: convert spec to a single canonical level when possible. The
+    // logsink `set_level` API takes a single bare level (e.g. "trace") and
+    // appends the noisy-crate suppression suffix itself. If we have a complex
+    // spec we leave it alone (the `RUST_LOG` mirror above already drove
+    // `install()` correctly on first call).
+    if matches!(
+        spec.as_str(),
+        "trace" | "debug" | "info" | "warn" | "error"
+    ) {
+        client_core_runtime::logsink::set_level(&spec);
+    }
+}
+
 // ─── Tokio runtime singleton ─────────────────────────────────────────────────
 
 static RT: OnceCell<Runtime> = OnceCell::new();
@@ -93,6 +151,10 @@ impl PacketIo for OutboundDispatcher {
 /// * `cfg_json`      — JSON-encoded [`ConnectProfile`] (name + conn_string + settings).
 /// * `settings_json` — JSON-encoded [`TunnelSettings`] (overrides settings inside
 ///                     cfg_json if present; may be `null` / empty to use defaults).
+/// * `verbose_log`   — when `true`, override the active log filter to TRACE for
+///                     every category (per ADR 0008 §3, priority 2). When
+///                     `false`, the default filter applies: `GHOSTSTREAM_LOG`
+///                     env (priority 1) → build-config default (priority 3).
 /// * `status_cb`     — called on every [`StatusFrame`] change; JSON-encoded bytes.
 /// * `log_cb`        — called for every [`LogFrame`]; JSON-encoded bytes.
 /// * `outbound_cb`   — called for each IP packet from the tunnel destined to the device.
@@ -103,6 +165,7 @@ impl PacketIo for OutboundDispatcher {
 pub extern "C" fn phantom_runtime_start(
     cfg_json: *const c_char,
     settings_json: *const c_char,
+    verbose_log: bool,
     status_cb: Option<unsafe extern "C" fn(*const u8, usize, *mut c_void)>,
     log_cb: Option<unsafe extern "C" fn(*const u8, usize, *mut c_void)>,
     outbound_cb: Option<unsafe extern "C" fn(*const u8, usize, *mut c_void)>,
@@ -145,6 +208,20 @@ pub extern "C" fn phantom_runtime_start(
                 return ERR_ALREADY_RUNNING;
             }
         }
+
+        // ── Log gating (ADR 0008 §3) ────────────────────────────────────────
+        // Priority resolution for the tracing filter:
+        //   1. env `GHOSTSTREAM_LOG` (full EnvFilter syntax)
+        //   2. `verbose_log == true` (UserDefaults-driven Swift toggle) ⇒ TRACE
+        //   3. Build-config default (debug vs release).
+        //
+        // `client_core_runtime::logsink::install()` (called transitively from
+        // `run()`) reads `RUST_LOG` for its initial filter. We mirror our
+        // resolved spec into `RUST_LOG` *before* `run()` so the very first
+        // event of the session honours it, then call `set_level()` for the
+        // verbose override path so a runtime toggle takes effect even after
+        // `install()` is already a no-op.
+        apply_log_filter(verbose_log);
 
         let rt = match get_or_init_rt() {
             Some(r) => r,
@@ -340,9 +417,19 @@ pub extern "C" fn phantom_compute_vpn_routes(direct_cidrs: *const c_char) -> *mu
             Err(_) => return std::ptr::null_mut(),
         };
         let table = phantom_core::routing::RoutingTable::from_cidrs(text);
-        tracing::info!("Routing: loaded {} direct CIDRs", table.direct_count());
+        let direct_n = table.direct_count();
         let routes = table.compute_vpn_routes();
-        tracing::info!("Routing: computed {} VPN routes", routes.len());
+        let vpn_n = routes.len();
+        // ADR 0008 §2: structured `settings.routes.computed` event so
+        // dashboards / log viewers can filter routing decisions out of
+        // the noise. Direct + VPN counts let us spot mis-configured
+        // route tables (e.g. direct_n=0 when split-routing is expected).
+        tracing::info!(
+            category = "settings",
+            direct_n = direct_n as u64,
+            vpn_n = vpn_n as u64,
+            "routes.computed"
+        );
         let json = phantom_core::routing::routes_to_json(&routes);
         CString::new(json)
             .map(|s| s.into_raw())
@@ -366,4 +453,136 @@ pub extern "C" fn phantom_free_string(ptr: *mut c_char) {
             drop(CString::from_raw(ptr));
         }
     }));
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use client_core_runtime::LogFrame;
+
+    /// ADR 0008: a `LogFrame::structured(...)` must round-trip cleanly via
+    /// JSON — the same path the FFI `log_cb` payload travels (Rust → bytes →
+    /// Swift JSONDecoder). Category and structured fields must survive bit-
+    /// exact.
+    #[test]
+    fn log_frame_v2_ffi_roundtrip_preserves_structured_payload() {
+        let event = LogFrame::structured(
+            "DBG",
+            "handshake",
+            "tls.client_hello",
+            [
+                ("sni".to_string(), "cdn.example.com".to_string()),
+                ("alpn".to_string(), "h2".to_string()),
+            ],
+        );
+
+        // Mirror the actual FFI encode path (lib.rs ~line 204).
+        let bytes = serde_json::to_vec(&event).expect("encode");
+        let parsed: LogFrame = serde_json::from_slice(&bytes).expect("decode");
+
+        assert_eq!(parsed.level, "DBG");
+        assert_eq!(parsed.category.as_deref(), Some("handshake"));
+        assert_eq!(parsed.msg, "tls.client_hello");
+        let fields = parsed.fields.as_ref().expect("fields present");
+        assert_eq!(fields.get("sni").map(String::as_str), Some("cdn.example.com"));
+        assert_eq!(fields.get("alpn").map(String::as_str), Some("h2"));
+        assert!(parsed.ts_unix_us > 0, "v2 frames must carry microsecond timestamp");
+    }
+
+    /// ADR 0008: a v1 LogFrame payload (no `category`, no `fields`, no
+    /// `ts_unix_us`) emitted by an older sender (Linux helper, Android
+    /// pre-v0.23.x) must still decode on the FFI consumer side. Backward
+    /// compat is the whole point of `#[serde(default)]` on the new fields.
+    #[test]
+    fn log_frame_v1_payload_decodes_via_ffi_path() {
+        let v1 = br#"{"ts_unix_ms":1715200000000,"level":"INF","msg":"legacy"}"#;
+
+        let parsed: LogFrame = serde_json::from_slice(v1).expect("v1 decodes");
+
+        assert_eq!(parsed.ts_unix_ms, 1715200000000);
+        assert_eq!(parsed.ts_unix_us, 0);
+        assert_eq!(parsed.level, "INF");
+        assert_eq!(parsed.msg, "legacy");
+        assert!(parsed.category.is_none());
+        assert!(parsed.fields.is_none());
+        // Convenience fallback — consumers should never see "us == 0" silently.
+        assert_eq!(parsed.timestamp_us(), 1715200000000 * 1_000);
+    }
+
+    /// ADR 0008 §3: `default_log_spec()` must differ between debug and
+    /// release so the file lives at INFO+ in shipped builds and DEBUG+ in
+    /// dev. We can't toggle `cfg!(debug_assertions)` at test time, but we
+    /// can pin the value for whichever profile this test runs in.
+    #[test]
+    fn default_log_spec_is_build_aware() {
+        let spec = default_log_spec();
+        if cfg!(debug_assertions) {
+            assert!(
+                spec.contains("client_core_runtime=debug"),
+                "debug build must enable DBG for our crates, got: {}",
+                spec
+            );
+        } else {
+            assert_eq!(spec, "info", "release build must default to INF, got: {}", spec);
+        }
+    }
+
+    /// ADR 0008 §3 priority 1: if `GHOSTSTREAM_LOG` is set, it must override
+    /// both the verbose toggle and the build default. We exercise the
+    /// resolution logic indirectly by inspecting `RUST_LOG` after
+    /// `apply_log_filter`. The test is `#[serial]`-style — guarded by a
+    /// process-wide mutex against the other env-mutating tests.
+    #[test]
+    fn ghoststream_log_env_overrides_verbose_toggle() {
+        let _guard = ENV_LOCK.lock();
+
+        // Save and restore `GHOSTSTREAM_LOG` and `RUST_LOG` to keep the
+        // test hermetic across runs.
+        let prev_gs = std::env::var_os("GHOSTSTREAM_LOG");
+        let prev_rust = std::env::var_os("RUST_LOG");
+
+        std::env::set_var("GHOSTSTREAM_LOG", "warn,h2=trace");
+        // Even with verbose=true, the env wins.
+        apply_log_filter(true);
+        assert_eq!(std::env::var("RUST_LOG").as_deref(), Ok("warn,h2=trace"));
+
+        // Cleanup.
+        match prev_gs {
+            Some(v) => std::env::set_var("GHOSTSTREAM_LOG", v),
+            None => std::env::remove_var("GHOSTSTREAM_LOG"),
+        }
+        match prev_rust {
+            Some(v) => std::env::set_var("RUST_LOG", v),
+            None => std::env::remove_var("RUST_LOG"),
+        }
+    }
+
+    /// ADR 0008 §3 priority 2: with no env set, `verbose_log == true` must
+    /// pin TRACE.
+    #[test]
+    fn verbose_toggle_pins_trace_when_env_unset() {
+        let _guard = ENV_LOCK.lock();
+
+        let prev_gs = std::env::var_os("GHOSTSTREAM_LOG");
+        let prev_rust = std::env::var_os("RUST_LOG");
+
+        std::env::remove_var("GHOSTSTREAM_LOG");
+        apply_log_filter(true);
+        assert_eq!(std::env::var("RUST_LOG").as_deref(), Ok("trace"));
+
+        match prev_gs {
+            Some(v) => std::env::set_var("GHOSTSTREAM_LOG", v),
+            None => std::env::remove_var("GHOSTSTREAM_LOG"),
+        }
+        match prev_rust {
+            Some(v) => std::env::set_var("RUST_LOG", v),
+            None => std::env::remove_var("RUST_LOG"),
+        }
+    }
+
+    /// Process-wide lock so tests that touch `RUST_LOG` / `GHOSTSTREAM_LOG`
+    /// don't race when `cargo test` runs them in parallel.
+    static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 }

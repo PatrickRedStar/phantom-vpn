@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use client_common::helpers;
 use client_common::{tls_connect, tls_connect_with_tcp, tls_rx_loop, tls_tx_loop, write_handshake};
@@ -17,6 +18,7 @@ use ghoststream_gui_ipc::{ConnState, ConnectProfile, StatusFrame, TunnelSettings
 use phantom_core::wire::{flow_stream_idx, n_data_streams_with_override};
 use tokio::sync::{watch, Mutex};
 
+use crate::log_bridge::{packet_rx_log_sample_should_emit, packet_tx_log_sample_should_emit};
 use crate::telemetry::{spawn_telem_task, Telemetry};
 use crate::{ProtectSocket, BACKOFF_SECS, MAX_ATTEMPTS};
 
@@ -47,6 +49,7 @@ pub async fn supervise(
     protect_socket: Option<ProtectSocket>,
 ) {
     let mut attempt: u32 = 0;
+    let mut last_error_str: Option<String> = None;
 
     loop {
         // Surface Connecting / Reconnecting to GUI.
@@ -68,10 +71,19 @@ pub async fn supervise(
         let cfg = match client_common::helpers::parse_conn_string(&profile.conn_string) {
             Ok(c) => c,
             Err(e) => {
-                fail(&status_tx, format!("parse conn_string: {:#}", e));
+                fail(&status_tx, format!("parse conn_string: {:#}", e), "parse_conn_string");
                 break;
             }
         };
+        // settings.profile.loaded — fired once per attempt (cheap, signals
+        // reload after a reconnect re-parsed conn_string).
+        tracing::info!(
+            category = "settings",
+            name = %profile.name,
+            server = %cfg.network.server_addr,
+            sni = %cfg.network.server_name.as_deref().unwrap_or(""),
+            "profile.loaded"
+        );
 
         let raw_addr = client_common::with_default_port(&cfg.network.server_addr, 443);
         let server_addr: SocketAddr = match raw_addr.parse() {
@@ -80,7 +92,9 @@ pub async fn supervise(
                 Ok(mut it) => match it.next() {
                     Some(a) => a,
                     None => {
-                        fail(&status_tx, format!("no DNS results for {}", raw_addr));
+                        let msg = format!("no DNS results for {}", raw_addr);
+                        last_error_str = Some(msg.clone());
+                        fail(&status_tx, msg, "dns_lookup");
                         if !should_reconnect(&settings, &status_tx, &cancel, attempt).await {
                             break;
                         }
@@ -89,7 +103,9 @@ pub async fn supervise(
                     }
                 },
                 Err(e) => {
-                    fail(&status_tx, format!("DNS lookup: {}", e));
+                    let msg = format!("DNS lookup: {}", e);
+                    last_error_str = Some(msg.clone());
+                    fail(&status_tx, msg, "dns_lookup");
                     if !should_reconnect(&settings, &status_tx, &cancel, attempt).await {
                         break;
                     }
@@ -102,14 +118,14 @@ pub async fn supervise(
         let client_identity = match helpers::load_tls_identity(&cfg) {
             Ok(v) => v,
             Err(e) => {
-                fail(&status_tx, format!("tls identity: {:#}", e));
+                fail(&status_tx, format!("tls identity: {:#}", e), "tls_identity");
                 break;
             }
         };
         let server_ca = match helpers::load_server_ca(&cfg) {
             Ok(v) => v,
             Err(e) => {
-                fail(&status_tx, format!("server CA: {:#}", e));
+                fail(&status_tx, format!("server CA: {:#}", e), "server_ca");
                 break;
             }
         };
@@ -127,20 +143,30 @@ pub async fn supervise(
         ));
         *shared_telem.lock().await = Some(telemetry.clone());
 
-        tracing::info!(
-            target: "client_core_runtime",
-            profile = %profile.name,
-            server = %server_addr,
-            sni = ?cfg.network.server_name,
-            attempt,
-            "attempting tunnel"
-        );
+        if attempt == 0 {
+            // tunnel.start: lifecycle event for the very first attempt.
+            tracing::info!(
+                category = "tunnel",
+                profile_id = %profile.name,
+                server = %server_addr,
+                sni = %cfg.network.server_name.as_deref().unwrap_or(""),
+                streams = n_streams as u64,
+                "start"
+            );
+        } else {
+            // tunnel.reconnect.attempt — retrying after a previous drop.
+            tracing::info!(
+                category = "tunnel",
+                attempt = attempt as u64,
+                "reconnect.attempt"
+            );
+        }
 
         // Instantiate TUN I/O for this attempt.
         let tun_channels = match tun_factory() {
             Ok(ch) => ch,
             Err(e) => {
-                fail(&status_tx, format!("tun factory: {:#}", e));
+                fail(&status_tx, format!("tun factory: {:#}", e), "tun_factory");
                 *shared_telem.lock().await = None;
                 break;
             }
@@ -165,15 +191,25 @@ pub async fn supervise(
         *shared_telem.lock().await = None;
 
         match &result {
-            Ok(()) => tracing::info!(target: "client_core_runtime", "tunnel exited cleanly"),
-            Err(e) => tracing::error!(
-                target: "client_core_runtime",
-                error = %format!("{:#}", e),
-                "tunnel failed"
+            Ok(()) => tracing::info!(
+                category = "tunnel",
+                reason = "clean",
+                "disconnect"
             ),
+            Err(e) => {
+                let err_str = format!("{:#}", e);
+                last_error_str = Some(err_str.clone());
+                tracing::error!(
+                    category = "tunnel",
+                    phase = "drive",
+                    error = %err_str,
+                    "error"
+                );
+            }
         }
 
         if explicit_shutdown {
+            tracing::info!(category = "tunnel", reason = "user", "disconnect");
             let mut f = status_tx.borrow().clone();
             f.state = ConnState::Disconnected;
             f.streams_up = 0;
@@ -191,6 +227,13 @@ pub async fn supervise(
         }
 
         if !should_reconnect(&settings, &status_tx, &cancel, attempt).await {
+            // tunnel.reconnect.giveup — all retries exhausted (or auto_reconnect off).
+            tracing::error!(
+                category = "tunnel",
+                attempts = (attempt + 1) as u64,
+                last_error = %last_error_str.clone().unwrap_or_default(),
+                "reconnect.giveup"
+            );
             let mut f = status_tx.borrow().clone();
             f.state = ConnState::Error;
             f.reconnect_attempt = None;
@@ -202,8 +245,8 @@ pub async fn supervise(
     }
 }
 
-fn fail(status_tx: &watch::Sender<StatusFrame>, msg: String) {
-    tracing::error!(target: "client_core_runtime", %msg, "supervisor fatal");
+fn fail(status_tx: &watch::Sender<StatusFrame>, msg: String, phase: &str) {
+    tracing::error!(category = "tunnel", phase = %phase, error = %msg, "error");
     let mut f = status_tx.borrow().clone();
     f.state = ConnState::Error;
     f.last_error = Some(msg);
@@ -232,11 +275,13 @@ async fn should_reconnect(
         return false;
     }
     let delay = BACKOFF_SECS.get(attempt as usize).copied().unwrap_or(60);
-    tracing::info!(
-        target: "client_core_runtime",
-        attempt = attempt + 1,
-        delay_secs = delay,
-        "scheduling reconnect"
+    // tunnel.reconnect.scheduled — published *before* sleeping so the GUI
+    // sees the upcoming delay even if cancel arrives mid-sleep.
+    tracing::warn!(
+        category = "tunnel",
+        attempt = (attempt + 1) as u64,
+        delay_secs = delay as u64,
+        "reconnect.scheduled"
     );
 
     // BUG FIX: publish the pending delay into StatusFrame *before* sleeping,
@@ -254,7 +299,7 @@ async fn should_reconnect(
     tokio::select! {
         _ = &mut sleep => true,
         _ = &mut notified => {
-            tracing::info!(target: "client_core_runtime", "reconnect cancelled");
+            tracing::info!(category = "tunnel", reason = "user", "reconnect.cancelled");
             false
         }
     }
@@ -296,6 +341,13 @@ async fn drive_tunnel(
     let mut tls_writers = Vec::with_capacity(n_streams);
     let mut tls_readers = Vec::with_capacity(n_streams);
     for idx in 0..n_streams {
+        // ADR 0008 §2: low-level handshake events (`tcp.connect`,
+        // `tcp.connected`, `tls.client_hello`, `tls.alpn_negotiated`)
+        // are emitted by `client-common::tls_handshake::do_connect` for
+        // every client (Linux / Android / iOS / macOS). Supervise emits
+        // only the per-stream events that need a `stream_id` correlator
+        // (mtls.cert_verify, h2.*, stream.*).
+        let stream_priority = if idx == 0 { "high" } else { "normal" };
         let (r, mut w) = if let Some(ref protect) = protect_socket {
             // Android: create socket, protect it from VPN routing, then connect.
             let socket = if server_addr.is_ipv4() {
@@ -313,24 +365,65 @@ async fn drive_tunnel(
                 .await
                 .with_context(|| format!("stream {} tcp connect", idx))?;
 
-            tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
+            let res = tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
                 .await
-                .with_context(|| format!("stream {} tls connect", idx))?
+                .with_context(|| format!("stream {} tls connect", idx))?;
+            tracing::debug!(
+                category = "handshake",
+                result = "ok",
+                subject = %server_name,
+                stream_id = idx as u64,
+                "mtls.cert_verify"
+            );
+            res
         } else {
-            // Linux/iOS: no socket protection needed.
-            tls_connect(server_addr, server_name.clone(), client_tls.clone())
+            // Linux/iOS/macOS: no socket protection needed.
+            let res = tls_connect(server_addr, server_name.clone(), client_tls.clone())
                 .await
-                .with_context(|| format!("stream {} tls connect", idx))?
+                .with_context(|| format!("stream {} tls connect", idx))?;
+            tracing::debug!(
+                category = "handshake",
+                result = "ok",
+                subject = %server_name,
+                stream_id = idx as u64,
+                "mtls.cert_verify"
+            );
+            res
         };
         write_handshake(&mut w, idx as u8, n_streams as u8)
             .await
             .with_context(|| format!("stream {} handshake", idx))?;
-        tracing::info!(target: "client_core_runtime", "stream {} connected", idx);
+        tracing::debug!(
+            category = "handshake",
+            max_concurrent = n_streams as u64,
+            initial_window = 0u64,
+            stream_id = idx as u64,
+            "h2.settings_sent"
+        );
+        // stream.open — per ADR 0008 §2.
+        tracing::debug!(
+            category = "stream",
+            stream_id = idx as u64,
+            priority = %stream_priority,
+            "open"
+        );
         telemetry.streams_alive[idx].store(true, Ordering::Relaxed);
         tls_readers.push(r);
         tls_writers.push(w);
     }
-    tracing::info!(target: "client_core_runtime", "all {} streams up", n_streams);
+    // handshake.h2.ready — all streams complete the H2-equivalent setup.
+    tracing::info!(
+        category = "handshake",
+        n_streams_open = n_streams as u64,
+        "h2.ready"
+    );
+    // tunnel.connected — top-level lifecycle.
+    tracing::info!(
+        category = "tunnel",
+        session_id = %format!("{:x}", telemetry.started_at.elapsed().as_nanos() as u64),
+        negotiated_streams = n_streams as u64,
+        "connected"
+    );
 
     let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
     let (mut tun_pkt_rx, tun_pkt_tx) = tun_channels;
@@ -367,15 +460,40 @@ async fn drive_tunnel(
     let tx_senders_clone = tx_senders.clone();
     let tele = telemetry.clone();
     let dispatcher = tokio::spawn(async move {
+        // packet.tx.batch is sampled 1/N (default 100) to keep verbose logs
+        // tractable. Counter is per-process inside `log_bridge`.
+        let mut first_tx_logged: [bool; 16] = [false; 16];
         while let Some(pkt) = tun_pkt_rx.recv().await {
             let idx = flow_stream_idx(&pkt, n_streams);
             let len = pkt.len() as u64;
+            // stream.first_packet_tx — once per stream lifetime.
+            if idx < first_tx_logged.len() && !first_tx_logged[idx] {
+                first_tx_logged[idx] = true;
+                tracing::trace!(
+                    category = "stream",
+                    stream_id = idx as u64,
+                    bytes = len,
+                    "first_packet_tx"
+                );
+            }
             if tx_senders_clone[idx].send(pkt).await.is_err() {
                 // Stream RX dropped — supervisor is tearing down. Exit.
                 break;
             }
             tele.bytes_tx.fetch_add(len, Ordering::Relaxed);
             tele.stream_tx_bytes[idx].fetch_add(len, Ordering::Relaxed);
+            // packet.tx.batch — sampled (default 1/100). Single packet
+            // counts as a "batch of 1" because the dispatcher is a per-pkt
+            // hot loop; downstream `tls_tx_loop` does the actual coalescing.
+            if packet_tx_log_sample_should_emit() {
+                tracing::trace!(
+                    category = "packet",
+                    n_pkts = 1u64,
+                    bytes = len,
+                    stream_id = idx as u64,
+                    "tx.batch"
+                );
+            }
         }
     });
     drop(tx_senders);
@@ -385,11 +503,18 @@ async fn drive_tunnel(
     let tele_rx = telemetry.clone();
     let rx_forwarder = tokio::spawn(async move {
         while let Some(pkt) = rx_sink_rx.recv().await {
-            tele_rx
-                .bytes_rx
-                .fetch_add(pkt.len() as u64, Ordering::Relaxed);
+            let len = pkt.len() as u64;
+            tele_rx.bytes_rx.fetch_add(len, Ordering::Relaxed);
             if tun_write_tx.send(pkt).await.is_err() {
                 return;
+            }
+            if packet_rx_log_sample_should_emit() {
+                tracing::trace!(
+                    category = "packet",
+                    n_pkts = 1u64,
+                    bytes = len,
+                    "rx.batch"
+                );
             }
         }
     });
@@ -398,32 +523,59 @@ async fn drive_tunnel(
     // Per-stream TX + RX tasks.
     let mut tx_handles = Vec::with_capacity(n_streams);
     let mut rx_handles = Vec::with_capacity(n_streams);
+    let stream_started_at = Instant::now();
     for (idx, (w, rxc)) in tls_writers
         .into_iter()
         .zip(tx_receivers.into_iter())
         .enumerate()
     {
         let tele = telemetry.clone();
+        let started_at = stream_started_at;
         tx_handles.push(tokio::spawn(async move {
             let res = tls_tx_loop(w, rxc).await;
             tele.streams_alive[idx].store(false, Ordering::Relaxed);
-            tracing::warn!(
-                target: "client_core_runtime",
-                "stream {} tx ended: {:?}", idx, res
-            );
+            let lifetime_ms = started_at.elapsed().as_millis() as u64;
+            match &res {
+                Ok(()) => tracing::debug!(
+                    category = "stream",
+                    stream_id = idx as u64,
+                    reason = "tx_ended",
+                    lifetime_ms,
+                    "close"
+                ),
+                Err(e) => tracing::warn!(
+                    category = "stream",
+                    stream_id = idx as u64,
+                    error = %format!("{:#}", e),
+                    "kill"
+                ),
+            }
             res
         }));
     }
     for (idx, r) in tls_readers.into_iter().enumerate() {
         let sink = rx_sink_tx.clone();
         let tele = telemetry.clone();
+        let started_at = stream_started_at;
         rx_handles.push(tokio::spawn(async move {
             let res = tls_rx_loop(r, sink).await;
             tele.streams_alive[idx].store(false, Ordering::Relaxed);
-            tracing::warn!(
-                target: "client_core_runtime",
-                "stream {} rx ended: {:?}", idx, res
-            );
+            let lifetime_ms = started_at.elapsed().as_millis() as u64;
+            match &res {
+                Ok(()) => tracing::debug!(
+                    category = "stream",
+                    stream_id = idx as u64,
+                    reason = "rx_ended",
+                    lifetime_ms,
+                    "close"
+                ),
+                Err(e) => tracing::warn!(
+                    category = "stream",
+                    stream_id = idx as u64,
+                    error = %format!("{:#}", e),
+                    "kill"
+                ),
+            }
             res
         }));
     }
@@ -447,25 +599,25 @@ async fn drive_tunnel(
 
     tokio::select! {
         _ = cancel.notified() => {
-            tracing::info!(target: "client_core_runtime", "explicit disconnect (cancel notified)");
+            tracing::info!(category = "tunnel", reason = "user", "disconnect");
             telemetry.shutdown.store(true, Ordering::SeqCst);
         }
         _ = shutdown_poll => {
-            tracing::info!(target: "client_core_runtime", "shutdown flag set");
+            tracing::info!(category = "tunnel", reason = "shutdown_flag", "disconnect");
         }
         _ = async {
             for h in &mut tx_handles { let _ = h.await; }
         } => {
-            tracing::warn!(target: "client_core_runtime", "all TX ended");
+            tracing::warn!(category = "tunnel", reason = "tx_drained", "disconnect");
         }
         _ = async {
             for h in &mut rx_handles { let _ = h.await; }
         } => {
-            tracing::warn!(target: "client_core_runtime", "all RX ended");
+            tracing::warn!(category = "tunnel", reason = "rx_drained", "disconnect");
         }
     }
 
-    tracing::info!(target: "client_core_runtime", "draining tunnel teardown");
+    tracing::debug!(category = "tunnel", "teardown.start");
 
     for h in tx_handles {
         h.abort();
@@ -478,6 +630,6 @@ async fn drive_tunnel(
     rx_forwarder.abort();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    tracing::info!(target: "client_core_runtime", "tunnel teardown complete");
+    tracing::debug!(category = "tunnel", "teardown.complete");
     Ok(())
 }

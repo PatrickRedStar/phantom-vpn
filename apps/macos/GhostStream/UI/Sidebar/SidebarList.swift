@@ -49,7 +49,7 @@ public struct SidebarList: View {
                 .tracking(-0.01 * 14)
                 .foregroundStyle(C.bone)
             Spacer()
-            Text("v0.23")
+            Text(AppVersion.short)
                 .font(.custom("DepartureMono-Regular", size: 9))
                 .tracking(0.18 * 9)
                 .foregroundStyle(C.textFaint)

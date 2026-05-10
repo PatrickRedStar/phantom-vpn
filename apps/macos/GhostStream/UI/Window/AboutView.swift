@@ -6,6 +6,7 @@
 //  CommandGroup(replacing: .appInfo).
 //
 
+import PhantomKit
 import PhantomUI
 import SwiftUI
 
@@ -23,7 +24,7 @@ public struct AboutView: View {
                 .tracking(-0.02 * 26)
                 .foregroundStyle(C.bone)
             HStack(spacing: 8) {
-                Text("v0.23.0")
+                Text(AppVersion.short)
                     .font(.custom("DepartureMono-Regular", size: 11))
                     .tracking(0.18 * 11)
                     .foregroundStyle(C.signal)

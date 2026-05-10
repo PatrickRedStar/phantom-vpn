@@ -45,6 +45,7 @@ public final class PreferencesStore {
         static let reduceMotion      = "reduce_motion"
         static let autoUpdate        = "auto_update"
         static let streams           = "streams"
+        static let verboseLog        = "verbose_log"
     }
 
     /// Stored property so `@Observable` can track changes and trigger SwiftUI
@@ -87,6 +88,15 @@ public final class PreferencesStore {
 
     public var autoUpdate: Bool = false {
         didSet { defaults.set(autoUpdate, forKey: Key.autoUpdate) }
+    }
+
+    /// ADR 0008: when `true` the runtime emits TRACE-level structured
+    /// `LogFrame` events for every micro-event (per-packet batches,
+    /// telemetry ticks, stream lifecycle). Drives the `verbose_log`
+    /// flag passed into `phantom_runtime_start`. Defaults to `false`
+    /// — INF level is enough for normal use.
+    public var verboseLog: Bool = false {
+        didSet { defaults.set(verboseLog, forKey: Key.verboseLog) }
     }
 
     public var streamOverride: Int? = nil {
@@ -141,6 +151,7 @@ public final class PreferencesStore {
         self.notifyStateChanges = defaults.object(forKey: Key.notifyStateChanges) as? Bool ?? true
         self.reduceMotion = defaults.object(forKey: Key.reduceMotion) as? Bool ?? false
         self.autoUpdate = defaults.object(forKey: Key.autoUpdate) as? Bool ?? false
+        self.verboseLog = defaults.object(forKey: Key.verboseLog) as? Bool ?? false
         self.streamOverride = Self.clampedStreamOverride(defaults.object(forKey: Key.streams) as? Int)
         let legacySplitRouting = defaults.object(forKey: Key.splitRouting) as? Bool
         if let storedRoutingMode = defaults.string(forKey: Key.routingMode),
