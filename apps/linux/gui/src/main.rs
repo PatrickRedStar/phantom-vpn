@@ -580,10 +580,16 @@ async fn tokio_worker(
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     let _ = slint::invoke_from_event_loop(move || {
                         let ts = if let Some(w) = win_weak.upgrade() {
+                            // Use struct-update so future `TunnelSettings`
+                            // additions (e.g. `streams` from the macOS
+                            // PacketTunnel pass-through work) don't break
+                            // the Linux GUI build. Defaults fill anything
+                            // we don't surface in the UI yet.
                             ghoststream_gui_ipc::TunnelSettings {
                                 dns_leak_protection: w.get_setting_dns_leak(),
                                 ipv6_killswitch: w.get_setting_ipv6_ks(),
                                 auto_reconnect: w.get_setting_autorec(),
+                                ..ghoststream_gui_ipc::TunnelSettings::default()
                             }
                         } else {
                             ghoststream_gui_ipc::TunnelSettings::default()
