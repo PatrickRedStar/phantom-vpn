@@ -465,6 +465,14 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             return
         }
 
+        // v0.24.0: announce the physical network carrying the tunnel so Android
+        // (a) stops reporting the VPN as "no internet" during mobile↔Wi-Fi
+        // handoff, (b) attributes data usage correctly, and (c) keeps the
+        // tunnel from appearing as its own underlying carrier (which can cause
+        // a route loop). If activeNetwork is null (extremely rare race), pass
+        // `null` array so Android falls back to "any non-VPN".
+        applyUnderlyingNetworks("startTunnel")
+
         userStopped = false
         savedTunAddr = tunAddr
         savedDnsServers = dnsServers
@@ -798,16 +806,73 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
         val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { wakeWatchdog("onAvailable") }
-            override fun onLost(network: Network)      { wakeWatchdog("onLost") }
+            override fun onAvailable(network: Network) {
+                wakeWatchdog("onAvailable")
+                // v0.24.0: refresh setUnderlyingNetworks so Android attributes
+                // the live TUN to the freshly-available physical network. If
+                // the VPN was already on a working carrier, this is a no-op
+                // (activeNetwork stays the same).
+                applyUnderlyingNetworks("onAvailable")
+            }
+            override fun onLost(network: Network) {
+                wakeWatchdog("onLost")
+                applyUnderlyingNetworks("onLost")
+            }
             override fun onCapabilitiesChanged(n: Network, caps: NetworkCapabilities) {
                 // Fires on SIM/Wi-Fi handoff too.
                 wakeWatchdog("onCapabilitiesChanged")
+                applyUnderlyingNetworks("onCapabilitiesChanged")
             }
         }
         networkCallback = cb
         runCatching { cm.registerNetworkCallback(req, cb) }
             .onFailure { Log.w(TAG, "registerNetworkCallback failed", it) }
+    }
+
+    /**
+     * Tell Android which physical (non-VPN) network is carrying our tunnel.
+     * Caller invokes after `Builder.establish()` and on every NetworkCallback
+     * fire. Idempotent and cheap.
+     *
+     * Picks `activeNetwork` first; falls back to the first allNetworks entry
+     * that has INTERNET + NOT_VPN capabilities. Passes `null` when nothing
+     * usable found (Android treats this as "any non-VPN"; better than
+     * leaving stale state pointing at a dead Wi-Fi).
+     */
+    private fun applyUnderlyingNetworks(reason: String) {
+        val service = this
+        val iface = vpnInterface ?: return
+        val cm = connectivityManager ?: getSystemService(ConnectivityManager::class.java) ?: return
+
+        fun isUsableNonVpn(net: Network): Boolean {
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                   caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        }
+
+        val net = cm.activeNetwork?.takeIf { isUsableNonVpn(it) }
+            ?: cm.allNetworks.firstOrNull { isUsableNonVpn(it) }
+
+        val networks = if (net != null) arrayOf(net) else null
+        val netDesc = if (net != null) {
+            val caps = cm.getNetworkCapabilities(net)
+            val type = when {
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true -> "Wi-Fi"
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Cellular"
+                caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "Ethernet"
+                else -> "Other"
+            }
+            "$type/${net.networkHandle}"
+        } else {
+            "none"
+        }
+        val ok = runCatching { service.setUnderlyingNetworks(networks) }
+            .onFailure { Log.w(TAG, "setUnderlyingNetworks failed", it) }
+            .isSuccess
+        if (ok) {
+            Log.i(TAG, "setUnderlyingNetworks($netDesc) reason=$reason")
+            VpnStateManager.emitLifecycleLog("INFO", "Сеть: $netDesc ($reason)")
+        }
     }
 
     private fun unregisterNetworkCallback() {

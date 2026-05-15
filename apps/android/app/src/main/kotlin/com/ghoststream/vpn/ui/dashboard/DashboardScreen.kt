@@ -91,9 +91,18 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     var accRx by remember { mutableStateOf(0f) }
     var accTx by remember { mutableStateOf(0f) }
 
+    // "Tunnel is up-ish" — any state where bytes can still move on the wire.
+    // Stale / Throttled / Reconnecting all keep the StatusFrame buffer alive
+    // so the user can see post-mortem context; we just don't lie about it
+    // being healthy.
+    fun VpnState.isLive(): Boolean = this is VpnState.Connected ||
+        this is VpnState.Stale ||
+        this is VpnState.Throttled ||
+        this is VpnState.Reconnecting
+
     // Accumulate deltas from each StatusFrame push
     LE(statusFrame.bytesRx, statusFrame.bytesTx, vpnState) {
-        if (vpnState is VpnState.Connected) {
+        if (vpnState.isLive()) {
             val dRx = (statusFrame.bytesRx - lastRx).coerceAtLeast(0)
             val dTx = (statusFrame.bytesTx - lastTx).coerceAtLeast(0)
             accRx += dRx.toFloat()
@@ -109,7 +118,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
 
     // Flush accumulated bytes into buffer once per second
     LE(vpnState, scopeWindowSecs) {
-        if (vpnState is VpnState.Connected) {
+        if (vpnState.isLive()) {
             while (true) {
                 delay(1000)
                 rxBuffer.add(accRx)
@@ -122,24 +131,43 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         }
     }
 
-    // Animated mux bars (cosmetic — 8 bars shimmer while connected)
+    // Animated mux bars — only shimmer when *real* RX traffic is flowing.
+    // Previously shimmered on a timer whenever Connected; now ticked off
+    // when rateRxBps drops to zero so the user sees a static row when the
+    // tunnel is silent (the visual representation of "stale"). v0.24.0.
     val barHeights = remember { mutableStateListOf(0.72f, 0.58f, 0.86f, 0.44f, 0.64f, 0.38f, 0.72f, 0.52f) }
     LE(vpnState) {
-        while (vpnState is VpnState.Connected) {
+        while (vpnState.isLive()) {
             delay(700)
-            for (i in barHeights.indices) {
-                barHeights[i] = (barHeights[i] + (Math.random().toFloat() - 0.5f) * 0.4f).coerceIn(0.2f, 0.95f)
+            // statusFrame.rateRxBps is the EMA bits/sec from runtime. >0
+            // means actual data arrived in the last few ticks.
+            if (statusFrame.rateRxBps > 0.0) {
+                for (i in barHeights.indices) {
+                    barHeights[i] =
+                        (barHeights[i] + (Math.random().toFloat() - 0.5f) * 0.4f)
+                            .coerceIn(0.2f, 0.95f)
+                }
             }
         }
     }
 
     val headerMeta = when (vpnState) {
-        is VpnState.Connected  -> "${activeProfile?.serverName?.take(12) ?: ""} · ${timerText}"
-        is VpnState.Connecting -> "connecting"
-        is VpnState.Error      -> "error"
-        else                   -> "standby"
+        is VpnState.Connected   -> "${activeProfile?.serverName?.take(12) ?: ""} · ${timerText}"
+        is VpnState.Stale       -> "stale · ${(vpnState as VpnState.Stale).idleRxSecs}s idle"
+        is VpnState.Throttled   -> "throttled · ${(vpnState as VpnState.Throttled).currentKbps} kbps"
+        is VpnState.Reconnecting -> {
+            val rs = vpnState as VpnState.Reconnecting
+            "reconnecting · ${rs.attempt}/8" + (rs.nextDelaySecs?.let { " · ${it}s" } ?: "")
+        }
+        is VpnState.Connecting  -> "connecting"
+        is VpnState.Error       -> "error"
+        else                    -> "standby"
     }
-    val metaPulse = vpnState is VpnState.Connected || vpnState is VpnState.Connecting
+    val metaPulse = vpnState is VpnState.Connected ||
+        vpnState is VpnState.Connecting ||
+        vpnState is VpnState.Stale ||
+        vpnState is VpnState.Throttled ||
+        vpnState is VpnState.Reconnecting
 
     Column(Modifier.fillMaxSize().background(C.bg)) {
         ScreenHeader(
@@ -168,16 +196,23 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 ) { state ->
                     val (verb, tail) = when (state) {
                         is VpnState.Connected     -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
+                        is VpnState.Stale         -> stringResource(R.string.state_stale_verb) to " ${state.idleRxSecs}s${stringResource(R.string.state_period)}"
+                        is VpnState.Throttled     -> stringResource(R.string.state_throttled_verb) to " ${state.currentKbps} kbps${stringResource(R.string.state_period)}"
+                        is VpnState.Reconnecting  -> stringResource(R.string.state_reconnecting_verb) to " ${state.attempt}/8${stringResource(R.string.state_ellipsis)}"
                         is VpnState.Connecting    -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
                         is VpnState.Error         -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
                         is VpnState.Disconnecting -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
                         else                      -> stringResource(R.string.state_standby_verb) to stringResource(R.string.state_period)
                     }
                     val accent = when (state) {
-                        is VpnState.Connected -> C.signal
-                        is VpnState.Error     -> C.danger
-                        is VpnState.Connecting, is VpnState.Disconnecting -> C.warn
-                        else                  -> C.textDim
+                        is VpnState.Connected      -> C.signal
+                        is VpnState.Stale          -> C.warn
+                        is VpnState.Throttled      -> C.warn
+                        is VpnState.Reconnecting   -> C.danger
+                        is VpnState.Error          -> C.danger
+                        is VpnState.Connecting,
+                        is VpnState.Disconnecting  -> C.warn
+                        else                       -> C.textDim
                     }
                     Text(
                         text = serifAccent(verb, tail, accent),
@@ -194,9 +229,18 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 verticalAlignment = Alignment.Bottom,
             ) {
                 Text(
-                    text = if (vpnState is VpnState.Connected) timerText else "--:--:--",
+                    // Timer keeps running across Connected/Stale/Throttled —
+                    // the session is the same wall-clock event even if the
+                    // wire went quiet. v0.24.0.
+                    text = if (vpnState.isLive()) timerText else "--:--:--",
                     style = com.ghoststream.vpn.ui.theme.GsText.ticker,
-                    color = if (vpnState is VpnState.Connected) C.bone else C.textFaint,
+                    color = when (vpnState) {
+                        is VpnState.Connected -> C.bone
+                        is VpnState.Stale,
+                        is VpnState.Throttled -> C.warn
+                        is VpnState.Reconnecting -> C.danger
+                        else -> C.textFaint
+                    },
                 )
                 Text(
                     text = stringResource(R.string.lbl_session).uppercase(),
@@ -336,9 +380,15 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
             Spacer(Modifier.weight(1f))
         }
 
-        // FAB bar
+        // FAB bar — Stop button is available across *every* "VPN is up-ish"
+        // state so the user can bail out of a degraded session without
+        // toggling Airplane mode. v0.24.0: include Stale/Throttled/Reconnecting
+        // alongside the legacy Connected/Connecting/Disconnecting.
         Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
             val isConnectedOrBusy = vpnState is VpnState.Connected ||
+                vpnState is VpnState.Stale ||
+                vpnState is VpnState.Throttled ||
+                vpnState is VpnState.Reconnecting ||
                 vpnState is VpnState.Connecting ||
                 vpnState is VpnState.Disconnecting
             GhostFab(
@@ -346,7 +396,11 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 outline = !isConnectedOrBusy,
                 onClick = {
                     when (vpnState) {
-                        is VpnState.Connected, is VpnState.Connecting -> viewModel.stopVpn()
+                        is VpnState.Connected,
+                        is VpnState.Stale,
+                        is VpnState.Throttled,
+                        is VpnState.Reconnecting,
+                        is VpnState.Connecting -> viewModel.stopVpn()
                         else -> {
                             val perm = VpnService.prepare(context)
                             if (perm != null) vpnPermLauncher.launch(perm)

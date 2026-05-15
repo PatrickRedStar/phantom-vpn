@@ -36,7 +36,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val preferencesStore = PreferencesStore(application)
     private val profilesStore = ProfilesStore.getInstance(application)
     private val routingRulesManager = RoutingRulesManager(application)
-    val vpnState = VpnStateManager.state
+    /**
+     * Honest VPN state derived from (lifecycle, StatusFrame.health).
+     * v0.24.0: switched from raw `VpnStateManager.state` to
+     * `derivedVpnState` so the dashboard never shows "Connected" while
+     * the runtime knows the tunnel is silently dead (Stale/Throttled/
+     * Reconnecting).
+     */
+    val vpnState = VpnStateManager.derivedVpnState
 
     // Combined: active profile (server/cert + per-profile overrides) + global prefs fallback
     val config: StateFlow<VpnConfig> = combine(
@@ -78,16 +85,23 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     init {
         viewModelScope.launch {
             vpnState.collect { state ->
-                when (state) {
-                    is VpnState.Connected -> {
-                        startTimer(state.since)
-                        fetchSubscriptionInfo()
-                    }
-                    else -> {
-                        _timerText.value = "00:00:00"
-                        _stats.value = VpnStats()
-                        _subscriptionText.value = null
-                    }
+                // v0.24.0: timer and subscription info stay live across every
+                // "tunnel up-ish" state (Connected/Stale/Throttled/Reconnecting)
+                // so the user keeps seeing session duration even when the
+                // tunnel goes silent — context is more useful than a reset.
+                val since: Instant? = when (state) {
+                    is VpnState.Connected -> state.since
+                    is VpnState.Stale -> state.since
+                    is VpnState.Throttled -> state.since
+                    else -> null
+                }
+                if (since != null) {
+                    startTimer(since)
+                    fetchSubscriptionInfo()
+                } else {
+                    _timerText.value = "00:00:00"
+                    _stats.value = VpnStats()
+                    _subscriptionText.value = null
                 }
             }
         }
@@ -95,7 +109,11 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun startTimer(since: Instant) {
         viewModelScope.launch {
-            while (vpnState.value is VpnState.Connected) {
+            // Keep ticking across Connected/Stale/Throttled — same session.
+            while (vpnState.value is VpnState.Connected ||
+                vpnState.value is VpnState.Stale ||
+                vpnState.value is VpnState.Throttled
+            ) {
                 val elapsed = Duration.between(since, Instant.now()).seconds
                 _timerText.value = FormatUtils.formatDuration(elapsed)
                 delay(1000)

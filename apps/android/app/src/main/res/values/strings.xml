@@ -20,6 +20,9 @@
     <string name="state_transmitting_verb">Transmitting</string>
     <string name="state_standby_verb">Standby</string>
     <string name="state_tuning_verb">Tuning</string>
+    <string name="state_stale_verb">Silent</string>
+    <string name="state_throttled_verb">Throttled</string>
+    <string name="state_reconnecting_verb">Reconnecting</string>
     <string name="state_lost_verb">Lost</string>
     <string name="state_signal_word">signal</string>
     <string name="state_period">.</string>
@@ -46,6 +49,8 @@
     <string name="chip_error">Error</string>
     <string name="chip_clear">Clear</string>
     <string name="chip_share">Share</string>
+    <string name="chip_cat_all">all</string>
+    <string name="logs_search_hint">Search…</string>
     <!-- Settings -->
     <string name="set_endpoints">Endpoints</string>
     <string name="set_routing">Routing</string>

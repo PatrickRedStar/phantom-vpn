@@ -63,11 +63,106 @@ pub type ProtectSocket = Arc<dyn Fn(RawFd) -> bool + Send + Sync>;
 
 // ── Public constants ─────────────────────────────────────────────────────────
 
-/// Backoff schedule in seconds. Index = attempt-1 (after the first drop).
-pub const BACKOFF_SECS: &[u32] = &[3, 6, 12, 24, 48, 60, 60, 60];
+/// Default reconnect backoff schedule in seconds. Index = attempt-1 (after
+/// the first drop). Tuned for "shaky network" conditions (mobile + TSPU):
+/// fast initial recovery (1, 2, 5 s) so brief DPI shakes don't manifest as
+/// long stalls, then back off to a 30 s ceiling. Step 5 (error categorisation)
+/// supplies a category-specific override that may bypass this table entirely.
+pub const BACKOFF_SECS: &[u32] = &[1, 2, 5, 10, 20, 30, 30, 30];
 
 /// Maximum number of reconnect attempts before transitioning to Error.
 pub const MAX_ATTEMPTS: u32 = 8;
+
+/// RX idle timeout in seconds. When a tunnel stream goes this long without
+/// any inbound bytes (data frame OR heartbeat), the read loop returns an
+/// error and the supervisor triggers a reconnect. Heartbeat cadence is
+/// ~20-30 s so 45 s gives a comfortable ~1.5×; smaller risks false trips
+/// on legitimately quiet sessions, larger lets a half-open TCP socket
+/// zombie for minutes under TSPU silent-drop conditions.
+///
+/// Used by `tls_rx_loop` in `client_common` when invoked from runtime.
+pub const RX_IDLE_TIMEOUT_SECS: u32 = 45;
+
+/// Coarse classification of a tunnel drop, used to pick the right reconnect
+/// delay. v0.24.0: replaces the one-size-fits-all `BACKOFF_SECS` lookup
+/// inside `should_reconnect`. The classifier is best-effort and matches
+/// substrings of the `anyhow::Error` chain — good enough for logs + delay
+/// shaping. Default to `Other` (table-based backoff) when nothing matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelErrorCategory {
+    /// TCP/H2 abruptly reset — server alive, connection broken. Fast retry.
+    HardReset,
+    /// `tls_rx_loop` fired `rx.idle_timeout` — silent half-open. Fast retry.
+    IdleTimeout,
+    /// `ENETUNREACH` / `EHOSTUNREACH` / no usable network at all. Long wait
+    /// (we'll be woken by Android `NetworkCallback` anyway).
+    NetworkUnreachable,
+    /// TLS alert / handshake failure. Server may be under load — short wait.
+    TlsAlert,
+    /// DNS resolution failed. Short wait — likely just a transient.
+    DnsFailed,
+    /// Catch-all → use `BACKOFF_SECS` table indexed by attempt.
+    Other,
+}
+
+impl TunnelErrorCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TunnelErrorCategory::HardReset => "hard_reset",
+            TunnelErrorCategory::IdleTimeout => "idle_timeout",
+            TunnelErrorCategory::NetworkUnreachable => "network_unreachable",
+            TunnelErrorCategory::TlsAlert => "tls_alert",
+            TunnelErrorCategory::DnsFailed => "dns_failed",
+            TunnelErrorCategory::Other => "other",
+        }
+    }
+}
+
+/// Best-effort error classifier. Walks the error string (already flattened
+/// by `format!("{:#}", err)`) for known substrings. Order matters: more
+/// specific first.
+pub fn classify_tunnel_error(err_str: &str) -> TunnelErrorCategory {
+    let s = err_str.to_ascii_lowercase();
+    if s.contains("rx idle timeout") || s.contains("rx body timeout") {
+        TunnelErrorCategory::IdleTimeout
+    } else if s.contains("connection reset")
+        || s.contains("broken pipe")
+        || s.contains("connection aborted")
+        || s.contains("unexpected eof")
+    {
+        TunnelErrorCategory::HardReset
+    } else if s.contains("network is unreachable")
+        || s.contains("no route to host")
+        || s.contains("host is unreachable")
+        || s.contains("network unreachable")
+    {
+        TunnelErrorCategory::NetworkUnreachable
+    } else if s.contains("tls alert") || s.contains("handshake failure") || s.contains("certificate") {
+        TunnelErrorCategory::TlsAlert
+    } else if s.contains("dns") || s.contains("nodename nor servname") || s.contains("name resolution") {
+        TunnelErrorCategory::DnsFailed
+    } else {
+        TunnelErrorCategory::Other
+    }
+}
+
+/// Compute reconnect delay seconds for a given error category + attempt
+/// number. Per-category overrides keep recovery fast on TSPU shakes; the
+/// catch-all branch falls back to the standard exponential schedule.
+pub fn reconnect_delay_secs(cat: TunnelErrorCategory, attempt: u32) -> u32 {
+    match cat {
+        TunnelErrorCategory::HardReset => 1,
+        TunnelErrorCategory::IdleTimeout => 2,
+        TunnelErrorCategory::DnsFailed => 3,
+        TunnelErrorCategory::TlsAlert => 5,
+        // No active network — wait long; the `NetworkCallback` wake will
+        // cut sleep short via `cancel.notified()`.
+        TunnelErrorCategory::NetworkUnreachable => 60,
+        TunnelErrorCategory::Other => {
+            BACKOFF_SECS.get(attempt as usize).copied().unwrap_or(30)
+        }
+    }
+}
 
 // ── RuntimeHandles ───────────────────────────────────────────────────────────
 

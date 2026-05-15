@@ -396,7 +396,7 @@ mod linux {
         for (idx, r) in tls_readers.into_iter().enumerate() {
             let sink = rx_sink_tx.clone();
             rx_handles.push(tokio::task::spawn_local(async move {
-                let res = tls_rx_loop(r, sink).await;
+                let res = tls_rx_loop(r, sink, None).await;
                 tracing::warn!("stream {}: rx loop ended: {:?}", idx, res);
                 res
             }));

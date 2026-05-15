@@ -153,6 +153,7 @@ mod tests {
             last_error: None,
             reconnect_attempt: None,
             reconnect_next_delay_secs: None,
+            ..StatusFrame::default()
         };
 
         let json = serde_json::to_string(&frame).expect("serialize");
@@ -303,6 +304,34 @@ impl ConnState {
     }
 }
 
+/// Fine-grained health classification for a `Connected` tunnel. Honest
+/// signal for the UI: even when `ConnState::Connected`, the underlying
+/// transport may be silent (`Stale`), partially throttled (`Degraded`),
+/// or mid-recovery (`Reconnecting`). New in v0.24.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelHealth {
+    #[default]
+    Healthy,
+    /// `Connected` but no RX traffic for > stale threshold (typically 20s).
+    Stale,
+    /// `Connected`, traffic flowing but bandwidth is heavily reduced.
+    Degraded,
+    /// Recovering — runtime decided to reconnect but UI still on Connected lifecycle.
+    Reconnecting,
+}
+
+/// Coarse bandwidth class, derived from peak-vs-current rate. `Throttled`
+/// is set when sustained throughput drops below 20% of session peak while
+/// traffic is still flowing — typical signature of DPI shaping (~128 kbit/s).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BandwidthClass {
+    #[default]
+    Normal,
+    Throttled,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusFrame {
     pub state: ConnState,
@@ -328,6 +357,27 @@ pub struct StatusFrame {
     /// Seconds until the next reconnect attempt. `None` if not waiting.
     #[serde(default)]
     pub reconnect_next_delay_secs: Option<u32>,
+    /// Unix-ms timestamp of last byte received from server. `0` if no
+    /// RX yet this session. New in v0.24.0.
+    #[serde(default)]
+    pub last_rx_ms: u64,
+    /// Unix-ms timestamp of last byte transmitted to server. `0` if no
+    /// TX yet this session. New in v0.24.0.
+    #[serde(default)]
+    pub last_tx_ms: u64,
+    /// Seconds since `last_rx_ms`. Derived for UI convenience so clients
+    /// don't have to do their own wall-clock math each frame. `0` when no
+    /// RX has happened yet. New in v0.24.0.
+    #[serde(default)]
+    pub idle_rx_secs: u32,
+    /// Fine-grained health classification for a `Connected` tunnel.
+    /// New in v0.24.0.
+    #[serde(default)]
+    pub health: TunnelHealth,
+    /// Coarse bandwidth class — `Throttled` flags suspected DPI shaping.
+    /// New in v0.24.0.
+    #[serde(default)]
+    pub bandwidth_class: BandwidthClass,
 }
 
 impl Default for StatusFrame {
@@ -349,6 +399,11 @@ impl Default for StatusFrame {
             last_error: None,
             reconnect_attempt: None,
             reconnect_next_delay_secs: None,
+            last_rx_ms: 0,
+            last_tx_ms: 0,
+            idle_rx_secs: 0,
+            health: TunnelHealth::Healthy,
+            bandwidth_class: BandwidthClass::Normal,
         }
     }
 }

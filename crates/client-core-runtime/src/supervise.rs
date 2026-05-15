@@ -95,7 +95,7 @@ pub async fn supervise(
                         let msg = format!("no DNS results for {}", raw_addr);
                         last_error_str = Some(msg.clone());
                         fail(&status_tx, msg, "dns_lookup");
-                        if !should_reconnect(&settings, &status_tx, &cancel, attempt).await {
+                        if !should_reconnect(&settings, &status_tx, &cancel, attempt, last_error_str.as_deref()).await {
                             break;
                         }
                         attempt += 1;
@@ -106,7 +106,7 @@ pub async fn supervise(
                     let msg = format!("DNS lookup: {}", e);
                     last_error_str = Some(msg.clone());
                     fail(&status_tx, msg, "dns_lookup");
-                    if !should_reconnect(&settings, &status_tx, &cancel, attempt).await {
+                    if !should_reconnect(&settings, &status_tx, &cancel, attempt, last_error_str.as_deref()).await {
                         break;
                     }
                     attempt += 1;
@@ -226,7 +226,7 @@ pub async fn supervise(
             let _ = status_tx.send(f);
         }
 
-        if !should_reconnect(&settings, &status_tx, &cancel, attempt).await {
+        if !should_reconnect(&settings, &status_tx, &cancel, attempt, last_error_str.as_deref()).await {
             // tunnel.reconnect.giveup — all retries exhausted (or auto_reconnect off).
             tracing::error!(
                 category = "tunnel",
@@ -267,6 +267,7 @@ async fn should_reconnect(
     status_tx: &watch::Sender<StatusFrame>,
     cancel: &tokio::sync::Notify,
     attempt: u32,
+    last_error_str: Option<&str>,
 ) -> bool {
     if !settings.auto_reconnect {
         return false;
@@ -274,13 +275,22 @@ async fn should_reconnect(
     if attempt + 1 > MAX_ATTEMPTS {
         return false;
     }
-    let delay = BACKOFF_SECS.get(attempt as usize).copied().unwrap_or(60);
+    // v0.24.0: classify the error so we can override the generic backoff
+    // table for common transient drops (hard reset, idle timeout, DNS) —
+    // useful under TSPU "shaky network" conditions where the default
+    // exponential backoff (1, 2, 5, 10, 20, 30 s) is still too slow on the
+    // first attempt for a clean RST.
+    let category = last_error_str
+        .map(crate::classify_tunnel_error)
+        .unwrap_or(crate::TunnelErrorCategory::Other);
+    let delay = crate::reconnect_delay_secs(category, attempt);
     // tunnel.reconnect.scheduled — published *before* sleeping so the GUI
     // sees the upcoming delay even if cancel arrives mid-sleep.
     tracing::warn!(
         category = "tunnel",
         attempt = (attempt + 1) as u64,
         delay_secs = delay as u64,
+        error_category = category.as_str(),
         "reconnect.scheduled"
     );
 
@@ -558,7 +568,14 @@ async fn drive_tunnel(
         let tele = telemetry.clone();
         let started_at = stream_started_at;
         rx_handles.push(tokio::spawn(async move {
-            let res = tls_rx_loop(r, sink).await;
+            let res = tls_rx_loop(
+                r,
+                sink,
+                Some(std::time::Duration::from_secs(
+                    crate::RX_IDLE_TIMEOUT_SECS as u64,
+                )),
+            )
+            .await;
             tele.streams_alive[idx].store(false, Ordering::Relaxed);
             let lifetime_ms = started_at.elapsed().as_millis() as u64;
             match &res {

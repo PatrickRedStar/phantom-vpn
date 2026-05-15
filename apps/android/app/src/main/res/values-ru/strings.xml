@@ -17,6 +17,9 @@
     <string name="state_transmitting_verb">Передача</string>
     <string name="state_standby_verb">Покой</string>
     <string name="state_tuning_verb">Настройка</string>
+    <string name="state_stale_verb">Тишина</string>
+    <string name="state_throttled_verb">Зажат</string>
+    <string name="state_reconnecting_verb">Переподключение</string>
     <string name="state_lost_verb">Сигнал</string>
     <string name="state_signal_word">потерян</string>
     <string name="state_period">.</string>
@@ -42,6 +45,8 @@
     <string name="chip_error">Error</string>
     <string name="chip_clear">Очистить</string>
     <string name="chip_share">Отправить</string>
+    <string name="chip_cat_all">все</string>
+    <string name="logs_search_hint">Поиск…</string>
     <string name="set_endpoints">Эндпоинты</string>
     <string name="set_routing">Маршрутизация</string>
     <string name="set_appearance">Внешний вид</string>

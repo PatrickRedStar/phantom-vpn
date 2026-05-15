@@ -45,18 +45,51 @@ pub async fn write_handshake<W: AsyncWriteExt + Unpin>(
 /// into the shared TUN sink channel. Uses a single reusable `BytesMut` buffer
 /// that is sliced per-packet, so each packet is a cheap refcount bump instead
 /// of an allocation.
+///
+/// `idle_timeout` (v0.24.0): when set, any `read_exact` wait that exceeds
+/// the timeout returns `Err`, which the caller surfaces to `drive_tunnel`
+/// and triggers a reconnect. Without this, a half-open TCP socket (server
+/// reachable for ACKs but no data flowing — typical with TSPU silently
+/// dropping packets) zombies forever on `read_exact`. Pass `None` to keep
+/// the legacy unbounded wait (OpenWrt CLI uses this).
 pub async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
     mut reader: R,
     tun_tx: mpsc::Sender<Bytes>,
+    idle_timeout: Option<std::time::Duration>,
 ) -> anyhow::Result<()> {
     let mut len_buf = [0u8; 4];
     let mut buf = BytesMut::with_capacity(RX_BUF_INIT);
 
     loop {
-        reader
-            .read_exact(&mut len_buf)
-            .await
-            .map_err(|e| anyhow::anyhow!("TLS read header: {}", e))?;
+        // Read header with optional idle timeout. Header is the part that
+        // blocks longest in a silent-tunnel scenario.
+        match idle_timeout {
+            Some(d) => {
+                match tokio::time::timeout(d, reader.read_exact(&mut len_buf)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(anyhow::anyhow!("TLS read header: {}", e)),
+                    Err(_) => {
+                        tracing::warn!(
+                            category = "network",
+                            event = "rx.idle_timeout",
+                            timeout_secs = d.as_secs(),
+                            "no RX for {}s — treating tunnel as dead",
+                            d.as_secs(),
+                        );
+                        return Err(anyhow::anyhow!(
+                            "rx idle timeout: no data for {}s",
+                            d.as_secs()
+                        ));
+                    }
+                }
+            }
+            None => {
+                reader
+                    .read_exact(&mut len_buf)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("TLS read header: {}", e))?;
+            }
+        }
         let frame_len = u32::from_be_bytes(len_buf) as usize;
         if frame_len == 0 {
             continue;
@@ -66,11 +99,37 @@ pub async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
         }
 
         // Make room for the full frame as a contiguous slice, then read into it.
+        // Body read also gets the timeout — by this point a header arrived but
+        // the body MUST follow promptly, otherwise stream is broken.
         buf.resize(frame_len, 0);
-        reader
-            .read_exact(&mut buf[..frame_len])
-            .await
-            .map_err(|e| anyhow::anyhow!("TLS read body: {}", e))?;
+        match idle_timeout {
+            Some(d) => {
+                match tokio::time::timeout(d, reader.read_exact(&mut buf[..frame_len])).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(anyhow::anyhow!("TLS read body: {}", e)),
+                    Err(_) => {
+                        tracing::warn!(
+                            category = "network",
+                            event = "rx.body_timeout",
+                            timeout_secs = d.as_secs(),
+                            frame_len = frame_len as u64,
+                            "header received but body stalled for {}s",
+                            d.as_secs(),
+                        );
+                        return Err(anyhow::anyhow!(
+                            "rx body timeout after header: no data for {}s",
+                            d.as_secs()
+                        ));
+                    }
+                }
+            }
+            None => {
+                reader
+                    .read_exact(&mut buf[..frame_len])
+                    .await
+                    .map_err(|e| anyhow::anyhow!("TLS read body: {}", e))?;
+            }
+        }
 
         // Parse batch in place.
         let mut offset = 0usize;
