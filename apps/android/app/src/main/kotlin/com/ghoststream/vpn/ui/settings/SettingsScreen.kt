@@ -27,6 +27,7 @@ import com.ghoststream.vpn.ui.components.GhostDialogButton
 import com.ghoststream.vpn.ui.components.ghostTextFieldColors
 import com.ghoststream.vpn.ui.components.GhostTextFieldShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,6 +97,17 @@ fun SettingsScreen(
     var showDnsPicker by remember { mutableStateOf(false) }
     var showPerAppPicker by remember { mutableStateOf(false) }
     var showSplitTunnel by remember { mutableStateOf(false) }
+
+    // QR import auto-open: when the scanner returns a conn-string via
+    // `setPendingConnString`, immediately open the Add-endpoint dialog
+    // pre-populated with that string. Without this, the user lands back
+    // on Settings with no visual change and has to tap "+ profile" again
+    // to see the QR result — reads as a glitch. v0.24.4.
+    LaunchedEffect(pendingConnString) {
+        if (pendingConnString.isNotBlank() && !showAddDialog && editingProfile == null) {
+            showAddDialog = true
+        }
+    }
 
     val version = com.ghoststream.vpn.BuildConfig.VERSION_NAME
     val gitTag = com.ghoststream.vpn.BuildConfig.GIT_TAG
