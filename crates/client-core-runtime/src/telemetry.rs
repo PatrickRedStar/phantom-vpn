@@ -203,7 +203,12 @@ pub fn spawn_telem_task(
 
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            if telemetry.shutdown.load(Ordering::Relaxed) {
+            // v0.25.1 (W3-8): Acquire matches the SeqCst Release semantics
+            // used by `Manager::disconnect()` / supervisor cancel paths.
+            // Relaxed could in theory let this task observe an *older* value
+            // of `shutdown` than the byte/peak counters carry — Acquire
+            // makes the synchronisation explicit and trivially correct.
+            if telemetry.shutdown.load(Ordering::Acquire) {
                 break;
             }
 
@@ -320,7 +325,10 @@ pub fn spawn_telem_task(
             // frame with state=Connected can ship after supervise has already
             // initiated graceful shutdown — widgets flash green for ~250 ms
             // after the user hits Disconnect.
-            if telemetry.shutdown.load(Ordering::Relaxed) {
+            // v0.25.1 (W3-8): Acquire (see comment at top of loop) so that
+            // any `shutdown.store(true, ...)` on another thread is reliably
+            // observable here even under aggressive reordering.
+            if telemetry.shutdown.load(Ordering::Acquire) {
                 break;
             }
             let _ = status_tx.send(cur);

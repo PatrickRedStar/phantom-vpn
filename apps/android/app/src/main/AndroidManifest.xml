@@ -8,12 +8,17 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- v0.25.1 W3-13: prompt user to whitelist us from battery optimisations
+         (on MIUI/EMUI/OxygenOS the foreground service alone isn't enough to
+         survive screen-off > 30 min) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <application
+        android:name=".MyApplication"
         android:allowBackup="false"
         android:label="GhostStream"
         android:icon="@mipmap/ic_launcher"

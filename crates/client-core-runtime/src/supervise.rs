@@ -1,8 +1,10 @@
 //! Tunnel supervisor FSM with exponential backoff reconnect.
 //!
 //! `supervise()` runs one `drive_tunnel()` attempt at a time and, on failure,
-//! sleeps a backoff delay before retrying. An explicit `cancel` `Notify`
-//! interrupts any pending sleep (issued by the caller on explicit disconnect).
+//! sleeps a backoff delay before retrying. An explicit `cancel`
+//! `watch::Receiver<bool>` interrupts any pending sleep (issued by the
+//! caller on explicit disconnect; survives missed signals because `watch`
+//! stores the latest value).
 
 use anyhow::Context;
 use bytes::Bytes;
@@ -39,17 +41,29 @@ pub type TunFactory = Arc<
 
 /// Top-level supervisor. Spawned once per `connect()` call. Runs
 /// `drive_tunnel()`, decides whether to reconnect, publishes GUI state.
+///
+/// v0.25.1 (W3-2): `cancel` is a `watch::Receiver<bool>` rather than the
+/// previous `Arc<Notify>`. `Notify::notify_waiters` only wakes tasks
+/// already suspended on `.notified()` — a cancel issued during the brief
+/// window between `select!` arms re-arming was silently dropped. `watch`
+/// stores the latest value so a late observer still sees `true`.
 pub async fn supervise(
     profile: ConnectProfile,
     settings: TunnelSettings,
     tun_factory: TunFactory,
     status_tx: watch::Sender<StatusFrame>,
-    cancel: Arc<tokio::sync::Notify>,
+    mut cancel: watch::Receiver<bool>,
     shared_telem: Arc<Mutex<Option<Arc<Telemetry>>>>,
     protect_socket: Option<ProtectSocket>,
 ) {
     let mut attempt: u32 = 0;
     let mut last_error_str: Option<String> = None;
+    // v0.25.1 (W3-7): carry the previous attempt's peak RX rate across the
+    // reconnect boundary. Without this, throttle hysteresis re-warms-up from
+    // zero every reconnect and the user sees "Normal" for ~60 s even though
+    // the underlying network is still degraded. We persist only RX (TX peak
+    // is not used by `derive_bandwidth_class`).
+    let mut carried_peak_rx_bps: u64 = 0;
 
     loop {
         // Surface Connecting / Reconnecting to GUI.
@@ -116,7 +130,7 @@ pub async fn supervise(
                         let msg = format!("no DNS results for {}", raw_addr);
                         last_error_str = Some(msg.clone());
                         fail(&status_tx, msg, "dns_lookup");
-                        if !should_reconnect(&settings, &status_tx, &cancel, attempt, last_error_str.as_deref()).await {
+                        if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, last_error_str.as_deref()).await {
                             break;
                         }
                         attempt += 1;
@@ -127,7 +141,7 @@ pub async fn supervise(
                     let msg = format!("DNS lookup: {}", e);
                     last_error_str = Some(msg.clone());
                     fail(&status_tx, msg, "dns_lookup");
-                    if !should_reconnect(&settings, &status_tx, &cancel, attempt, last_error_str.as_deref()).await {
+                    if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, last_error_str.as_deref()).await {
                         break;
                     }
                     attempt += 1;
@@ -162,6 +176,14 @@ pub async fn supervise(
             server_addr.to_string(),
             sni.clone(),
         ));
+        // v0.25.1 (W3-7): restore carried peak RX rate from the prior attempt
+        // so throttle classification keeps the same baseline across a
+        // reconnect. First attempt has carried = 0 → no-op.
+        if carried_peak_rx_bps > 0 {
+            telemetry
+                .peak_rate_rx_bps
+                .store(carried_peak_rx_bps, Ordering::Relaxed);
+        }
         *shared_telem.lock().await = Some(telemetry.clone());
 
         if attempt == 0 {
@@ -209,6 +231,11 @@ pub async fn supervise(
         .await;
 
         let explicit_shutdown = telemetry.shutdown.load(Ordering::SeqCst);
+        // v0.25.1 (W3-7): capture peak before dropping the Telemetry handle,
+        // so the next attempt can resume throttle classification from the
+        // same baseline. We snapshot under Acquire to match the Release
+        // semantics implied by the SeqCst store on the hot RX path.
+        carried_peak_rx_bps = telemetry.peak_rate_rx_bps.load(Ordering::Acquire);
         *shared_telem.lock().await = None;
 
         match &result {
@@ -256,7 +283,7 @@ pub async fn supervise(
             let _ = status_tx.send(f);
         }
 
-        if !should_reconnect(&settings, &status_tx, &cancel, attempt, last_error_str.as_deref()).await {
+        if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, last_error_str.as_deref()).await {
             // tunnel.reconnect.giveup — all retries exhausted (or auto_reconnect off).
             tracing::error!(
                 category = "tunnel",
@@ -292,10 +319,15 @@ fn fail(status_tx: &watch::Sender<StatusFrame>, msg: String, phase: &str) {
 ///
 /// Returns `false` when auto_reconnect is off, attempt count is exhausted, or
 /// an explicit disconnect cancel arrived mid-sleep.
+///
+/// v0.25.1 (W3-2): `cancel` is a `watch::Receiver<bool>`. We use the
+/// `wait_cancelled` helper to survive the case where `true` was already
+/// stored before this function suspended on the channel — `Notify`'s
+/// old `notified()` future missed that signal.
 async fn should_reconnect(
     settings: &TunnelSettings,
     status_tx: &watch::Sender<StatusFrame>,
-    cancel: &tokio::sync::Notify,
+    cancel: &mut watch::Receiver<bool>,
     attempt: u32,
     last_error_str: Option<&str>,
 ) -> bool {
@@ -334,11 +366,9 @@ async fn should_reconnect(
 
     let sleep = tokio::time::sleep(std::time::Duration::from_secs(delay as u64));
     tokio::pin!(sleep);
-    let notified = cancel.notified();
-    tokio::pin!(notified);
     tokio::select! {
         _ = &mut sleep => true,
-        _ = &mut notified => {
+        _ = crate::wait_cancelled(cancel) => {
             tracing::info!(category = "tunnel", reason = "user", "reconnect.cancelled");
             false
         }
@@ -366,7 +396,7 @@ async fn drive_tunnel(
     ),
     n_streams: usize,
     protect_socket: Option<ProtectSocket>,
-    cancel: Arc<tokio::sync::Notify>,
+    mut cancel: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let client_tls =
         phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
@@ -554,14 +584,44 @@ async fn drive_tunnel(
     drop(tx_senders);
 
     // RX sink forwarder: count bytes then push into TUN writer.
+    //
+    // v0.25.1 (W3-1): a TUN writer that stops accepting (fd closed, OS hung,
+    // VpnService teardown half-way) used to make `tun_write_tx.send().await`
+    // block forever — and because the forwarder also held the rx_sink_rx
+    // receiver, the per-stream RX loops could not drain either. The whole
+    // tunnel froze with no visible signal. We now timeout the TUN write at
+    // 5 s and, on expiry, signal `forwarder_dead_tx` so the supervisor
+    // tears down and reconnects. 5 s is generous: TUN buffer-full normally
+    // clears in ms; anything longer is structurally broken.
+    let (forwarder_dead_tx, mut forwarder_dead_rx) =
+        tokio::sync::oneshot::channel::<()>();
     let tun_write_tx = tun_pkt_tx.clone();
     let tele_rx = telemetry.clone();
     let rx_forwarder = tokio::spawn(async move {
         while let Some(pkt) = rx_sink_rx.recv().await {
             let len = pkt.len() as u64;
             tele_rx.bytes_rx.fetch_add(len, Ordering::Relaxed);
-            if tun_write_tx.send(pkt).await.is_err() {
-                return;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tun_write_tx.send(pkt),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(_send_err)) => {
+                    // TUN writer dropped — clean teardown path, not deadlock.
+                    return;
+                }
+                Err(_elapsed) => {
+                    // TUN writer hung for 5 s → forwarder is unresponsive.
+                    tracing::error!(
+                        category = "tunnel",
+                        event = "rx_forwarder.tun_write_timeout",
+                        "TUN write blocked for 5 s — forwarder is dead, will reconnect"
+                    );
+                    let _ = forwarder_dead_tx.send(());
+                    return;
+                }
             }
             if packet_rx_log_sample_should_emit() {
                 tracing::trace!(
@@ -651,7 +711,12 @@ async fn drive_tunnel(
         let tele = telemetry.clone();
         async move {
             loop {
-                if tele.shutdown.load(Ordering::Relaxed) {
+                // v0.25.1 (W3-8): Acquire matches the SeqCst Release used by
+                // the writers (Manager::disconnect, supervisor cancel arm).
+                // Relaxed could let this poll observe a stale `false` after
+                // a writer has committed `true` — Acquire makes the cross-
+                // task signal trivially correct.
+                if tele.shutdown.load(Ordering::Acquire) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -659,13 +724,29 @@ async fn drive_tunnel(
         }
     };
 
+    // v0.25.1 (W3-1): track whether the forwarder timed out so we can
+    // return Err *after* teardown completes — otherwise the supervisor sees
+    // Ok(()) and the user-facing "everything is fine" path runs even though
+    // the TUN side froze and we triggered an internal reconnect.
+    let mut forwarder_dead = false;
+
     tokio::select! {
-        _ = cancel.notified() => {
+        _ = crate::wait_cancelled(&mut cancel) => {
             tracing::info!(category = "tunnel", reason = "user", "disconnect");
             telemetry.shutdown.store(true, Ordering::SeqCst);
         }
         _ = shutdown_poll => {
             tracing::info!(category = "tunnel", reason = "shutdown_flag", "disconnect");
+        }
+        _ = &mut forwarder_dead_rx => {
+            // v0.25.1 (W3-1): rx_forwarder timed out on TUN write — the
+            // packet-IO side is structurally hung. Force reconnect.
+            tracing::error!(
+                category = "tunnel",
+                reason = "rx_forwarder_dead",
+                "RX forwarder timed out on TUN write — disconnecting"
+            );
+            forwarder_dead = true;
         }
         _ = async {
             for h in &mut tx_handles { let _ = h.await; }
@@ -693,5 +774,14 @@ async fn drive_tunnel(
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     tracing::debug!(category = "tunnel", "teardown.complete");
+
+    if forwarder_dead {
+        // Surface as error so the supervisor classifies this as a drop and
+        // triggers reconnect (`should_reconnect` uses the error string for
+        // category — "rx_forwarder dead" doesn't match any specific
+        // pattern, so it falls into `Other` which uses the standard
+        // backoff table).
+        return Err(anyhow::anyhow!("rx_forwarder dead — TUN write blocked"));
+    }
     Ok(())
 }

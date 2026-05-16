@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
@@ -34,8 +35,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -169,10 +175,42 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         vpnState is VpnState.Throttled ||
         vpnState is VpnState.Reconnecting
 
+    // Pull the state name only (not bytes/timer) for the TalkBack live
+    // announcement. The visible HeaderMeta shows the full info including
+    // rapidly-changing values; this invisible Text triggers a polite
+    // announcement only when the *state name* changes (Connected → Stale →
+    // Reconnecting), avoiding TalkBack chatter every ~250 ms when bytes
+    // tick over. v0.25.1. Inline Russian literals — string resources
+    // a11y_state_* aren't shipped yet and adding them is out of scope.
+    val stateLabel = when (vpnState) {
+        is VpnState.Connected    -> "Подключено"
+        is VpnState.Stale        -> "Канал замолчал"
+        is VpnState.Throttled    -> "Скорость ограничена"
+        is VpnState.Reconnecting -> "Переподключаемся"
+        is VpnState.Connecting   -> "Подключение"
+        is VpnState.Error        -> "Ошибка соединения"
+        else                     -> "Ожидание"
+    }
+
     Column(Modifier.fillMaxSize().background(C.bg)) {
         ScreenHeader(
             brand = stringResource(R.string.brand_stream),
-            meta = { HeaderMeta(headerMeta, pulse = metaPulse, liveRegion = true) },
+            meta = { HeaderMeta(headerMeta, pulse = metaPulse) },
+        )
+
+        // Invisible TalkBack live region — announces only the state word,
+        // not the changing bytes/timer in HeaderMeta. Rendered at 1.dp /
+        // alpha 0 so Compose keeps it in the semantics tree without it
+        // appearing on screen. v0.25.1.
+        Text(
+            text = stateLabel,
+            modifier = Modifier
+                .size(1.dp)
+                .alpha(0f)
+                .semantics {
+                    liveRegion = LiveRegionMode.Polite
+                    contentDescription = stateLabel
+                },
         )
 
         Column(

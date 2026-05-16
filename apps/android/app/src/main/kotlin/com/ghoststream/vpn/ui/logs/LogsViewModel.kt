@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnStateManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -96,9 +97,18 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
      * Replaces the per-frame `viewModelScope.launch { appendPersisted(...) }`
      * which spawned a fresh coroutine on every log frame and raced on the
      * shared writer. v0.25.0.
+     *
+     * v0.25.1: raised capacity from BUFFERED (64) → 4096 and switched to
+     * DROP_OLDEST. At TRACE level Rust emits 100+ frames/sec; the old
+     * 64-slot buffer dropped *new* lines silently via `trySend = false`,
+     * meaning the most useful entries (errors after a reconnect) would be
+     * lost exactly when needed. DROP_OLDEST keeps the freshest history
+     * and `trySend` is now always successful — overflow drops the oldest
+     * undrained entry, which is generally fine for a tail log buffer.
      */
     private val persistQueue = kotlinx.coroutines.channels.Channel<Pair<LogEntry, Long>>(
-        capacity = kotlinx.coroutines.channels.Channel.BUFFERED,
+        capacity = 4096,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
     init {
@@ -149,10 +159,11 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // Persist to file (off the main thread).
-                // trySend — non-blocking. On overflow (BUFFERED full, very rare) the
-                // log line is dropped rather than blocking the producer. Acceptable
-                // trade-off for logs vs. UI thread stalls.
+                // Persist to file (off the main thread). trySend is non-blocking;
+                // with DROP_OLDEST + capacity 4096 it effectively never fails —
+                // backpressure drops the oldest pending entry instead, so the
+                // newest log lines (errors after reconnect, etc.) are preserved.
+                // v0.25.1.
                 persistQueue.trySend(entry to frame.tsUnixMs)
 
                 applyFilter()

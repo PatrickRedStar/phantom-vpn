@@ -67,6 +67,8 @@ import com.ghoststream.vpn.ui.theme.GsSignal
 import com.ghoststream.vpn.ui.theme.GsText
 import com.ghoststream.vpn.ui.theme.GsTextFaint
 import com.ghoststream.vpn.ui.theme.GsWarn
+import android.content.Context
+import android.os.PowerManager
 
 @Composable
 fun SettingsScreen(
@@ -237,6 +239,22 @@ fun SettingsScreen(
                 showDivider = false,
             )
         }
+
+        // ── v0.25.1 W3-12/W3-13: OEM lifecycle hints ────────────────────────
+        //
+        // On Xiaomi/MIUI, Huawei/EMUI, Vivo, Oppo/ColorOS, Realme and Honor
+        // the standard Android boot/foreground-service guarantees aren't
+        // enough — the vendor's "Security center" silently kills background
+        // VPNs unless the user explicitly grants two permissions that are
+        // hidden 3-4 settings screens deep. We surface them inline only on
+        // those devices, only when relevant. v0.25.1 W3-12 + W3-13.
+        OemLifecycleHints(
+            autoStart = autoStart,
+            viewModel = viewModel,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, start = 18.dp, end = 18.dp),
+        )
 
         Spacer(Modifier.height(24.dp))
 
@@ -1019,3 +1037,103 @@ private fun AddProfileDialog(
     )
 }
 
+// ── OEM lifecycle hints (W3-12 + W3-13) ──────────────────────────────────
+//
+// Two banners that only appear when relevant:
+//   1. OEM autostart banner — only on Xiaomi/Huawei/Vivo/Oppo family AND
+//      when the user has toggled "auto-start on boot" on. Without the
+//      vendor's hidden Autostart permission, BOOT_COMPLETED is dropped.
+//   2. Battery optimisation banner — on any device where the system
+//      reports us as NOT whitelisted. MIUI/EMUI/OxygenOS routinely kill
+//      foreground VPN services after 30 min screen-off otherwise.
+//
+// Both are dismissable-by-fixing: once granted, the banner disappears on
+// the next composition (battery-opt) or stays as confirmation (autostart
+// — we can't actually detect it from app side, so we just stop nagging
+// once user clicks through).
+private fun isOemAutostartProblematic(): Boolean {
+    val m = android.os.Build.MANUFACTURER.lowercase()
+    return m in setOf("xiaomi", "huawei", "honor", "vivo", "oppo", "realme", "redmi")
+}
+
+@Composable
+private fun OemLifecycleHints(
+    autoStart: Boolean,
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val showAutostartHint = autoStart && isOemAutostartProblematic()
+    val pm = remember { context.getSystemService(Context.POWER_SERVICE) as PowerManager }
+    var isIgnoringBatteryOpt by remember {
+        mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
+    }
+    val showBatteryHint = !isIgnoringBatteryOpt
+
+    if (!showAutostartHint && !showBatteryHint) return
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (showAutostartHint) {
+            GhostCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                    Text(
+                        text = "Запуск при загрузке",
+                        style = GsText.profileName,
+                        color = C.warn,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "${android.os.Build.MANUFACTURER}: для автозапуска нужно вручную включить «Автозапуск» в настройках устройства — без этого VPN не стартует после перезагрузки.",
+                        style = GsText.host,
+                        color = C.textDim,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "ОТКРЫТЬ НАСТРОЙКИ АВТОЗАПУСКА",
+                        style = GsText.labelMono,
+                        color = C.signal,
+                        modifier = Modifier
+                            .clickable { viewModel.openOemAutostartSettings(context) }
+                            .padding(4.dp),
+                    )
+                }
+            }
+        }
+        if (showBatteryHint) {
+            GhostCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                    Text(
+                        text = "Фоновая работа",
+                        style = GsText.profileName,
+                        color = C.bone,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "Android может убивать VPN при экономии заряда. Разрешите неограниченную фоновую работу.",
+                        style = GsText.host,
+                        color = C.textDim,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "РАЗРЕШИТЬ",
+                        style = GsText.labelMono,
+                        color = C.signal,
+                        modifier = Modifier
+                            .clickable {
+                                viewModel.requestIgnoreBatteryOptimisations(context)
+                                // Re-check on next render — system dialog
+                                // is modal, control returns synchronously
+                                // after the user decides.
+                                isIgnoringBatteryOpt =
+                                    pm.isIgnoringBatteryOptimizations(context.packageName)
+                            }
+                            .padding(4.dp),
+                    )
+                }
+            }
+        }
+    }
+}

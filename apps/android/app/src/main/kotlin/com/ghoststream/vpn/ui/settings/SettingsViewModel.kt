@@ -122,6 +122,93 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch { preferencesStore.setAutoStartOnBoot(enabled) }
     }
 
+    // ── v0.25.1 W3-12: OEM autostart settings ─────────────────────────────
+    //
+    // On Xiaomi/MIUI, Huawei/EMUI, Vivo/FuntouchOS, Oppo/ColorOS, Realme
+    // and Honor the "Autostart" / "Background startup" permission is *separate*
+    // from Android's standard battery whitelist. Without it, BOOT_COMPLETED
+    // is silently dropped → BootReceiver never fires → user thinks "VPN
+    // doesn't start in the morning, app is broken". We can't grant it
+    // ourselves; we can only deep-link into the right OEM activity.
+    //
+    // If the deep link fails (vendor removed the activity in newer ROM,
+    // device is rooted custom ROM, etc.) we fall back to standard app
+    // details so the user can at least navigate from there.
+    fun openOemAutostartSettings(context: Context) {
+        val manufacturer = android.os.Build.MANUFACTURER.lowercase()
+        val intent = Intent().apply {
+            when (manufacturer) {
+                "xiaomi", "redmi" -> {
+                    component = android.content.ComponentName(
+                        "com.miui.securitycenter",
+                        "com.miui.permcenter.autostart.AutoStartManagementActivity",
+                    )
+                }
+                "huawei", "honor" -> {
+                    component = android.content.ComponentName(
+                        "com.huawei.systemmanager",
+                        "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+                    )
+                }
+                "vivo" -> {
+                    component = android.content.ComponentName(
+                        "com.vivo.permissionmanager",
+                        "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+                    )
+                }
+                "oppo", "realme" -> {
+                    component = android.content.ComponentName(
+                        "com.coloros.safecenter",
+                        "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+                    )
+                }
+                else -> {
+                    // Fallback: per-app details — at least lets user find
+                    // "Autostart" toggle on stock-ish ROMs that put it there.
+                    action = android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                    data = android.net.Uri.parse("package:${context.packageName}")
+                }
+            }
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            // Component name moved / removed in newer ROM build → fall back
+            // to the universal app-details screen so the user isn't stuck.
+            val fallback = Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.parse("package:${context.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try { context.startActivity(fallback) } catch (_: Exception) {}
+        }
+    }
+
+    // ── v0.25.1 W3-13: battery-optimisation exemption prompt ──────────────
+    //
+    // Without REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, MIUI/EMUI/OxygenOS will
+    // happily kill the foreground service after ~30 min screen-off, despite
+    // the FGS contract. The platform Intent shows a yes/no dialog directly;
+    // we can call it without an Activity result because we just re-check
+    // status on the next Settings render.
+    @android.annotation.SuppressLint("BatteryLife")
+    fun requestIgnoreBatteryOptimisations(context: Context) {
+        try {
+            val intent = Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                android.net.Uri.parse("package:${context.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            // Fallback — open the full list. Older OEM ROMs sometimes
+            // remove the per-package action.
+            val fallback = Intent(
+                android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try { context.startActivity(fallback) } catch (_: Exception) {}
+        }
+    }
+
     // ── Import dialog state ───────────────────────────────────────────────────
 
     private val _pendingConnString = MutableStateFlow("")

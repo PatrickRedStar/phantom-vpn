@@ -29,7 +29,7 @@
 //! ).await?;
 //!
 //! // Disconnect later:
-//! handles.cancel.notify_waiters();
+//! let _ = handles.cancel.send(true);
 //! let _ = join.await;
 //! # Ok(())
 //! # }
@@ -168,14 +168,41 @@ pub fn reconnect_delay_secs(cat: TunnelErrorCategory, attempt: u32) -> u32 {
 
 /// Handles returned by `run()` to control the live tunnel.
 pub struct RuntimeHandles {
-    /// Notify to trigger a graceful disconnect (wakes any pending backoff sleep
-    /// and sets the shutdown flag on the live telemetry).
-    pub cancel: Arc<tokio::sync::Notify>,
+    /// Cancel signal: send `true` to trigger a graceful disconnect. Wakes any
+    /// pending backoff sleep and sets the shutdown flag on the live telemetry.
+    ///
+    /// v0.25.1 (W3-2): a `watch::Sender<bool>` replaces the old `Arc<Notify>`
+    /// — `Notify::notify_waiters()` only wakes tasks that are *already*
+    /// suspended on `.notified()`. A cancel issued *between* the watcher
+    /// arming itself and re-entering the `select!` is silently lost, which
+    /// led to "press Disconnect, nothing happens for 45s" on Android. `watch`
+    /// stores the latest value so a late observer still sees the signal.
+    pub cancel: watch::Sender<bool>,
     /// For `TunIo::Callback` only: push inbound packets (from
     /// `NEPacketTunnelFlow` / Android `VpnService`) into the tunnel here.
     /// The channel is bounded (4096) — callers should `try_send` and drop
     /// on overflow.
     pub inbound_tx: tokio::sync::mpsc::Sender<Bytes>,
+}
+
+/// Suspend until cancel signal arrives. Survives missed signals because
+/// `watch` stores the latest value: if `true` was sent before this call,
+/// we return immediately. Returns when the stored value becomes `true`
+/// or when the sender drops.
+///
+/// v0.25.1 (W3-2): the helper exists because every supervise/drive_tunnel
+/// `select!` arm needs the same "cancel can arrive at any point" semantics
+/// and `watch::Receiver::changed()` alone misses the case where the
+/// initial value already requested cancellation.
+pub async fn wait_cancelled(cancel: &mut watch::Receiver<bool>) {
+    loop {
+        if *cancel.borrow() {
+            return;
+        }
+        if cancel.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 // ── run() ────────────────────────────────────────────────────────────────────
@@ -335,10 +362,12 @@ pub async fn run(
             }
         };
 
-    let cancel = Arc::new(tokio::sync::Notify::new());
+    // v0.25.1 (W3-2): watch::channel(bool) replaces Arc<Notify>. The
+    // supervisor takes the Receiver; `RuntimeHandles.cancel` exposes the
+    // Sender to the caller. `false` = run, `true` = shut down.
+    let (cancel_tx, cancel_rx) = watch::channel(false);
     let shared_telem: Arc<Mutex<Option<Arc<Telemetry>>>> = Arc::new(Mutex::new(None));
 
-    let supervisor_cancel = cancel.clone();
     let supervisor_telem = shared_telem.clone();
     let settings = cfg.settings.clone();
 
@@ -349,7 +378,7 @@ pub async fn run(
             settings,
             tun_factory,
             status_tx,
-            supervisor_cancel,
+            cancel_rx,
             supervisor_telem,
             protect_socket,
         )
@@ -368,7 +397,7 @@ pub async fn run(
     });
 
     let handles = RuntimeHandles {
-        cancel,
+        cancel: cancel_tx,
         inbound_tx,
     };
     Ok((handles, join))

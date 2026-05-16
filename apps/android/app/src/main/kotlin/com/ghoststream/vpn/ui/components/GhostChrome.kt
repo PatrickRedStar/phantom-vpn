@@ -11,9 +11,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -51,24 +48,18 @@ fun ScreenHeader(
 /**
  * Meta block — pulse-dot + caps mono text (used in header right side).
  *
- * `liveRegion = true` on the Dashboard so TalkBack announces VPN state
- * changes (Connected → Stale → Reconnecting) as the meta text updates.
- * Off by default on quieter screens (Settings/Logs/Admin) where the
- * text rarely changes and a polite announce would be noise.
+ * Note: this is a pure displayer — it does NOT carry a TalkBack live region,
+ * because the visible text often contains rapidly-updating values (bytes/timer)
+ * that would make TalkBack chatter every ~250 ms. Dashboards that want a
+ * polite state announcement should render a separate invisible Text alongside
+ * HeaderMeta that contains only the state name (see DashboardScreen). v0.25.1.
  */
 @Composable
 fun HeaderMeta(
     text: String,
     pulse: Boolean = false,
-    liveRegion: Boolean = false,
 ) {
-    val rowModifier = if (liveRegion) {
-        Modifier.semantics { this.liveRegion = LiveRegionMode.Polite }
-    } else {
-        Modifier
-    }
     Row(
-        modifier = rowModifier,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (pulse) {

@@ -20,6 +20,57 @@ use ghoststream_gui_ipc::LogFrame;
 use tokio::sync::{mpsc, watch};
 use ghoststream_gui_ipc::StatusFrame;
 
+// ─── JNI-safe GlobalRef wrapper (v0.25.1, W3-9) ──────────────────────────────
+//
+// Bare `GlobalRef::drop()` calls `DeleteGlobalRef`, which JNI requires to be
+// invoked from a thread currently attached to the JVM. When a watcher task
+// is aborted, or `nativeStart` early-returns with an error, the GlobalRef
+// can be dropped on a tokio worker thread that has long detached from the
+// JVM. ART's `-Xcheck:jni` debug mode treats this as fatal; release mode
+// silently leaks slots in the global ref table.
+//
+// `JniSafeGlobalRef` re-attaches the dropping thread as a daemon before
+// releasing the inner ref. `attach_current_thread_as_daemon` is the right
+// primitive here:
+//   - permanent attach (no detach on guard drop), so the tokio worker
+//     stays attached for the rest of its life — cost is one thread slot
+//     in the JVM, paid once per worker. Cheap; workers are pooled.
+//   - safe to call when already attached (returns the existing JNIEnv).
+//   - never detaches by itself, so the underlying `DeleteGlobalRef` call
+//     happens on a known-attached thread.
+struct JniSafeGlobalRef {
+    inner: Option<GlobalRef>,
+    vm: Arc<JavaVM>,
+}
+
+impl JniSafeGlobalRef {
+    fn new(env: &mut JNIEnv, obj: &JObject, vm: Arc<JavaVM>) -> jni::errors::Result<Self> {
+        Ok(Self { inner: Some(env.new_global_ref(obj)?), vm })
+    }
+
+    fn as_obj(&self) -> &GlobalRef {
+        self.inner.as_ref().expect("JniSafeGlobalRef used after drop")
+    }
+}
+
+impl Drop for JniSafeGlobalRef {
+    fn drop(&mut self) {
+        let Some(gref) = self.inner.take() else { return };
+        // attach_current_thread_as_daemon returns Result<JNIEnv> and leaves
+        // the thread permanently attached. We don't need the JNIEnv — just
+        // the side effect of being attached when `gref` drops below.
+        match self.vm.attach_current_thread_as_daemon() {
+            Ok(_) => drop(gref),
+            Err(_) => {
+                // JVM is unreachable (shutdown in progress, or attach
+                // limit hit). Leak the slot rather than risk a crash —
+                // process is going down anyway in either case.
+                std::mem::forget(gref);
+            }
+        }
+    }
+}
+
 // ─── Android logcat ──────────────────────────────────────────────────────────
 
 #[link(name = "log")]
@@ -43,8 +94,23 @@ fn logcat(prio: libc::c_int, msg: &str) {
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 struct TunnelState {
-    cancel: Arc<tokio::sync::Notify>,
+    /// Cancel signal: send `true` to trigger graceful shutdown.
+    ///
+    /// v0.25.1 (W3-2): `watch::Sender<bool>` replaces `Arc<Notify>` so that
+    /// a cancel issued mid-`select!` (between arms re-arming) isn't lost.
+    /// `Notify::notify_waiters()` only wakes tasks already suspended on
+    /// `.notified()` — under TSPU drops the supervisor sometimes raced its
+    /// own re-entry and a user-issued Disconnect tap stalled for 45 s.
+    cancel: tokio::sync::watch::Sender<bool>,
     join: tokio::task::JoinHandle<anyhow::Result<()>>,
+    /// Watcher task handles — kept so `nativeStop` can `.abort()` them
+    /// synchronously before the supervisor finishes draining. Without
+    /// this, a slow `attach_current_thread → call_method → detach` cycle
+    /// inside the watcher could land one final "Disconnected" frame
+    /// *after* a freshly-started new tunnel has already emitted
+    /// "Connected", causing the UI to blink (v0.25.1, W3-10).
+    status_watcher: tokio::task::JoinHandle<()>,
+    log_watcher: tokio::task::JoinHandle<()>,
 }
 
 static TUNNEL: Mutex<Option<TunnelState>> = Mutex::new(None);
@@ -95,9 +161,19 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     // Without awaiting the JoinHandle, old supervisor tasks survive as zombies
     // that keep reading/writing the TUN fd → protect() failures, dual tunnels,
     // "TUN write failed" errors.
-    if let Some(TunnelState { cancel, join }) = TUNNEL.lock().unwrap().take() {
+    if let Some(TunnelState { cancel, join, status_watcher, log_watcher }) =
+        TUNNEL.lock().unwrap().take()
+    {
         logcat(4, "nativeStart: cancelling previous tunnel");
-        cancel.notify_waiters();
+        // v0.25.1 (W3-2): watch::Sender::send may legitimately fail when the
+        // supervisor's receiver has already dropped (rare — usually means
+        // it exited on its own). Ignoring is correct: we still join below.
+        let _ = cancel.send(true);
+        // v0.25.1 (W3-10): abort the previous tunnel's watcher tasks so
+        // their already-queued frames can't race past the new tunnel's
+        // first "Connecting" callback.
+        status_watcher.abort();
+        log_watcher.abort();
         let rt = get_or_init_runtime();
         let _ = rt.block_on(async {
             let _ = tokio::time::timeout(Duration::from_secs(5), join).await;
@@ -169,23 +245,29 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     // Create separate global refs from the local ref — GlobalRef::clone()
     // passes a global ref to NewGlobalRef which ART's -Xcheck:jni rejects as
     // an "invalid local reference".
-    let listener_for_status: GlobalRef = match env.new_global_ref(&listener) {
-        Ok(g) => g,
+    //
+    // v0.25.1 (W3-9): each ref is wrapped in `JniSafeGlobalRef` so its
+    // eventual drop attaches the dropping thread to the JVM as a daemon
+    // first. Otherwise a watcher task aborted on a tokio worker would
+    // drop the raw `GlobalRef` on a detached thread — silent leak in
+    // release, `-Xcheck:jni` fatal in debug.
+    let listener_for_status = match JniSafeGlobalRef::new(&mut env, &listener, jvm.clone()) {
+        Ok(g) => Arc::new(g),
         Err(e) => {
             logcat(6, &format!("nativeStart: new_global_ref(status) failed: {:?}", e));
             return -1;
         }
     };
-    let listener_for_logs: GlobalRef = match env.new_global_ref(&listener) {
-        Ok(g) => g,
+    let listener_for_logs = match JniSafeGlobalRef::new(&mut env, &listener, jvm.clone()) {
+        Ok(g) => Arc::new(g),
         Err(e) => {
             logcat(6, &format!("nativeStart: new_global_ref(logs) failed: {:?}", e));
             return -1;
         }
     };
     // Global ref to VpnService for protect() calls from tokio worker threads.
-    let service_for_protect: GlobalRef = match env.new_global_ref(&this) {
-        Ok(g) => g,
+    let service_ref: Arc<JniSafeGlobalRef> = match JniSafeGlobalRef::new(&mut env, &this, jvm.clone()) {
+        Ok(g) => Arc::new(g),
         Err(e) => {
             logcat(6, &format!("nativeStart: new_global_ref(service) failed: {:?}", e));
             return -1;
@@ -194,6 +276,12 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
 
     // ── 5. Build ProtectSocket callback ──────────────────────────────────────
     // Called by the runtime on tokio worker threads before each TCP connect.
+    //
+    // v0.25.1 (W3-9): `service_ref` is `Arc<JniSafeGlobalRef>`. It moves
+    // into the closure; the closure itself is held by the runtime's
+    // protect callback for the tunnel's lifetime. When that last clone
+    // finally drops on a tokio worker thread, `JniSafeGlobalRef::drop`
+    // re-attaches the thread to the JVM before releasing the inner ref.
     let jvm_protect = jvm.clone();
     let protect: ProtectSocket = Arc::new(move |tcp_fd: RawFd| {
         let mut jni_env = match jvm_protect.attach_current_thread() {
@@ -202,7 +290,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         };
         let result = jni_env
             .call_method(
-                service_for_protect.as_obj(),
+                service_ref.as_obj(),
                 "protect",
                 "(I)Z",
                 &[JValue::Int(tcp_fd)],
@@ -240,19 +328,19 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         }
     };
 
-    // Store cancel handle AND join handle so nativeStop can trigger graceful
-    // shutdown and WAIT for the supervisor task to fully exit.  Previously
-    // the JoinHandle was dropped (_join), leaving no way to join the
-    // supervisor — the root cause of zombie tunnels.
-    *TUNNEL.lock().unwrap() = Some(TunnelState {
-        cancel: handles.cancel.clone(),
-        join,
-    });
-
     // ── 9. Spawn status watcher ───────────────────────────────────────────────
     // watch::Receiver changes → listener.onStatusFrame(json)
-    {
+    //
+    // v0.25.1 (W3-10): the JoinHandle is now retained in TunnelState so
+    // `nativeStop` can `.abort()` this task synchronously. Without this,
+    // a slow JNI call cycle could deliver one final "Disconnected" frame
+    // *after* a freshly-started new tunnel has emitted "Connected", which
+    // surfaced as a UI flicker on rapid Stop→Start.
+    let status_watcher = {
         let jvm_status = jvm.clone();
+        // `listener_for_status: Arc<JniSafeGlobalRef>` — when the spawned
+        // task ends or is aborted, the Arc drops on a tokio worker; the
+        // wrapper attaches the thread before releasing the inner GlobalRef.
         let listener_status = listener_for_status;
         rt.spawn(async move {
             logcat(4, "status watcher: task started");
@@ -304,16 +392,16 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
                 }
             }
             logcat(4, "status watcher: task exiting");
-            // Attach thread to JVM before GlobalRef drop to avoid
-            // "Dropping a GlobalRef in a detached thread" warning.
-            let _guard = jvm_status.attach_current_thread();
-            drop(listener_status);
-        });
-    }
+            // GlobalRef drop is now safe — JniSafeGlobalRef::drop re-attaches
+            // the dropping thread to the JVM before releasing the ref.
+        })
+    };
 
     // ── 10. Spawn log watcher ─────────────────────────────────────────────────
     // mpsc::Receiver<LogFrame> → listener.onLogFrame(json)
-    {
+    //
+    // v0.25.1 (W3-10): JoinHandle retained for `nativeStop.abort()`.
+    let log_watcher = {
         let jvm_log = jvm;
         let listener_log = listener_for_logs;
         rt.spawn(async move {
@@ -337,10 +425,31 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
                     );
                 }
             }
-            // Attach thread to JVM before GlobalRef drop.
-            let _guard = jvm_log.attach_current_thread();
-            drop(listener_log);
-        });
+            // GlobalRef drop is now safe — see status watcher comment.
+        })
+    };
+
+    // Store cancel handle + supervisor join + watcher join handles so
+    // nativeStop can abort watchers synchronously and join the supervisor.
+    //
+    // NB: the watcher store happens *after* successful `run()` so that
+    // an early return on a `run()` error doesn't leave watchers running
+    // against a tunnel that never started (W3-9: watcher tasks would
+    // otherwise drop GlobalRefs on detached workers — though the
+    // JniSafeGlobalRef wrapper makes that safe regardless).
+    if let Some(prev) = TUNNEL.lock().unwrap().replace(TunnelState {
+        cancel: handles.cancel.clone(),
+        join,
+        status_watcher,
+        log_watcher,
+    }) {
+        // This branch is theoretically unreachable — step 0 already took
+        // and joined any previous TunnelState. But if a concurrent insert
+        // ever snuck through, abort the displaced watchers to keep
+        // the invariant "only one tunnel's watcher tasks alive at a time".
+        prev.status_watcher.abort();
+        prev.log_watcher.abort();
+        prev.join.abort();
     }
 
     logcat(4, "nativeStart: tunnel started OK");
@@ -354,9 +463,29 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     _class: JClass,
 ) -> jint {
     let _op_guard = START_STOP_LOCK.lock().unwrap();
-    if let Some(TunnelState { cancel, join }) = TUNNEL.lock().unwrap().take() {
+    if let Some(TunnelState { cancel, join, status_watcher, log_watcher }) =
+        TUNNEL.lock().unwrap().take()
+    {
         logcat(4, "nativeStop: notifying cancel");
-        cancel.notify_waiters();
+        // v0.25.1 (W3-2): watch::Sender::send carries a value so it can't
+        // be "missed" the way `Notify::notify_waiters` could. A late
+        // observer of the channel still sees `true` and exits.
+        let _ = cancel.send(true);
+
+        // v0.25.1 (W3-10): abort watcher tasks *before* awaiting the
+        // supervisor. The supervisor's status_tx/log_tx are still alive
+        // while it's draining, so without abort the watchers would keep
+        // pumping frames (including a final "Disconnected") and a rapid
+        // Stop→Start would race them against the new tunnel's watchers.
+        // Aborting is synchronous from the caller's POV: any frame the
+        // watcher was mid-flight delivering completes (`call_method`
+        // is not an await point), then the task is cancelled at its
+        // next poll — guaranteed before this thread returns to Kotlin
+        // because we don't resume the supervisor join below until the
+        // abort signal has been issued.
+        status_watcher.abort();
+        log_watcher.abort();
+
         logcat(4, "nativeStop: waiting for tunnel exit");
         let rt = get_or_init_runtime();
         let _ = rt.block_on(async {

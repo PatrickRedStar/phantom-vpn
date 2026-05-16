@@ -10,7 +10,6 @@
 
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use anyhow::Context;
 use tokio::sync::{watch, Mutex};
@@ -32,8 +31,13 @@ pub struct Manager {
 struct Inner {
     /// JoinHandle for the runtime supervisor task.
     supervisor: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
-    /// `RuntimeHandles.cancel` Notify — wired up on connect, used by disconnect.
-    cancel: Option<Arc<tokio::sync::Notify>>,
+    /// `RuntimeHandles.cancel` — wired up on connect, used by disconnect.
+    ///
+    /// v0.25.1 (W3-2): `watch::Sender<bool>` replaces `Arc<Notify>`.
+    /// `Notify::notify_waiters()` only wakes tasks already suspended on
+    /// `.notified()`, so a Disconnect issued between supervisor select!
+    /// arms could be silently dropped. `watch` stores the value.
+    cancel: Option<watch::Sender<bool>>,
     /// Live Linux guards for the current session. Dropped on disconnect.
     _tun_device: Option<tun::TunDevice>,
     _route_guard: Option<tun::RouteGuard>,
@@ -187,8 +191,10 @@ impl Manager {
         };
 
         // Wake any pending backoff sleep in the supervisor.
+        // v0.25.1 (W3-2): watch::Sender::send carries `true` so the
+        // supervisor wakes even if it had not yet re-armed its select! arm.
         if let Some(c) = cancel {
-            c.notify_waiters();
+            let _ = c.send(true);
         }
 
         if let Some(h) = handle {

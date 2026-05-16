@@ -338,7 +338,13 @@ pub extern "C" fn phantom_runtime_stop() -> i32 {
         let state = STATE.lock().take();
         match state {
             Some(s) => {
-                s.handles.cancel.notify_waiters();
+                // v0.25.1 (W3-2): `cancel` is now `watch::Sender<bool>`.
+                // `send(true)` stores the value so a supervisor that has
+                // not yet re-armed its select! arm still sees the signal
+                // — the fix for missed-cancel under TSPU shake. Ignoring
+                // the result is correct: a closed channel means the
+                // supervisor already exited on its own.
+                let _ = s.handles.cancel.send(true);
                 tracing::info!("phantom_runtime_stop: cancel notified");
                 0
             }

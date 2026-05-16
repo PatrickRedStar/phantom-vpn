@@ -335,12 +335,13 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         tokio::select! {
             _ = sigint.recv() => {
                 tracing::info!("Received SIGINT. Initiating shutdown...");
-                handles.cancel.notify_waiters();
+                // v0.25.1 (W3-2): watch::Sender::send replaces Notify::notify_waiters
+                let _ = handles.cancel.send(true);
                 let _ = join_handle.await;
             }
             _ = sigterm.recv() => {
                 tracing::info!("Received SIGTERM. Initiating shutdown...");
-                handles.cancel.notify_waiters();
+                let _ = handles.cancel.send(true);
                 let _ = join_handle.await;
             }
             res = &mut join_handle => {
