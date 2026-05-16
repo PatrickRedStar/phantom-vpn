@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,9 +24,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.ui.admin.AdminScreen
+import com.ghoststream.vpn.ui.components.GhostAdaptiveScaffold
 import com.ghoststream.vpn.ui.components.GhostBottomNav
 import com.ghoststream.vpn.ui.components.NavEntry
 import com.ghoststream.vpn.ui.components.QrScannerScreen
+import com.ghoststream.vpn.ui.components.rememberAdaptiveNavType
 import com.ghoststream.vpn.ui.dashboard.DashboardScreen
 import com.ghoststream.vpn.ui.logs.LogsScreen
 import com.ghoststream.vpn.ui.logs.LogsViewModel
@@ -82,106 +85,123 @@ fun AppNavigation() {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(C.bg)) {
-        // Main tab pager — always composed to preserve state
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.statusBars),
-            beyondViewportPageCount = 2,
-            userScrollEnabled = isOnTabRoute,
-        ) { page ->
-            when (page) {
-                0 -> DashboardScreen()
-                1 -> LogsScreen(viewModel = logsViewModel)
-                2 -> SettingsScreen(
-                    viewModel = settingsViewModel,
-                    onNavigateToQrScanner = { navController.navigate("qr_scanner") },
-                    onAdminNavigate = { profileId -> navController.navigate("admin/$profileId") },
-                    onShareToTv = { profileId -> navController.navigate("qr_scanner_pair/$profileId") },
-                    onGetFromPhone = { navController.navigate("tv_pairing") },
-                )
-            }
-        }
+    // v0.26.0: decide nav chrome from physical form factor.
+    // Phone (any orientation) → NavigationBar → existing GhostBottomNav.
+    // Tablet/foldable          → Rail or Drawer drawn by GhostAdaptiveScaffold.
+    val navType = rememberAdaptiveNavType()
 
-        // NavHost for non-tab routes (overlays pager when active)
-        NavHost(
-            navController,
-            startDestination = "tabs",
-            Modifier.fillMaxSize(),
-        ) {
-            composable("tabs") { /* empty — pager handles tab content */ }
-
-            composable("admin_root") { entry ->
-                val vm: SettingsViewModel = viewModel(entry)
-                val profiles by vm.profiles.collectAsStateWithLifecycle()
-                val activeId by vm.activeProfileId.collectAsStateWithLifecycle()
-                val adminProfile = profiles.firstOrNull { it.id == activeId && it.cachedIsAdmin == true }
-                    ?: profiles.firstOrNull { it.cachedIsAdmin == true }
-                    ?: profiles.firstOrNull { it.id == activeId }
-                    ?: profiles.firstOrNull()
-                if (adminProfile != null) {
-                    AdminScreen(
-                        profile = adminProfile,
-                        onBack = {
-                            navController.popBackStack("tabs", inclusive = false)
-                        },
+    GhostAdaptiveScaffold(
+        entries = entries,
+        selectedIndex = pagerState.currentPage,
+        onSelect = { idx ->
+            scope.launch { pagerState.animateScrollToPage(idx) }
+        },
+        navType = navType,
+        modifier = Modifier.fillMaxSize().background(C.bg),
+    ) {
+        Box(Modifier.fillMaxSize().background(C.bg)) {
+            // Main tab pager — always composed to preserve state
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.statusBars),
+                beyondViewportPageCount = 2,
+                userScrollEnabled = isOnTabRoute,
+            ) { page ->
+                when (page) {
+                    0 -> DashboardScreen()
+                    1 -> LogsScreen(viewModel = logsViewModel)
+                    2 -> SettingsScreen(
+                        viewModel = settingsViewModel,
+                        onNavigateToQrScanner = { navController.navigate("qr_scanner") },
+                        onAdminNavigate = { profileId -> navController.navigate("admin/$profileId") },
+                        onShareToTv = { profileId -> navController.navigate("qr_scanner_pair/$profileId") },
+                        onGetFromPhone = { navController.navigate("tv_pairing") },
                     )
                 }
             }
 
-            composable("qr_scanner") {
-                QrScannerScreen(
-                    onResult = { result ->
-                        navController.previousBackStackEntry
-                            ?.savedStateHandle?.set("qr_result", result)
-                        navController.popBackStack()
-                    },
-                    onBack = { navController.popBackStack() },
-                )
-            }
+            // NavHost for non-tab routes (overlays pager when active)
+            NavHost(
+                navController,
+                startDestination = "tabs",
+                Modifier.fillMaxSize(),
+            ) {
+                composable("tabs") { /* empty — pager handles tab content */ }
 
-            composable("qr_scanner_pair/{profileId}") { backEntry ->
-                val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
-                QrScannerScreen(
-                    onResult = { qrText ->
-                        navController.previousBackStackEntry
-                            ?.savedStateHandle?.set("pair_qr_result", "$profileId|||$qrText")
-                        navController.popBackStack()
-                    },
-                    onBack = { navController.popBackStack() },
-                )
-            }
+                composable("admin_root") { entry ->
+                    val vm: SettingsViewModel = viewModel(entry)
+                    val profiles by vm.profiles.collectAsStateWithLifecycle()
+                    val activeId by vm.activeProfileId.collectAsStateWithLifecycle()
+                    val adminProfile = profiles.firstOrNull { it.id == activeId && it.cachedIsAdmin == true }
+                        ?: profiles.firstOrNull { it.cachedIsAdmin == true }
+                        ?: profiles.firstOrNull { it.id == activeId }
+                        ?: profiles.firstOrNull()
+                    if (adminProfile != null) {
+                        AdminScreen(
+                            profile = adminProfile,
+                            onBack = {
+                                navController.popBackStack("tabs", inclusive = false)
+                            },
+                        )
+                    }
+                }
 
-            composable("tv_pairing") {
-                TvPairingScreen(onDone = { navController.popBackStack() })
-            }
-
-            composable("admin/{profileId}") { backEntry ->
-                val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
-                val profile = settingsViewModel.profiles.collectAsStateWithLifecycle().value
-                    .find { it.id == profileId }
-                if (profile != null) {
-                    AdminScreen(
-                        profile = profile,
+                composable("qr_scanner") {
+                    QrScannerScreen(
+                        onResult = { result ->
+                            navController.previousBackStackEntry
+                                ?.savedStateHandle?.set("qr_result", result)
+                            navController.popBackStack()
+                        },
                         onBack = { navController.popBackStack() },
                     )
                 }
-            }
-        }
 
-        // Bottom nav — visible only on tab routes
-        if (isOnTabRoute) {
-            GhostBottomNav(
-                entries = entries,
-                currentRoute = bottomRoutes.getOrNull(pagerState.currentPage) ?: "dashboard",
-                onSelect = { route ->
-                    val idx = bottomRoutes.indexOf(route)
-                    if (idx >= 0) scope.launch { pagerState.animateScrollToPage(idx) }
-                },
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
+                composable("qr_scanner_pair/{profileId}") { backEntry ->
+                    val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
+                    QrScannerScreen(
+                        onResult = { qrText ->
+                            navController.previousBackStackEntry
+                                ?.savedStateHandle?.set("pair_qr_result", "$profileId|||$qrText")
+                            navController.popBackStack()
+                        },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable("tv_pairing") {
+                    TvPairingScreen(onDone = { navController.popBackStack() })
+                }
+
+                composable("admin/{profileId}") { backEntry ->
+                    val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
+                    val profile = settingsViewModel.profiles.collectAsStateWithLifecycle().value
+                        .find { it.id == profileId }
+                    if (profile != null) {
+                        AdminScreen(
+                            profile = profile,
+                            onBack = { navController.popBackStack() },
+                        )
+                    }
+                }
+            }
+
+            // Bottom nav — visible only on tab routes AND only on phones.
+            // On tablets/foldables the Rail/Drawer drawn by
+            // GhostAdaptiveScaffold owns selection.
+            if (isOnTabRoute && navType == NavigationSuiteType.NavigationBar) {
+                GhostBottomNav(
+                    entries = entries,
+                    currentRoute = bottomRoutes.getOrNull(pagerState.currentPage) ?: "dashboard",
+                    onSelect = { route ->
+                        val idx = bottomRoutes.indexOf(route)
+                        if (idx >= 0) scope.launch { pagerState.animateScrollToPage(idx) }
+                    },
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
         }
     }
 }

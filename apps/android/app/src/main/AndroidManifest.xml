@@ -27,9 +27,22 @@
         android:theme="@style/Theme.GhostStream"
         android:networkSecurityConfig="@xml/network_security_config">
 
+        <!-- v0.26.0: tablet/foldable support.
+             resizeableActivity=true       — multi-window / split-screen / dragged
+                                              resize is honoured (default is true
+                                              on targetSdk≥24 but we make it
+                                              explicit so reviewers see it).
+             configChanges (size+orient)    — Compose handles rotation/resize
+                                              itself; tell the system NOT to
+                                              recreate the Activity, so pager
+                                              currentPage, ViewModels and any
+                                              ongoing scroll animations survive
+                                              the transition. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:resizeableActivity="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
             android:windowSoftInputMode="adjustResize" />
 
         <!-- Icon: Bone (default — enabled) -->
