@@ -31,10 +31,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,6 +57,9 @@ import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsText
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import java.util.concurrent.Executors
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 @Composable
 fun QrScannerScreen(
@@ -258,54 +263,96 @@ private fun ViewfinderCorners() {
 private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var detected by remember { mutableStateOf(false) }
 
-    AndroidView(
-        factory = { ctx ->
-            PreviewView(ctx).apply {
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
+    // Single PreviewView that survives recomposition (scanline animation
+    // ticks ~60 fps and would otherwise recreate the surface each frame).
+    val previewView = remember {
+        PreviewView(context).apply {
+            // COMPATIBLE = TextureView. PERFORMANCE (SurfaceView default)
+            // closed surfaces immediately on Samsung One UI 8 / Android 16
+            // before the View was fully attached to the window, killing
+            // the Camera2 session within ~18 s.
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        }
+    }
 
-                    val preview = Preview.Builder().build().also {
-                        it.setSurfaceProvider(this@apply.surfaceProvider)
+    // MLKit decode + frame analysis MUST NOT run on the UI thread: it
+    // throttles compose's frame callbacks and One UI 8's Camera2 HAL
+    // disconnects on missed frames.
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    val scanner = remember { BarcodeScanning.getClient() }
+    val detected = remember { mutableStateOf(false) }
+    val currentOnDetected by rememberUpdatedState(onBarcodeDetected)
+
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { analysisExecutor.shutdown() }
+            runCatching { scanner.close() }
+        }
+    }
+
+    // Bind AFTER PreviewView lands in the compose tree (LaunchedEffect
+    // body runs after first composition + layout). At that point
+    // `previewView.surfaceProvider` is ready and won't be torn down
+    // on the first layout pass.
+    LaunchedEffect(lifecycleOwner, previewView) {
+        val cameraProvider = ProcessCameraProvider.getInstance(context).awaitProvider()
+        val preview = Preview.Builder().build().also {
+            it.setSurfaceProvider(previewView.surfaceProvider)
+        }
+        val imageAnalysis = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+            .also { ia ->
+                ia.setAnalyzer(analysisExecutor) { imageProxy ->
+                    val mediaImage = imageProxy.image ?: run {
+                        imageProxy.close(); return@setAnalyzer
                     }
-
-                    val imageAnalysis = ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-
-                    val scanner = BarcodeScanning.getClient()
-
-                    imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(ctx)) { imageProxy ->
-                        val mediaImage = imageProxy.image
-                        if (mediaImage == null) {
-                            imageProxy.close()
-                            return@setAnalyzer
-                        }
-                        val inputImage = InputImage.fromMediaImage(
-                            mediaImage, imageProxy.imageInfo.rotationDegrees,
-                        )
-                        scanner.process(inputImage)
-                            .addOnSuccessListener { barcodes ->
-                                if (!detected) {
-                                    barcodes.firstOrNull()?.rawValue?.let { value ->
-                                        detected = true
-                                        onBarcodeDetected(value)
-                                    }
+                    val input = InputImage.fromMediaImage(
+                        mediaImage, imageProxy.imageInfo.rotationDegrees,
+                    )
+                    scanner.process(input)
+                        .addOnSuccessListener { barcodes ->
+                            if (!detected.value) {
+                                barcodes.firstOrNull()?.rawValue?.let { value ->
+                                    detected.value = true
+                                    currentOnDetected(value)
                                 }
                             }
-                            .addOnCompleteListener { imageProxy.close() }
-                    }
-
-                    val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner, cameraSelector, preview, imageAnalysis,
-                    )
-                }, ContextCompat.getMainExecutor(ctx))
+                        }
+                        .addOnCompleteListener { imageProxy.close() }
+                }
             }
-        },
+        runCatching {
+            cameraProvider.unbindAll()
+            cameraProvider.bindToLifecycle(
+                lifecycleOwner,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                preview,
+                imageAnalysis,
+            )
+        }
+    }
+
+    AndroidView(
+        factory = { previewView },
         modifier = Modifier.fillMaxSize(),
+    )
+}
+
+/**
+ * Suspend wrapper around the ListenableFuture returned by
+ * `ProcessCameraProvider.getInstance(context)`. Avoids pulling in
+ * `kotlinx-coroutines-guava` just for one await.
+ */
+private suspend fun com.google.common.util.concurrent.ListenableFuture<ProcessCameraProvider>.awaitProvider():
+    ProcessCameraProvider = suspendCancellableCoroutine { cont ->
+    addListener(
+        Runnable {
+            runCatching { get() }
+                .onSuccess { cont.resume(it) }
+                .onFailure { cont.cancel(it) }
+        },
+        java.util.concurrent.Executors.newSingleThreadExecutor(),
     )
 }
