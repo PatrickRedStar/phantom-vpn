@@ -5,9 +5,14 @@ import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.util.Log
+import android.util.Size as AndroidSize
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.RepeatMode
@@ -55,7 +60,9 @@ import androidx.core.content.ContextCompat
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsText
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 import kotlin.coroutines.resume
@@ -280,9 +287,21 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
     // throttles compose's frame callbacks and One UI 8's Camera2 HAL
     // disconnects on missed frames.
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-    val scanner = remember { BarcodeScanning.getClient() }
+
+    // Narrow scanner to QR-only — Google explicitly recommends this for
+    // speed. With all formats on, the decoder budgets per-frame work
+    // across PDF417/Aztec/DataMatrix/EAN/UPC and can exhaust the frame
+    // window before reaching QR, so QRs from a screen never decode.
+    val scanner = remember {
+        BarcodeScanning.getClient(
+            BarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                .build(),
+        )
+    }
     val detected = remember { mutableStateOf(false) }
     val currentOnDetected by rememberUpdatedState(onBarcodeDetected)
+    val frameCounter = remember { java.util.concurrent.atomic.AtomicLong(0) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -300,25 +319,67 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
         val preview = Preview.Builder().build().also {
             it.setSurfaceProvider(previewView.surfaceProvider)
         }
+
+        // Default ImageAnalysis resolution is 640×480 — too low for QR
+        // codes shown on a screen at 15-30 cm. Modules end up at ~2-3 px,
+        // below MLKit's decodable limit. Request 1280×720 with closest-
+        // higher fallback (Google's documented recommendation).
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    AndroidSize(1280, 720),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                ),
+            )
+            .build()
+
         val imageAnalysis = ImageAnalysis.Builder()
+            .setResolutionSelector(resolutionSelector)
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            // Explicit YUV — what MLKit expects natively, avoids any
+            // RGBA conversion overhead.
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
             .build()
             .also { ia ->
                 ia.setAnalyzer(analysisExecutor) { imageProxy ->
+                    val frameNum = frameCounter.incrementAndGet()
                     val mediaImage = imageProxy.image ?: run {
-                        imageProxy.close(); return@setAnalyzer
+                        Log.w("QrScanner", "frame=$frameNum mediaImage null, skipping")
+                        imageProxy.close()
+                        return@setAnalyzer
+                    }
+                    // Log frame metadata once every 30 frames (~1s at 30fps)
+                    // so we can verify resolution / rotation in logcat
+                    // without spamming the log.
+                    if (frameNum % 30L == 1L) {
+                        Log.d(
+                            "QrScanner",
+                            "frame=$frameNum size=${mediaImage.width}x${mediaImage.height}" +
+                                " rot=${imageProxy.imageInfo.rotationDegrees}" +
+                                " fmt=${mediaImage.format}",
+                        )
                     }
                     val input = InputImage.fromMediaImage(
                         mediaImage, imageProxy.imageInfo.rotationDegrees,
                     )
                     scanner.process(input)
                         .addOnSuccessListener { barcodes ->
+                            if (barcodes.isNotEmpty()) {
+                                Log.i(
+                                    "QrScanner",
+                                    "frame=$frameNum detected ${barcodes.size} QR(s)",
+                                )
+                            }
                             if (!detected.value) {
                                 barcodes.firstOrNull()?.rawValue?.let { value ->
                                     detected.value = true
                                     currentOnDetected(value)
                                 }
                             }
+                        }
+                        .addOnFailureListener { e ->
+                            Log.w("QrScanner", "frame=$frameNum scanner failure", e)
                         }
                         .addOnCompleteListener { imageProxy.close() }
                 }
@@ -331,7 +392,8 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
                 preview,
                 imageAnalysis,
             )
-        }
+            Log.i("QrScanner", "camera bound, resolution=1280x720 target, QR-only scanner")
+        }.onFailure { Log.e("QrScanner", "bindToLifecycle failed", it) }
     }
 
     AndroidView(
