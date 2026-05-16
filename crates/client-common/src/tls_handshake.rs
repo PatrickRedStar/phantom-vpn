@@ -61,6 +61,19 @@ async fn do_connect(
     // Do NOT set SO_RCVBUF/SO_SNDBUF — disables TCP auto-tuning.
     let _ = tcp.set_nodelay(true);
 
+    // v0.25.0: SO_KEEPALIVE — мобильные NAT'ы выкидывают idle TCP entry
+    // за 60-180s. Heartbeat ходит через TLS-layer, но если NAT уже выпилен
+    // до того как heartbeat пройдёт — пакет получает RST. Keepalive
+    // проактивно держит NAT entry живой. Bug #8.
+    {
+        use socket2::{SockRef, TcpKeepalive};
+        let keepalive = TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(30))
+            .with_interval(std::time::Duration::from_secs(15))
+            .with_retries(3);
+        let _ = SockRef::from(&tcp).set_tcp_keepalive(&keepalive);
+    }
+
     let sni_str = server_name.clone();
     tracing::debug!(
         category = "handshake",

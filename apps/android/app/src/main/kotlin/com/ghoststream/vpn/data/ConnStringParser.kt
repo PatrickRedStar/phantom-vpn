@@ -38,6 +38,13 @@ object ConnStringParser {
         require(userinfo.isNotEmpty()) { "Malformed ghs:// URL: empty userinfo" }
         require(authority.isNotEmpty()) { "Malformed ghs:// URL: empty host:port" }
 
+        // v0.25.0: cap userinfo at 16 KB. Real PEM cert+key for RSA-4096 is
+        // ~5-7 KB base64; pasting a 10 MB blob from clipboard would OOM on
+        // low-end devices. 16 KB gives 2× headroom.
+        require(userinfo.length <= 16_384) {
+            "conn_string userinfo too large (${userinfo.length} > 16384)"
+        }
+
         val padded = userinfo + "=".repeat((4 - userinfo.length % 4) % 4)
         val pemBytes = Base64.decode(padded, Base64.URL_SAFE or Base64.NO_WRAP)
         val pemStr = String(pemBytes, Charsets.UTF_8)

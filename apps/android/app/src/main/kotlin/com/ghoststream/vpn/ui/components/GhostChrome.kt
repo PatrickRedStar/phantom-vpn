@@ -11,6 +11,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -45,13 +48,29 @@ fun ScreenHeader(
     }
 }
 
-/** Meta block — pulse-dot + caps mono text (used in header right side). */
+/**
+ * Meta block — pulse-dot + caps mono text (used in header right side).
+ *
+ * `liveRegion = true` on the Dashboard so TalkBack announces VPN state
+ * changes (Connected → Stale → Reconnecting) as the meta text updates.
+ * Off by default on quieter screens (Settings/Logs/Admin) where the
+ * text rarely changes and a polite announce would be noise.
+ */
 @Composable
 fun HeaderMeta(
     text: String,
     pulse: Boolean = false,
+    liveRegion: Boolean = false,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    val rowModifier = if (liveRegion) {
+        Modifier.semantics { this.liveRegion = LiveRegionMode.Polite }
+    } else {
+        Modifier
+    }
+    Row(
+        modifier = rowModifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         if (pulse) {
             PulseDot()
             Spacer(Modifier.width(6.dp))

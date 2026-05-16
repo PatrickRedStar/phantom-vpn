@@ -316,6 +316,13 @@ pub fn spawn_telem_task(
             cur.bandwidth_class = bandwidth_class;
             cur.health = derive_health(cur.state, idle_rx_secs, bandwidth_class);
 
+            // v0.25.0: re-check shutdown right before publish. Without this, a
+            // frame with state=Connected can ship after supervise has already
+            // initiated graceful shutdown — widgets flash green for ~250 ms
+            // after the user hits Disconnect.
+            if telemetry.shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             let _ = status_tx.send(cur);
 
             // telemetry.publish — per ADR 0008 §2. TRACE level so it's

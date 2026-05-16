@@ -110,6 +110,17 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
         anyhow::bail!("Malformed ghs:// URL: empty host:port");
     }
 
+    // v0.25.0: cap userinfo at 16 KB. A 10 MB blob would alloc ~7.5 MB
+    // in the decode buffer and stress-test memory on constrained devices.
+    const MAX_USERINFO_LEN: usize = 16 * 1024;
+    if userinfo.len() > MAX_USERINFO_LEN {
+        anyhow::bail!(
+            "conn_string userinfo too large ({} bytes > {} cap)",
+            userinfo.len(),
+            MAX_USERINFO_LEN
+        );
+    }
+
     // Decode userinfo = base64url(cert_pem + "\n" + key_pem)
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     let pem_bytes = URL_SAFE_NO_PAD.decode(userinfo.as_bytes())

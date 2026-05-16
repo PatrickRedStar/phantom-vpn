@@ -91,6 +91,16 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     private val activeLogFile: File get() = File(logsDir, "ghoststream.log")
     private var currentWriter: BufferedWriter? = null
 
+    /**
+     * Single-producer/single-consumer channel for persistent log writes.
+     * Replaces the per-frame `viewModelScope.launch { appendPersisted(...) }`
+     * which spawned a fresh coroutine on every log frame and raced on the
+     * shared writer. v0.25.0.
+     */
+    private val persistQueue = kotlinx.coroutines.channels.Channel<Pair<LogEntry, Long>>(
+        capacity = kotlinx.coroutines.channels.Channel.BUFFERED,
+    )
+
     init {
         // Ensure Rust sends all log levels — filtering is UI-only.
         try { GhostStreamVpnService.nativeSetLogLevel("trace") } catch (_: Exception) {}
@@ -100,6 +110,14 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         // on disk and included in `shareLogs`.
         viewModelScope.launch(Dispatchers.IO) {
             replayPersistedLogs()
+        }
+
+        // Single consumer that drains the persistQueue and writes sequentially.
+        // Survives the lifetime of the ViewModel.
+        viewModelScope.launch(Dispatchers.IO) {
+            for ((entry, ts) in persistQueue) {
+                appendPersisted(entry, ts)
+            }
         }
 
         // Collect push-based log frames from Rust via VpnStateManager.
@@ -132,9 +150,10 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // Persist to file (off the main thread).
-                viewModelScope.launch(Dispatchers.IO) {
-                    appendPersisted(entry, frame.tsUnixMs)
-                }
+                // trySend — non-blocking. On overflow (BUFFERED full, very rare) the
+                // log line is dropped rather than blocking the producer. Acceptable
+                // trade-off for logs vs. UI thread stalls.
+                persistQueue.trySend(entry to frame.tsUnixMs)
 
                 applyFilter()
             }
@@ -380,6 +399,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        runCatching { persistQueue.close() }
         runCatching { currentWriter?.flush(); currentWriter?.close() }
     }
 }

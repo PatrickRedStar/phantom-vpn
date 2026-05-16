@@ -89,9 +89,30 @@ pub async fn supervise(
         let server_addr: SocketAddr = match raw_addr.parse() {
             Ok(a) => a,
             Err(_) => match tokio::net::lookup_host(&raw_addr).await {
-                Ok(mut it) => match it.next() {
-                    Some(a) => a,
-                    None => {
+                Ok(it) => {
+                    // v0.25.0: prefer IPv4 — наши серверы v4-only, на IPv6-only
+                    // сетях (T-Mobile US, Иран) `it.next()` без фильтра может
+                    // выдать IPv6 → TCP connect timeout. Берём v4 если есть.
+                    // Bug #9.
+                    let all: Vec<SocketAddr> = it.collect();
+                    let v4 = all.iter().find(|a| a.is_ipv4()).copied();
+                    let v6 = all.iter().find(|a| a.is_ipv6()).copied();
+                    let chosen = v4.or(v6);
+                    if let Some(a) = chosen {
+                        let v4_count = all.iter().filter(|a| a.is_ipv4()).count() as u64;
+                        let v6_count = all.iter().filter(|a| a.is_ipv6()).count() as u64;
+                        tracing::info!(
+                            category = "network",
+                            event = "dns.resolved",
+                            host = %raw_addr,
+                            chosen = %a,
+                            v4_count = v4_count,
+                            v6_count = v6_count,
+                            stack = if a.is_ipv4() { "v4" } else { "v6" },
+                            "DNS resolved"
+                        );
+                        a
+                    } else {
                         let msg = format!("no DNS results for {}", raw_addr);
                         last_error_str = Some(msg.clone());
                         fail(&status_tx, msg, "dns_lookup");
@@ -101,7 +122,7 @@ pub async fn supervise(
                         attempt += 1;
                         continue;
                     }
-                },
+                }
                 Err(e) => {
                     let msg = format!("DNS lookup: {}", e);
                     last_error_str = Some(msg.clone());
@@ -191,11 +212,20 @@ pub async fn supervise(
         *shared_telem.lock().await = None;
 
         match &result {
-            Ok(()) => tracing::info!(
-                category = "tunnel",
-                reason = "clean",
-                "disconnect"
-            ),
+            Ok(()) => {
+                // v0.25.0: clear any residual error from prior failed attempts
+                // so the next failure starts fresh (and
+                // `should_reconnect`/`f.last_error` aren't polluted from
+                // earlier attempts). `drive_tunnel` Ok means we successfully
+                // ran the Connected loop until either explicit shutdown or a
+                // clean drop — either way, prior errors are no longer relevant.
+                last_error_str = None;
+                tracing::info!(
+                    category = "tunnel",
+                    reason = "clean",
+                    "disconnect"
+                );
+            }
             Err(e) => {
                 let err_str = format!("{:#}", e);
                 last_error_str = Some(err_str.clone());
@@ -447,6 +477,21 @@ async fn drive_tunnel(
         f.tun_addr = Some(tun_addr.to_string());
         f.server_addr = Some(server_addr.to_string());
         f.sni = Some(server_name.clone());
+        // v0.25.0: clear all per-attempt residue carried over from the previous
+        // failed `drive_tunnel` iteration. Without this, the first frame after a
+        // successful reconnect shows stale `last_rx_ms` (from previous session,
+        // 60+ seconds ago) → derive_health flags Stale for 250-500 ms until
+        // telem_task overwrites with fresh values. Also `last_error` from a
+        // prior failed attempt stays in the frame until next failure — false
+        // "DNS lookup failed" while we're actually Connected.
+        f.last_rx_ms = 0;
+        f.last_tx_ms = 0;
+        f.idle_rx_secs = 0;
+        f.last_error = None;
+        f.reconnect_attempt = None;
+        f.reconnect_next_delay_secs = None;
+        f.health = ghoststream_gui_ipc::TunnelHealth::Healthy;
+        f.bandwidth_class = ghoststream_gui_ipc::BandwidthClass::Normal;
         let _ = status_tx.send(f);
     }
 

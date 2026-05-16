@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import com.ghoststream.vpn.BuildConfig
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.widget.WidgetState
@@ -153,7 +154,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     /** Latest status pushed from Rust via onStatusFrame. Used by the watchdog. */
     @Volatile private var lastStatusJson: String? = null
 
-    private var vpnInterface: ParcelFileDescriptor? = null
+    @Volatile private var vpnInterface: ParcelFileDescriptor? = null
     private var watchdogThread: Thread? = null
     private var startupThread: Thread? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -167,7 +168,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     @Volatile private var userStopped = false
     /** Monotonic generation counter — incremented on every start/stop command.
      *  Stale startup threads check this and bail before calling nativeStart. */
-    @Volatile private var tunnelGeneration = 0
+    // v0.25.0: AtomicInteger so double-tap Connect can't pass both
+    // startTunnel invocations through the staleness guard.
+    private val tunnelGeneration = java.util.concurrent.atomic.AtomicInteger(0)
 
     // Used by watchdog to sleep-with-wakeup. notifyAll() from network callback or stopTunnel
     // short-circuits exponential backoff so reconnect happens immediately.
@@ -236,7 +239,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      * instead of polling nativeGetStats().
      */
     override fun onStatusFrame(json: String) {
-        Log.d(TAG, "status: $json")
+        if (BuildConfig.DEBUG) Log.d(TAG, "status: $json")
         // Store for watchdog polling via readNativeStats().
         lastStatusJson = json
         // Push to VpnStateManager so DashboardViewModel can observe.
@@ -333,7 +336,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         val connString = resolved.connString
         val relayAddr = resolved.relayAddr
-        val myGeneration = ++tunnelGeneration
+        val myGeneration = tunnelGeneration.incrementAndGet()
         startupThread?.interrupt()
         startupThread = Thread {
             startTunnel(
@@ -366,7 +369,10 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val builder = Builder()
             .setSession("GhostStream")
             .addAddress(tunIp, tunPrefix)
-            .setMtu(1350)
+            // v0.25.0: 1350→1300 — на 5G NSA / некоторых mobile carriers
+            // underlying link MTU = 1280, и 1350 приводил к фрагментации/drop.
+            // 1300 даёт запас под TLS+TCP+IP headers. Bug #P1-7.
+            .setMtu(1300)
 
         // ── Routing ──────────────────────────────────────────────────────
         if (splitRouting && directCidrsPath.isNotBlank()) {
@@ -402,6 +408,16 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             builder.addRoute("0.0.0.0", 0)
         }
 
+        // v0.25.0: IPv6 killswitch — default-safe. TUN has no IPv6 listener
+        // и IPv6 route в "::/0" → kernel drops packet → effectively killswitch.
+        // Без этого IPv6 traffic от apps утекает мимо тоннеля. Применяется
+        // во всех ветках routing (full-tunnel + split-routing). Bug #16.
+        try {
+            builder.addRoute("::", 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "addRoute(::/0) failed", e)
+        }
+
         // ── DNS ──────────────────────────────────────────────────────────
         for (dns in dnsServers) {
             try { builder.addDnsServer(dns) } catch (_: Exception) {}
@@ -435,18 +451,18 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 val serverPort = serverAddr.substringAfterLast(':', "443")
                 "$relayAddr:$serverPort"
             } else relayAddr
-            Log.i(TAG, "Relay mode: routing via $relayWithPort")
+            if (BuildConfig.DEBUG) Log.i(TAG, "Relay mode: routing via $relayWithPort")
             VpnStateManager.emitLifecycleLog("INFO", "Relay: $relayWithPort")
             val resolved = resolveServerAddrViaUnderlying(relayWithPort)
-            Log.i(TAG, "Relay resolved: $resolved")
+            if (BuildConfig.DEBUG) Log.i(TAG, "Relay resolved: $resolved")
             resolved
         } else {
             resolveServerAddrViaUnderlying(serverAddr)
         }
 
         // Bail if a newer start/stop has been issued while we were setting up.
-        if (generation >= 0 && tunnelGeneration != generation) {
-            Log.i(TAG, "startTunnel: superseded by generation $tunnelGeneration (mine=$generation), aborting")
+        if (generation >= 0 && tunnelGeneration.get() != generation) {
+            Log.i(TAG, "startTunnel: superseded by generation ${tunnelGeneration.get()} (mine=$generation), aborting")
             return
         }
 
@@ -709,7 +725,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      * unable to stopSelf().
      */
     private fun stopTunnelAsync(finalState: VpnState = VpnState.Disconnected) {
-        tunnelGeneration++ // Invalidate any in-flight startTunnel threads
+        tunnelGeneration.incrementAndGet() // Invalidate any in-flight startTunnel threads
         userStopped = true
         lastStatusJson = null
         // Push disconnected state to widgets
@@ -844,14 +860,30 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val iface = vpnInterface ?: return
         val cm = connectivityManager ?: getSystemService(ConnectivityManager::class.java) ?: return
 
+        // v0.25.0: prefer NET_CAPABILITY_VALIDATED so we don't pin our tunnel
+        // to a captive-portal Wi-Fi which has INTERNET capability but no
+        // real connectivity. Fallback to INTERNET-only only if no validated
+        // network exists (transient: just connected, validation in progress).
+        // Bug #10.
         fun isUsableNonVpn(net: Network): Boolean {
             val caps = cm.getNetworkCapabilities(net) ?: return false
             return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
         }
 
-        val net = cm.activeNetwork?.takeIf { isUsableNonVpn(it) }
+        fun isValidatedNonVpn(net: Network): Boolean {
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                   caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                   caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+
+        val validated = cm.activeNetwork?.takeIf { isValidatedNonVpn(it) }
+            ?: cm.allNetworks.firstOrNull { isValidatedNonVpn(it) }
+        val net = validated
+            ?: cm.activeNetwork?.takeIf { isUsableNonVpn(it) }
             ?: cm.allNetworks.firstOrNull { isUsableNonVpn(it) }
+        val validatedNote = if (validated != null) "validated" else "unvalidated-fallback"
 
         val networks = if (net != null) arrayOf(net) else null
         val netDesc = if (net != null) {
@@ -870,8 +902,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             .onFailure { Log.w(TAG, "setUnderlyingNetworks failed", it) }
             .isSuccess
         if (ok) {
-            Log.i(TAG, "setUnderlyingNetworks($netDesc) reason=$reason")
-            VpnStateManager.emitLifecycleLog("INFO", "Сеть: $netDesc ($reason)")
+            Log.i(TAG, "setUnderlyingNetworks($netDesc) reason=$reason status=$validatedNote")
+            VpnStateManager.emitLifecycleLog("INFO", "Сеть: $netDesc ($reason, $validatedNote)")
         }
     }
 
@@ -914,8 +946,12 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         return runCatching {
             val addrs = net.getAllByName(host)
-            val ip = addrs.firstOrNull { it is java.net.Inet4Address }
-                ?: addrs.firstOrNull()
+            // v0.25.0: prefer IPv4 explicit — наши серверы v4-only, на
+            // IPv6-only сетях (T-Mobile US, Иран) первый возвращённый адрес
+            // может быть IPv6 → TCP connect timeout. Bug #9.
+            val v4 = addrs.firstOrNull { it is java.net.Inet4Address }
+            val v6 = addrs.firstOrNull { it is java.net.Inet6Address }
+            val ip = v4 ?: v6
                 ?: run {
                     Log.w(TAG, "DNS resolved $host but no addresses returned")
                     VpnStateManager.emitLifecycleLog("WARN", "DNS: $host — нет адресов")
@@ -923,8 +959,15 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 }
             val ipStr = ip.hostAddress ?: return@runCatching hostPort
             val out = if (ip is java.net.Inet6Address) "[$ipStr]:$port" else "$ipStr:$port"
-            Log.i(TAG, "Pre-resolved $host → $ipStr via underlying network")
-            VpnStateManager.emitLifecycleLog("DEBUG", "DNS: $host → $ipStr")
+            val stack = if (v4 != null) "v4" else "v6-fallback"
+            if (BuildConfig.DEBUG) {
+                Log.i(
+                    TAG,
+                    "DNS resolved $host → $ipStr stack=$stack " +
+                        "v4=${if (v4 != null) 1 else 0} v6=${if (v6 != null) 1 else 0}",
+                )
+            }
+            VpnStateManager.emitLifecycleLog("DEBUG", "DNS: $host → $ipStr ($stack)")
             out
         }.getOrElse { e ->
             Log.w(TAG, "DNS resolution failed for $host: ${e.message}")

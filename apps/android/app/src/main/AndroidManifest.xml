@@ -62,6 +62,12 @@
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:foregroundServiceType="specialUse">
+            <!-- v0.25.0: Android 14+ requires PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+                 justifying the specialUse foregroundServiceType. Play Console
+                 reviews this string. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="VPN tunnel disguised as HTTPS for traffic privacy" />
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
@@ -81,7 +87,8 @@
         <!-- Widget receivers -->
         <receiver
             android:name=".widget.MicroToggleWidgetReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.BIND_APPWIDGET">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -92,7 +99,8 @@
 
         <receiver
             android:name=".widget.StatusPanelWidgetReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.BIND_APPWIDGET">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -103,7 +111,8 @@
 
         <receiver
             android:name=".widget.StripWidgetReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.BIND_APPWIDGET">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -114,7 +123,8 @@
 
         <receiver
             android:name=".widget.FullDashboardWidgetReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.BIND_APPWIDGET">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -125,7 +135,8 @@
 
         <receiver
             android:name=".widget.PillWidgetReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.BIND_APPWIDGET">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>

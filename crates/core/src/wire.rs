@@ -7,10 +7,17 @@ use rand::Rng;
 use std::time::Duration;
 
 // ─── Константы ──────────────────────────────────────────────────────────────
-/// TUN MTU (conservative for TLS stream framing)
-pub const QUIC_TUNNEL_MTU: usize = 1350;
-/// MSS for TCP SYN clamping
-pub const QUIC_TUNNEL_MSS: u16 = 1310;
+/// TUN MTU (conservative for TLS stream framing).
+///
+/// v0.25.0: lowered 1350→1300 — на 5G NSA / некоторых mobile carriers underlying
+/// link MTU = 1280, и наш 1350 приводил к фрагментации/drop. 1300 даёт запас
+/// под TLS+TCP+IP headers и стабильно проходит. Потеря throughput ~5% на
+/// 1500-MTU сетях, выигрыш — устойчивость на узких каналах. Bug #P1-7.
+pub const QUIC_TUNNEL_MTU: usize = 1300;
+/// MSS for TCP SYN clamping.
+///
+/// v0.25.0: lowered 1310→1240 в паре с MTU. Bug #P1-7.
+pub const QUIC_TUNNEL_MSS: u16 = 1240;
 
 /// Maximum batch plaintext (H.264 I-frame up to 50 KB + overhead)
 pub const BATCH_MAX_PLAINTEXT: usize = 65_536;

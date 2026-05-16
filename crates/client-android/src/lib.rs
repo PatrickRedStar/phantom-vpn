@@ -116,7 +116,13 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let cfg: ConnectProfile = match serde_json::from_str(&cfg_str) {
         Ok(c) => c,
         Err(e) => {
-            logcat(6, &format!("nativeStart: failed to parse cfgJson: {}", e));
+            // v0.25.0: don't log `e`'s Display — serde_json::Error includes a
+            // content snippet which for cfgJson means the private key surface
+            // area. Log only the category code.
+            logcat(6, &format!(
+                "nativeStart: failed to parse cfgJson (category={})",
+                e.classify() as u8
+            ));
             return -1;
         }
     };
@@ -125,9 +131,26 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let _settings: TunnelSettings = match env.get_string(&settings_json) {
         Ok(s) => {
             let s = String::from(s);
-            serde_json::from_str(&s).unwrap_or_default()
+            match serde_json::from_str::<TunnelSettings>(&s) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    // v0.25.0: don't silently downgrade to default — that
+                    // may turn killswitch off without the user knowing.
+                    // Logcat surfaces this so we can spot breaking-change
+                    // formats; default is still applied (fail-safe) so
+                    // the tunnel still comes up.
+                    logcat(6, &format!(
+                        "nativeStart: settings parse failed (category={}), using defaults",
+                        e.classify() as u8
+                    ));
+                    TunnelSettings::default()
+                }
+            }
         }
-        Err(_) => TunnelSettings::default(),
+        Err(_) => {
+            logcat(6, "nativeStart: settings_json get_string failed, using defaults");
+            TunnelSettings::default()
+        }
     };
 
     // ── 3. TUN fd ────────────────────────────────────────────────────────────

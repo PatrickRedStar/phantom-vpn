@@ -212,7 +212,11 @@ object VpnStateManager {
         deriveUiState(lifecycle, frame)
     }.stateIn(
         scope,
-        SharingStarted.Eagerly,
+        // v0.25.0: stop the derived-state collector when no one's looking.
+        // Eagerly meant a coroutine ran forever even after all UI scopes
+        // unsubscribed. WhileSubscribed(5_000L) keeps it warm for 5s after
+        // last subscriber leaves (typical UI navigation), then idles.
+        SharingStarted.WhileSubscribed(5_000L),
         deriveUiState(_state.value, _statusFrame.value),
     )
 

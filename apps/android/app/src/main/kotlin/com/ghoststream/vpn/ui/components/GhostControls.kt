@@ -26,6 +26,10 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.ghoststream.vpn.ui.theme.C
@@ -62,24 +66,37 @@ fun GhostChip(
     }
 }
 
-/** Lime-solid primary button spanning full width (used as Connect/Disconnect FAB). */
+/**
+ * Lime-solid primary button spanning full width (used as Connect/Disconnect FAB).
+ *
+ * `contentDescription` is accepted explicitly so TalkBack can read a
+ * different label than the visible text (e.g. "Disconnect from
+ * Ghoststream" instead of "DISCONNECT"). When null, the visible text
+ * is used — fine for short imperative labels.
+ */
 @Composable
 fun GhostFab(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     outline: Boolean = false,
+    contentDescription: String? = null,
 ) {
     val haptic = LocalHapticFeedback.current
     val signalColor = C.signal
     val bgColor = C.bg
     val bg = if (outline) Color.Transparent else signalColor
     val fg = if (outline) signalColor else bgColor
+    val a11yLabel = contentDescription ?: text
     Box(
         modifier
             .fillMaxWidth()
             .height(48.dp)
             .clickable(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() })
+            .semantics {
+                role = Role.Button
+                this.contentDescription = a11yLabel
+            }
             .background(bg)
             .then(if (outline) Modifier.border(1.dp, signalColor) else Modifier)
             .drawBehind {

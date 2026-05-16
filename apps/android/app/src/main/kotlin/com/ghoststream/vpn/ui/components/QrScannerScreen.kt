@@ -54,6 +54,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +71,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -98,6 +104,23 @@ private sealed class LockState {
     data object Scanning : LockState()
     data class Detected(val rawValue: String) : LockState()
 }
+
+/**
+ * Saver for `LockState` so a rotation in mid-lock doesn't drop the user
+ * back into the scanning phase. We only persist enough to re-enter the
+ * dismissal animation: the raw QR value if we'd already detected one,
+ * otherwise a sentinel string for the scanning phase.
+ */
+private val LockStateSaver = Saver<LockState, Any>(
+    save = { state -> if (state is LockState.Detected) state.rawValue else "scanning" },
+    restore = { saved ->
+        when (saved) {
+            "scanning" -> LockState.Scanning
+            is String -> LockState.Detected(saved)
+            else -> LockState.Scanning
+        }
+    },
+)
 
 /** Total time from detection to `onResult` invocation. */
 private const val LOCK_TOTAL_MS = 720
@@ -131,7 +154,11 @@ fun QrScannerScreen(
 
     // Two-phase state machine. Detected only fires once — subsequent
     // barcodes are ignored while the success animation plays out.
-    var lockState by remember { mutableStateOf<LockState>(LockState.Scanning) }
+    // `rememberSaveable` so a rotation between detection and the
+    // dismissal animation doesn't reset the screen back to scanning.
+    var lockState by rememberSaveable(stateSaver = LockStateSaver) {
+        mutableStateOf<LockState>(LockState.Scanning)
+    }
 
     // Single-shot lock arming: fire haptic, then schedule onResult after
     // the full lock-on choreography (LOCK_TOTAL_MS).
@@ -192,11 +219,17 @@ fun QrScannerScreen(
             ScreenHeader(
                 brand = stringResource(R.string.brand_intake),
                 meta = {
+                    val closeLabel = stringResource(R.string.qr_close)
                     Text(
-                        text = stringResource(R.string.qr_close).uppercase(),
+                        text = closeLabel.uppercase(),
                         style = GsText.hdrMeta,
                         color = C.textDim,
-                        modifier = Modifier.clickable { onBack() },
+                        modifier = Modifier
+                            .clickable { onBack() }
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = closeLabel
+                            },
                     )
                 },
             )
@@ -612,8 +645,15 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
     val currentOnDetected by rememberUpdatedState(onBarcodeDetected)
     val frameCounter = remember { java.util.concurrent.atomic.AtomicLong(0) }
 
+    // Hold a reference so we can unbind on dispose. Otherwise Samsung
+    // One UI 8 keeps the Camera2 device busy for ~18 s after the screen
+    // leaves the composition, blocking the next QR open and other
+    // camera apps.
+    val cameraProviderState = remember { mutableStateOf<ProcessCameraProvider?>(null) }
+
     DisposableEffect(Unit) {
         onDispose {
+            runCatching { cameraProviderState.value?.unbindAll() }
             runCatching { analysisExecutor.shutdown() }
             runCatching { scanner.close() }
         }
@@ -624,7 +664,9 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
     // `previewView.surfaceProvider` is ready and won't be torn down
     // on the first layout pass.
     LaunchedEffect(lifecycleOwner, previewView) {
-        val cameraProvider = ProcessCameraProvider.getInstance(context).awaitProvider()
+        val cameraProvider = ProcessCameraProvider.getInstance(context)
+            .awaitProvider(ContextCompat.getMainExecutor(context))
+        cameraProviderState.value = cameraProvider
         val preview = Preview.Builder().build().also {
             it.setSurfaceProvider(previewView.surfaceProvider)
         }
@@ -715,15 +757,23 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
  * Suspend wrapper around the ListenableFuture returned by
  * `ProcessCameraProvider.getInstance(context)`. Avoids pulling in
  * `kotlinx-coroutines-guava` just for one await.
+ *
+ * Takes an executor from the caller — previously we spawned a fresh
+ * single-thread Executor on every QR open and never shut it down,
+ * leaving one detached thread per scanner open. Use
+ * `ContextCompat.getMainExecutor(context)` at the call site: the
+ * listener fires once with the provider, main-thread cost is
+ * negligible.
  */
-private suspend fun com.google.common.util.concurrent.ListenableFuture<ProcessCameraProvider>.awaitProvider():
-    ProcessCameraProvider = suspendCancellableCoroutine { cont ->
+private suspend fun com.google.common.util.concurrent.ListenableFuture<ProcessCameraProvider>.awaitProvider(
+    executor: java.util.concurrent.Executor,
+): ProcessCameraProvider = suspendCancellableCoroutine { cont ->
     addListener(
         Runnable {
             runCatching { get() }
                 .onSuccess { cont.resume(it) }
                 .onFailure { cont.cancel(it) }
         },
-        java.util.concurrent.Executors.newSingleThreadExecutor(),
+        executor,
     )
 }

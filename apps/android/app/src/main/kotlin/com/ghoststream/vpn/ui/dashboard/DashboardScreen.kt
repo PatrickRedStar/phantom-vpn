@@ -172,7 +172,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     Column(Modifier.fillMaxSize().background(C.bg)) {
         ScreenHeader(
             brand = stringResource(R.string.brand_stream),
-            meta = { HeaderMeta(headerMeta, pulse = metaPulse) },
+            meta = { HeaderMeta(headerMeta, pulse = metaPulse, liveRegion = true) },
         )
 
         Column(

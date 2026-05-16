@@ -48,7 +48,7 @@ class TvPairingViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         val token = PairingServer.generateToken()
-        val pairingServer = PairingServer(token)
+        val pairingServer = PairingServer(token, getApplication())
         val port = pairingServer.start()
         server = pairingServer
 
