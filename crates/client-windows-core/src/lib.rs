@@ -8,9 +8,16 @@
 //! targeting Windows.
 
 pub mod profile;
+pub mod routing;
 pub mod tun_backend;
 
 pub use tun_backend::{MockBackend, TunBackend};
 
 #[cfg(windows)]
 pub use tun_backend::{WintunBackend, WintunConfig};
+
+// `RouteScope` bookkeeping and the `CommandRunner` trait compile on every
+// host — useful for the unit tests in `routing.rs` and for the dev loop
+// on Mac. `discover_default_gateway` is the only piece that actually
+// requires Windows (the Mac stub bails out loudly).
+pub use routing::{discover_default_gateway, CommandRunner, RouteScope, ShellRunner};

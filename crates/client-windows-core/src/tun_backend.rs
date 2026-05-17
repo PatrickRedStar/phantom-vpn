@@ -197,6 +197,17 @@ mod wintun_impl {
             Ok(())
         }
 
+        /// Win32 interface index of the underlying Wintun adapter — the
+        /// argument every `netsh interface ip ... <idx> ...` invocation
+        /// needs. Delegates straight to `wintun::Adapter::get_adapter_index`
+        /// (wintun 0.5.1 caches the value at create/open time, so this
+        /// call is effectively free).
+        pub fn adapter_index(&self) -> Result<u32> {
+            self._adapter
+                .get_adapter_index()
+                .map_err(|e| anyhow::anyhow!("get wintun adapter index: {e:?}"))
+        }
+
         fn ensure_dll_present(path: &Path) -> Result<()> {
             if !path.exists() {
                 anyhow::bail!(

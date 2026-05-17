@@ -8,11 +8,17 @@
 //! transitions and a low rate of synthetic RX/TX so the GUI can be
 //! exercised without admin rights or a real adapter.
 
+#[cfg(windows)]
 use std::sync::Arc;
+#[cfg(not(windows))]
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use ghoststream_gui_ipc::{ConnState, ConnectProfile, LogFrame, StatusFrame};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::Result;
+#[cfg(not(windows))]
+use ghoststream_gui_ipc::ConnState;
+use ghoststream_gui_ipc::{ConnectProfile, LogFrame, StatusFrame};
 use slint::Weak;
 use tokio::sync::{mpsc, watch};
 
@@ -22,9 +28,17 @@ use crate::MainWindow;
 /// Handles to a running tunnel session. Dropping does not cancel — the
 /// caller must explicitly send `cancel` and `.await` the join handle to
 /// shut down cleanly.
+///
+/// On Windows we additionally own a `RouteScope` so the netsh routes we
+/// installed get torn down when the tunnel ends. The field name starts
+/// with `_` because nothing reads it — it exists purely so that `Drop`
+/// fires when `ActiveTunnel` goes out of scope (after `stop()` has
+/// awaited the join handle).
 pub struct ActiveTunnel {
     pub cancel: watch::Sender<bool>,
     pub join: tokio::task::JoinHandle<Result<()>>,
+    #[cfg(windows)]
+    pub _routes: client_windows_core::RouteScope,
 }
 
 impl ActiveTunnel {
@@ -50,7 +64,7 @@ pub async fn start_tunnel(
 
     // Fork: real Wintun path on Windows, simulator on every other host.
     #[cfg(windows)]
-    let (cancel, join) = start_real_tunnel(profile, status_tx, log_tx).await?;
+    let (cancel, join, routes) = start_real_tunnel(profile, status_tx, log_tx).await?;
 
     #[cfg(not(windows))]
     let (cancel, join) = start_simulated_tunnel(profile, status_tx, log_tx);
@@ -60,7 +74,12 @@ pub async fn start_tunnel(
     // Log forwarder: mpsc::Receiver → UI.
     spawn_log_forwarder(weak, log_rx);
 
-    Ok(ActiveTunnel { cancel, join })
+    Ok(ActiveTunnel {
+        cancel,
+        join,
+        #[cfg(windows)]
+        _routes: routes,
+    })
 }
 
 fn spawn_status_forwarder(weak: Weak<MainWindow>, mut rx: watch::Receiver<StatusFrame>) {
@@ -90,7 +109,11 @@ async fn start_real_tunnel(
     profile: ConnectProfile,
     status_tx: watch::Sender<StatusFrame>,
     log_tx: mpsc::Sender<LogFrame>,
-) -> Result<(watch::Sender<bool>, tokio::task::JoinHandle<Result<()>>)> {
+) -> Result<(
+    watch::Sender<bool>,
+    tokio::task::JoinHandle<Result<()>>,
+    client_windows_core::RouteScope,
+)> {
     use client_core_runtime::TunIo;
     use client_windows_core::{WintunBackend, WintunConfig};
     use std::net::Ipv4Addr;
@@ -114,6 +137,46 @@ async fn start_real_tunnel(
     };
     let backend = WintunBackend::new(&cfg).context("create wintun backend")?;
 
+    // ── Routing setup (P0-1, P0-2, P1-1, P1-5) ────────────────────────
+    //
+    // Order matters:
+    //   1. Discover the physical default gateway BEFORE installing our
+    //      own default — otherwise our `0.0.0.0/1 → Wintun` would
+    //      shadow the lookup.
+    //   2. Add the `/32` host route to the VPN server via the physical
+    //      gateway, so the TLS handshake reaches `vdsina` instead of
+    //      recursing into the tunnel (P0-2).
+    //   3. Install the split default route via Wintun (P0-1).
+    //   4. Pin the Wintun adapter metric to 1 (P1-5).
+    //   5. Route IPv6 into Wintun (P1-1).
+    //
+    // The `RouteScope` is returned up the call stack and stored inside
+    // `ActiveTunnel` — `Drop` will tear down all five steps on disconnect.
+    let adapter_idx = backend
+        .adapter_index()
+        .context("get wintun adapter index")?;
+    let gw = client_windows_core::discover_default_gateway()
+        .context("discover default gateway")?;
+    // TODO(Task 5): parse the server IP out of `profile.conn_string`
+    // (`helpers::parse_conn_string` returns a `network.server_addr` we
+    // can DNS-resolve). For Task 1 we hard-code `vdsina` so we have
+    // something to route around for end-to-end testing.
+    let server_ip = Ipv4Addr::new(89, 110, 109, 128);
+
+    let mut routes = client_windows_core::RouteScope::new();
+    routes
+        .add_host_via_gateway(server_ip, gw)
+        .context("install server exclude host route")?;
+    routes
+        .add_default_via_adapter(adapter_idx)
+        .context("install default route via Wintun")?;
+    routes
+        .set_adapter_metric(adapter_idx, 1)
+        .context("set Wintun adapter metric")?;
+    routes
+        .enable_ipv6_default_via_adapter(adapter_idx)
+        .context("install IPv6 default route via Wintun")?;
+
     let (handles, join) = client_core_runtime::run(
         profile,
         TunIo::Backend(Arc::new(backend)),
@@ -124,7 +187,7 @@ async fn start_real_tunnel(
     .await
     .context("client-core-runtime::run")?;
 
-    Ok((handles.cancel, join))
+    Ok((handles.cancel, join, routes))
 }
 
 // ── Non-Windows: simulated tunnel for the dev loop ────────────────────────
