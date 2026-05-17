@@ -125,10 +125,14 @@ lipo -create \
 
 echo "==> cbindgen → $HEADERS_DIR/PhantomCore.h"
 mkdir -p "$HEADERS_DIR"
-cbindgen \
+# cbindgen discovers the workspace manifest from cwd — when ship-macos.sh
+# invokes us with cwd=apps/macos (after its own `cd "$(dirname "$0")/.."`),
+# cbindgen reads `apps/macos/Cargo.toml` which doesn't exist. Run from REPO_ROOT
+# explicitly so the workspace Cargo.toml is always found.
+(cd "$REPO_ROOT" && cbindgen \
     --config "$CRATE_DIR/cbindgen.toml" \
     --crate phantom-client-apple \
-    --output "$HEADERS_DIR/PhantomCore.h"
+    --output "$HEADERS_DIR/PhantomCore.h")
 
 # ─── Create XCFramework ───────────────────────────────────────────────────────
 
