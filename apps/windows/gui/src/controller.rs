@@ -114,6 +114,8 @@ async fn start_real_tunnel(
     tokio::task::JoinHandle<Result<()>>,
     client_windows_core::RouteScope,
 )> {
+    use std::net::IpAddr;
+
     use client_common::helpers::parse_conn_string;
     use client_core_runtime::TunIo;
     use client_windows_core::{WintunBackend, WintunConfig};
@@ -152,6 +154,52 @@ async fn start_real_tunnel(
     // Server IP for the routing exclude — DNS-resolve if it's a hostname.
     let server_ip = resolve_server_ipv4(&parsed.network.server_addr).await?;
 
+    // ── DNS leak protection (P0-4) ────────────────────────────────────
+    //
+    // Without pushing DNS to the adapter, Windows keeps using whatever
+    // resolver the user's physical NIC was configured with — so queries
+    // leak past the tunnel even though all routes go through Wintun.
+    //
+    // GhostStream's conn_string protocol does NOT yet carry an explicit
+    // DNS field — only `sni`, `tun=<cidr>`, `v=1`. Other clients pick
+    // their DNS as follows:
+    //   • Linux helper: tunnel gateway (`default_gw`, e.g. 10.7.0.1) —
+    //     the VPN server runs an internal resolver on :53 of its
+    //     tunnel-interior address. See apps/linux/helper/src/linux/dns.rs
+    //     and the tunnel.rs activator block (`DnsGuard::activate(...)`).
+    //   • Android: user-settable in UI, defaults to "8.8.8.8,1.1.1.1".
+    //   • macOS / iOS: user-settable, falls back to ["1.1.1.1","8.8.8.8"].
+    //
+    // We follow Linux's pattern here: the tunnel-interior resolver gives
+    // us in-tunnel DNS (so queries actually use the VPN) AND it preserves
+    // user privacy (no third-party resolver sees their queries). If we
+    // somehow can't infer `default_gw` (malformed conn_string), fall back
+    // to public resolvers — leaking to Cloudflare is bad, but silently
+    // leaking to the user's ISP because we pushed nothing is worse.
+    // Once the Windows GUI grows a custom-DNS setting we can override this.
+    let dns_servers: Vec<IpAddr> = parsed
+        .network
+        .default_gw
+        .as_deref()
+        .and_then(|s| s.parse::<IpAddr>().ok())
+        .map(|ip| vec![ip])
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                category = "tun",
+                "default_gw missing from conn_string — using public resolvers as DNS fallback"
+            );
+            vec![
+                IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1)),
+                IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8)),
+            ]
+        });
+
+    tracing::info!(
+        category = "tun",
+        dns = ?dns_servers,
+        "applying DNS servers to Wintun adapter"
+    );
+
     let cfg = WintunConfig {
         adapter_name: "GhostStream".into(),
         tunnel_type: "GhostStream Tunnel".into(),
@@ -159,7 +207,7 @@ async fn start_real_tunnel(
         address: tun_address,
         netmask: tun_netmask,
         mtu: tun_mtu,
-        dns_servers: vec![],
+        dns_servers,
     };
     let backend = WintunBackend::new(&cfg).context("create wintun backend")?;
 
