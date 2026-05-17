@@ -51,24 +51,28 @@ object GsText {
     )
     // v0.26.1: responsive по WindowSizeClass. Phone хороший, но на Tab S11
     // 54sp выглядит карликом в huge headline pane — масштабируется по форм-
-    // фактору. lineHeight держим proportional (≈ 1.037× от fontSize, как в
+    // фактору. lineHeight держим proportional (≈ 1.063× от fontSize, как в
     // оригинале 54/56).
     //   Compact (phone, sw < 600)              → 54sp / 56sp
-    //   Medium  (tablet portrait, sw ≥ 600,     → 72sp / 75sp
+    //   Medium  (tablet portrait, sw ≥ 600,     → 56sp / 60sp
     //            current width < 840)
-    //   Expanded (tablet landscape / unfolded,  → 80sp / 84sp
+    //   Expanded (tablet landscape / unfolded,  → 64sp / 68sp
     //            sw ≥ 600 ∧ width ≥ 840)
-    // Expanded picked at 80sp (not 96sp) so the Russian word
-    // "Настройка..." fits one line in the 42% left pane of Dashboard
-    // 2-col hero. Increase only if we ever switch to auto-shrink.
+    //
+    // v0.26.4 down-tuned: на Tab S11 landscape 80sp ломает одну строку для
+    // "Переподключаемся 1/8…" (15 chars + ellipsis) в 42% pane (~445 dp).
+    // 64sp гарантированно fits + строит чище визуальный rhythm с timer
+    // ticker'ом 26sp снизу. Medium portrait тоже понижен до 56sp — на 10"
+    // portrait 72sp слишком doминирует над остальной телеметрией. Compact
+    // (phone) не трогаем — там пропорции уже выверены.
     val stateHeadline: TextStyle
         @Composable get() {
             val cfg = LocalConfiguration.current
             val (fs, lh) = when {
                 cfg.smallestScreenWidthDp >= 600 && cfg.screenWidthDp >= 840 ->
-                    80.sp to 84.sp
+                    64.sp to 68.sp
                 cfg.smallestScreenWidthDp >= 600 ->
-                    72.sp to 75.sp
+                    56.sp to 60.sp
                 else ->
                     54.sp to 56.sp
             }

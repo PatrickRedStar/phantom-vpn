@@ -63,6 +63,7 @@ import com.ghoststream.vpn.ui.components.isTabletExpanded
 import com.ghoststream.vpn.ui.components.isTabletPortrait
 import com.ghoststream.vpn.ui.components.serifAccent
 import com.ghoststream.vpn.ui.theme.C
+import com.ghoststream.vpn.ui.theme.LocalIsDark
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.LaunchedEffect as LE
 
@@ -477,28 +478,52 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
             // right = SCOPE / MUX / KV stacked, independently scrollable.
             // Bottom-nav is replaced by NavigationDrawer at this width, so
             // no 80 dp tail padding is needed.
+            //
+            // v0.26.4 polish:
+            //   1. Theme-aware vertical divider — `C.hair` is barely visible
+            //      on light paper, bump to `C.hairBold` + 1.5 dp width.
+            //   2. Top-align both panes — right had top=16 dp, left had
+            //      none, making the SCOPE card sit lower than the state
+            //      headline. Both panes now share top=16 dp.
+            //   3. FAB max-width 360 dp — on Tab S11 the 42% pane is ~445 dp
+            //      wide and a full-width CONNECT button looks comically
+            //      large. Centre it within a fillMaxWidth wrapper.
             isExpanded -> {
+                val isDark = LocalIsDark.current
+                val dividerColor = if (isDark) C.hair else C.hairBold
+                val dividerWidth = if (isDark) 1.dp else 1.5.dp
                 Row(Modifier.weight(1f).fillMaxWidth()) {
                     // Left pane 42% — hero copy + CONNECT
                     Column(
                         modifier = Modifier
                             .weight(0.42f)
                             .fillMaxHeight()
-                            .verticalScroll(rememberScrollState()),
+                            .verticalScroll(rememberScrollState())
+                            .padding(top = 16.dp),
                     ) {
                         stateHeadlineSection()
                         timerRowSection()
                         emptyHintSection()
                         preflightSection()
                         Spacer(Modifier.weight(1f))
-                        fabSection(Modifier)
+                        // Centered FAB capped at 360 dp on the wide pane.
+                        // The inner Box.fillMaxWidth honours pane width
+                        // while the widthIn caps the visual extent of the
+                        // CONNECT button; fabSection itself still applies
+                        // its 18 dp horizontal padding inside that 360 dp.
+                        Box(
+                            modifier = Modifier.fillMaxWidth(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            fabSection(Modifier.widthIn(max = 360.dp))
+                        }
                     }
-                    // Vertical divider between panes
+                    // Vertical divider between panes (theme-aware)
                     Box(
                         Modifier
-                            .width(1.dp)
+                            .width(dividerWidth)
                             .fillMaxHeight()
-                            .background(C.hair),
+                            .background(dividerColor),
                     )
                     // Right pane 58% — telemetry cards
                     Column(

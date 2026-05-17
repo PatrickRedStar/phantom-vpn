@@ -101,13 +101,19 @@ fun AppNavigation() {
     ) {
         Box(Modifier.fillMaxSize().background(C.bg)) {
             // Main tab pager — always composed to preserve state
+            //
+            // v0.26.4: swipe pager only on Compact (phone) — Rail/Drawer
+            // tablet layouts have larger swipe distances that conflict with
+            // edge-back-gesture. Tablet users tap the nav-suite items
+            // instead, which is also the platform convention for Material
+            // adaptive layouts. Behaviour on phone is identical to v0.26.3.
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.statusBars),
                 beyondViewportPageCount = 2,
-                userScrollEnabled = isOnTabRoute,
+                userScrollEnabled = isOnTabRoute && navType == NavigationSuiteType.NavigationBar,
             ) { page ->
                 when (page) {
                     0 -> DashboardScreen()

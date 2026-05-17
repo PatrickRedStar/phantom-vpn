@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.ghoststream.vpn.BuildConfig
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsText
+import com.ghoststream.vpn.ui.theme.LocalIsDark
 
 /**
  * Adaptive scaffold that switches the navigation chrome based on form factor.
@@ -115,6 +117,13 @@ private fun GhostNavigationRail(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
 ) {
+    // v0.26.4: theme-aware pill alpha. Lime on dark stays vivid at 0.10
+    // because the phosphor signal is already saturated; moss-green on
+    // light paper needs ~0.22 to read as a discernible pill against
+    // C.bgElev. Without this, the active item is "almost invisible" on
+    // light theme — the audit caught it on Tab S11 in daylight mode.
+    val isDark = LocalIsDark.current
+    val pillColor = C.signal.copy(alpha = if (isDark) 0.10f else 0.22f)
     NavigationRail(
         containerColor = C.bgElev,
         contentColor = C.bone,
@@ -126,6 +135,10 @@ private fun GhostNavigationRail(
         entries.forEachIndexed { idx, entry ->
             val active = idx == selectedIndex
             NavigationRailItem(
+                // v0.26.4: enforce 56 dp minimum touch target (Material a11y
+                // guideline — Rail items are slightly larger than Bar/Drawer
+                // because they carry both icon and label vertically).
+                modifier = Modifier.heightIn(min = 56.dp),
                 selected = active,
                 onClick = { onSelect(idx) },
                 icon = {
@@ -147,7 +160,7 @@ private fun GhostNavigationRail(
                     unselectedIconColor = C.textDim,
                     selectedTextColor = C.bone,
                     unselectedTextColor = C.textFaint,
-                    indicatorColor = C.signal.copy(alpha = 0.10f),
+                    indicatorColor = pillColor,
                 ),
             )
         }
@@ -170,6 +183,11 @@ private fun GhostPermanentDrawer(
     selectedIndex: Int,
     onSelect: (Int) -> Unit,
 ) {
+    // v0.26.4: see GhostNavigationRail for rationale on theme-aware pill
+    // alpha. Same fix here — the drawer's wider items make the under-saturated
+    // pill on light theme even more glaring.
+    val isDark = LocalIsDark.current
+    val pillColor = C.signal.copy(alpha = if (isDark) 0.10f else 0.22f)
     Box(
         modifier = Modifier
             .fillMaxHeight()
@@ -212,14 +230,22 @@ private fun GhostPermanentDrawer(
                     },
                     shape = RoundedCornerShape(10.dp),
                     colors = NavigationDrawerItemDefaults.colors(
-                        selectedContainerColor = C.signal.copy(alpha = 0.10f),
+                        selectedContainerColor = pillColor,
                         unselectedContainerColor = Color.Transparent,
                         selectedIconColor = C.signal,
                         unselectedIconColor = C.textDim,
                         selectedTextColor = C.bone,
                         unselectedTextColor = C.textFaint,
                     ),
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                    // v0.26.4: enforce 48 dp minimum touch target (Material
+                    // a11y guideline). NavigationDrawerItem's default height
+                    // is 56 dp but with our reduced vertical padding (2 dp)
+                    // the rendered hit-rect can dip below. heightIn is
+                    // a no-op when default is already ≥ 48 — strictly a
+                    // safety net.
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                        .heightIn(min = 48.dp),
                 )
             }
 

@@ -55,6 +55,7 @@ import com.ghoststream.vpn.ui.components.isTabletPortrait
 import com.ghoststream.vpn.ui.theme.BlueDebug
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsText
+import com.ghoststream.vpn.ui.theme.LocalIsDark
 
 @Composable
 fun LogsScreen(viewModel: LogsViewModel) {
@@ -101,6 +102,12 @@ fun LogsScreen(viewModel: LogsViewModel) {
         )
 
         if (twoPane) {
+            // v0.26.4: theme-aware divider between FilterPane and LogList.
+            // 1 dp `C.hair` on light paper is barely visible — bump to
+            // 1.5 dp `C.hairBold` (mirrors Dashboard 2-col fix).
+            val isDark = LocalIsDark.current
+            val dividerColor = if (isDark) C.hair else C.hairBold
+            val dividerWidth = if (isDark) 1.dp else 1.5.dp
             Row(Modifier.fillMaxSize()) {
                 FilterPane(
                     modifier = Modifier
@@ -119,9 +126,9 @@ fun LogsScreen(viewModel: LogsViewModel) {
                 )
                 Box(
                     Modifier
-                        .width(1.dp)
+                        .width(dividerWidth)
                         .fillMaxHeight()
-                        .background(C.hair),
+                        .background(dividerColor),
                 )
                 LogList(
                     modifier = Modifier
