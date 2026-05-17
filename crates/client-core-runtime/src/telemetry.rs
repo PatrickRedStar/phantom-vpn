@@ -20,19 +20,49 @@ const ALPHA: f64 = 0.35;
 /// UI flips to Stale shortly before the runtime triggers a forced reconnect.
 const STALE_IDLE_SECS: u32 = 18;
 
-/// Throttle detection floor: ignore drops while peak is below this; we
-/// don't want noise from tiny sessions to mark themselves throttled.
-const THROTTLE_PEAK_FLOOR_BPS: f64 = 200_000.0; // 200 kbit/s
+// ── TSPU-128 signature detector (v0.26.5) ────────────────────────────────
+//
+// Russian TSPU (the DPI middleboxes deployed by Roskomnadzor) implements
+// throttling by dropping client→server ACK packets, which collapses the
+// TCP congestion window to a steady fixed rate. For TCP/H2 the documented
+// rate is 128 kbps (Meduza 2024-08-06, U. Michigan IMC paper, ValdikSS).
+// QUIC is throttled to ~512 kbps but our transport is TCP/H2, so we only
+// look for the 128 kbps signature.
+//
+// Detection rule: rate sits inside the 100-160 kbps band for ≥ 10 s of
+// continuous RX activity → throttled. Recovers when rate clears 320 kbps
+// (2× the band ceiling — well outside any plausible TSPU shaping).
+//
+// This replaces v0.25.1's ratio-vs-peak heuristic which false-positived
+// hard on bursty browsing: a single page-load burst pinned the lifetime
+// peak high, then natural idle reading dropped below 20 % × peak and
+// flipped UI to "Throttled" while the tunnel was perfectly healthy.
+//
+// The signature is narrow on purpose — it catches the specific TSPU
+// behaviour we care about (the same machine that targets googlevideo,
+// twitter.com, etc.) without crying wolf on natural traffic variation.
 
-/// Throttle detection ratio: current ≤ 20% × peak → suspect DPI shaping.
-const THROTTLE_DROP_RATIO: f64 = 0.20;
+/// Lower edge of the TSPU 128 kbps signature band.
+const TSPU_BAND_MIN_BPS: f64 = 100_000.0;
 
-/// Recovery ratio: current ≥ 70% × peak → back to Normal.
-const THROTTLE_RECOVERY_RATIO: f64 = 0.70;
+/// Upper edge of the TSPU 128 kbps signature band. 160 leaves headroom
+/// for EMA smoothing and small jitter without false-matching above-band
+/// real traffic.
+const TSPU_BAND_MAX_BPS: f64 = 160_000.0;
 
-/// Minimum session age before throttle detection kicks in (gives peak time
-/// to stabilise on a real workload).
-const THROTTLE_WARMUP_SECS: u64 = 60;
+/// Consecutive 250 ms ticks the rate must stay in-band before flipping
+/// to Throttled. 40 ticks = 10 s. Lower → faster detect, more flicker;
+/// higher → laggy. 10 s matches the warmup we already lose anyway.
+const TSPU_STABLE_TICKS: u32 = 40;
+
+/// Recovery threshold. Rate above this clearly means TSPU isn't pinning
+/// us — 2× the band ceiling.
+const TSPU_RECOVERY_BPS: f64 = 320_000.0;
+
+/// Session must be at least this old before we trust the detector. Gives
+/// the tunnel time to actually push bytes; first few seconds rate is
+/// noisy by nature of EMA warmup.
+const THROTTLE_WARMUP_SECS: u64 = 10;
 
 /// Returns current wall-clock Unix time in milliseconds. Saturates on
 /// pre-epoch clocks (shouldn't happen but defensive).
@@ -56,9 +86,6 @@ pub struct Telemetry {
     pub last_rx_unix_ms: AtomicU64,
     /// Unix-ms timestamp of the last TX byte. `0` = no TX yet.
     pub last_tx_unix_ms: AtomicU64,
-    /// Peak RX rate (bits/sec, EMA) observed during this session. Used as
-    /// the baseline for DPI throttle detection.
-    pub peak_rate_rx_bps: AtomicU64,
     /// Per-stream TX byte counters for activity indicator. Fixed 16-entry
     /// array matches `MAX_N_STREAMS`.
     pub stream_tx_bytes: Vec<AtomicU64>,
@@ -84,7 +111,6 @@ impl Telemetry {
             bytes_tx: AtomicU64::new(0),
             last_rx_unix_ms: AtomicU64::new(0),
             last_tx_unix_ms: AtomicU64::new(0),
-            peak_rate_rx_bps: AtomicU64::new(0),
             stream_tx_bytes: (0..16).map(|_| AtomicU64::new(0)).collect(),
             n_streams,
             streams_alive: (0..16).map(|_| AtomicBool::new(false)).collect(),
@@ -124,34 +150,61 @@ pub(crate) fn derive_health(
     }
 }
 
-/// Compute `bandwidth_class` from peak vs current RX rate.
+/// Compute `bandwidth_class` from the TSPU-128 signature.
 ///
-/// Hysteresis: returns `Throttled` once current drops to `≤ 20% × peak`
-/// and recovers to `Normal` only when current climbs back to `≥ 70% × peak`.
-/// Pure function — exposed for unit tests.
+/// State machine, pure function — exposed for unit tests:
+///   - Gate: not Connected, warmup not over, or RX idle > 5 s → reset
+///     stable counter, force `Normal`. No detection during dead time.
+///   - In-band (100-160 kbps): increment stable counter. ≥ 40 ticks
+///     of continuous in-band → flip to `Throttled`.
+///   - Above recovery (320 kbps): reset stable counter, flip back to
+///     `Normal` if we were Throttled.
+///   - Below band but above zero (transient dip, e.g. user mid-scroll):
+///     freeze the counter, keep current state.
+///
+/// Returns `(new_class, new_stable_in_band)` — caller threads the counter
+/// through successive ticks.
 pub(crate) fn derive_bandwidth_class(
     current_class: BandwidthClass,
     cur_rx_bps: f64,
-    peak_rx_bps: f64,
+    stable_in_band: u32,
     session_secs: u64,
     state: ConnState,
     idle_rx_secs: u32,
-) -> BandwidthClass {
-    // Don't even consider throttle until we have a real baseline and
-    // we're actually trying to push traffic.
+) -> (BandwidthClass, u32) {
     if state != ConnState::Connected
         || session_secs < THROTTLE_WARMUP_SECS
-        || peak_rx_bps < THROTTLE_PEAK_FLOOR_BPS
         || idle_rx_secs > 5
     {
-        return BandwidthClass::Normal;
+        return (BandwidthClass::Normal, 0);
     }
-    let ratio = cur_rx_bps / peak_rx_bps;
-    match current_class {
-        BandwidthClass::Normal if ratio <= THROTTLE_DROP_RATIO => BandwidthClass::Throttled,
-        BandwidthClass::Throttled if ratio >= THROTTLE_RECOVERY_RATIO => BandwidthClass::Normal,
+
+    let in_band = (TSPU_BAND_MIN_BPS..=TSPU_BAND_MAX_BPS).contains(&cur_rx_bps);
+    let above_recovery = cur_rx_bps > TSPU_RECOVERY_BPS;
+
+    let next_counter = if in_band {
+        stable_in_band.saturating_add(1)
+    } else if above_recovery {
+        0
+    } else {
+        // Below band but not clearly above recovery — natural dip, hold.
+        stable_in_band
+    };
+
+    let next_class = match current_class {
+        BandwidthClass::Normal if next_counter >= TSPU_STABLE_TICKS => BandwidthClass::Throttled,
+        BandwidthClass::Throttled if above_recovery => BandwidthClass::Normal,
         other => other,
-    }
+    };
+
+    // Once we recover, the next sample needs a fresh streak to flip back.
+    let final_counter = if next_class == BandwidthClass::Normal && current_class == BandwidthClass::Throttled {
+        0
+    } else {
+        next_counter
+    };
+
+    (next_class, final_counter)
 }
 
 // Extracted for unit tests.
@@ -200,6 +253,10 @@ pub fn spawn_telem_task(
         let mut ema_rx = 0.0f64;
         let mut ema_tx = 0.0f64;
         let mut bandwidth_class = BandwidthClass::Normal;
+        // v0.26.5: TSPU-128 signature detector — counts consecutive ticks
+        // where the RX rate sits inside the 100-160 kbps band. Flips to
+        // Throttled at TSPU_STABLE_TICKS (= 40 ticks = 10 s).
+        let mut stable_in_band: u32 = 0;
 
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -239,16 +296,6 @@ pub fn spawn_telem_task(
             ema_rx = compute_ema(ema_rx, inst_rx_bps, ALPHA);
             ema_tx = compute_ema(ema_tx, inst_tx_bps, ALPHA);
 
-            // Track session peak RX rate (atomic max). Saturating bit-cast
-            // is safe: bps stays non-negative, f64 → u64 truncates fraction.
-            let peak_before = telemetry.peak_rate_rx_bps.load(Ordering::Relaxed) as f64;
-            if ema_rx > peak_before {
-                telemetry
-                    .peak_rate_rx_bps
-                    .store(ema_rx as u64, Ordering::Relaxed);
-            }
-            let peak = telemetry.peak_rate_rx_bps.load(Ordering::Relaxed) as f64;
-
             // Per-stream activity: normalize delta by the max over this window.
             let mut per_stream_delta = [0u64; 16];
             let mut alive = [false; 16];
@@ -284,35 +331,32 @@ pub fn spawn_telem_task(
             cur.last_tx_ms = last_tx_ms;
             cur.idle_rx_secs = idle_rx_secs;
 
-            // Throttle classification with hysteresis. Log on edge changes.
-            let new_bw = derive_bandwidth_class(
+            // TSPU-128 signature classification. Log on edge changes.
+            let (new_bw, new_counter) = derive_bandwidth_class(
                 bandwidth_class,
                 ema_rx,
-                peak,
+                stable_in_band,
                 session_secs,
                 cur.state,
                 idle_rx_secs,
             );
+            stable_in_band = new_counter;
             if new_bw != bandwidth_class {
                 let cur_kbps = (ema_rx / 1000.0) as u64;
-                let peak_kbps = (peak / 1000.0) as u64;
                 if new_bw == BandwidthClass::Throttled {
                     tracing::warn!(
                         category = "network",
                         event = "throttle.detected",
                         cur_kbps = cur_kbps,
-                        peak_kbps = peak_kbps,
-                        "bandwidth dropped to {} kbps from peak {} kbps — DPI shaping suspected",
+                        "TSPU-128 signature: RX held in 100-160 kbps band for 10 s — shaping suspected (cur {} kbps)",
                         cur_kbps,
-                        peak_kbps,
                     );
                 } else {
                     tracing::info!(
                         category = "network",
                         event = "throttle.recovered",
                         cur_kbps = cur_kbps,
-                        peak_kbps = peak_kbps,
-                        "bandwidth recovered to {} kbps",
+                        "bandwidth recovered to {} kbps — TSPU signature cleared",
                         cur_kbps,
                     );
                 }
@@ -493,75 +537,149 @@ mod tests {
         );
     }
 
-    /// Throttle detection: warmup window suppresses early drops.
+    /// Throttle detection: warmup window suppresses early in-band ticks.
     #[test]
     fn test_throttle_warmup_holds_normal() {
-        let class = derive_bandwidth_class(
+        let (class, counter) = derive_bandwidth_class(
             BandwidthClass::Normal,
-            10_000.0,   // current 10 kbps
-            5_000_000.0, // peak 5 Mbps
-            10,         // session 10s — still warming up
+            128_000.0, // smack in the TSPU band
+            100,       // stale-but-pre-warmup counter — should be wiped
+            5,         // session 5s — still warming up
             ConnState::Connected,
             0,
         );
         assert_eq!(class, BandwidthClass::Normal);
+        assert_eq!(counter, 0, "warmup gate must reset the counter");
     }
 
-    /// Throttle detection: after warmup + big peak + low current → Throttled.
+    /// TSPU signature: 40 consecutive in-band ticks → Throttled.
     #[test]
-    fn test_throttle_drops_to_throttled_after_warmup() {
-        let class = derive_bandwidth_class(
-            BandwidthClass::Normal,
-            100_000.0,   // 100 kbps current
-            10_000_000.0, // 10 Mbps peak
-            120,         // 2 min in
-            ConnState::Connected,
-            0,
-        );
+    fn test_throttle_signature_flips_after_stable_window() {
+        let mut class = BandwidthClass::Normal;
+        let mut counter: u32 = 0;
+        // Simulate 40 ticks at 128 kbps — exactly the TSPU TCP rate.
+        for tick in 0..TSPU_STABLE_TICKS {
+            let (c, n) = derive_bandwidth_class(
+                class,
+                128_000.0,
+                counter,
+                30, // well past warmup
+                ConnState::Connected,
+                0,
+            );
+            class = c;
+            counter = n;
+            // Should hold Normal until the last tick crosses the threshold.
+            if tick + 1 < TSPU_STABLE_TICKS {
+                assert_eq!(class, BandwidthClass::Normal, "tick {} too early", tick);
+            }
+        }
         assert_eq!(class, BandwidthClass::Throttled);
+        assert_eq!(counter, TSPU_STABLE_TICKS);
     }
 
-    /// Throttle hysteresis: Throttled stays Throttled at mid-band, only
-    /// recovers above the 70% line.
+    /// TSPU signature: out-of-band rates never accumulate enough to flip.
+    /// This is the test that v0.25.1's ratio-vs-peak would have failed —
+    /// bursty browsing (200-2000 kbps) is normal, not throttled.
     #[test]
-    fn test_throttle_hysteresis_band() {
-        // At 50% (above the 20% drop threshold but below 70% recovery) →
-        // stays Throttled.
-        let stay = derive_bandwidth_class(
-            BandwidthClass::Throttled,
-            5_000_000.0,  // 5 Mbps
-            10_000_000.0, // 10 Mbps peak
-            300,
-            ConnState::Connected,
-            0,
-        );
-        assert_eq!(stay, BandwidthClass::Throttled);
+    fn test_throttle_bursty_traffic_no_false_positive() {
+        let bursty_pattern = [
+            300_000.0,   // 300 kbps — above band
+            1_800_000.0, // 1.8 Mbps burst
+            500_000.0,
+            80_000.0, // dip below band, but isolated
+            2_000_000.0,
+            400_000.0,
+        ];
+        let mut class = BandwidthClass::Normal;
+        let mut counter: u32 = 0;
+        // Repeat 100x — well past TSPU_STABLE_TICKS.
+        for cycle in 0..100 {
+            for rate in bursty_pattern {
+                let (c, n) = derive_bandwidth_class(
+                    class,
+                    rate,
+                    counter,
+                    30,
+                    ConnState::Connected,
+                    0,
+                );
+                class = c;
+                counter = n;
+            }
+            assert_eq!(
+                class,
+                BandwidthClass::Normal,
+                "cycle {} bursty pattern flipped to Throttled (counter={})",
+                cycle,
+                counter,
+            );
+        }
+    }
 
-        // At 80% — recovers.
-        let recover = derive_bandwidth_class(
+    /// Recovery: once we're Throttled, a rate above 320 kbps clears it
+    /// and resets the counter so we need a fresh streak to flip back.
+    #[test]
+    fn test_throttle_recovers_above_band_ceiling() {
+        let (class, counter) = derive_bandwidth_class(
             BandwidthClass::Throttled,
-            8_000_000.0,
-            10_000_000.0,
+            500_000.0, // above TSPU_RECOVERY_BPS
+            TSPU_STABLE_TICKS,
             300,
             ConnState::Connected,
             0,
         );
-        assert_eq!(recover, BandwidthClass::Normal);
+        assert_eq!(class, BandwidthClass::Normal);
+        assert_eq!(counter, 0, "recovery must reset the counter");
+    }
+
+    /// Below-band but not clearly recovered: transient dip during scroll.
+    /// Counter freezes, state holds — neither flips nor recovers spuriously.
+    #[test]
+    fn test_throttle_below_band_holds_state() {
+        // Normal state, transient 80 kbps dip — should NOT advance counter.
+        let (class, counter) = derive_bandwidth_class(
+            BandwidthClass::Normal,
+            80_000.0, // below band
+            17,       // mid-streak from earlier in-band run
+            30,
+            ConnState::Connected,
+            0,
+        );
+        assert_eq!(class, BandwidthClass::Normal);
+        assert_eq!(counter, 17, "below-band dip must freeze counter");
     }
 
     /// Idle RX ≠ throttled: if the user just isn't requesting anything,
-    /// don't blame the network.
+    /// don't blame the network. Counter resets so re-warmup is honest.
     #[test]
     fn test_throttle_ignores_pure_idle() {
-        let class = derive_bandwidth_class(
+        let (class, counter) = derive_bandwidth_class(
             BandwidthClass::Normal,
             0.0,
-            10_000_000.0,
+            25, // counter mid-streak
             300,
             ConnState::Connected,
             30, // idle for 30s — natural, not throttled
         );
         assert_eq!(class, BandwidthClass::Normal);
+        assert_eq!(counter, 0, "idle gate resets the counter");
+    }
+
+    /// Disconnect mid-detection wipes state — no Throttled label after
+    /// reconnect needs to be earned fresh.
+    #[test]
+    fn test_throttle_non_connected_state_resets() {
+        let (class, counter) = derive_bandwidth_class(
+            BandwidthClass::Throttled,
+            128_000.0,
+            TSPU_STABLE_TICKS,
+            300,
+            ConnState::Reconnecting,
+            0,
+        );
+        assert_eq!(class, BandwidthClass::Normal);
+        assert_eq!(counter, 0);
     }
 
     /// All-alive but all-idle case: every alive stream should hit the floor

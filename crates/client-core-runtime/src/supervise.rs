@@ -58,12 +58,12 @@ pub async fn supervise(
 ) {
     let mut attempt: u32 = 0;
     let mut last_error_str: Option<String> = None;
-    // v0.25.1 (W3-7): carry the previous attempt's peak RX rate across the
-    // reconnect boundary. Without this, throttle hysteresis re-warms-up from
-    // zero every reconnect and the user sees "Normal" for ~60 s even though
-    // the underlying network is still degraded. We persist only RX (TX peak
-    // is not used by `derive_bandwidth_class`).
-    let mut carried_peak_rx_bps: u64 = 0;
+    // v0.26.5: removed W3-7 peak_rate_rx_bps carry. The v0.25.1 throttle
+    // detector compared current RX vs lifetime peak; carrying peak across
+    // reconnect was the only way to keep classification stable. The new
+    // TSPU-128 signature detector is stateful in `telem_task` only (counter
+    // of in-band ticks) and intentionally re-earns Throttled after every
+    // reconnect — fresh tunnel, fresh evaluation.
 
     loop {
         // Surface Connecting / Reconnecting to GUI.
@@ -176,14 +176,6 @@ pub async fn supervise(
             server_addr.to_string(),
             sni.clone(),
         ));
-        // v0.25.1 (W3-7): restore carried peak RX rate from the prior attempt
-        // so throttle classification keeps the same baseline across a
-        // reconnect. First attempt has carried = 0 → no-op.
-        if carried_peak_rx_bps > 0 {
-            telemetry
-                .peak_rate_rx_bps
-                .store(carried_peak_rx_bps, Ordering::Relaxed);
-        }
         *shared_telem.lock().await = Some(telemetry.clone());
 
         if attempt == 0 {
@@ -231,11 +223,6 @@ pub async fn supervise(
         .await;
 
         let explicit_shutdown = telemetry.shutdown.load(Ordering::SeqCst);
-        // v0.25.1 (W3-7): capture peak before dropping the Telemetry handle,
-        // so the next attempt can resume throttle classification from the
-        // same baseline. We snapshot under Acquire to match the Release
-        // semantics implied by the SeqCst store on the hot RX path.
-        carried_peak_rx_bps = telemetry.peak_rate_rx_bps.load(Ordering::Acquire);
         *shared_telem.lock().await = None;
 
         match &result {
