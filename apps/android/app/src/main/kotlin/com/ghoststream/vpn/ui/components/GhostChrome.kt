@@ -30,7 +30,9 @@ fun ScreenHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .hairlineBottom()
+            // Pass C.hair explicitly — Modifier ext default is GsHair (dark)
+            // which renders as a near-black strip on the light paper theme.
+            .hairlineBottom(C.hair)
             .padding(horizontal = 22.dp)
             .padding(top = 22.dp, bottom = 14.dp),
         verticalAlignment = Alignment.Bottom,

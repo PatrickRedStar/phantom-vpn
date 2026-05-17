@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- v0.26.x: window decor background warm-black (dark night override).
+         See values/colors.xml gs_window_bg for full context. -->
+    <color name="gs_window_bg">#FF0A0908</color>
+
     <!-- Widget preview colors (dark theme) -->
     <color name="wp_bg_elev">#FF12110E</color>
     <color name="wp_hair">#FF2A2619</color>

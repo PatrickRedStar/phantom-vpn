@@ -3,5 +3,11 @@
     <style name="Theme.GhostStream" parent="Theme.AppCompat.NoActionBar">
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- v0.26.x: paper-light window decor. Visible under the gesture
+             pill area on tablets where NavigationSuiteScaffoldLayout
+             consumes the navigationBars inset, leaving a strip the
+             Compose tree doesn't paint over. Without this override the
+             OS default (~#FAFAFA) showed as a white strip on light theme. -->
+        <item name="android:windowBackground">@color/gs_window_bg</item>
     </style>
 </resources>

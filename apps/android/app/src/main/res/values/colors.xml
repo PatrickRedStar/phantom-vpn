@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- v0.26.x: window decor background paper-light. Painted by the OS
+         under any inset zone the Compose tree doesn't reach (e.g. the
+         gesture-pill area on tablets where NavigationSuiteScaffoldLayout
+         consumes the navigationBars inset). Mirrors GsLightBg. -->
+    <color name="gs_window_bg">#FFF1ECDC</color>
+
     <!-- Widget preview colors (light theme) -->
     <color name="wp_bg_elev">#FFE8E2D0</color>
     <color name="wp_hair">#FFCBC3AD</color>

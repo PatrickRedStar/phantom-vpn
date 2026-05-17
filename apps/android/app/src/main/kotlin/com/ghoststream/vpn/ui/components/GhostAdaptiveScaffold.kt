@@ -96,7 +96,10 @@ fun GhostAdaptiveScaffold(
             }
         },
         content = {
-            Box(Modifier.fillMaxSize()) { content() }
+            // .background(C.bg) defends against NavigationSuiteScaffoldLayout
+            // consuming the navigationBars inset on tablet — the consumed
+            // strip would otherwise expose the OS windowBackground.
+            Box(Modifier.fillMaxSize().background(C.bg)) { content() }
         },
     )
 }
