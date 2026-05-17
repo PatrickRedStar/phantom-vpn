@@ -242,20 +242,35 @@ public struct MenuBarPopover: View {
         // disabled "TUNING…" pill. The Round 1 race on parallel
         // `installAndStart` is still prevented because `toggleConnect`
         // routes any non-disconnected state through `stop()`.
+        // MIG-R4-N01: when the v0.23→v0.24 migration's phase B is
+        // still running we render a faint "IMPORTING…" label and the
+        // tap is rejected inside `toggleConnect()` — Keychain
+        // cert/key items aren't re-imported yet, so a CONNECT here
+        // would fail mTLS handshake silently.
         let state = stateMgr.statusFrame.state
         let live = state == .connected
         let busy = state == .connecting || state == .reconnecting
-        let label = live ? "DISCONNECT" : (busy ? "CANCEL" : "CONNECT")
-        let tint: Color = busy ? C.warn : (live ? C.danger : C.signal)
+        let migrating = LegacyMigration.state.isMigrating
+        let label: String = busy
+            ? "CANCEL"
+            : (live ? "DISCONNECT"
+            : (migrating ? "IMPORTING…" : "CONNECT"))
+        let tint: Color = busy ? C.warn
+            : (live ? C.danger
+            : (migrating ? C.textFaint : C.signal))
         VStack(alignment: .leading, spacing: 8) {
             GhostFab(
                 text: label,
                 outline: !live,
                 tint: tint
             ) {
-                popoverLog.info("GhostFab tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public)")
+                popoverLog.info("GhostFab tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public) migrating=\(migrating, privacy: .public)")
                 Task { await toggleConnect() }
             }
+            .disabled(migrating && !live && !busy)
+            .help(migrating
+                ? "Importing keychain items from previous version — please wait."
+                : "")
             if let err = inlineConnectError {
                 Text(err)
                     .font(.custom("JetBrainsMono-Regular", size: 11))
@@ -488,6 +503,16 @@ public struct MenuBarPopover: View {
         if state == .connected || state == .connecting || state == .reconnecting {
             popoverLog.info("toggleConnect → stop (state=\(String(describing: state), privacy: .public))")
             tunnel.stop()
+            return
+        }
+
+        // MIG-R4-N01: refuse CONNECT while the v0.23→v0.24 migration's
+        // phase B is still running — see DashboardView.toggle() for
+        // the full rationale (cert/key items not yet re-imported,
+        // mTLS would fail).
+        if LegacyMigration.state.isMigrating {
+            popoverLog.info("toggleConnect → migration phase B still in flight, refusing CONNECT")
+            tunnel.lastError = "Importing keychain items from previous version — please wait a moment and try again."
             return
         }
 

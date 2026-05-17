@@ -120,13 +120,16 @@ targets:
           - $(AppIdentifierPrefix)group.com.ghoststream.client
     settings:
       base:
-        # NOTE: iOS Swift code (VpnTunnelController.swift:42, LogsViewModel.swift:267)
-        # currently hardcodes "<host>.PacketTunnelProvider" as the extension bundle id.
-        # macOS Round 1 adopted .tunnel suffix; iOS keeps .PacketTunnelProvider until
-        # Round 4 updates the Swift constants. Do NOT change this without also fixing
-        # both Swift sites — otherwise NETunnelProviderManager.loadAllFromPreferences()
-        # will never match and VPN will silently fail to start.
-        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client.PacketTunnelProvider
+        # MIG-R4-N11: extension bundle id now uses the `.tunnel` suffix
+        # so iOS and macOS share a single packet-tunnel naming scheme.
+        # iOS Swift sites (VpnTunnelController.swift:42, LogsViewModel.swift:267)
+        # were updated to match. NETunnelProviderManager.loadAllFromPreferences()
+        # filters on this exact string — if you rename it again, both
+        # Swift constants MUST be updated in lock-step. The Apple
+        # Developer Portal also needs a matching App ID + provisioning
+        # profile for `com.ghoststream.client.tunnel`; archiving without
+        # those will fail to sign the extension.
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client.tunnel
         INFOPLIST_FILE: PacketTunnelProvider/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnelProvider/PacketTunnelProvider.entitlements
         TARGETED_DEVICE_FAMILY: "1"

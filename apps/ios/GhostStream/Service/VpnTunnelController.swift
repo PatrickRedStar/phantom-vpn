@@ -38,8 +38,16 @@ public final class VpnTunnelController: ObservableObject {
     @Published public private(set) var manager: NETunnelProviderManager?
     @Published public var lastError: String?
 
+    // MIG-R4-N11: macOS already moved the packet-tunnel extension to
+    // the `.tunnel` suffix (com.ghoststream.client.tunnel); iOS now
+    // follows so both platforms share a single naming convention.
+    // The extension's PRODUCT_BUNDLE_IDENTIFIER in apps/ios/project.yml
+    // must match. Switching this constant *requires* a corresponding
+    // App ID and provisioning profile (`com.ghoststream.client.tunnel`)
+    // on the Apple Developer Portal — without it, signing the new
+    // extension fails on the first archive after the rename.
     private var providerBundleId: String {
-        "\(Bundle.main.bundleIdentifier!).PacketTunnelProvider"
+        "\(Bundle.main.bundleIdentifier!).tunnel"
     }
     private let log = Logger(subsystem: "com.ghoststream.client", category: "VpnTunnelController")
 

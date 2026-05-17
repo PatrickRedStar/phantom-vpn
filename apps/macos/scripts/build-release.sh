@@ -15,9 +15,22 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 # script is idempotent and incremental — Cargo skips unchanged crates,
 # so the cost is one no-op cargo invocation per target when nothing has
 # changed.
-echo ""
-echo "==> [pre] Rebuild PhantomCore.xcframework if Rust changed"
-"$REPO_ROOT/crates/client-apple/build-xcframework.sh"
+#
+# MIG-R4-N15: GHOSTSTREAM_SKIP_XCFRAMEWORK=1 is the same escape hatch
+# the Debug build already accepts. The release flow uses it when an
+# operator has already produced a verified PhantomCore.xcframework on
+# a separate machine (e.g. clean build farm output) and is only
+# re-running the Xcode archive + notarisation half of the pipeline.
+# The full rebuild via lipo + cbindgen + xcframework adds ~3min on a
+# warm cache, which adds up across notarisation retries.
+if [[ "${GHOSTSTREAM_SKIP_XCFRAMEWORK:-0}" != "1" ]]; then
+  echo ""
+  echo "==> [pre] Rebuild PhantomCore.xcframework if Rust changed"
+  "$REPO_ROOT/crates/client-apple/build-xcframework.sh"
+else
+  echo ""
+  echo "==> [pre] GHOSTSTREAM_SKIP_XCFRAMEWORK=1 — using existing PhantomCore.xcframework"
+fi
 
 TEAM_ID="${GHOSTSTREAM_DEVELOPMENT_TEAM:-UPG896A272}"
 CONFIGURATION="${GHOSTSTREAM_CONFIGURATION:-Release}"

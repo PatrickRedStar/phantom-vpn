@@ -264,8 +264,14 @@ final class LogsViewModel {
     }
 
     private func selectTunnelManager(from managers: [NETunnelProviderManager]) -> NETunnelProviderManager? {
+        // MIG-R4-N11: extension bundle id moved from `.PacketTunnelProvider`
+        // to `.tunnel` for parity with macOS. Match both legacy and
+        // new suffixes during the fallback path so installs that still
+        // have a stale NETunnelProviderManager pointing at the old
+        // suffix can still surface their logs while the new manager
+        // takes over.
         let expectedProviderId = Bundle.main.bundleIdentifier.map {
-            "\($0).PacketTunnelProvider"
+            "\($0).tunnel"
         }
         let matches = managers.filter { manager in
             guard let providerId = (manager.protocolConfiguration as? NETunnelProviderProtocol)?
@@ -275,7 +281,8 @@ final class LogsViewModel {
             if let expectedProviderId {
                 return providerId == expectedProviderId
             }
-            return providerId.hasSuffix(".PacketTunnelProvider")
+            return providerId.hasSuffix(".tunnel")
+                || providerId.hasSuffix(".PacketTunnelProvider")
         }
 
         return matches.first { $0.connection.status != .disconnected } ?? matches.first

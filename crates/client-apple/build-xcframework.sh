@@ -12,8 +12,17 @@ if [ "${VERBOSE:-}" = "1" ]; then
 fi
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
+#
+# MIG-R4-R01: resolve the repo root via `cd && pwd` instead of
+# `git rev-parse --show-toplevel`. The release tarballs that the
+# notarisation pipeline produces are extracted in a non-git workdir on
+# CI, so a git-based lookup `fatal: not a git repository`-fails and the
+# whole xcframework build aborts. The script lives at a known relative
+# path inside the repo (`crates/client-apple/`), so the two-up
+# resolution is stable.
 
-REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CRATE_DIR="$REPO_ROOT/crates/client-apple"
 HEADERS_DIR="$CRATE_DIR/include"
 OUT_DIR="$REPO_ROOT/apps/ios/Frameworks"
@@ -73,12 +82,19 @@ build_target() {
             platform_label="min macOS $MACOS_MIN"
             ;;
     esac
-    echo "==> cargo build --release --target $triple -p phantom-client-apple ($platform_label)"
+    # MIG-R4-N14: `--locked` pins Cargo.lock so a stale crate cache
+    # on the build host can't silently produce binaries whose
+    # transitive deps differ from CI. Without it, a `cargo update` in
+    # one of the dev shells would change ABI underneath the xcframework
+    # (rustls and ring in particular touch the C symbol surface) — the
+    # resulting .a would link fine but exhibit subtle runtime
+    # mismatches against the Swift FFI layer.
+    echo "==> cargo build --locked --release --target $triple -p phantom-client-apple ($platform_label)"
     (cd "$REPO_ROOT" && \
         export IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN" && \
         export MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN" && \
         export "$var_name=$deployment_flag" && \
-        cargo build --release --target "$triple" -p phantom-client-apple)
+        cargo build --locked --release --target "$triple" -p phantom-client-apple)
 }
 
 build_target aarch64-apple-ios

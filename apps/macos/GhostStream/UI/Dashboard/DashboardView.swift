@@ -186,10 +186,21 @@ public struct DashboardView: View {
         let state = stateMgr.statusFrame.state
         let live = state == .connected
         let busy = state == .connecting || state == .reconnecting
-        let buttonTint: Color = busy ? C.warn : (live ? C.danger : C.signal)
+        // MIG-R4-N01: phase A (UserDefaults) is sync — profiles appear
+        // in the picker as soon as the window opens — but phase B
+        // (Keychain cert/key re-import) runs on a detached task and
+        // takes ~5–30s. If the user taps CONNECT before phase B
+        // finishes, the tunnel starts with `certPem == nil` and mTLS
+        // fails silently. Gate the button (and route around it in
+        // `toggle()`) until the migration observable says we're done.
+        let migrating = LegacyMigration.state.isMigrating
+        let buttonTint: Color = busy ? C.warn
+            : (live ? C.danger
+            : (migrating ? C.textFaint : C.signal))
         let buttonLabel: String = busy
             ? "CANCEL"
-            : (live ? "DISCONNECT" : "CONNECT")
+            : (live ? "DISCONNECT"
+            : (migrating ? "IMPORTING…" : "CONNECT"))
         HStack(alignment: .bottom, spacing: 24) {
             kvLabel(label: "ENDPOINT") {
                 if let host = profiles.activeProfile?.serverAddr, !host.isEmpty {
@@ -243,17 +254,18 @@ public struct DashboardView: View {
             // Connect / disconnect / cancel compact GhostFab
             VStack(alignment: .trailing, spacing: 6) {
                 Button {
-                    dashLog.info("Connect button tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public)")
+                    dashLog.info("Connect button tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public) migrating=\(migrating, privacy: .public)")
                     Task { await toggle() }
                 } label: {
                     HStack(spacing: 8) {
                         Text(buttonLabel)
                             .font(.custom("DepartureMono-Regular", size: 11))
                             .tracking(0.20 * 11)
-                        if busy {
-                            // Keep the spinner during busy so the user
-                            // gets visual confirmation a teardown is
-                            // in progress when CANCEL is tapped.
+                        if busy || (migrating && !live) {
+                            // Keep the spinner during busy AND during
+                            // migration so the user gets visual
+                            // confirmation that *something* is in
+                            // progress when CONNECT can't be tapped.
                             ProgressView()
                                 .controlSize(.mini)
                         } else {
@@ -274,6 +286,15 @@ public struct DashboardView: View {
                 // valid action during busy states. The Round 1 race on
                 // parallel `installAndStart` is still prevented by the
                 // `live || busy → stop()` branch in `toggle()`.
+                // MIG-R4-N01: while migrating (phase B in flight) we
+                // disable the keyboard shortcut and surface a tooltip
+                // so users understand the delay; the `toggle()` method
+                // also short-circuits with an inline error if the user
+                // gets here anyway via accessibility.
+                .disabled(migrating && !live && !busy)
+                .help(migrating
+                    ? "Importing keychain items from previous version — please wait."
+                    : "")
 
                 if let err = inlineConnectError {
                     Text(err)
@@ -561,6 +582,16 @@ public struct DashboardView: View {
         if state == .connected || state == .connecting || state == .reconnecting {
             dashLog.info("toggle → stop (state=\(String(describing: state), privacy: .public))")
             tunnel.stop()
+            return
+        }
+        // MIG-R4-N01: belt-and-braces guard for the case the user gets
+        // past the disabled button (accessibility / keyboard shortcut
+        // path). Phase B re-imports cert/key material from the legacy
+        // keychain; tapping CONNECT before that finishes starts the
+        // tunnel with `certPem == nil` and mTLS silently fails.
+        if LegacyMigration.state.isMigrating {
+            dashLog.info("toggle → migration phase B still in flight, refusing CONNECT")
+            tunnel.lastError = "Importing keychain items from previous version — please wait a moment and try again."
             return
         }
         if let preflightError = connectPreflightError() {

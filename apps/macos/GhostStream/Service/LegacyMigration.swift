@@ -5,6 +5,8 @@
 //  IPC-C4 / docs/knowledge/audits/2026-05-17-macos-bug-hunt.md §4
 //  Round 3 hardening: OPS-R2-04 / SEC-R2-N01 / CONC-R2-N10 / OPS-R2-03 /
 //  SEC-R2-N02 / SEC-R2-N03 — docs/knowledge/audits/2026-05-17-macos-bug-hunt-round2.md
+//  Round 5 hardening: MIG-R4-N01 / MIG-R4-N03 / MIG-R4-N04 / MIG-R4-N07 —
+//  docs/knowledge/audits/2026-05-17-macos-bug-hunt-round4.md
 //
 //  Pre-v0.24 builds used the bundle id `com.ghoststream.vpn` and App Group
 //  `group.com.ghoststream.vpn`. v0.24+ moved to `com.ghoststream.client`
@@ -34,12 +36,27 @@
 //       Only re-imports items that match a profile ID present in the
 //       migrated `profiles.json` (SEC-R2-N03 — no wildcard enumeration).
 //    5. Removes any `NETunnelProviderManager` whose providerBundleIdentifier
-//       still points at `com.ghoststream.vpn.tunnel`.
-//    6. Posts `LegacyMigration.didFinishKeychainImport` so ProfilesStore
-//       (or anything else holding hydrated profile data) can reload after
-//       the cert/key items have been re-registered in the new keychain
-//       access group.
-//    7. Sets the final "completion" flag in the new App Group.
+//       still points at `com.ghoststream.vpn.tunnel`. Skips managers that
+//       are currently `.connected` or `.connecting` — those are live
+//       sessions and we wait until next launch to retire them
+//       (MIG-R4-N04).
+//    6. Posts `LegacyMigration.didFinishKeychainImport` unconditionally
+//       on completion so ProfilesStore (or anything else holding
+//       hydrated profile data) reloads regardless of how many Keychain
+//       items were re-imported — including the legitimate "0 items"
+//       case (MIG-R4-N03).
+//    7. Sets the final "completion" flag in the new App Group, but only
+//       after a *successful* phase B. If `extractProfileIds` failed to
+//       decode `profiles.json` we leave `migrationFlagKey` unset so the
+//       slow phase retries on next launch (MIG-R4-N07).
+//
+//  CONNECT GATING (MIG-R4-N01): the UI subscribes to
+//  `LegacyMigration.state.phaseBCompleted` and disables the CONNECT
+//  button while phase B is in flight. Otherwise the user can see
+//  profiles in the picker (phase A copied `profiles.json` into the new
+//  UserDefaults) but the Keychain cert/key items aren't re-imported
+//  yet — the tunnel would start with `certPem == nil` and silently fail
+//  during mTLS handshake.
 //
 //  Failure model: every individual sub-step swallows its error after
 //  logging — the migration is best-effort. Phase-A flag protects the
@@ -58,10 +75,37 @@
 
 import Foundation
 import NetworkExtension
+import Observation
 import Security
 import os.log
 
 public enum LegacyMigration {
+
+    // MARK: - Observable state (MIG-R4-N01)
+
+    /// Migration progress observed by the UI. SwiftUI views read
+    /// `phaseBCompleted` (or `isMigrating`) to gate the CONNECT action
+    /// while Keychain re-import is still running. Without this guard the
+    /// user could tap CONNECT in the ~5–30s gap between phase A
+    /// (profile picker visible) and phase B (cert/key items re-added) —
+    /// the tunnel would attempt mTLS with `certPem == nil` and fail
+    /// silently.
+    @MainActor
+    @Observable
+    public final class State {
+        public fileprivate(set) var phaseACompleted: Bool = false
+        public fileprivate(set) var phaseBCompleted: Bool = false
+
+        /// `true` while the slow phase B steps are still running.
+        /// Equivalent to `!phaseBCompleted` once phase A has started —
+        /// kept as a derived property so call sites read naturally.
+        public var isMigrating: Bool { !phaseBCompleted }
+
+        fileprivate init() {}
+    }
+
+    @MainActor
+    public static let state = State()
 
     // MARK: - Constants
 
@@ -129,9 +173,21 @@ public enum LegacyMigration {
     public static func runIfNeeded() {
         guard let newDefaults = UserDefaults(suiteName: newAppGroup) else {
             log.fault("New App Group container unavailable — cannot run legacy migration")
+            // Treat as "nothing to migrate" so the UI doesn't sit forever
+            // gated on a flag that will never flip.
+            Task { @MainActor in
+                state.phaseACompleted = true
+                state.phaseBCompleted = true
+            }
             return
         }
         if newDefaults.bool(forKey: migrationFlagKey) {
+            // Already done in a prior session — UI is free to connect
+            // immediately.
+            Task { @MainActor in
+                state.phaseACompleted = true
+                state.phaseBCompleted = true
+            }
             return
         }
 
@@ -145,38 +201,71 @@ public enum LegacyMigration {
         } else {
             log.info("Phase A already completed — running only phase B")
         }
-
-        // Snapshot the migrated profile IDs while we're still on the
-        // calling thread — phase-B's Keychain importer needs them to
-        // target known accounts only (SEC-R2-N03).
-        let knownProfileIds = extractProfileIds(from: newDefaults)
+        // Phase A is observably done — the UI may now render the
+        // profile list, but CONNECT remains gated on `phaseBCompleted`.
+        Task { @MainActor in
+            state.phaseACompleted = true
+        }
 
         // PHASE B — asynchronous, slow. Detached so UI launch is not
         // blocked by Keychain queries / NE prefs / file I/O
         // (CONC-R2-N10). Final flag flips inside the task so a crash
         // mid-phase-B will cause the slow steps to retry on next launch.
-        Task.detached(priority: .userInitiated) { [knownProfileIds] in
-            await runPhaseB(profileIds: knownProfileIds)
+        //
+        // We compute `knownProfileIds` *inside* the detached task using
+        // a Result so a malformed `profiles.json` (decode failure) does
+        // not mark the migration as complete — phase B is left
+        // incomplete and retries on next launch (MIG-R4-N07).
+        Task.detached(priority: .userInitiated) {
+            await runPhaseB()
         }
     }
 
-    private static func runPhaseB(profileIds: [String]) async {
+    private static func runPhaseB() async {
+        guard let newDefaults = UserDefaults(suiteName: newAppGroup) else {
+            log.fault("Phase B: new App Group container unavailable")
+            // Unblock the UI — there is nothing more we can do.
+            await MainActor.run { state.phaseBCompleted = true }
+            return
+        }
+
+        // MIG-R4-N07: if `profiles.json` is present but undecodable we
+        // bail out *without* setting `migrationFlagKey`. The next
+        // launch retries the slow phase against the same (possibly
+        // user-repaired) data instead of permanently masking the
+        // failure.
+        let profileIds: [String]
+        switch extractProfileIds(from: newDefaults) {
+        case .success(let ids):
+            profileIds = ids
+        case .failure(let error):
+            log.error("Phase B: profiles.json decode failed — won't mark migration complete: \(String(describing: error), privacy: .public)")
+            // Unblock the UI: a decode failure is unrecoverable from a
+            // user perspective. Leaving `isMigrating == true` forever
+            // is worse than letting the user try to connect (they'll
+            // see an inline "no Keychain item" error if needed).
+            await MainActor.run { state.phaseBCompleted = true }
+            return
+        }
+
         await migrateAppGroupFilesAsync()
         let importedKeychainItems = await migrateKeychainItemsAsync(profileIds: profileIds)
         await removeStaleVpnManager()
 
-        if importedKeychainItems > 0 {
-            // Wake up subscribers (ProfilesStore) on the main thread so
-            // they can rehydrate cert/key fields from the new keychain.
-            await MainActor.run {
-                NotificationCenter.default.post(name: didFinishKeychainImport, object: nil)
-            }
+        newDefaults.set(true, forKey: migrationFlagKey)
+
+        // MIG-R4-N03: post the notification unconditionally — including
+        // the legitimate 0-keychain-items case. Previously this branch
+        // only fired when at least one item was re-imported, so a
+        // legacy install with no cert/key material left ProfilesStore
+        // stuck on its pre-migration snapshot until the user manually
+        // reloaded.
+        await MainActor.run {
+            NotificationCenter.default.post(name: didFinishKeychainImport, object: nil)
+            state.phaseBCompleted = true
         }
 
-        if let newDefaults = UserDefaults(suiteName: newAppGroup) {
-            newDefaults.set(true, forKey: migrationFlagKey)
-        }
-        log.info("v0.23 -> v0.24 legacy migration completed")
+        log.info("v0.23 -> v0.24 legacy migration completed (keychain items: \(importedKeychainItems, privacy: .public))")
     }
 
     // MARK: - 1. UserDefaults (PHASE A — synchronous)
@@ -207,9 +296,16 @@ public enum LegacyMigration {
     /// accounts (SEC-R2-N03) — we will *not* re-import every legacy
     /// Keychain item under the old service identifier, since another
     /// app sharing our Team ID could have written items there.
-    private static func extractProfileIds(from defaults: UserDefaults) -> [String] {
+    ///
+    /// MIG-R4-N07: returns a `Result` so phase B can distinguish
+    /// "legitimately empty profile list" (`.success([])`) from "data
+    /// present but undecodable" (`.failure`). Decode failures must NOT
+    /// mark the migration as complete — they should retry on the next
+    /// launch.
+    private static func extractProfileIds(from defaults: UserDefaults) -> Result<[String], Error> {
         guard let data = defaults.data(forKey: profilesJsonKey) else {
-            return []
+            // No `profiles.json` at all — legitimately empty.
+            return .success([])
         }
         // Use a thin local DTO so we don't depend on VpnProfile's full
         // schema — only the `id` field matters here and we want this to
@@ -217,11 +313,13 @@ public enum LegacyMigration {
         struct ProfileIdOnly: Decodable {
             let id: String
         }
-        guard let decoded = try? JSONDecoder().decode([ProfileIdOnly].self, from: data) else {
-            log.error("profiles.json present but undecodable — no Keychain items will be re-imported")
-            return []
+        do {
+            let decoded = try JSONDecoder().decode([ProfileIdOnly].self, from: data)
+            return .success(decoded.map(\.id))
+        } catch {
+            log.error("profiles.json present but undecodable — no Keychain items will be re-imported: \(String(describing: error), privacy: .public)")
+            return .failure(error)
         }
-        return decoded.map(\.id)
     }
 
     // MARK: - 2. App Group files (PHASE B — async)
@@ -403,6 +501,17 @@ public enum LegacyMigration {
         }
 
         for manager in stale {
+            // MIG-R4-N04: never tear down a *live* legacy session
+            // mid-flight. A user could legitimately be migrating
+            // straight from a connected v0.23 install, and yanking the
+            // NEVPN manager out from under an active connection drops
+            // the tunnel without any user feedback. Defer removal until
+            // the next launch when the session has naturally ended.
+            let status = manager.connection.status
+            if status == .connected || status == .connecting || status == .reasserting {
+                log.warning("Legacy NETunnelProviderManager is active (status=\(status.rawValue, privacy: .public)) — postponing removal until next launch")
+                continue
+            }
             do {
                 try await manager.removeFromPreferences()
                 log.info("Removed stale NETunnelProviderManager for legacy bundle id")
