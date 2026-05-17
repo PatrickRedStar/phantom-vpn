@@ -78,6 +78,18 @@ public struct WelcomeWindow: View {
             coordinator.preferences = prefs
             Task { await coordinator.resync() }
         }
+        // UI-R2-N23: when the user closes the Welcome window with ⌘W
+        // (or by clicking the red traffic light) before the wizard
+        // reaches `.ready`, the coordinator was getting stuck on the
+        // pending step — subsequent CONNECT taps would either show
+        // nothing (`.awaitingApproval`) or replay the failed sys-ext
+        // install. Resetting to `.paste` lets the user start fresh
+        // when they next open setup, and `.resync()` on the next
+        // .onAppear immediately re-detects which step is actually
+        // needed based on real state.
+        .onDisappear {
+            coordinator.dismissedBeforeReady()
+        }
     }
 
     // MARK: - Brand block

@@ -34,12 +34,24 @@ public struct TailView: View {
     @State private var followTail: Bool = true
     @State private var selectedCategories: Set<String> = []
     @State private var actionStatus: TailStatus?
+    @State private var actionStatusTtlTask: Task<Void, Never>?
     @State private var searchDebounceTask: Task<Void, Never>?
+    @State private var regexDebounceTask: Task<Void, Never>?
     // UI-C1: cached filter result. The previous `var filteredLogs`
     // computed property re-ran `TailViewFilter.filter` 3+ times per
     // body invocation (counts + ForEach + status strip). On a 50k row
     // buffer that's tens of ms × 3 every time `logStore.logs` changed.
     // We now recompute exactly once whenever the inputs change.
+    //
+    // TODO(UI-R2-N01): when both the embedded TailView (sidebar
+    // channel) and the detached Logs window are open, each instance
+    // owns its own `@State cachedFilteredLogs` — doubling memory
+    // (~25 MB worst case on a 50k buffer). The proper fix is a shared
+    // observable view-model keyed on filter inputs, similar to
+    // `TrafficSeriesStore`. Skipped in Round 3 because filter inputs
+    // (activeFilter / search / categories) are also per-view, so a
+    // naïve singleton would need keyed caches. Out of scope for this
+    // sweep.
     @State private var cachedFilteredLogs: [LogFrame] = []
     @FocusState private var searchFieldFocused: Bool
 
@@ -75,8 +87,33 @@ public struct TailView: View {
         .onChange(of: logStore.logs.count) { _, _ in recomputeFilteredLogs() }
         .onChange(of: activeFilter) { _, _ in recomputeFilteredLogs() }
         .onChange(of: selectedCategories) { _, _ in recomputeFilteredLogs() }
-        .onChange(of: regexSearch) { _, _ in recomputeFilteredLogs() }
+        // UI-R2-N10: debounce regexSearch toggle too — recomputing on
+        // a 50k row buffer is ~50ms and the toggle previously ran on
+        // the main thread without yielding.
+        .onChange(of: regexSearch) { _, _ in
+            regexDebounceTask?.cancel()
+            let task = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard !Task.isCancelled else { return }
+                recomputeFilteredLogs()
+            }
+            regexDebounceTask = task
+        }
         .onChange(of: searchText) { _, _ in
+            // UI-R2-R05: when regex mode is on and the pattern is
+            // currently invalid, zero out the cache *synchronously*
+            // so the table doesn't keep showing stale matches against
+            // a regex that no longer compiles. The 300ms debounce
+            // below would otherwise leave the previous result on
+            // screen until the next pause in typing.
+            if regexSearch && !searchText.isEmpty {
+                do {
+                    _ = try NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
+                } catch {
+                    cachedFilteredLogs = []
+                    return
+                }
+            }
             // Debounce search keystrokes — typing in a 50k-row buffer
             // should not lock the main thread on every character.
             searchDebounceTask?.cancel()
@@ -87,7 +124,15 @@ public struct TailView: View {
             }
             searchDebounceTask = task
         }
-        .onDisappear { searchDebounceTask?.cancel() }
+        .onDisappear {
+            // UI-R2-R07-style cleanup: cancel every Task this view
+            // owns so we don't keep waking the main actor after the
+            // view is torn down (detached Logs window can come and go
+            // repeatedly within a session).
+            searchDebounceTask?.cancel()
+            regexDebounceTask?.cancel()
+            actionStatusTtlTask?.cancel()
+        }
         .task { logStore.start(stateManager: stateMgr) }
     }
 
@@ -227,11 +272,15 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .help("Clear log buffer (⌘K)")
-                // UI-C3: ⌘K (was ⌘L which collides with macOS) — scoped
-                // SwiftUI shortcut, fires only when TailView is focused,
-                // so it never hijacks Copy/Find in other text fields.
-                .keyboardShortcut("k", modifiers: .command)
+                .help("Clear log buffer (⌘⌫)")
+                // UI-R2-R01: ⌘⌫ (Cmd-Delete) to clear the log buffer.
+                // Round 1 used ⌘K to dodge a macOS collision but that
+                // bound the same chord to CONNECT on the dashboard —
+                // when both views live in the responder tree (detached
+                // logs + visible dashboard), the chord became
+                // non-deterministic. Cmd-Delete is the platform idiom
+                // for "trash this" and has no collisions in our UI.
+                .keyboardShortcut(.delete, modifiers: .command)
                 Button {
                     copyVisibleLogs()
                 } label: {
@@ -285,7 +334,7 @@ public struct TailView: View {
                 .buttonStyle(.plain)
                 .help("Toggle follow tail")
                 KeyboardShortcutHint("⌘F")
-                KeyboardShortcutHint("⌘K")
+                KeyboardShortcutHint("⌘⌫")
                 KeyboardShortcutHint("⇧⌘C")
                 KeyboardShortcutHint("⇧⌘E")
 
@@ -620,15 +669,15 @@ public struct TailView: View {
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(row),
               let json = String(data: data, encoding: .utf8) else {
-            actionStatus = TailStatus(message: "Could not encode row to JSON", tone: .danger)
+            setActionStatus(TailStatus(message: "Could not encode row to JSON", tone: .danger))
             return
         }
         NSPasteboard.general.clearContents()
         guard NSPasteboard.general.setString(json, forType: .string) else {
-            actionStatus = TailStatus(message: "Pasteboard rejected the copy", tone: .danger)
+            setActionStatus(TailStatus(message: "Pasteboard rejected the copy", tone: .danger))
             return
         }
-        actionStatus = TailStatus(message: "Copied 1 log row as JSON", tone: .info)
+        setActionStatus(TailStatus(message: "Copied 1 log row as JSON", tone: .info))
     }
 
     private func revealRuntimeLogFile() {
@@ -638,22 +687,22 @@ public struct TailView: View {
         let url = LogPathResolver.defaultRuntimeLogURL()
         if FileManager.default.fileExists(atPath: url.path) {
             NSWorkspace.shared.activateFileViewerSelecting([url])
-            actionStatus = TailStatus(message: "Revealed runtime.log in Finder", tone: .info)
+            setActionStatus(TailStatus(message: "Revealed runtime.log in Finder", tone: .info))
             return
         }
 
         let dirUrl = url.deletingLastPathComponent()
         if FileManager.default.fileExists(atPath: dirUrl.path) {
             NSWorkspace.shared.open(dirUrl)
-            actionStatus = TailStatus(
+            setActionStatus(TailStatus(
                 message: "runtime.log not yet created — opened log folder",
                 tone: .warning
-            )
+            ))
         } else {
-            actionStatus = TailStatus(
+            setActionStatus(TailStatus(
                 message: "Log folder not yet created — start the tunnel first",
                 tone: .warning
-            )
+            ))
         }
     }
 
@@ -701,28 +750,28 @@ public struct TailView: View {
     private func copyVisibleLogs() {
         let output = renderVisibleLogs()
         guard !output.isEmpty else {
-            actionStatus = TailStatus(message: "No visible log lines to copy", tone: .warning)
+            setActionStatus(TailStatus(message: "No visible log lines to copy", tone: .warning))
             return
         }
 
         NSPasteboard.general.clearContents()
         guard NSPasteboard.general.setString(output, forType: .string) else {
-            actionStatus = TailStatus(message: "Copy failed: pasteboard rejected the log text", tone: .danger)
+            setActionStatus(TailStatus(message: "Copy failed: pasteboard rejected the log text", tone: .danger))
             return
         }
-        actionStatus = TailStatus(message: "Copied \(cachedFilteredLogs.count) visible log lines", tone: .info)
+        setActionStatus(TailStatus(message: "Copied \(cachedFilteredLogs.count) visible log lines", tone: .info))
     }
 
     private func clearLogs() {
         logStore.clear()
-        actionStatus = TailStatus(message: "Cleared log buffer", tone: .info)
+        setActionStatus(TailStatus(message: "Cleared log buffer", tone: .info))
     }
 
     private func clearFilters() {
         activeFilter = .all
         searchText = ""
         regexSearch = false
-        actionStatus = TailStatus(message: "Cleared log filters", tone: .info)
+        setActionStatus(TailStatus(message: "Cleared log filters", tone: .info))
         focusSearchField()
     }
 
@@ -731,6 +780,31 @@ public struct TailView: View {
         DispatchQueue.main.async {
             searchFieldFocused = true
         }
+    }
+
+    /// UI-R2-N02: action banner with TTL. Info-tone banners auto-clear
+    /// after 5s so a successful "Copied N lines" doesn't sit on screen
+    /// forever (and gradually accrue visual weight like a warning).
+    /// Warning/danger banners stick until the next action so the user
+    /// has time to read them. Cancels any pending TTL task before
+    /// re-arming.
+    private func setActionStatus(_ status: TailStatus) {
+        actionStatus = status
+        actionStatusTtlTask?.cancel()
+        guard status.tone == .info else { return }
+        let captured = status
+        let task = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            // Only clear if we still own this banner — a later action
+            // may have replaced it.
+            if let current = actionStatus,
+               current.message == captured.message,
+               current.tone == captured.tone {
+                actionStatus = nil
+            }
+        }
+        actionStatusTtlTask = task
     }
 
     // UI-C3/C6/H11: shortcut handling moved to per-button SwiftUI
@@ -745,7 +819,7 @@ public struct TailView: View {
     private func exportVisibleLogs() {
         let output = renderVisibleLogs()
         guard !output.isEmpty else {
-            actionStatus = TailStatus(message: "No visible log lines to export", tone: .warning)
+            setActionStatus(TailStatus(message: "No visible log lines to export", tone: .warning))
             return
         }
 
@@ -755,9 +829,9 @@ public struct TailView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try output.write(to: url, atomically: true, encoding: .utf8)
-            actionStatus = TailStatus(message: "Exported \(cachedFilteredLogs.count) visible log lines", tone: .info)
+            setActionStatus(TailStatus(message: "Exported \(cachedFilteredLogs.count) visible log lines", tone: .info))
         } catch {
-            actionStatus = TailStatus(message: "Export failed: \(error.localizedDescription)", tone: .danger)
+            setActionStatus(TailStatus(message: "Export failed: \(error.localizedDescription)", tone: .danger))
         }
     }
 

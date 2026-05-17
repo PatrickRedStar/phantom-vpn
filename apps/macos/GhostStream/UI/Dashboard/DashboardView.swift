@@ -33,6 +33,13 @@ public struct DashboardView: View {
     @EnvironmentObject private var tunnel: VpnTunnelController
 
     @State private var scopeWindow: ScopeWindow = .m5
+    // UI-R2-R03/R04: Track whether we transitioned through `.connected`
+    // since the last error. Round 1's UI-H3 fix cleared `lastError` on
+    // every `.disconnected` arrival — but the natural failure flow is
+    // `.connecting → .error → .disconnected`, which means the error
+    // text vanished ~100ms after surfacing. We now only clear on the
+    // benign path: user explicitly disconnected from `.connected`.
+    @State private var wasConnected = false
 
     public init() {}
 
@@ -51,13 +58,19 @@ public struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
-        // UI-H3 workaround: clear the inline error chip when the
-        // tunnel returns to disconnected. Without this, a previous
-        // failure stays red on the dashboard forever, looking like a
-        // *fresh* failure each time the user opens the app.
+        // UI-R2-R03/R04 (was UI-H3): clear the inline error chip only
+        // when the tunnel transitioned through a successful
+        // `.connected` state and is now `.disconnected`. The previous
+        // implementation cleared on any `.disconnected` arrival, which
+        // wiped errors raised on the failure path
+        // `.connecting → .error → .disconnected` before the user could
+        // read them.
         .onChange(of: stateMgr.statusFrame.state) { _, newState in
-            if newState == .disconnected {
+            if newState == .connected {
+                wasConnected = true
+            } else if newState == .disconnected && wasConnected {
                 Task { @MainActor in tunnel.lastError = nil }
+                wasConnected = false
             }
         }
     }
@@ -164,15 +177,18 @@ public struct DashboardView: View {
 
     @ViewBuilder
     private var endpointRow: some View {
-        // UI-H1: button disabled state — busy means we're already
-        // mid-handshake or mid-recovery, additional clicks would
-        // spawn parallel `installAndStart` tasks.
+        // UI-R2-N20: during `connecting`/`reconnecting` the button now
+        // surfaces CANCEL instead of being disabled. The Round 1 UI-H1
+        // fix gated parallel `installAndStart` calls by disabling the
+        // button — but that left the user with no escape during the
+        // 75s TLS deadline on slow servers. CANCEL is a `tunnel.stop()`
+        // call, idempotent if a teardown is already in flight.
         let state = stateMgr.statusFrame.state
         let live = state == .connected
         let busy = state == .connecting || state == .reconnecting
         let buttonTint: Color = busy ? C.warn : (live ? C.danger : C.signal)
         let buttonLabel: String = busy
-            ? (state == .connecting ? "TUNING…" : "REGROUPING…")
+            ? "CANCEL"
             : (live ? "DISCONNECT" : "CONNECT")
         HStack(alignment: .bottom, spacing: 24) {
             kvLabel(label: "ENDPOINT") {
@@ -224,10 +240,10 @@ public struct DashboardView: View {
 
             Spacer()
 
-            // Connect / disconnect compact GhostFab
+            // Connect / disconnect / cancel compact GhostFab
             VStack(alignment: .trailing, spacing: 6) {
                 Button {
-                    dashLog.info("Connect button tapped — live=\(live, privacy: .public)")
+                    dashLog.info("Connect button tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public)")
                     Task { await toggle() }
                 } label: {
                     HStack(spacing: 8) {
@@ -235,10 +251,9 @@ public struct DashboardView: View {
                             .font(.custom("DepartureMono-Regular", size: 11))
                             .tracking(0.20 * 11)
                         if busy {
-                            // Tiny progress indicator beside the
-                            // label so the user knows the click was
-                            // received even when the button itself
-                            // is disabled.
+                            // Keep the spinner during busy so the user
+                            // gets visual confirmation a teardown is
+                            // in progress when CANCEL is tapped.
                             ProgressView()
                                 .controlSize(.mini)
                         } else {
@@ -255,8 +270,10 @@ public struct DashboardView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("k", modifiers: .command)
-                .disabled(busy)
-                .opacity(busy ? 0.7 : 1.0)
+                // UI-R2-N20: button never goes disabled — CANCEL is a
+                // valid action during busy states. The Round 1 race on
+                // parallel `installAndStart` is still prevented by the
+                // `live || busy → stop()` branch in `toggle()`.
 
                 if let err = inlineConnectError {
                     Text(err)
@@ -537,8 +554,12 @@ public struct DashboardView: View {
     // MARK: - Helpers
 
     private func toggle() async {
-        if stateMgr.statusFrame.state == .connected {
-            dashLog.info("toggle → stop")
+        let state = stateMgr.statusFrame.state
+        // UI-R2-N20: connected → DISCONNECT, busy → CANCEL. Both paths
+        // funnel to `tunnel.stop()` so a half-completed handshake can be
+        // torn down before it hits the 75s TLS deadline.
+        if state == .connected || state == .connecting || state == .reconnecting {
+            dashLog.info("toggle → stop (state=\(String(describing: state), privacy: .public))")
             tunnel.stop()
             return
         }

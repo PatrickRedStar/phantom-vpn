@@ -46,6 +46,14 @@ public struct MenuBarPopover: View {
     @Environment(DockPolicyController.self) private var dock
     @EnvironmentObject private var tunnel: VpnTunnelController
 
+    // UI-R2-R03/R04: clear `lastError` only after a successful
+    // `.connected` round-trip. The Round 1 fix wiped errors on every
+    // `.disconnected` arrival, swallowing the failure-path message
+    // (`.connecting → .error → .disconnected`) before users could read
+    // it. Tracked independently per view because both the dashboard
+    // and the popover own their own `.onChange` watchers.
+    @State private var wasConnected = false
+
     public init() {}
 
     public var body: some View {
@@ -60,14 +68,16 @@ public struct MenuBarPopover: View {
         .frame(width: 380, height: 520, alignment: .top)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
-        // UI-H3 workaround: when the tunnel returns to `disconnected`
-        // the inline error chip is stale — the user explicitly tore
-        // the session down and the red text now feels like a fresh
-        // failure. Clear it from the UI here. A proper Service-layer
-        // fix would clear on transition inside `VpnTunnelController`.
+        // UI-R2-R03/R04 (was UI-H3): only clear `lastError` when the
+        // tunnel transitioned through `.connected` first. Errors from
+        // the connecting path now stay visible until the next
+        // successful session.
         .onChange(of: stateMgr.statusFrame.state) { _, newState in
-            if newState == .disconnected {
+            if newState == .connected {
+                wasConnected = true
+            } else if newState == .disconnected && wasConnected {
                 Task { @MainActor in tunnel.lastError = nil }
+                wasConnected = false
             }
         }
     }
@@ -227,25 +237,25 @@ public struct MenuBarPopover: View {
 
     @ViewBuilder
     private var fabRow: some View {
-        // UI-H1: when the tunnel is mid-handshake (`connecting`) or
-        // mid-recovery (`reconnecting`) we must not let the user
-        // start a *second* `installAndStart` — each one spawns its
-        // own `saveToPreferences` round-trip plus a fresh Rust
-        // runtime, racing the first.
+        // UI-R2-N20: during busy (`connecting`/`reconnecting`) the FAB
+        // now shows CANCEL — a `tunnel.stop()` call — instead of a
+        // disabled "TUNING…" pill. The Round 1 race on parallel
+        // `installAndStart` is still prevented because `toggleConnect`
+        // routes any non-disconnected state through `stop()`.
         let state = stateMgr.statusFrame.state
         let live = state == .connected
         let busy = state == .connecting || state == .reconnecting
+        let label = live ? "DISCONNECT" : (busy ? "CANCEL" : "CONNECT")
+        let tint: Color = busy ? C.warn : (live ? C.danger : C.signal)
         VStack(alignment: .leading, spacing: 8) {
             GhostFab(
-                text: live ? "DISCONNECT" : (busy ? "TUNING…" : "CONNECT"),
+                text: label,
                 outline: !live,
-                tint: live ? C.danger : C.signal
+                tint: tint
             ) {
-                popoverLog.info("GhostFab tapped — live=\(live, privacy: .public)")
+                popoverLog.info("GhostFab tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public)")
                 Task { await toggleConnect() }
             }
-            .disabled(busy)
-            .opacity(busy ? 0.6 : 1.0)
             if let err = inlineConnectError {
                 Text(err)
                     .font(.custom("JetBrainsMono-Regular", size: 11))
@@ -471,9 +481,12 @@ public struct MenuBarPopover: View {
     // MARK: - Actions
 
     private func toggleConnect() async {
-        let isLive = stateMgr.statusFrame.state == .connected
-        if isLive {
-            popoverLog.info("toggleConnect → stop")
+        let state = stateMgr.statusFrame.state
+        // UI-R2-N20: connected → DISCONNECT, busy → CANCEL. Both route
+        // to `tunnel.stop()` to let the user abort a stuck handshake
+        // (TSPU servers can sit on TLS for up to 75s).
+        if state == .connected || state == .connecting || state == .reconnecting {
+            popoverLog.info("toggleConnect → stop (state=\(String(describing: state), privacy: .public))")
             tunnel.stop()
             return
         }

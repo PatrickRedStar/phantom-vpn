@@ -108,13 +108,19 @@ struct GhostStreamApp: App {
                 }
                 .keyboardShortcut("0", modifiers: .command)
 
-                Button(String(localized: "command_palette.placeholder")) {
+                // UI-R2-R09: was `command_palette.placeholder`
+                // ("Введите команду или профиль…") — the *placeholder*
+                // string was reused for the menu item title, so the
+                // menu read like a search prompt instead of an action.
+                Button(String(localized: "menu.command_palette")) {
                     openForegroundWindow("console")
                     router.commandPaletteOpen = true
                 }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
 
-                Button("Open Logs") {
+                // UI-R2-R10: was hardcoded English — broke the menu
+                // on RU locale (mixed RU/EN strings).
+                Button(String(localized: "menu.logs")) {
                     router.openDetachedLogs()
                     openForegroundWindow("logs")
                 }

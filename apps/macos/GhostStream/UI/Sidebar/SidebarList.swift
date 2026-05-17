@@ -71,6 +71,7 @@ public struct SidebarList: View {
     @ViewBuilder
     private func channelRow(_ channel: SidebarChannel) -> some View {
         let active = router.selectedChannel == channel
+        let paletteOpen = router.commandPaletteOpen
         Button {
             router.select(channel)
         } label: {
@@ -99,6 +100,34 @@ public struct SidebarList: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .keyboardShortcut(KeyEquivalent(channel.hotkey), modifiers: .command)
+        // UI-R2-N15: when the command palette is open, the sidebar
+        // ⌘1..⌘4 chords hijack number keys the user is typing inside
+        // the palette query field. Bind the shortcut only when the
+        // palette is closed; the `.disabled` on the NavigationSplitView
+        // also masks button taps but does not unbind the shortcut.
+        .if(!paletteOpen) { view in
+            view.keyboardShortcut(KeyEquivalent(channel.hotkey), modifiers: .command)
+        }
+    }
+}
+
+// MARK: - View+If helper
+
+private extension View {
+    /// Conditional modifier — preserves view identity by not switching
+    /// type, applies `transform` when `condition` is `true`. Used here
+    /// so a `.keyboardShortcut` modifier can be omitted entirely when
+    /// the chord shouldn't fire — `.keyboardShortcut(nil)` does not
+    /// exist as a SwiftUI API.
+    @ViewBuilder
+    func `if`<Content: View>(
+        _ condition: Bool,
+        transform: (Self) -> Content
+    ) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
     }
 }

@@ -22,18 +22,23 @@ public struct MenuBarStatusItem: View {
         self.state = state
     }
 
-    /// Menu bar lives outside the SwiftUI environment chain that
-    /// provides `\.gsColors`, so palette lookup here uses the dark
-    /// values directly. This is fine because the macOS menu bar
-    /// background is always near-black, and the existing
-    /// `MenuBarIcon` asset already renders in template mode (system
-    /// auto-tints it black on light, white on dark).
-    ///
-    /// UI-H12: previously a literal `Color(red:green:blue:)` —
-    /// effectively a hand-tuned approximation of the design palette
-    /// that gradually drifted out of sync with `GsColorSet.dark`.
-    /// Single source of truth now.
-    private let palette: GsColorSet = .dark
+    /// UI-R2-R08: the menu bar label runs outside the SwiftUI
+    /// environment chain that provides `\.gsColors`, so we look up the
+    /// palette manually. Round 1 hard-coded `.dark` which left the
+    /// state dot at dark-mode values when the user had explicitly
+    /// switched to the light theme — most visible as the wrong shade
+    /// of green for the "connected" dot on a light menu bar. We now
+    /// read `ThemeOverride.current` (App Group UserDefaults) and fall
+    /// back to the system colour scheme when the user picked "system".
+    @Environment(\.colorScheme) private var systemScheme
+
+    private var palette: GsColorSet {
+        switch ThemeOverride.current {
+        case .dark:   return .dark
+        case .light:  return .light
+        case .system: return systemScheme == .light ? .light : .dark
+        }
+    }
 
     public var body: some View {
         HStack(spacing: 3) {

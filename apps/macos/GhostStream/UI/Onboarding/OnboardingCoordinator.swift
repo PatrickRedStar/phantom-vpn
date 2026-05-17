@@ -158,6 +158,21 @@ public final class OnboardingCoordinator {
         stopPolling()
     }
 
+    /// UI-R2-N23: the user closed the Welcome window before the
+    /// wizard reached `.ready` (typically by ⌘W). Stop any polling
+    /// tasks and reset the FSM to `.paste` so the next time the user
+    /// opens setup we don't show "Жду разрешения" stuck on an
+    /// approval the user can't actually grant from the missing
+    /// window. Idempotent on `.ready`.
+    public func dismissedBeforeReady() {
+        stopPolling()
+        awaitingVpnApproval = false
+        lastError = nil
+        if step != .ready {
+            step = .paste
+        }
+    }
+
     // MARK: - Deeplinks
 
     public static func openSystemSettingsLoginItems() {

@@ -74,6 +74,14 @@ public struct ServerRosterView: View {
         .task {
             await probeLoop()
         }
+        // UI-R2-R07: cancel the running 5s TTL task when the user
+        // navigates away — otherwise it keeps a strong reference to
+        // the @MainActor closure and (more importantly) can mutate
+        // `rosterStatusBanner` after the view re-enters with a fresh
+        // banner, flickering it away.
+        .onDisappear {
+            rosterStatusTtlTask?.cancel()
+        }
     }
 
     // MARK: - 1. detail-head

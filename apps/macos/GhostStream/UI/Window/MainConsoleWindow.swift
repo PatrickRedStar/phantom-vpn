@@ -27,6 +27,15 @@ public struct MainConsoleWindow: View {
                     .navigationSplitViewColumnWidth(min: 740, ideal: 980)
             }
             .background(C.bg)
+            // UI-R2-R02: when the command palette is open, the
+            // underlying split view stays in the responder tree and
+            // its `.keyboardShortcut` modifiers (CONNECT ⌘K, TailView
+            // ⌘⌫, channel switch ⌘1..⌘4) still fire. Disable
+            // interaction so the palette is the only thing taking
+            // input. We deliberately do not move the palette to a
+            // separate Window here — that would require a larger
+            // refactor of focus / lifecycle wiring.
+            .disabled(router.commandPaletteOpen)
 
             if router.commandPaletteOpen {
                 CommandPalette()
