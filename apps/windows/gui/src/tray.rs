@@ -113,6 +113,17 @@ pub fn install_event_pump(
     cmd_tx: UnboundedSender<UiCommand>,
     on_show: impl Fn() + 'static,
 ) {
+    thread_local! {
+        // OnceCell because we only ever install one tray event pump per
+        // event-loop thread — calling `install_event_pump` twice would
+        // be a programming error, not a recoverable state, so we
+        // silently keep the first timer. thread_local fits because
+        // `slint::Timer` is `!Send + !Sync` (tied to the event-loop
+        // thread); a global `OnceLock` would not compile.
+        static TRAY_TIMER: std::cell::OnceCell<slint::Timer> =
+            const { std::cell::OnceCell::new() };
+    }
+
     let receiver = MenuEvent::receiver();
     let on_show = std::rc::Rc::new(on_show);
     let timer = slint::Timer::default();
@@ -134,10 +145,18 @@ pub fn install_event_pump(
             }
         },
     );
-    // Leak the timer so it lives for the lifetime of the app — the
-    // event pump is supposed to run forever, and dropping the Timer
-    // would silently cancel future ticks.
-    std::mem::forget(timer);
+
+    TRAY_TIMER.with(|cell| {
+        // If called twice (shouldn't happen in normal flow), the second
+        // call's timer is dropped immediately — the first one keeps
+        // pumping. Log a warning so we notice the misuse.
+        if cell.set(timer).is_err() {
+            tracing::warn!(
+                category = "tray",
+                "install_event_pump called twice — keeping the original timer"
+            );
+        }
+    });
 }
 
 /// Subset of `Tray` exposed to the event pump. `MenuEvent::receiver` is
