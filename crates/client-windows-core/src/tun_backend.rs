@@ -222,20 +222,19 @@ mod wintun_impl {
 
     impl TunBackend for WintunBackend {
         fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-            // Use try_receive instead of receive_blocking so the runtime's
-            // reader thread can periodically yield (the runtime sleeps
-            // 10 ms on WouldBlock — see lib.rs Backend match arm). That
-            // tradeoff costs ~10 ms of latency under no-traffic conditions
-            // but avoids holding a thread inside a blocking syscall when
-            // the runtime is shutting down.
-            match self.session.try_receive() {
-                Ok(Some(pkt)) => {
+            // Blocking read — parks the OS thread on Wintun's internal read
+            // event (Win32 WaitForSingleObject). Returns Err when
+            // `session.shutdown()` is called from another thread (our
+            // `shutdown_hint` path), causing the runtime's reader thread to
+            // exit cleanly. No polling, no 10 ms sleep, no idle CPU burn,
+            // and no first-packet latency after a quiet period.
+            match self.session.receive_blocking() {
+                Ok(pkt) => {
                     let bytes = pkt.bytes();
                     let n = bytes.len().min(buf.len());
                     buf[..n].copy_from_slice(&bytes[..n]);
                     Ok(n)
                 }
-                Ok(None) => Err(io::Error::new(io::ErrorKind::WouldBlock, "no packet")),
                 Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{e:?}"))),
             }
         }

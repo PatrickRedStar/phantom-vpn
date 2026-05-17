@@ -544,11 +544,12 @@ pub async fn run(
                                     }
                                 }
                                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                    // Wintun returns no packets right now —
-                                    // brief sleep to avoid burning CPU. The
-                                    // Wintun adapter wakes us via internal
-                                    // event so 10 ms is a soft cap, not a
-                                    // poll cadence.
+                                    // Wintun never hits this branch — it
+                                    // returns Err on shutdown or Ok on packet
+                                    // via `receive_blocking`. MockBackend hits
+                                    // it when its rx queue is empty; the brief
+                                    // sleep prevents tight loops in test
+                                    // fixtures that exercise an idle backend.
                                     std::thread::sleep(std::time::Duration::from_millis(10));
                                     continue;
                                 }

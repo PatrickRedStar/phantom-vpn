@@ -19,14 +19,23 @@ pub trait PacketIo: Send + Sync {
 /// blocking is fine.
 ///
 /// `read` returns one inbound packet (local stack → tunnel); `write`
-/// accepts one outbound packet (tunnel → local stack). Both calls may
-/// return `io::ErrorKind::WouldBlock` so the reader/writer threads can
-/// re-check the cancel flag and exit cleanly.
+/// accepts one outbound packet (tunnel → local stack).
 ///
 /// Concrete impls: `WintunBackend` on Windows (`client-windows-core`),
 /// `MockBackend` on any host for headless tests.
 pub trait TunBackend: Send + Sync + 'static {
+    /// Read one packet into `buf`. Two acceptable implementation patterns:
+    ///
+    /// * **Blocking** (preferred — used by Wintun): park the OS thread
+    ///   until a packet arrives. Return `Err(io::ErrorKind::Other)` (or
+    ///   any non-WouldBlock error) when `shutdown_hint` is called from
+    ///   another thread, so the runtime's reader exits cleanly.
+    /// * **Non-blocking** (used by MockBackend in tests): return
+    ///   `Err(io::ErrorKind::WouldBlock)` when nothing is available.
+    ///   The runtime sleeps ~10 ms and retries.
     fn read(&self, buf: &mut [u8]) -> std::io::Result<usize>;
+
+    /// Write one outbound packet. Returns the number of bytes accepted.
     fn write(&self, packet: &[u8]) -> std::io::Result<usize>;
 
     /// Hint that the reader thread should wake up and exit. Default is a
