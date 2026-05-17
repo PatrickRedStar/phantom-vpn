@@ -11,6 +11,8 @@
 | Android (Kotlin + Compose) | ✅ Production |
 | iOS (SwiftUI + NEPacketTunnelProvider) | ✅ Production |
 | Linux (CLI + Slint GUI) | ✅ Production |
+| macOS (SwiftUI + NEPacketTunnelProvider) | ✅ Production |
+| Windows (Slint + Wintun) | 🚧 In-progress (`feature/windows-client`) |
 | OpenWrt (netifd + LuCI) | ✅ Production |
 | Server (NL exit + RU SNI-passthrough relay) | ✅ Production |
 

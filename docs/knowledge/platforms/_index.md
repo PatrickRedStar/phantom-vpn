@@ -14,6 +14,7 @@ updated: 2026-04-17
 | [ios.md](ios.md) | SwiftUI host + `NEPacketTunnelProvider` + PhantomKit Swift package + Apple FFI, App Group shared storage, IPv6 killswitch | `crates/client-apple/` + `apps/ios/` |
 | [macos.md](macos.md) | SwiftUI host + system extension `NEPacketTunnelProvider` + shared PhantomKit/PhantomUI с iOS, MenuBar primary + Console secondary, Sparkle 2 auto-update, Direct distribution (DMG + Developer ID notarize) | `crates/client-apple/` + `apps/macos/` |
 | [linux.md](linux.md) | Три независимых приложения — CLI + GUI (Slint) + privileged helper, io_uring TUN с fallback на blocking, gui-ipc wire protocol | `apps/linux/cli/`, `apps/linux/gui/`, `apps/linux/helper/` |
+| [windows.md](windows.md) | Slint UI + Wintun юзер-mode TUN + tokio worker, всё в одном процессе с UAC manifest. `TunIo::Backend(Arc<dyn TunBackend>)` cross-platform variant + MockBackend для headless тестов на Mac | `crates/client-windows-core/`, `apps/windows/gui/` |
 | [openwrt.md](openwrt.md) | phantom-client-openwrt + netifd proto (`ghoststream.sh`) + LuCI, CI cross-compile для MIPS/arm/arm64/x86_64, MIPS build специфика | `apps/openwrt/` |
 
 Общие runtime-штуки (`TunIo` enum, supervise FSM, `StatusFrame` EMA) — в
