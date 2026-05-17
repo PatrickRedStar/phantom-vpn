@@ -44,11 +44,22 @@ impl LogReceiver {
     }
 }
 
+/// Lock helper that survives a poisoned mutex. FFI-H3 (v0.25.3): every
+/// poison path inside `BroadcastLayer::on_event` already calls these helpers
+/// from a panic-handler-equivalent context (a tracing event fired during
+/// unwind). Panicking again on `.unwrap()` here turns a recoverable problem
+/// into an abort — exactly the failure mode `panic = "abort"` makes lethal.
+/// Treat poison as "previous holder panicked; data is still structurally
+/// valid Vec<Sender>" and proceed.
+fn lock_subs(s: &'static Subs) -> std::sync::MutexGuard<'static, Vec<mpsc::Sender<LogFrame>>> {
+    s.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Subscribe to the global log stream. Returns a `LogReceiver` whose
 /// channel is populated by the broadcast layer.
 pub fn subscribe() -> LogReceiver {
     let (tx, rx) = mpsc::channel(CHANNEL_CAP);
-    let mut g = subs().lock().unwrap();
+    let mut g = lock_subs(subs());
     g.push(tx);
     LogReceiver { rx }
 }
@@ -58,7 +69,7 @@ pub fn subscribe() -> LogReceiver {
 /// `mpsc::Sender<LogFrame>` and wants to hook into the global log stream
 /// without going through [`subscribe`].
 pub fn add_sender(tx: mpsc::Sender<LogFrame>) {
-    let mut g = subs().lock().unwrap();
+    let mut g = lock_subs(subs());
     g.push(tx);
 }
 
@@ -66,7 +77,7 @@ pub fn add_sender(tx: mpsc::Sender<LogFrame>) {
 /// to prevent stale senders from the previous session duplicating log
 /// lines.
 pub fn clear_senders() {
-    let mut g = subs().lock().unwrap();
+    let mut g = lock_subs(subs());
     g.clear();
 }
 

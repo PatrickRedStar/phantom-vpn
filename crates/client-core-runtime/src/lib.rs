@@ -289,6 +289,14 @@ pub async fn run(
                 let (persist_write_tx, mut persist_write_rx) =
                     tokio::sync::mpsc::channel::<Bytes>(4096);
 
+                // FFI-H4 (v0.25.3): both blocking-thread spawns are now
+                // fallible — under PID / thread cap exhaustion (or a
+                // hardened sandbox), `Builder::spawn` returns
+                // `io::Error`. The previous `.expect(...)` paniced inside
+                // `client_core_runtime::run`, which on Apple maps to an
+                // abort because `panic = "abort"` is set workspace-wide.
+                // Propagating the error lets the FFI return a clean
+                // negative code so Swift can surface a real error UI.
                 let tun_fd_reader = raw_fd;
                 std::thread::Builder::new()
                     .name("phantom-tun-rd".into())
@@ -327,7 +335,7 @@ pub async fn run(
                             }
                         }
                     })
-                    .expect("spawn tun reader thread");
+                    .map_err(|e| anyhow::anyhow!("spawn tun reader thread: {}", e))?;
 
                 // Writer thread: persistent. Same rationale as reader, plus
                 // the original blocking-on-tokio-worker concern (incident
@@ -369,7 +377,7 @@ pub async fn run(
                         }
                         tracing::debug!(category = "tun", tun_fd = tun_fd_writer, "writer: channel closed");
                     })
-                    .expect("spawn tun writer thread");
+                    .map_err(|e| anyhow::anyhow!("spawn tun writer thread: {}", e))?;
 
                 // Wrap the single persistent read receiver behind an async
                 // mutex so the per-attempt forwarder task can take exclusive
@@ -457,14 +465,37 @@ pub async fn run(
                 let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
                 let inbound_rx = Arc::new(tokio::sync::Mutex::new(inbound_rx));
                 let io = io.clone();
+
+                // FFI-C4 (v0.25.3): retain the previous attempt's forwarder
+                // handles so the next factory call aborts them BEFORE
+                // spawning new ones.
+                //
+                // Without this, the previous inbound forwarder was still
+                // parked on `inbound_rx.lock().await.recv()` and would only
+                // release the shared mutex when the next packet arrived. On
+                // an idle network — exactly when reconnect typically fires
+                // — that wait was unbounded. The new forwarder would block
+                // on `lock().await` until a TUN packet showed up, freezing
+                // the freshly-handshaked tunnel. Mirrors the pattern used
+                // for `BlockingThreads` above.
+                let prev_handles: Arc<parking_lot::Mutex<Option<(
+                    tokio::task::JoinHandle<()>,
+                    tokio::task::JoinHandle<()>,
+                )>>> = Arc::new(parking_lot::Mutex::new(None));
+
                 let factory: supervise::TunFactory = Arc::new(move || {
+                    if let Some((in_h, out_h)) = prev_handles.lock().take() {
+                        in_h.abort();
+                        out_h.abort();
+                    }
+
                     let (write_tx, mut write_rx) =
                         tokio::sync::mpsc::channel::<Bytes>(4096);
                     let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
 
                     // Forward outbound packets to the callback.
                     let io_clone = io.clone();
-                    tokio::spawn(async move {
+                    let out_handle = tokio::spawn(async move {
                         let mut batch = Vec::with_capacity(32);
                         while write_rx.recv_many(&mut batch, 32).await > 0 {
                             io_clone.submit_outbound_batch(std::mem::take(&mut batch));
@@ -473,7 +504,7 @@ pub async fn run(
 
                     // Forward inbound packets from the caller's push channel into read_rx.
                     let inbound_rx = inbound_rx.clone();
-                    tokio::spawn(async move {
+                    let in_handle = tokio::spawn(async move {
                         let mut rx = inbound_rx.lock().await;
                         while let Some(pkt) = rx.recv().await {
                             if read_tx.send(pkt).await.is_err() {
@@ -481,6 +512,8 @@ pub async fn run(
                             }
                         }
                     });
+
+                    *prev_handles.lock() = Some((in_handle, out_handle));
 
                     Ok((read_rx, write_tx))
                 });

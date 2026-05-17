@@ -30,6 +30,16 @@ private func c_phantom_runtime_submit_inbound(
 @_silgen_name("phantom_runtime_stop")
 private func c_phantom_runtime_stop() -> Int32
 
+/// Register the release callback Rust invokes from inside
+/// `phantom_runtime_stop` *after* the supervisor and forwarder tasks have
+/// fully drained. This is the only safe moment to balance the
+/// `Unmanaged.passRetained` we did in `start()` — see FFI-C1 in
+/// 2026-05-17 macOS bug-hunt.
+@_silgen_name("phantom_runtime_set_release_cb")
+private func c_phantom_runtime_set_release_cb(
+    _ cb: @convention(c) (UnsafeMutableRawPointer?) -> Void
+)
+
 @_silgen_name("phantom_parse_conn_string")
 private func c_phantom_parse_conn_string(
     _ input: UnsafePointer<CChar>?
@@ -42,6 +52,22 @@ private func c_phantom_compute_vpn_routes(
 
 @_silgen_name("phantom_free_string")
 private func c_phantom_free_string(_ ptr: UnsafeMutablePointer<CChar>?)
+
+/// One-shot install of the global `release_ctx` trampoline. Rust accepts
+/// only the first registration; subsequent calls are silently ignored.
+/// Run this exactly once at module-load time via a dispatch-once guard so
+/// both the host app and the extension end up sharing one trampoline.
+private let releaseCtxInstaller: Void = {
+    c_phantom_runtime_set_release_cb { ctx in
+        guard let ctx else { return }
+        // Balances the `Unmanaged.passRetained` performed in `start()`.
+        // `release()` decrements the retain count; the underlying
+        // `BridgeContext` is freed when the actor itself drops the
+        // matching `contextBox` reference.
+        Unmanaged<BridgeContext>.fromOpaque(ctx).release()
+    }
+    return ()
+}()
 
 // MARK: - Errors
 
@@ -84,6 +110,12 @@ public actor PhantomBridge {
     /// being deallocated while Rust still holds a raw pointer to it.
     private var contextBox: AnyObject?
 
+    /// Opaque pointer handed to Rust via `Unmanaged.passRetained.toOpaque`.
+    /// Kept here purely for diagnostics — the actual release is performed
+    /// by the global trampoline that Rust invokes from inside
+    /// `phantom_runtime_stop`. FFI-C1.
+    private var opaqueCtx: UnsafeMutableRawPointer?
+
     private init() {}
 
     // MARK: - Public API
@@ -110,6 +142,11 @@ public actor PhantomBridge {
         onLog:     @escaping LogCallback,
         onInbound: @escaping InboundCallback
     ) throws {
+        // Install the global release-ctx trampoline once. Lazily evaluated
+        // via the `let releaseCtxInstaller: Void` constant — first access
+        // performs the registration, subsequent accesses are zero-cost.
+        _ = releaseCtxInstaller
+
         statusHandler  = onStatus
         logHandler     = onLog
         inboundHandler = onInbound
@@ -136,8 +173,14 @@ public actor PhantomBridge {
         }
 
         let box = BridgeContext(bridge: self)
+        // FFI-C1: keep a Swift-side strong ref so the box stays alive even
+        // if Rust somehow returned without invoking release_ctx. The
+        // `passRetained` below bumps the Unmanaged retain count to +1; the
+        // matching release happens inside the release trampoline that
+        // Rust invokes from `phantom_runtime_stop`.
         contextBox = box
         let ctx = Unmanaged.passRetained(box).toOpaque()
+        opaqueCtx = ctx
 
         let rc = cfgStr.withCString { cfgPtr in
             setStr.withCString { setPtr in
@@ -168,7 +211,16 @@ public actor PhantomBridge {
             }
         }
 
-        guard rc == 0 else { throw BridgeError.startFailed(rc) }
+        guard rc == 0 else {
+            // FFI-C1 (start failed): Rust never installed the runtime so it
+            // won't invoke release_ctx for this ctx. Balance the retain here
+            // synchronously to avoid leaking the BridgeContext on start
+            // errors (bad config, already-running collision, etc.).
+            Unmanaged<BridgeContext>.fromOpaque(ctx).release()
+            opaqueCtx = nil
+            contextBox = nil
+            throw BridgeError.startFailed(rc)
+        }
     }
 
     /// Submits a raw outbound IP packet into the Rust tunnel.
@@ -185,13 +237,23 @@ public actor PhantomBridge {
     }
 
     /// Stops the Rust tunnel runtime and clears all callbacks.
+    ///
+    /// FFI-C1/C2/C3: `c_phantom_runtime_stop` is now a synchronous barrier.
+    /// It signals the supervisor, joins all forwarder tasks (with a 5 s
+    /// supervisor timeout + 2 s per-forwarder timeout), and finally invokes
+    /// the registered release trampoline to balance the `passRetained`
+    /// we did in `start()`. By the time it returns, Rust has guaranteed no
+    /// more callbacks will fire — we are free to drop our Swift-side state.
     public func stop() {
         _ = c_phantom_runtime_stop()
         statusHandler  = nil
         logHandler     = nil
         inboundHandler = nil
-        // Release the context box — Rust must no longer invoke callbacks
-        // after phantom_runtime_stop returns.
+        // The release trampoline (installed once at module load) has
+        // already balanced our `passRetained` retain by the time
+        // `c_phantom_runtime_stop` returned. Clear our Swift-side strong
+        // references so the BridgeContext can deallocate.
+        opaqueCtx = nil
         contextBox = nil
     }
 

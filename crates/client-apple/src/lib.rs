@@ -18,10 +18,27 @@
 //! transferred via `CString::into_raw`. The caller MUST free them exactly once
 //! via [`phantom_free_string`]. Passing any other pointer to that function, or
 //! double-freeing, is undefined behavior.
+//!
+//! # Lifecycle invariant (FFI-C1/C2/C3 — v0.25.3)
+//!
+//! `phantom_runtime_stop` is a **synchronous barrier**: it
+//!   1. signals the supervisor to cancel,
+//!   2. waits (with a 5 s timeout) for the supervisor's `JoinHandle`,
+//!   3. drops the broadcast log senders so the log forwarder's `recv().await`
+//!      returns `None`,
+//!   4. aborts and joins the status + log forwarder tasks,
+//!   5. invokes the Swift-supplied `release_ctx` callback (registered via
+//!      [`phantom_runtime_set_release_cb`]) so Swift can `release` the
+//!      `Unmanaged` retain it took before calling `start`.
+//!
+//! Once `phantom_runtime_stop` returns, Rust guarantees that none of the C
+//! callbacks it was given (`status_cb`, `log_cb`, `outbound_cb`) will fire
+//! again — Swift may release any state those callbacks were closing over.
 
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use client_core_runtime::{ConnectProfile, PacketIo, RuntimeHandles, TunIo, TunnelSettings};
@@ -29,6 +46,7 @@ use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, watch};
+use tokio::task::JoinHandle;
 
 // ─── Error codes ─────────────────────────────────────────────────────────────
 
@@ -38,6 +56,19 @@ const ERR_RUNTIME_INIT: i32 = -4;
 const ERR_QUEUE_FULL: i32 = -10;
 const ERR_NO_TUNNEL: i32 = -11;
 const ERR_PANIC: i32 = -99;
+
+// ─── Length limits for incoming FFI buffers (FFI-H1, FFI-H2) ────────────────
+
+/// Maximum bytes per `phantom_runtime_submit_inbound` packet. IPv4 MTU caps
+/// at 65 535 (16-bit total-length field); anything larger came from a Swift
+/// bug (e.g. an arithmetic overflow in a packet-size calculation) or a
+/// hostile sender and must be rejected before we allocate.
+const MAX_INBOUND_LEN: usize = 65_535;
+
+/// Strnlen ceiling for general FFI C-strings (server addr, profile name,
+/// CIDR list). 16 KiB comfortably absorbs `ghs://` conn-strings carrying
+/// base64-PEM cert + key with whitespace.
+const MAX_FFI_CSTR_LEN: usize = 16_384;
 
 // ─── Log filter gating (ADR 0008 §3) ─────────────────────────────────────────
 
@@ -114,11 +145,67 @@ fn get_or_init_rt() -> Option<&'static Runtime> {
     .ok()
 }
 
+// ─── Swift-side release callback (FFI-C1) ────────────────────────────────────
+//
+// Swift hands the runtime an opaque pointer (`Unmanaged.passRetained.toOpaque`)
+// that bumps a Swift retain count by +1. Rust is responsible for telling Swift
+// when it's safe to undo that retain — but Rust has no way to call ARC. The
+// idiomatic solution is a tiny C trampoline: Swift registers `release_ctx` once,
+// Rust invokes it at the end of `phantom_runtime_stop`, and Swift's
+// implementation does `Unmanaged.fromOpaque(ctx).release()`.
+//
+// `OnceCell` is enough — registration is idempotent (Swift sets it once at app
+// launch) and there's exactly one Rust crate.
+
+type ReleaseCb = unsafe extern "C" fn(ctx: *mut c_void);
+static RELEASE_CB: OnceCell<ReleaseCb> = OnceCell::new();
+
+/// Register a Swift-side callback that releases the opaque `ctx` pointer
+/// passed to `phantom_runtime_start`. Idempotent — first call wins; later
+/// calls are silently ignored.
+///
+/// Swift should register this exactly once at app launch:
+///
+/// ```objc
+/// c_phantom_runtime_set_release_cb({ ctx in
+///     Unmanaged<BridgeContext>.fromOpaque(ctx).release()
+/// })
+/// ```
+///
+/// # Safety
+/// `cb` must remain valid for the entire process lifetime and be safe to
+/// call from any thread. The Rust side invokes it from inside
+/// `phantom_runtime_stop` on whatever thread the caller used to call stop.
+#[no_mangle]
+pub unsafe extern "C" fn phantom_runtime_set_release_cb(cb: ReleaseCb) {
+    let _ = RELEASE_CB.set(cb);
+}
+
 // ─── Global runtime state ────────────────────────────────────────────────────
 
+/// State held for the lifetime of one active tunnel session.
+///
+/// FFI-C2/C3 (v0.25.3): we now retain every spawned task's `JoinHandle`
+/// (supervisor, status forwarder, log forwarder) so `phantom_runtime_stop`
+/// can synchronously wait for all of them before clearing Swift state. Without
+/// this, a forwarder task could still be alive when Swift released the
+/// `BridgeContext`, dereferencing freed memory on its next callback.
 struct RuntimeState {
     handles: RuntimeHandles,
-    _join: tokio::task::JoinHandle<anyhow::Result<()>>,
+    /// Supervisor task — `tokio::spawn` inside `client_core_runtime::run()`.
+    supervisor: JoinHandle<anyhow::Result<()>>,
+    /// Forwards `watch::Receiver<StatusFrame>` → Swift `status_cb`.
+    /// `None` if Swift passed `status_cb == NULL`.
+    status_forwarder: Option<JoinHandle<()>>,
+    /// Forwards `mpsc::Receiver<LogFrame>` → Swift `log_cb`.
+    /// `None` if Swift passed `log_cb == NULL`.
+    log_forwarder: Option<JoinHandle<()>>,
+    /// Opaque pointer Swift handed us via `Unmanaged.passRetained`. Forwarded
+    /// to every callback and finally passed back to Swift's `release_ctx`
+    /// when this session is fully torn down. Stored as `usize` so the
+    /// struct is `Send + Sync`; the pointer is only dereferenced inside an
+    /// `unsafe` block when the registered Swift trampoline is invoked.
+    ctx_ptr: usize,
 }
 
 static STATE: Mutex<Option<RuntimeState>> = Mutex::new(None);
@@ -146,6 +233,28 @@ impl PacketIo for OutboundDispatcher {
     }
 }
 
+// ─── FFI helpers ─────────────────────────────────────────────────────────────
+
+/// Bounded-length wrapper around `CStr::from_ptr`. Without this, a Swift bug
+/// that hands us a non-NUL-terminated buffer makes `CStr::from_ptr` walk off
+/// the end of the page and SIGBUS — which `catch_unwind` does *not* catch
+/// because it's a signal, not a panic. We strnlen-scan up to `max_len` and
+/// reject anything that didn't terminate in that range. (FFI-H2)
+///
+/// # Safety
+/// `ptr` must either be null or point to a readable buffer of at least
+/// `max_len` bytes. Returns `None` if the buffer isn't NUL-terminated within
+/// `max_len`, contains invalid UTF-8, or is null.
+unsafe fn cstr_to_str_bounded<'a>(ptr: *const c_char, max_len: usize) -> Option<&'a str> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: caller asserted `ptr` points to at least `max_len` readable bytes.
+    let slice = std::slice::from_raw_parts(ptr as *const u8, max_len);
+    let nul = slice.iter().position(|b| *b == 0)?;
+    std::str::from_utf8(&slice[..nul]).ok()
+}
+
 // ─── phantom_runtime_start ───────────────────────────────────────────────────
 
 /// Start the tunnel runtime.
@@ -163,8 +272,17 @@ impl PacketIo for OutboundDispatcher {
 /// * `ctx`           — opaque pointer forwarded to all three callbacks.
 ///
 /// Returns 0 on success, negative on error.
+///
+/// # Safety
+/// All pointer parameters must satisfy the contracts above. `cfg_json`,
+/// `settings_json` (when non-null) must point to NUL-terminated UTF-8 strings
+/// of at most [`MAX_FFI_CSTR_LEN`] bytes. The callbacks, when non-null, must
+/// remain valid until [`phantom_runtime_stop`] returns. `ctx` is forwarded
+/// to all three callbacks unchanged and must remain valid until the Swift
+/// release callback registered via [`phantom_runtime_set_release_cb`] has
+/// been invoked.
 #[no_mangle]
-pub extern "C" fn phantom_runtime_start(
+pub unsafe extern "C" fn phantom_runtime_start(
     cfg_json: *const c_char,
     settings_json: *const c_char,
     verbose_log: bool,
@@ -178,10 +296,11 @@ pub extern "C" fn phantom_runtime_start(
             return ERR_BAD_CONFIG;
         }
 
-        // Parse ConnectProfile from cfg_json.
-        let cfg_str = match unsafe { CStr::from_ptr(cfg_json) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return ERR_BAD_CONFIG,
+        // Parse ConnectProfile from cfg_json. FFI-H2: bounded read so a
+        // non-NUL-terminated buffer can't SIGBUS us.
+        let cfg_str = match unsafe { cstr_to_str_bounded(cfg_json, MAX_FFI_CSTR_LEN) } {
+            Some(s) => s,
+            None => return ERR_BAD_CONFIG,
         };
         let mut cfg: ConnectProfile = match serde_json::from_str(cfg_str) {
             Ok(c) => c,
@@ -204,7 +323,7 @@ pub extern "C" fn phantom_runtime_start(
 
         // Optionally override TunnelSettings from settings_json.
         if !settings_json.is_null() {
-            if let Ok(s) = unsafe { CStr::from_ptr(settings_json) }.to_str() {
+            if let Some(s) = unsafe { cstr_to_str_bounded(settings_json, MAX_FFI_CSTR_LEN) } {
                 if !s.is_empty() {
                     if let Ok(ts) = serde_json::from_str::<TunnelSettings>(s) {
                         cfg.settings = ts;
@@ -278,46 +397,64 @@ pub extern "C" fn phantom_runtime_start(
         // and the Swift `startTunnel` thread is held for microseconds.
         // The actual tunnel lifecycle runs on tokio workers via the
         // spawned supervisor (`join` below).
-        let (handles, join) = match rt.block_on(client_core_runtime::run(cfg, tun, status_tx, log_tx, None)) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("phantom_runtime_start: run() failed: {}", e);
-                // No state inserted; another start may now proceed.
-                return ERR_BAD_CONFIG;
-            }
-        };
+        let (handles, supervisor) =
+            match rt.block_on(client_core_runtime::run(cfg, tun, status_tx, log_tx, None)) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("phantom_runtime_start: run() failed: {}", e);
+                    // No state inserted; another start may now proceed.
+                    return ERR_BAD_CONFIG;
+                }
+            };
 
-        // Spawn status watcher task.
-        if let Some(scb) = status_cb {
+        // Spawn status watcher task. FFI-C3 (v0.25.3): retain the
+        // JoinHandle so `phantom_runtime_stop` can synchronously join it.
+        let status_forwarder = status_cb.map(|scb| {
             let ctx_ptr = ctx as usize; // send across thread boundary as usize
             rt.spawn(async move {
                 while status_rx.changed().await.is_ok() {
                     let frame = status_rx.borrow_and_update().clone();
                     if let Ok(json) = serde_json::to_vec(&frame) {
                         let ctx = ctx_ptr as *mut c_void;
+                        // SAFETY: `scb` is a function pointer Swift gave us
+                        // for the lifetime of the session. `ctx` is the
+                        // opaque pointer Swift retained before `start`; it
+                        // remains alive until `phantom_runtime_stop`
+                        // invokes the registered release callback.
                         unsafe { scb(json.as_ptr(), json.len(), ctx) };
                     }
                 }
-            });
-        }
+            })
+        });
 
-        // Spawn log forwarder task.
-        if let Some(lcb) = log_cb {
+        // Spawn log forwarder task. FFI-C3 (v0.25.3): retain the JoinHandle
+        // and rely on `logsink::clear_senders()` from inside
+        // `phantom_runtime_stop` to drop the broadcast sender, so the
+        // `log_rx.recv().await` below returns `None` and the task exits
+        // on its own without an abort racing against an in-flight invoke.
+        let log_forwarder = log_cb.map(|lcb| {
             let ctx_ptr = ctx as usize;
             rt.spawn(async move {
                 while let Some(frame) = log_rx.recv().await {
                     if let Ok(json) = serde_json::to_vec(&frame) {
                         let ctx = ctx_ptr as *mut c_void;
+                        // SAFETY: see status forwarder.
                         unsafe { lcb(json.as_ptr(), json.len(), ctx) };
                     }
                 }
-            });
-        }
+            })
+        });
 
         // Commit the slot atomically — same guard we acquired at the top of
         // the function, so no other thread has observed a stale `None` in
         // the meantime.
-        *state_guard = Some(RuntimeState { handles, _join: join });
+        *state_guard = Some(RuntimeState {
+            handles,
+            supervisor,
+            status_forwarder,
+            log_forwarder,
+            ctx_ptr: ctx as usize,
+        });
         0
     }))
     .unwrap_or_else(|_| {
@@ -333,11 +470,21 @@ pub extern "C" fn phantom_runtime_start(
 /// Naming convention note: "inbound" here is from the tunnel's perspective —
 /// this packet travels inbound to the tunnel (device → network).
 ///
-/// Returns 0 on accept, -10 on queue full (drop), -11 if no tunnel running.
+/// Returns 0 on accept, -10 on queue full (drop), -11 if no tunnel running,
+/// -1 if `len` is zero, exceeds [`MAX_INBOUND_LEN`], or `ptr` is null.
+///
+/// # Safety
+/// `ptr` must point to at least `len` readable bytes when non-null. `len`
+/// must not exceed [`MAX_INBOUND_LEN`]; oversized values are rejected.
 #[no_mangle]
-pub extern "C" fn phantom_runtime_submit_inbound(ptr: *const u8, len: usize) -> i32 {
+pub unsafe extern "C" fn phantom_runtime_submit_inbound(ptr: *const u8, len: usize) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
-        if ptr.is_null() || len == 0 {
+        // FFI-H1: reject zero-length, null, and oversized buffers before we
+        // touch them. `usize` from Swift can be silently overflowing into the
+        // billions if a packet-size calculation went wrong upstream; without
+        // a cap we'd happily try to allocate a 4 GiB `Bytes` and OOM the
+        // extension.
+        if ptr.is_null() || len == 0 || len > MAX_INBOUND_LEN {
             return ERR_BAD_CONFIG;
         }
 
@@ -349,6 +496,9 @@ pub extern "C" fn phantom_runtime_submit_inbound(ptr: *const u8, len: usize) -> 
             }
         };
 
+        // SAFETY: caller asserted at least `len` readable bytes at `ptr`,
+        // and we've bounded `len <= MAX_INBOUND_LEN` so the slice/copy
+        // cannot exceed a real network packet's worth of memory.
         let pkt = Bytes::copy_from_slice(unsafe { std::slice::from_raw_parts(ptr, len) });
         match sender.try_send(pkt) {
             Ok(()) => 0,
@@ -361,26 +511,126 @@ pub extern "C" fn phantom_runtime_submit_inbound(ptr: *const u8, len: usize) -> 
 
 // ─── phantom_runtime_stop ────────────────────────────────────────────────────
 
-/// Signal the running tunnel to shut down gracefully.
-/// Returns 0 if a shutdown was signalled, -11 if no tunnel was running.
+/// Synchronously shut down the running tunnel.
+///
+/// Blocks the caller until:
+///   1. the supervisor task observes the cancel signal and exits, OR a 5 s
+///      timeout elapses (the timeout is a safety belt; under normal
+///      conditions the supervisor exits in <100 ms once cancel fires);
+///   2. the status + log forwarder tasks have finished draining;
+///   3. the Swift-registered release callback has been invoked, balancing
+///      the `Unmanaged.passRetained` that Swift performed before `start`.
+///
+/// After this returns, none of the C callbacks Swift passed to
+/// `phantom_runtime_start` will be invoked again — Swift may release any
+/// state those callbacks were closing over.
+///
+/// Returns 0 if a shutdown was performed, -11 if no tunnel was running.
+///
+/// # Safety
+/// Safe to call from any thread, but callers must serialise with
+/// `phantom_runtime_start` — calling them concurrently is meaningless.
 #[no_mangle]
-pub extern "C" fn phantom_runtime_stop() -> i32 {
+pub unsafe extern "C" fn phantom_runtime_stop() -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         let state = STATE.lock().take();
-        match state {
-            Some(s) => {
-                // v0.25.1 (W3-2): `cancel` is now `watch::Sender<bool>`.
-                // `send(true)` stores the value so a supervisor that has
-                // not yet re-armed its select! arm still sees the signal
-                // — the fix for missed-cancel under TSPU shake. Ignoring
-                // the result is correct: a closed channel means the
-                // supervisor already exited on its own.
-                let _ = s.handles.cancel.send(true);
-                tracing::info!("phantom_runtime_stop: cancel notified");
-                0
+        let Some(s) = state else { return ERR_NO_TUNNEL };
+
+        let RuntimeState {
+            handles,
+            supervisor,
+            status_forwarder,
+            log_forwarder,
+            ctx_ptr,
+        } = s;
+
+        // 1. Notify the supervisor.
+        //
+        // v0.25.1 (W3-2): `cancel` is `watch::Sender<bool>`. `send(true)`
+        // stores the value so a supervisor that has not yet re-armed its
+        // select! arm still sees the signal — the fix for missed-cancel
+        // under TSPU shake. Ignoring the result is correct: a closed
+        // channel means the supervisor already exited on its own.
+        let _ = handles.cancel.send(true);
+        tracing::info!("phantom_runtime_stop: cancel notified");
+
+        // 2. Drop the handles' `inbound_tx` so any pending submit observer
+        // observes a closed channel rather than racing the supervisor.
+        drop(handles);
+
+        let Some(rt) = get_or_init_rt() else {
+            tracing::error!("phantom_runtime_stop: tokio runtime unavailable, leaking ctx");
+            return ERR_PANIC;
+        };
+
+        // 3. Wait for the supervisor's JoinHandle (FFI-C2). Under normal
+        // shutdown this completes in <100 ms after cancel. The 5 s timeout
+        // exists for pathological cases — handshake mid-syscall, kernel
+        // TCP cleanup, etc. — where we'd rather forcibly proceed than
+        // hang the Swift thread.
+        rt.block_on(async {
+            if let Err(_elapsed) =
+                tokio::time::timeout(Duration::from_secs(5), supervisor).await
+            {
+                tracing::error!(
+                    "phantom_runtime_stop: supervisor join timed out after 5 s"
+                );
             }
-            None => ERR_NO_TUNNEL,
+        });
+
+        // 4. Drop our log sender so the log forwarder's `recv().await`
+        // returns `None` and the task exits naturally. Without this the
+        // forwarder would stay parked forever (no more frames will come
+        // because the supervisor exited), and `.abort()` on a task mid-
+        // unsafe-callback could land the Swift trampoline on an
+        // already-released context.
+        //
+        // FFI-C3: `clear_senders` evicts ALL registered log subscribers —
+        // there's only one per Apple session (the FFI's `log_tx`), so this
+        // is exactly what we want.
+        client_core_runtime::logsink::clear_senders();
+
+        // 5. Wait for forwarders to drain. They were spawned on the same
+        // runtime as the supervisor and should already be unwinding by
+        // the time we get here (status: watch channel closed when its
+        // sender dropped inside supervisor exit; log: clear_senders above).
+        rt.block_on(async {
+            if let Some(h) = status_forwarder {
+                let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+            }
+            if let Some(h) = log_forwarder {
+                let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+            }
+        });
+
+        // 6. All callbacks are guaranteed quiescent — invoke Swift's
+        // `release_ctx` so it can decrement the `Unmanaged` retain count.
+        //
+        // FFI-C1: this is the missing release that used to leak one
+        // `BridgeContext` per Connect/Disconnect cycle. The retain Swift
+        // did with `passRetained.toOpaque` in `start()` is now precisely
+        // balanced here, after we've confirmed no callback can fire
+        // again on the released context.
+        if let Some(rcb) = RELEASE_CB.get() {
+            let ctx = ctx_ptr as *mut c_void;
+            // SAFETY: `rcb` was registered via
+            // `phantom_runtime_set_release_cb` and is required to remain
+            // valid for the process lifetime. `ctx` is exactly the pointer
+            // Swift handed us at `start`; ownership semantics are spelled
+            // out in the trampoline contract.
+            unsafe { (rcb)(ctx) };
+        } else {
+            // Swift never registered a release callback. This is a bug
+            // in the Swift integration (no `Unmanaged.fromOpaque(ctx).release()`
+            // happens), but we can't do anything about it from Rust — the
+            // closest we can get is to keep the warning loud so the issue
+            // is visible in extension logs.
+            tracing::warn!(
+                "phantom_runtime_stop: no release_cb registered — Swift Unmanaged retain will leak"
+            );
         }
+
+        0
     }))
     .unwrap_or(ERR_PANIC)
 }
@@ -391,15 +641,17 @@ pub extern "C" fn phantom_runtime_stop() -> i32 {
 /// relevant fields: `{"server_addr":"...","server_name":"...","tun_addr":"...",`
 /// `"cert_pem":"...","key_pem":"..."}`. Returns NULL on parse error.
 /// Caller must free via `phantom_free_string`.
+///
+/// # Safety
+/// `input` must be NUL-terminated UTF-8 of at most [`MAX_FFI_CSTR_LEN`] bytes
+/// (rejected otherwise — returns NULL).
 #[no_mangle]
-pub extern "C" fn phantom_parse_conn_string(input: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn phantom_parse_conn_string(input: *const c_char) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
-        if input.is_null() {
-            return std::ptr::null_mut();
-        }
-        let s = match unsafe { CStr::from_ptr(input) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return std::ptr::null_mut(),
+        // FFI-H2: bounded read.
+        let s = match unsafe { cstr_to_str_bounded(input, MAX_FFI_CSTR_LEN) } {
+            Some(s) => s,
+            None => return std::ptr::null_mut(),
         };
         let cfg = match client_common::helpers::parse_conn_string(s) {
             Ok(c) => c,
@@ -450,15 +702,17 @@ pub extern "C" fn phantom_parse_conn_string(input: *const c_char) -> *mut c_char
 /// Output: JSON array `[{"addr":"...","prefix":N}]` of routes that should be
 /// sent through the VPN (complement of the direct list).
 /// Caller must free via `phantom_free_string`.
+///
+/// # Safety
+/// `direct_cidrs` must be NUL-terminated UTF-8 of at most [`MAX_FFI_CSTR_LEN`]
+/// bytes (rejected otherwise — returns NULL).
 #[no_mangle]
-pub extern "C" fn phantom_compute_vpn_routes(direct_cidrs: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn phantom_compute_vpn_routes(direct_cidrs: *const c_char) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
-        if direct_cidrs.is_null() {
-            return std::ptr::null_mut();
-        }
-        let text = match unsafe { CStr::from_ptr(direct_cidrs) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return std::ptr::null_mut(),
+        // FFI-H2: bounded read.
+        let text = match unsafe { cstr_to_str_bounded(direct_cidrs, MAX_FFI_CSTR_LEN) } {
+            Some(s) => s,
+            None => return std::ptr::null_mut(),
         };
         let table = phantom_core::routing::RoutingTable::from_cidrs(text);
         let direct_n = table.direct_count();
@@ -487,12 +741,20 @@ pub extern "C" fn phantom_compute_vpn_routes(direct_cidrs: *const c_char) -> *mu
 /// Free a string returned by any `phantom_*` function that returns
 /// `*mut c_char`. Passing NULL is a no-op. Passing anything not obtained
 /// from this library, or double-freeing, is undefined behavior.
+///
+/// # Safety
+/// `ptr`, when non-null, must have been obtained from a previous call to a
+/// `phantom_*` function in this library. Double-frees and foreign pointers
+/// are undefined behavior.
 #[no_mangle]
-pub extern "C" fn phantom_free_string(ptr: *mut c_char) {
+pub unsafe extern "C" fn phantom_free_string(ptr: *mut c_char) {
     if ptr.is_null() {
         return;
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: caller asserted `ptr` came from `CString::into_raw` inside
+        // this crate. `from_raw` reclaims that allocation; `drop` runs the
+        // `CString` destructor.
         unsafe {
             drop(CString::from_raw(ptr));
         }
@@ -634,6 +896,29 @@ mod tests {
             Some(v) => std::env::set_var("GHOSTSTREAM_LOG", v),
             None => std::env::remove_var("GHOSTSTREAM_LOG"),
         }
+    }
+
+    /// FFI-H2: `cstr_to_str_bounded` must reject buffers that don't NUL-
+    /// terminate within the supplied limit. Without this, an out-of-spec
+    /// Swift caller could walk a thread off the end of a page and SIGBUS
+    /// us. We can't easily test the "page-fault" path in cargo without
+    /// `unsafe` gymnastics, but we *can* exercise the bounded scan logic
+    /// on a normal buffer that just lacks a NUL.
+    #[test]
+    fn cstr_to_str_bounded_rejects_unterminated_buffer() {
+        let bytes = [b'A'; 64];
+        // SAFETY: 64 bytes alive on the stack; scan limit matches buffer size.
+        let res = unsafe { cstr_to_str_bounded(bytes.as_ptr() as *const c_char, bytes.len()) };
+        assert!(res.is_none(), "unterminated buffer must be rejected");
+    }
+
+    /// FFI-H2: NUL-terminated UTF-8 inside the limit must decode.
+    #[test]
+    fn cstr_to_str_bounded_accepts_valid_cstring() {
+        let cstr = std::ffi::CString::new("hello").unwrap();
+        // SAFETY: the CString owns a NUL-terminated buffer of length 6.
+        let res = unsafe { cstr_to_str_bounded(cstr.as_ptr(), 32) };
+        assert_eq!(res, Some("hello"));
     }
 
     /// Process-wide lock so tests that touch `GHOSTSTREAM_LOG` (read or

@@ -395,79 +395,110 @@ async fn drive_tunnel(
         .unwrap_or("phantom")
         .to_string();
 
-    let mut tls_writers = Vec::with_capacity(n_streams);
-    let mut tls_readers = Vec::with_capacity(n_streams);
-    for idx in 0..n_streams {
-        // ADR 0008 §2: low-level handshake events (`tcp.connect`,
-        // `tcp.connected`, `tls.client_hello`, `tls.alpn_negotiated`)
-        // are emitted by `client-common::tls_handshake::do_connect` for
-        // every client (Linux / Android / iOS / macOS). Supervise emits
-        // only the per-stream events that need a `stream_id` correlator
-        // (mtls.cert_verify, h2.*, stream.*).
-        let stream_priority = if idx == 0 { "high" } else { "normal" };
-        let (r, mut w) = if let Some(ref protect) = protect_socket {
-            // Android: create socket, protect it from VPN routing, then connect.
-            let socket = if server_addr.is_ipv4() {
-                tokio::net::TcpSocket::new_v4()
+    // ── Cancellable handshake loop (CONC-C1) ──────────────────────────────
+    //
+    // The whole per-stream connect/TLS/H2-handshake sequence is wrapped in a
+    // single `tokio::select!` against the supervisor's `cancel` watch. Without
+    // this, a Disconnect issued while we were inside `TcpStream::connect`
+    // could not be observed until the kernel's SYN_RETRIES (~75 s on macOS)
+    // unblocked the call — the audit's bug‑bash #7 "Disconnect hangs 75 s".
+    //
+    // `tls_connect` / `tls_connect_with_tcp` are also bounded by the
+    // `HANDSHAKE_TIMEOUT` from `client_common::tls_handshake`, giving us a
+    // hard ceiling even when cancel never arrives.
+    let handshake_fut = async {
+        let mut tls_writers = Vec::with_capacity(n_streams);
+        let mut tls_readers = Vec::with_capacity(n_streams);
+        for idx in 0..n_streams {
+            // ADR 0008 §2: low-level handshake events (`tcp.connect`,
+            // `tcp.connected`, `tls.client_hello`, `tls.alpn_negotiated`)
+            // are emitted by `client-common::tls_handshake::do_connect` for
+            // every client (Linux / Android / iOS / macOS). Supervise emits
+            // only the per-stream events that need a `stream_id` correlator
+            // (mtls.cert_verify, h2.*, stream.*).
+            let stream_priority = if idx == 0 { "high" } else { "normal" };
+            let (r, mut w) = if let Some(ref protect) = protect_socket {
+                // Android: create socket, protect it from VPN routing, then connect.
+                let socket = if server_addr.is_ipv4() {
+                    tokio::net::TcpSocket::new_v4()
+                } else {
+                    tokio::net::TcpSocket::new_v6()
+                }.with_context(|| format!("stream {} socket create", idx))?;
+
+                let fd = socket.as_raw_fd();
+                if !protect(fd) {
+                    anyhow::bail!("stream {} VpnService.protect() failed", idx);
+                }
+
+                let tcp = socket.connect(server_addr)
+                    .await
+                    .with_context(|| format!("stream {} tcp connect", idx))?;
+
+                let res = tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
+                    .await
+                    .with_context(|| format!("stream {} tls connect", idx))?;
+                tracing::debug!(
+                    category = "handshake",
+                    result = "ok",
+                    subject = %server_name,
+                    stream_id = idx as u64,
+                    "mtls.cert_verify"
+                );
+                res
             } else {
-                tokio::net::TcpSocket::new_v6()
-            }.with_context(|| format!("stream {} socket create", idx))?;
-
-            let fd = socket.as_raw_fd();
-            if !protect(fd) {
-                anyhow::bail!("stream {} VpnService.protect() failed", idx);
-            }
-
-            let tcp = socket.connect(server_addr)
+                // Linux/iOS/macOS: no socket protection needed.
+                let res = tls_connect(server_addr, server_name.clone(), client_tls.clone())
+                    .await
+                    .with_context(|| format!("stream {} tls connect", idx))?;
+                tracing::debug!(
+                    category = "handshake",
+                    result = "ok",
+                    subject = %server_name,
+                    stream_id = idx as u64,
+                    "mtls.cert_verify"
+                );
+                res
+            };
+            write_handshake(&mut w, idx as u8, n_streams as u8)
                 .await
-                .with_context(|| format!("stream {} tcp connect", idx))?;
-
-            let res = tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
-                .await
-                .with_context(|| format!("stream {} tls connect", idx))?;
+                .with_context(|| format!("stream {} handshake", idx))?;
             tracing::debug!(
                 category = "handshake",
-                result = "ok",
-                subject = %server_name,
+                max_concurrent = n_streams as u64,
+                initial_window = 0u64,
                 stream_id = idx as u64,
-                "mtls.cert_verify"
+                "h2.settings_sent"
             );
-            res
-        } else {
-            // Linux/iOS/macOS: no socket protection needed.
-            let res = tls_connect(server_addr, server_name.clone(), client_tls.clone())
-                .await
-                .with_context(|| format!("stream {} tls connect", idx))?;
+            // stream.open — per ADR 0008 §2.
             tracing::debug!(
-                category = "handshake",
-                result = "ok",
-                subject = %server_name,
+                category = "stream",
                 stream_id = idx as u64,
-                "mtls.cert_verify"
+                priority = %stream_priority,
+                "open"
             );
-            res
-        };
-        write_handshake(&mut w, idx as u8, n_streams as u8)
-            .await
-            .with_context(|| format!("stream {} handshake", idx))?;
-        tracing::debug!(
-            category = "handshake",
-            max_concurrent = n_streams as u64,
-            initial_window = 0u64,
-            stream_id = idx as u64,
-            "h2.settings_sent"
-        );
-        // stream.open — per ADR 0008 §2.
-        tracing::debug!(
-            category = "stream",
-            stream_id = idx as u64,
-            priority = %stream_priority,
-            "open"
-        );
-        telemetry.streams_alive[idx].store(true, Ordering::Relaxed);
-        tls_readers.push(r);
-        tls_writers.push(w);
-    }
+            telemetry.streams_alive[idx].store(true, Ordering::Relaxed);
+            tls_readers.push(r);
+            tls_writers.push(w);
+        }
+        anyhow::Ok((tls_writers, tls_readers))
+    };
+
+    let (tls_writers, tls_readers) = tokio::select! {
+        biased;
+        _ = crate::wait_cancelled(&mut cancel) => {
+            tracing::info!(
+                category = "tunnel",
+                phase = "handshake",
+                "cancelled during handshake"
+            );
+            // Mark this as explicit shutdown so the supervisor exits cleanly
+            // without retry. `telemetry.shutdown` is checked by the outer
+            // `supervise` loop right after `drive_tunnel` returns.
+            telemetry.shutdown.store(true, Ordering::SeqCst);
+            anyhow::bail!("cancelled");
+        }
+        result = handshake_fut => result?,
+    };
     // handshake.h2.ready — all streams complete the H2-equivalent setup.
     tracing::info!(
         category = "handshake",
