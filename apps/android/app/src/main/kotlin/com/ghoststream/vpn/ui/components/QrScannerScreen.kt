@@ -36,9 +36,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,6 +48,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.unit.Dp
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -183,19 +187,81 @@ fun QrScannerScreen(
         label = "lockProgress",
     )
 
-    Box(Modifier.fillMaxSize().background(C.bg)) {
+    // v0.26.3: BoxWithConstraints exposes maxWidth/maxHeight so we can compute
+    // a proportional viewfinder size on tablet/foldable form factors. On phone
+    // (Compact) everything stays pixel-identical to v0.26.2 — camera fills the
+    // screen, viewfinder is 240 dp, paste-CTA is full-width.
+    BoxWithConstraints(Modifier.fillMaxSize().background(C.bg)) {
+        val isWide = isTabletExpanded() || isTabletPortrait()
+        val viewfinderSize: Dp = if (isWide) {
+            (minOf(maxWidth, maxHeight) * 0.4f).coerceIn(220.dp, 480.dp)
+        } else {
+            240.dp
+        }
+        // 4:3 because that's the camera's native sensor aspect for the
+        // analysis resolution we request (1280×720 → close to 16:9 actually,
+        // but the preview pipeline lets the surface drive aspect; 4:3 gives
+        // a more "square" framing that matches QR code shapes and keeps the
+        // viewfinder squarely on-screen on portrait foldables).
+        val cameraAspectRatio = 4f / 3f
+
         if (hasCameraPermission) {
-            CameraPreviewView(
-                onBarcodeDetected = { value ->
-                    // Latch on the first detection. The CameraX analyzer
-                    // keeps running but lockState=Detected suppresses
-                    // further onResult calls and starts the dismissal
-                    // timer above.
-                    if (lockState is LockState.Scanning) {
-                        lockState = LockState.Detected(value)
-                    }
-                },
-            )
+            if (isWide) {
+                // Tablet / foldable: centre the camera with a fixed aspect
+                // ratio so the live preview doesn't stretch across an 1100 dp
+                // panel. Cover the side letterbox area with a dim wash so the
+                // viewfinder is the visual focus rather than the stretched
+                // image edges.
+                val previewWidth: Dp = minOf(maxWidth, maxHeight * cameraAspectRatio)
+                val previewHeight: Dp = previewWidth / cameraAspectRatio
+                Box(
+                    modifier = Modifier
+                        .width(previewWidth)
+                        .height(previewHeight)
+                        .align(Alignment.Center),
+                ) {
+                    CameraPreviewView(
+                        onBarcodeDetected = { value ->
+                            if (lockState is LockState.Scanning) {
+                                lockState = LockState.Detected(value)
+                            }
+                        },
+                    )
+                }
+                // Side letterbox dim wash. Only draws when there's actual
+                // letterbox to fill — on Medium portrait (sw≥600, w<840)
+                // the camera may already use full width, so the dim bars
+                // collapse to zero width and become no-ops.
+                if (previewWidth < maxWidth) {
+                    val sideWidth = (maxWidth - previewWidth) / 2
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .width(sideWidth)
+                            .align(Alignment.CenterStart)
+                            .background(C.bg.copy(alpha = 0.78f)),
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .width(sideWidth)
+                            .align(Alignment.CenterEnd)
+                            .background(C.bg.copy(alpha = 0.78f)),
+                    )
+                }
+            } else {
+                CameraPreviewView(
+                    onBarcodeDetected = { value ->
+                        // Latch on the first detection. The CameraX analyzer
+                        // keeps running but lockState=Detected suppresses
+                        // further onResult calls and starts the dismissal
+                        // timer above.
+                        if (lockState is LockState.Scanning) {
+                            lockState = LockState.Detected(value)
+                        }
+                    },
+                )
+            }
         } else {
             Column(
                 modifier = Modifier.fillMaxSize(),
@@ -235,23 +301,33 @@ fun QrScannerScreen(
             )
         }
 
-        // Viewfinder
+        // Viewfinder — size scales proportionally on tablet/foldable so the
+        // bracket corners frame realistic QR sizes instead of a tiny square
+        // lost in the middle of an 1100 dp panel. Lock-on animation (corner
+        // snap, scanline freeze, check, readout, progress) is scale-free —
+        // every primitive draws relative to viewfinderSize.
         val signalColor = C.signal
         val isDetected = lockState is LockState.Detected
         Box(
             modifier = Modifier
-                .size(240.dp)
+                .size(viewfinderSize)
                 .align(Alignment.Center)
                 .offset(y = (-20).dp),
         ) {
             // 4 corner brackets — animate inward on lock.
             ViewfinderCorners(lockProgress = lockProgress)
 
-            // Scanline — animates while scanning, snaps to centre + flashes on lock.
+            // Scanline — animates while scanning, snaps to centre + flashes
+            // on lock. Range is proportional to viewfinderSize so the line
+            // sweeps the whole frame on any size (240 dp phone, 480 dp tablet).
+            // 4 dp / 12 dp insets keep it from drawing on top of the corner
+            // brackets at the top/bottom edges.
+            val scanTopDp = 4f
+            val scanBottomDp = (viewfinderSize.value - 12f).coerceAtLeast(scanTopDp + 1f)
             val transition = rememberInfiniteTransition(label = "scanline")
             val scanY by transition.animateFloat(
-                initialValue = 4f,
-                targetValue = 228f,
+                initialValue = scanTopDp,
+                targetValue = scanBottomDp,
                 animationSpec = infiniteRepeatable(
                     animation = tween(2400),
                     repeatMode = RepeatMode.Reverse,
@@ -373,17 +449,21 @@ fun QrScannerScreen(
             }
         }
 
-        // Paste CTA — same fade as hints.
+        // Paste CTA — same fade as hints. On tablet/foldable the CTA caps
+        // at 480 dp wide and centres so it doesn't stretch across an 1100 dp
+        // panel as one giant button. On phone it stays full-width as before.
         if (hintAlpha > 0.01f) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 30.dp, start = 18.dp, end = 18.dp)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .padding(bottom = 30.dp, start = 18.dp, end = 18.dp),
+                contentAlignment = Alignment.Center,
             ) {
                 DashedGhostCard(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .let { if (isWide) it.widthIn(max = 480.dp) else it }
                         .background(C.bg.copy(alpha = 0.75f * hintAlpha))
                         .clickable {
                             clipboard.getText()?.text?.let { value ->
