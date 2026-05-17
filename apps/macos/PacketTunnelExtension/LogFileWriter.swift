@@ -55,14 +55,26 @@ public final class LogFileWriter {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
         return f
     }()
+
+    /// Audit PROV-R2-R06 — `DateFormatter.timeZone = .current` evaluates
+    /// once at init. A user changing system timezone (or daylight savings
+    /// crossing) while the extension is running would otherwise keep
+    /// rotating archives under the *initial* timezone — so the day key on
+    /// disk could drift by an hour from "now" and log archives could be
+    /// dropped under the wrong filename. Refresh per-call so the day key
+    /// always reflects the live timezone the user sees in Finder.
+    private func dayKey(for date: Date = Date()) -> String {
+        dayFormatter.timeZone = TimeZone.current
+        return dayFormatter.string(from: date)
+    }
 
     public init() {
         let dir = LogFileWriter.defaultDirectory()
         self.directoryURL = dir
         self.currentURL = dir.appendingPathComponent("runtime.log")
+        dayFormatter.timeZone = TimeZone.current
         self.currentDayKey = dayFormatter.string(from: Date())
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         sweepOldFiles()
@@ -136,7 +148,7 @@ public final class LogFileWriter {
     }
 
     private func ensureRotation() throws {
-        let today = dayFormatter.string(from: Date())
+        let today = dayKey()
         if today != currentDayKey {
             try rotateForDay(previousKey: currentDayKey)
             currentDayKey = today
@@ -175,7 +187,7 @@ public final class LogFileWriter {
         // day we still want to roll it over to runtime.log.YYYY-MM-DD
         // before appending today's frames.
         if let mtime = try? fileManager.attributesOfItem(atPath: currentURL.path)[.modificationDate] as? Date {
-            let mtimeKey = dayFormatter.string(from: mtime)
+            let mtimeKey = dayKey(for: mtime)
             if mtimeKey != currentDayKey {
                 try handle?.close()
                 handle = nil

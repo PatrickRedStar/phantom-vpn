@@ -23,6 +23,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private let log = Logger(subsystem: "com.ghoststream.client.tunnel", category: "tunnel")
     private let osLogPool = OSLogCategoryPool()
+    /// Audit PROV-R2-R01 — `outboundTask`, `routeSettingsTask`,
+    /// `handshakeTimeoutTask`, `pathMonitor`, `previousPathStatus`,
+    /// `previousPathInterfaces`, `pathDebounceTask`, `reconnectingWatchdogTask`
+    /// are mutated from multiple queues (`startTunnel`'s Task, `stopTunnel`'s
+    /// Task, the IPC `handleAppMessage` queue, the `pathMonitorQueue`, the
+    /// `wake`/`sleep` callbacks). The previous code had no synchronisation
+    /// at all — readers could see torn writes and writers could clobber each
+    /// other's task references, leaking Tasks. We funnel every access through
+    /// `runtimeStateLock` via `withStateLock { ... }` so each mutation
+    /// happens-before the next read.
     private var outboundTask: Task<Void, Never>?
     private var routeSettingsTask: Task<Void, Never>?
     /// ADR 0008 — verbose logging is sourced from the host App Group
@@ -37,6 +47,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var handshakeTimeoutTask: Task<Void, Never>?
     private static let handshakeTimeoutSeconds: UInt64 = 30
 
+    /// Audit PROV-R2-N02 — watchdog that fires `forceRuntimeReconnect` if
+    /// the runtime sits in `.reconnecting` for more than
+    /// `reconnectingWatchdogSeconds` without reaching `.connected` or
+    /// `.error`. Without this the UI can be stuck on "reconnecting" forever
+    /// when the runtime's internal retry loop wedges.
+    private var reconnectingWatchdogTask: Task<Void, Never>?
+    private static let reconnectingWatchdogSeconds: UInt64 = 60
+
     /// Audit PROV-H1 / PROV-H2 / CONC-C2 — observe path changes so we can
     /// force a reconnect when interfaces flip (Wi-Fi → cellular, sleep
     /// teardown re-attach, etc.) instead of waiting for the runtime's
@@ -48,6 +66,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var pathMonitor: NWPathMonitor?
     private var previousPathStatus: Network.NWPath.Status?
     private var previousPathInterfaces: Set<NWInterface.InterfaceType>?
+    /// Audit PROV-R2-N04 — NWPathMonitor can fire several updates within
+    /// hundreds of milliseconds when the system enumerates interfaces (e.g.
+    /// joining a Wi-Fi network: status flaps between satisfied/unsatisfied,
+    /// interfaces flip across `[wifi]`, `[wifi, wiredEthernet]`, etc.).
+    /// Without a debounce we'd kick a fresh `forceRuntimeReconnect` for each
+    /// edge — draining the battery and racing the previous reconnect's
+    /// `armHandshakeTimeout`. Coalesce updates onto a single 2 s window.
+    private var pathDebounceTask: Task<Void, Never>?
+    private static let pathDebounceSeconds: UInt64 = 2
     private let pathMonitorQueue = DispatchQueue(
         label: "com.ghoststream.client.tunnel.pathmonitor",
         qos: .utility
@@ -67,11 +94,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// state-only frame on connecting / error / disconnect.
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
+    /// Audit PROV-R2-R01 — also guards `outboundTask`, `routeSettingsTask`,
+    /// `handshakeTimeoutTask`, `pathMonitor`, `previousPathStatus`,
+    /// `previousPathInterfaces`, `pathDebounceTask`, `reconnectingWatchdogTask`,
+    /// `activeProfile`, and `activeSettings`. See those fields' docstrings
+    /// for why mutation under this lock is required.
     private let runtimeStateLock = NSLock()
     private let snapshotPayloadKey = "vpn.statusFrame.v1"
     private let snapshotUpdatedAtKey = "vpn.statusFrame.updatedAt"
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
+
+    /// Single-call escape hatch around `runtimeStateLock`. Use this for every
+    /// read/write of fields covered by the lock so we never have to remember
+    /// the lock/unlock pair by hand — see audit PROV-R2-R01.
+    @discardableResult
+    private func withStateLock<T>(_ block: () -> T) -> T {
+        runtimeStateLock.lock()
+        defer { runtimeStateLock.unlock() }
+        return block()
+    }
 
     /// Apple forbids calling the `startTunnel` completionHandler more than
     /// once — the second call traps the extension. The handler can fire
@@ -131,21 +173,25 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping () -> Void
     ) {
         log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
-        // Snapshot the task references on the calling thread, but defer
-        // cancellation + await into the Task below so we can wait for the
-        // outbound loop to drain *before* PhantomBridge tears the runtime
-        // down. Otherwise a late `submitInbound` from the AsyncStream
-        // callback hits a bridge with cleared handlers and silently
-        // drops the packet — see audit Fix 2.
-        let outbound = outboundTask
-        outboundTask = nil
-        routeSettingsTask?.cancel()
-        routeSettingsTask = nil
-        handshakeTimeoutTask?.cancel()
-        handshakeTimeoutTask = nil
+        // Audit PROV-R2-R01 — snapshot + clear task references under the
+        // state lock so a concurrent IPC `.disconnect` or `wake()` can't
+        // resurrect them after we've decided to tear down.
+        let outbound = withStateLock { () -> Task<Void, Never>? in
+            let captured = outboundTask
+            outboundTask = nil
+            routeSettingsTask?.cancel()
+            routeSettingsTask = nil
+            handshakeTimeoutTask?.cancel()
+            handshakeTimeoutTask = nil
+            reconnectingWatchdogTask?.cancel()
+            reconnectingWatchdogTask = nil
+            pathDebounceTask?.cancel()
+            pathDebounceTask = nil
+            activeProfile = nil
+            activeSettings = nil
+            return captured
+        }
         stopPathMonitor()
-        activeProfile = nil
-        activeSettings = nil
         emitProviderEvent(
             level: "INF",
             category: "tunnel",
@@ -153,14 +199,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             fields: ["reason": String(reason.rawValue)]
         )
 
+        // Audit CONC-R2-N03 / PROV-R2-N01 — wrap each teardown step in
+        // `withTimeout` so the chain never exceeds the ~5 s SIGKILL deadline.
+        // The Round 1 FFI change made `PhantomBridge.stop` block up to 9 s on
+        // its own and `setTunnelNetworkSettings(nil)` can sit 1-3 s during a
+        // bad sleep cycle; together they would always exceed the budget.
         Task {
-            outbound?.cancel()
-            _ = await outbound?.value
+            await withTimeout(seconds: 0.5) { @Sendable in
+                outbound?.cancel()
+                _ = await outbound?.value
+            }
             // CONC-H1 — give the system a chance to tear down DNS/routes
             // before the runtime stops. `nil` clears the previously-applied
             // NEPacketTunnelNetworkSettings on the active interface.
-            try? await setTunnelNetworkSettings(nil)
-            await PhantomBridge.shared.stop()
+            await withTimeout(seconds: 1.0) { [weak self] in
+                guard let self else { return }
+                try? await self.setTunnelNetworkSettings(nil)
+            }
+            await withTimeout(seconds: 1.0) { @Sendable in
+                await PhantomBridge.shared.stop()
+            }
             LogFileWriter.shared.flush()
             writeDisconnectedSnapshot()
             completionHandler()
@@ -181,38 +239,79 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             event: "sleep",
             fields: nil
         )
-        completionHandler()
+        super.sleep(completionHandler: completionHandler)
     }
 
     /// On wake the TCP sockets the runtime owns are typically dead.
     /// Restart the runtime end-to-end with the previously-loaded profile —
     /// simplest reliable path. We deliberately don't preserve the previous
     /// handshakeTimeoutTask: a fresh start re-arms its own.
+    ///
+    /// Audit PROV-R2-N05 — sleep tears down Wi-Fi/Ethernet drivers along
+    /// with the runtime sockets, and the kernel takes 1-2 s after the wake
+    /// signal to bring an interface back up. Kicking `forceRuntimeReconnect`
+    /// immediately means TLS handshake races a half-attached interface and
+    /// almost always times out via the 30 s handshake watchdog. Delay a
+    /// brief 2 s window first so the path is steady by the time we open
+    /// new sockets.
     override func wake() {
-        log.info("wake — restarting runtime")
+        super.wake()
+        log.info("wake — delaying reconnect 2s for network readiness")
         emitProviderEvent(
             level: "INF",
             category: "tunnel",
             event: "wake",
             fields: nil
         )
-        forceRuntimeReconnect(reason: "wake")
+        Task { [weak self] in
+            let nanos = Self.pathDebounceSeconds * 1_000_000_000
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled, let self else { return }
+            self.forceRuntimeReconnect(reason: "wake")
+        }
     }
 
     /// Audit PROV-H1 — restart `PhantomBridge` while preserving the
     /// already-loaded profile/settings. Used by both `wake()` and the
     /// NWPathMonitor handler. Re-arms the handshake timeout via
     /// `armHandshakeTimeout()`.
+    ///
+    /// Audit PROV-R2-R02 — `armHandshakeTimeout` MUST run *before*
+    /// `PhantomBridge.start` because the `.connected` callback can fire
+    /// inside `start`'s suspension. The previous ordering armed the
+    /// 30 s watchdog *after* the runtime had already published its
+    /// `.connected` frame, so `cancelHandshakeTimeout()` ran on `nil` and
+    /// then we promptly armed a fresh watchdog that nobody ever cancelled
+    /// — guaranteeing the tunnel was force-killed exactly 30 s after a
+    /// successful wake.
+    ///
+    /// Audit PROV-R2-N07 — also cancel any in-flight `outboundTask` before
+    /// the reconnect so we don't keep streaming TUN packets into a dead
+    /// PhantomBridge. The replacement loop is spawned right after the new
+    /// runtime is up and `setTunnelNetworkSettings` has applied.
     private func forceRuntimeReconnect(reason: String) {
-        guard let profile = activeProfile, let settings = activeSettings else {
+        let (profile, settings, outbound) = withStateLock { () -> (VpnProfile?, TunnelSettings?, Task<Void, Never>?) in
+            let captured = outboundTask
+            outboundTask = nil
+            return (activeProfile, activeSettings, captured)
+        }
+        guard let profile, let settings else {
             log.warning("forceRuntimeReconnect skipped — no active profile")
             return
         }
-        let verbose = verboseLog
+        let verbose = withStateLock { verboseLog }
         let runtimeProfile = profileForRuntime(profile: profile, settings: settings)
 
         Task {
+            // PROV-R2-N07 — drain the outbound stream so any in-flight
+            // submitInbound calls land in the dying bridge, not the new one.
+            outbound?.cancel()
+            _ = await outbound?.value
+
             await PhantomBridge.shared.stop()
+            // PROV-R2-R02 — arm the handshake watchdog BEFORE start so a
+            // racing `.connected` callback finds a cancellable timer.
+            self.armHandshakeTimeout()
             do {
                 try await PhantomBridge.shared.start(
                     profile: runtimeProfile,
@@ -233,6 +332,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                 ]
                             )
                             self.cancelHandshakeTimeout()
+                            self.cancelReconnectingWatchdog()
+                        } else if frame.state == .reconnecting {
+                            self.armReconnectingWatchdog()
                         }
                     },
                     onLog: { [weak self] frame in
@@ -251,8 +353,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     event: "reconnect",
                     fields: ["reason": reason]
                 )
-                self.armHandshakeTimeout()
+                // PROV-R2-N07 — start a fresh outbound loop now that the
+                // new bridge is live and route settings are in place.
+                let replacement: Task<Void, Never> = Task.detached { [weak self] in
+                    guard let self else { return }
+                    await self.outboundLoop()
+                }
+                self.withStateLock {
+                    self.outboundTask = replacement
+                }
             } catch {
+                self.cancelHandshakeTimeout()
                 self.emitProviderEvent(
                     level: "ERR",
                     category: "tunnel",
@@ -270,41 +381,75 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func startPathMonitor() {
         let monitor = NWPathMonitor()
-        previousPathStatus = nil
-        previousPathInterfaces = nil
+        withStateLock {
+            previousPathStatus = nil
+            previousPathInterfaces = nil
+            pathMonitor = monitor
+        }
         monitor.pathUpdateHandler = { [weak self] path in
             self?.handlePathUpdate(path)
         }
         monitor.start(queue: pathMonitorQueue)
-        pathMonitor = monitor
     }
 
     private func stopPathMonitor() {
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        previousPathStatus = nil
-        previousPathInterfaces = nil
+        withStateLock {
+            pathMonitor?.cancel()
+            pathMonitor = nil
+            previousPathStatus = nil
+            previousPathInterfaces = nil
+            // Audit PROV-R2-N04 — drop any pending debounce so a queued
+            // path-change reconnect can't fire after the tunnel is gone.
+            pathDebounceTask?.cancel()
+            pathDebounceTask = nil
+        }
     }
 
+    /// Audit PROV-R2-N04 — NWPathMonitor often emits 2-5 updates within a
+    /// few hundred ms when interfaces flap (joining/leaving a network,
+    /// captive portal probes, the system retrying DHCP). The previous code
+    /// kicked a fresh `forceRuntimeReconnect` for each edge, draining
+    /// battery and racing the previous reconnect's handshake watchdog.
+    /// Coalesce updates onto a single 2 s window: only the last edge in
+    /// that window actually triggers a reconnect.
     private func handlePathUpdate(_ path: Network.NWPath) {
         let interfaces: Set<NWInterface.InterfaceType> = [
             .wifi, .cellular, .wiredEthernet, .loopback, .other
         ].filter { path.usesInterfaceType($0) }.reduce(into: Set()) { $0.insert($1) }
 
-        let prevStatus = previousPathStatus
-        let prevIfaces = previousPathInterfaces
-        previousPathStatus = path.status
-        previousPathInterfaces = interfaces
+        let outcome: (Bool, Bool)? = withStateLock {
+            let prevStatus = previousPathStatus
+            let prevIfaces = previousPathInterfaces
+            previousPathStatus = path.status
+            previousPathInterfaces = interfaces
 
-        // First callback — record baseline, don't reconnect.
-        guard prevStatus != nil else { return }
+            // First callback — record baseline, don't reconnect.
+            guard prevStatus != nil else { return nil }
 
-        let recovered = prevStatus == .unsatisfied && path.status == .satisfied
-        let interfaceChanged = prevIfaces != nil && prevIfaces != interfaces
-        guard recovered || interfaceChanged else { return }
+            let recovered = prevStatus == .unsatisfied && path.status == .satisfied
+            let interfaceChanged = prevIfaces != nil && prevIfaces != interfaces
+            guard recovered || interfaceChanged else { return nil }
+            return (recovered, interfaceChanged)
+        }
+        guard let (recovered, interfaceChanged) = outcome else { return }
 
-        log.info("path change — forcing reconnect (recovered=\(recovered) ifaceChanged=\(interfaceChanged))")
-        forceRuntimeReconnect(reason: recovered ? "path_recovered" : "iface_changed")
+        log.info("path change — debouncing reconnect (recovered=\(recovered) ifaceChanged=\(interfaceChanged))")
+        scheduleDebouncedReconnect(reason: recovered ? "path_recovered" : "iface_changed")
+    }
+
+    private func scheduleDebouncedReconnect(reason: String) {
+        let task = Task<Void, Never> { [weak self] in
+            let nanos = Self.pathDebounceSeconds * 1_000_000_000
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled, let self else { return }
+            self.forceRuntimeReconnect(reason: reason)
+        }
+        let previous = withStateLock { () -> Task<Void, Never>? in
+            let prev = pathDebounceTask
+            pathDebounceTask = task
+            return prev
+        }
+        previous?.cancel()
     }
 
     private static func afFamily(forFirstByte byte: UInt8) -> Int32 {
@@ -315,11 +460,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func armHandshakeTimeout() {
-        cancelHandshakeTimeout()
+        // Audit PROV-R2-R01 — install the new task under the state lock so
+        // a concurrent `cancelHandshakeTimeout` (e.g. the `.connected`
+        // callback racing the post-`start` re-arm) sees one cohesive write.
         let task = Task<Void, Never> { [weak self] in
             let nanos = Self.handshakeTimeoutSeconds * 1_000_000_000
             try? await Task.sleep(nanoseconds: nanos)
             guard !Task.isCancelled, let self else { return }
+            // Audit PROV-R2-R02 — defensive double-check: if the runtime
+            // already published `.connected` between the timer firing and
+            // this branch running, bail. Pairs with the cancel in the
+            // `onStatus` `.connected` arm but survives missed cancel races.
+            let alreadyConnected = self.withStateLock { self.lastStatusFrame.state == .connected }
+            if alreadyConnected { return }
             let err = NSError(
                 domain: "GhostStream",
                 code: -1,
@@ -328,12 +481,60 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.callStartCompletionOnce(err)
             self.cancelTunnelWithError(err)
         }
-        handshakeTimeoutTask = task
+        let previous = withStateLock { () -> Task<Void, Never>? in
+            let prev = handshakeTimeoutTask
+            handshakeTimeoutTask = task
+            return prev
+        }
+        previous?.cancel()
     }
 
     private func cancelHandshakeTimeout() {
-        handshakeTimeoutTask?.cancel()
-        handshakeTimeoutTask = nil
+        let task = withStateLock { () -> Task<Void, Never>? in
+            let captured = handshakeTimeoutTask
+            handshakeTimeoutTask = nil
+            return captured
+        }
+        task?.cancel()
+    }
+
+    /// Audit PROV-R2-N02 — armed when the runtime publishes `.reconnecting`
+    /// in the `onStatus` callback. If the runtime stays in that state
+    /// without advancing to `.connected` or `.error` within
+    /// `reconnectingWatchdogSeconds`, we force a hard reconnect ourselves.
+    /// Without this watchdog the UI can be stuck on "reconnecting" forever
+    /// when the runtime's internal retry loop wedges (e.g. resolver hung,
+    /// TLS in CLOSE_WAIT).
+    private func armReconnectingWatchdog() {
+        let task = Task<Void, Never> { [weak self] in
+            let nanos = Self.reconnectingWatchdogSeconds * 1_000_000_000
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled, let self else { return }
+            let stillStuck = self.withStateLock { self.lastStatusFrame.state == .reconnecting }
+            guard stillStuck else { return }
+            self.emitProviderEvent(
+                level: "WRN",
+                category: "tunnel",
+                event: "reconnecting_watchdog",
+                fields: ["timeout_secs": String(Self.reconnectingWatchdogSeconds)]
+            )
+            self.forceRuntimeReconnect(reason: "stuck_reconnecting")
+        }
+        let previous = withStateLock { () -> Task<Void, Never>? in
+            let prev = reconnectingWatchdogTask
+            reconnectingWatchdogTask = task
+            return prev
+        }
+        previous?.cancel()
+    }
+
+    private func cancelReconnectingWatchdog() {
+        let task = withStateLock { () -> Task<Void, Never>? in
+            let captured = reconnectingWatchdogTask
+            reconnectingWatchdogTask = nil
+            return captured
+        }
+        task?.cancel()
     }
 
     // MARK: - IPC
@@ -416,8 +617,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // task that owns the current apply; cancelling it requests
             // the older apply to abandon; awaiting its `.value` blocks
             // the new apply until the cancelled run has unwound.
-            routeSettingsTask?.cancel()
-            let previous = routeSettingsTask
+            //
+            // Audit PROV-R2-R01 — install the replacement task atomically
+            // so a concurrent stopTunnel cannot null-out `routeSettingsTask`
+            // between our cancel and our store.
+            let previous = withStateLock { routeSettingsTask }
+            previous?.cancel()
             let task = Task<Void, Never> { [weak self] in
                 _ = await previous?.value
                 guard let self else { return }
@@ -450,21 +655,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     completionHandler?(try? JSONEncoder().encode(response))
                 }
             }
-            routeSettingsTask = task
+            withStateLock {
+                routeSettingsTask = task
+            }
 
         case .disconnect:
             // Same ordering as stopTunnel: defer cancel/await of the
             // outbound loop into the Task so the AsyncStream drains
             // before PhantomBridge.stop clears the runtime handlers.
-            let outbound = outboundTask
-            outboundTask = nil
-            routeSettingsTask?.cancel()
-            routeSettingsTask = nil
-            handshakeTimeoutTask?.cancel()
-            handshakeTimeoutTask = nil
+            //
+            // Audit PROV-R2-R01 — snapshot + null task references atomically.
+            let outbound = withStateLock { () -> Task<Void, Never>? in
+                let captured = outboundTask
+                outboundTask = nil
+                routeSettingsTask?.cancel()
+                routeSettingsTask = nil
+                handshakeTimeoutTask?.cancel()
+                handshakeTimeoutTask = nil
+                reconnectingWatchdogTask?.cancel()
+                reconnectingWatchdogTask = nil
+                pathDebounceTask?.cancel()
+                pathDebounceTask = nil
+                activeProfile = nil
+                activeSettings = nil
+                return captured
+            }
             stopPathMonitor()
-            activeProfile = nil
-            activeSettings = nil
             emitProviderEvent(
                 level: "INF",
                 category: "tunnel",
@@ -472,11 +688,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 fields: ["reason": "ipc"]
             )
             Task {
-                outbound?.cancel()
-                _ = await outbound?.value
+                // Audit CONC-R2-N03 / PROV-R2-N01 — bound each phase so
+                // an IPC `.disconnect` can't wedge the extension past the
+                // SIGKILL deadline (`PhantomBridge.stop` is now blocking
+                // up to 9 s after the Round 1 FFI changes).
+                await withTimeout(seconds: 0.5) { @Sendable in
+                    outbound?.cancel()
+                    _ = await outbound?.value
+                }
                 // CONC-H1 — clear DNS/routes before the runtime exits.
-                try? await self.setTunnelNetworkSettings(nil)
-                await PhantomBridge.shared.stop()
+                await withTimeout(seconds: 1.0) { [weak self] in
+                    guard let self else { return }
+                    try? await self.setTunnelNetworkSettings(nil)
+                }
+                await withTimeout(seconds: 1.0) { @Sendable in
+                    await PhantomBridge.shared.stop()
+                }
                 LogFileWriter.shared.flush()
                 writeDisconnectedSnapshot()
                 let response = TunnelIpcBridge.Response.ok
@@ -487,11 +714,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     event: "response",
                     fields: ["op": opName, "status": "ok"]
                 )
-                // CONC-H2 — let the NE framework converge to `.disconnected`
-                // so the host doesn't see the tunnel as `.connected` after
-                // an IPC-driven teardown. Apple's docs: pass `nil` for a
-                // user-initiated disconnect.
-                self.cancelTunnelWithError(nil)
+                // Audit PROV-R2-R03 — do NOT call
+                // `cancelTunnelWithError(nil)` here. Calling it after we've
+                // already cleared the network settings forces the NE
+                // framework to redo teardown a second time (it then calls
+                // `stopTunnel(with:.userInitiated, ...)` on us a few ms
+                // later), and that second teardown runs against the
+                // already-stopped bridge with no profile loaded — racing
+                // every snapshot/log frame. The Round 1 IPC commit already
+                // emits `.ok` to the host; NE will see `.disconnected`
+                // naturally as the settings-clear completes above.
             }
         }
     }
@@ -524,9 +756,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw error
         }
         let settings = loadSettings()
-        activeProfile = profile
-        activeSettings = settings
-        verboseLog = readVerboseLogPreference()
+        let verbose = readVerboseLogPreference()
+        // Audit PROV-R2-R01 — publish the loaded profile/settings/verbose
+        // flag under the state lock so a racing wake / path update doesn't
+        // observe a half-populated tuple.
+        withStateLock {
+            activeProfile = profile
+            activeSettings = settings
+            verboseLog = verbose
+        }
 
         emitProviderEvent(
             level: "INF",
@@ -537,7 +775,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 "profile_name": profile.name,
                 "server": profile.serverAddr,
                 "sni": profile.serverName,
-                "verbose_log": verboseLog ? "true" : "false",
+                "verbose_log": verbose ? "true" : "false",
             ]
         )
         publishStatusFrame(makeStateOnlyFrame(state: .connecting, profile: profile))
@@ -582,7 +820,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try await PhantomBridge.shared.start(
                 profile: runtimeProfile,
                 settings: settings,
-                verboseLog: verboseLog,
+                verboseLog: verbose,
                 onStatus: { [weak self] frame in
                     guard let self else { return }
                     // Per ADR 0007 the runtime frame is authoritative — relay
@@ -602,7 +840,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         // PROV-C1 — only signal `nil` (success) to NE after
                         // the runtime confirms the handshake is up.
                         self.cancelHandshakeTimeout()
+                        self.cancelReconnectingWatchdog()
                         self.callStartCompletionOnce(nil)
+                    } else if frame.state == .reconnecting {
+                        // PROV-R2-N02 — arm the watchdog so we don't sit in
+                        // `.reconnecting` forever if the runtime's retry
+                        // loop wedges.
+                        self.armReconnectingWatchdog()
                     }
                 },
                 onLog: { [weak self] frame in
@@ -619,6 +863,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         } catch {
             cancelHandshakeTimeout()
+            cancelReconnectingWatchdog()
             stopPathMonitor()
             await PhantomBridge.shared.stop()
             emitProviderEvent(
@@ -655,8 +900,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // Completion fires from the `.connected` onStatus callback above
         // (success) or via `armHandshakeTimeout()` (timeout).
 
-        outboundTask = Task.detached { [weak self] in
-            await self?.outboundLoop()
+        let task: Task<Void, Never> = Task.detached { [weak self] in
+            guard let self else { return }
+            await self.outboundLoop()
+        }
+        withStateLock {
+            outboundTask = task
         }
     }
 
@@ -742,6 +991,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // tunnel address as iOS so unsupported IPv6 traffic is captured
         // and dropped instead of leaking outside the VPN.
         if settings.ipv6Killswitch {
+            // TODO(PROV-R2-N08): generate per-profile ULA prefix instead of
+            // hardcoding `fd00:6768:6f73:7473::1/64`. Local networks that
+            // happen to also use the `fd00:6768::/32` block (unlikely but
+            // possible — RFC 4193 ULAs are pseudo-random per-network, and
+            // we re-use the same one across every install) would collide.
+            // Persist the generated prefix per profile so reconnects stay
+            // stable for the duration of an install.
             let ipv6 = NEIPv6Settings(
                 addresses: ["fd00:6768:6f73:7473::1"],
                 networkPrefixLengths: [64]
@@ -977,15 +1233,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func updateRoutePolicy(_ snapshot: RoutePolicySnapshot) async throws {
-        guard var settings = activeSettings, let profile = activeProfile else {
+        // Audit PROV-R2-R01 — read + write the active profile/settings under
+        // the state lock so a racing `forceRuntimeReconnect` doesn't see
+        // half-mutated settings.
+        let prepared: (VpnProfile, TunnelSettings)? = withStateLock {
+            guard var settings = activeSettings, let profile = activeProfile else {
+                return nil
+            }
+            settings.routingMode = snapshot.mode
+            settings.manualDirectCidrs = snapshot.manualDirectCidrs
+            settings.manualDirectIpv6Cidrs = snapshot.manualDirectIpv6Cidrs
+            settings.preserveScopedDns = snapshot.preserveScopedDns
+            settings.routePolicy = snapshot
+            activeSettings = settings
+            return (profile, settings)
+        }
+        guard let (profile, settings) = prepared else {
             throw ProviderError.missingProfile
         }
-        settings.routingMode = snapshot.mode
-        settings.manualDirectCidrs = snapshot.manualDirectCidrs
-        settings.manualDirectIpv6Cidrs = snapshot.manualDirectIpv6Cidrs
-        settings.preserveScopedDns = snapshot.preserveScopedDns
-        settings.routePolicy = snapshot
-        activeSettings = settings
 
         // Serialisation of concurrent applies happens at the caller via
         // `routePolicyApplier` (see handleAppMessage `.updateRoutePolicy`).
@@ -1033,9 +1298,25 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // an unbounded buffer would let memory grow without bound while
         // the Rust runtime falls behind, e.g. during a TLS handshake or
         // a brief network stall.
-        let packetsStream = AsyncStream<[Data]>(bufferingPolicy: .bufferingNewest(16)) { continuation in
-            @Sendable func scheduleRead() {
-                self.packetFlow.readPackets { packets, _ in
+        //
+        // Audit PROV-R2-N03 — `scheduleRead`'s `self.packetFlow` capture
+        // and the `readPackets` completion closure both retained the
+        // Provider strongly. NE bookkeeps active `NEPacketTunnelProvider`
+        // instances in process; the strong cycle through `packetFlow`
+        // (which references its owning provider) plus the AsyncStream
+        // captured the provider for the lifetime of the stream. Once a
+        // tunnel restart fired, the old provider was never released —
+        // the leak compounded across reconnects until the host process
+        // was reaped. Capture `self` weakly here so the AsyncStream and
+        // its underlying continuation can drop their references when the
+        // stream terminates.
+        let packetsStream = AsyncStream<[Data]>(bufferingPolicy: .bufferingNewest(16)) { [weak self] continuation in
+            func scheduleRead() {
+                guard let strong = self else {
+                    continuation.finish()
+                    return
+                }
+                strong.packetFlow.readPackets { packets, _ in
                     let result = continuation.yield(packets)
                     switch result {
                     case .terminated:
@@ -1082,17 +1363,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try data.write(to: url, options: .atomic)
-                // PROV-H8 — snapshot.json carries the active StatusFrame
-                // (server IP, SNI, session timings). The App Group container
-                // is shared between host and extension but defaults to umask
-                // (0644) on first write, letting other local users tail it
-                // out of band. Lock to 0600 immediately after every write
-                // so a rotated stat doesn't accidentally widen the perms.
-                try? FileManager.default.setAttributes(
-                    [.posixPermissions: NSNumber(value: 0o600)],
-                    ofItemAtPath: url.path
-                )
+                // Audit SEC-R2-N04 — the previous flow was
+                //   `data.write(to: url, options: .atomic)`
+                //   followed by `setAttributes(.posixPermissions: 0o600)`.
+                // Between those two steps the freshly-renamed file is
+                // visible at 0644 (umask default) — another local user can
+                // open it before the chmod completes and read SNI / server
+                // IP / tun_addr. Use `atomicWrite` which pre-creates the
+                // temp file at 0600 before the final rename so the file is
+                // never world-readable in any visible state.
+                try atomicWrite(data, to: url, mode: NSNumber(value: 0o600))
             } catch {
                 log.error("snapshot write failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -1140,6 +1420,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             fields: nil
         )
         publishStatusFrame(.disconnected)
+        // Audit PROV-R2-N11 — the in-memory ring buffer survives the
+        // disconnect → reconnect cycle because the Provider class is
+        // re-used by NE. Without an explicit reset, every `subscribeLogs`
+        // for a fresh session re-served all 10k frames from the *previous*
+        // tunnel. Clear the buffer here so the host's "Logs" tab starts
+        // empty on each new session.
+        withStateLock {
+            recentLogFrames.removeAll(keepingCapacity: false)
+        }
     }
 
     /// Build a minimal `StatusFrame` carrying only `state` plus the endpoint
@@ -1148,7 +1437,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// All telemetry fields stay at their zero/default values — the runtime
     /// owns those numbers per ADR 0007.
     private func makeStateOnlyFrame(state: ConnState, profile: VpnProfile? = nil) -> StatusFrame {
-        let p = profile ?? activeProfile
+        // Audit PROV-R2-R01 — `activeProfile` may be mutated from a
+        // background queue (e.g. `wake`'s reconnect Task or `.disconnect`
+        // IPC). Take the snapshot under the state lock when the caller
+        // didn't pass an explicit profile.
+        let p = profile ?? withStateLock { activeProfile }
         return StatusFrame(
             state: state,
             sessionSecs: 0,
@@ -1219,24 +1512,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func publishStatusFrame(_ frame: StatusFrame) {
-        runtimeStateLock.lock()
-        lastStatusFrame = frame
-        runtimeStateLock.unlock()
-
+        withStateLock {
+            lastStatusFrame = frame
+        }
         writeSnapshot(frame)
     }
 
     private func currentStatusFrame() -> StatusFrame {
-        runtimeStateLock.lock()
-        let frame = lastStatusFrame
-        runtimeStateLock.unlock()
-        return frame
+        withStateLock { lastStatusFrame }
     }
 
     private func currentLogFrames(sinceMs: UInt64) -> [LogFrame] {
-        runtimeStateLock.lock()
-        let filtered = recentLogFrames.filter { $0.tsUnixMs > sinceMs }
-        runtimeStateLock.unlock()
+        let filtered = withStateLock { recentLogFrames.filter { $0.tsUnixMs > sinceMs } }
         // Audit IPC-H1 — the first poll after the host subscribes uses
         // `sinceMs == 0` which would otherwise return up to
         // `maxRecentLogFrames` (10 000) frames in one XPC reply. Cap to
@@ -1256,12 +1543,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private static let maxRecentLogFrames = 10_000
 
     private func appendProviderLog(_ frame: LogFrame) {
-        runtimeStateLock.lock()
-        recentLogFrames.append(frame)
-        if recentLogFrames.count > Self.maxRecentLogFrames {
-            recentLogFrames.removeFirst(recentLogFrames.count - Self.maxRecentLogFrames)
+        withStateLock {
+            recentLogFrames.append(frame)
+            if recentLogFrames.count > Self.maxRecentLogFrames {
+                recentLogFrames.removeFirst(recentLogFrames.count - Self.maxRecentLogFrames)
+            }
         }
-        runtimeStateLock.unlock()
 
         // Mirror to OSLog for live `log stream` consumers — one logger
         // per category keeps the predicate filter clean. The level
@@ -1315,6 +1602,85 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return .debug
         default:
             return .info
+        }
+    }
+
+    /// Audit CONC-R2-N03 / PROV-R2-N01 — bound an async operation by a
+    /// wall-clock budget. macOS 15 Sequoia gives `stopTunnel` ~5 s before
+    /// the system SIGKILLs the extension; chained steps like
+    /// `await PhantomBridge.shared.stop()` (up to 9 s after the Round 1
+    /// FFI changes) and `setTunnelNetworkSettings(nil)` (1-3 s in the
+    /// wild) would each blow that deadline alone. Wrap each phase so we
+    /// at worst miss the tail of teardown — but always return control to
+    /// the `completionHandler` before the kill timer fires.
+    ///
+    /// Returns the operation's result, or `nil` if the timeout fired
+    /// first. The losing branch is cancelled but Swift's structured
+    /// concurrency may need a moment to unwind it — the caller should
+    /// treat the operation as best-effort once `nil` comes back.
+    @discardableResult
+    private func withTimeout<T: Sendable>(
+        seconds: Double,
+        _ op: @Sendable @escaping () async -> T
+    ) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { await op() }
+            group.addTask {
+                let nanos = UInt64(seconds * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// Audit SEC-R2-N04 — write `data` to `url` so that the file's
+    /// permissions are bounded to `mode` for the entire visible lifetime.
+    ///
+    /// The naive pattern (`data.write(to: url, options: .atomic)` followed by
+    /// `setAttributes(.posixPermissions: 0o600)`) leaves a TOCTOU window
+    /// where another process can `open(url, O_RDONLY)` before the chmod
+    /// completes. We pre-create the temp file with the target mode (via
+    /// `createFile(attributes:)`) and only then atomically rename it onto
+    /// the destination — never publishing an over-permissive view of the
+    /// payload to other local users.
+    private func atomicWrite(
+        _ data: Data,
+        to url: URL,
+        mode: NSNumber = NSNumber(value: 0o600)
+    ) throws {
+        let tempURL = url
+            .deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).tmp")
+
+        let created = FileManager.default.createFile(
+            atPath: tempURL.path,
+            contents: nil,
+            attributes: [.posixPermissions: mode]
+        )
+        guard created else {
+            throw NSError(
+                domain: "GhostStream.atomicWrite",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "createFile failed at \(tempURL.path)"]
+            )
+        }
+
+        do {
+            let handle = try FileHandle(forWritingTo: tempURL)
+            do {
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } catch {
+                try? handle.close()
+                throw error
+            }
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw error
         }
     }
 
