@@ -34,6 +34,21 @@ fn mock_backend_read_empty_would_block() {
 }
 
 #[test]
+fn mock_backend_shutdown_hint_is_noop() {
+    // The trait's default `shutdown_hint` impl is a no-op; MockBackend
+    // doesn't override it. Calling it must not panic and must leave the
+    // backend fully usable — the runtime calls this once at shutdown,
+    // but tests that re-use a MockBackend after the call expect it to
+    // keep working.
+    let backend = MockBackend::new();
+    backend.shutdown_hint();
+    backend.push_rx(vec![42]);
+    let mut buf = [0u8; 1];
+    assert_eq!(backend.read(&mut buf).expect("read after hint"), 1);
+    assert_eq!(buf[0], 42);
+}
+
+#[test]
 fn tun_io_backend_accepts_mock_via_trait_object() {
     let backend = Arc::new(MockBackend::new());
     backend.push_rx(vec![0xAA, 0xBB, 0xCC]);

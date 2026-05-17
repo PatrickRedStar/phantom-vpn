@@ -260,5 +260,27 @@ mod wintun_impl {
                 Err(e) => Err(io::Error::new(io::ErrorKind::Other, format!("{e:?}"))),
             }
         }
+
+        fn shutdown_hint(&self) {
+            // session.shutdown() cancels any active receive_blocking calls and
+            // causes the reader thread to exit with an Err on the next iteration.
+            // Idempotent — wintun internally tracks a shutdown flag.
+            if let Err(e) = self.session.shutdown() {
+                tracing::warn!(category = "tun", error = ?e, "wintun session shutdown_hint failed");
+            }
+        }
+    }
+
+    impl Drop for WintunBackend {
+        fn drop(&mut self) {
+            // Best-effort: ensure the session is stopped before the Arc
+            // chains drop. wintun's own Drop impls handle adapter cleanup;
+            // we just make sure no reader thread is mid-flight.
+            let _ = self.session.shutdown();
+            tracing::info!(
+                category = "tun",
+                "wintun backend dropped — session shut down"
+            );
+        }
     }
 }

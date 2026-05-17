@@ -28,6 +28,16 @@ pub trait PacketIo: Send + Sync {
 pub trait TunBackend: Send + Sync + 'static {
     fn read(&self, buf: &mut [u8]) -> std::io::Result<usize>;
     fn write(&self, packet: &[u8]) -> std::io::Result<usize>;
+
+    /// Hint that the reader thread should wake up and exit. Default is a
+    /// no-op; backends that block in `read()` (like Wintun's
+    /// `receive_blocking`) must override this to unblock the reader so
+    /// the runtime can shut down cleanly.
+    ///
+    /// Called by the runtime's supervise task ONCE after the supervisor
+    /// loop exits. Safe to call multiple times — implementations should
+    /// be idempotent.
+    fn shutdown_hint(&self) {}
 }
 
 /// Platform TUN I/O variant. Determines how the runtime reads from / writes to

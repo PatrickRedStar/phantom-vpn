@@ -247,6 +247,14 @@ pub async fn run(
     #[allow(unused_mut)]
     let mut tun_fd_to_close: Option<i32> = None;
 
+    // Backend to wake up at shutdown so its `read()` returns and the
+    // persistent reader thread can exit. Only set for the `TunIo::Backend`
+    // arm; Uring/BlockingThreads/Callback variants stay `None`. Without
+    // this, the reader thread blocks in `backend.read()` forever after
+    // supervise exits, holding the `Arc<WintunBackend>` alive and leaving
+    // the adapter in a zombie state for the next Connect attempt.
+    let mut backend_for_shutdown: Option<Arc<dyn TunBackend>> = None;
+
     let (tun_factory, inbound_tx): (supervise::TunFactory, tokio::sync::mpsc::Sender<Bytes>) =
         match tun {
             #[cfg(target_os = "linux")]
@@ -505,6 +513,12 @@ pub async fn run(
                 // the supervisor's ephemeral channels — same shape as the
                 // BlockingThreads arm, but driven by trait calls instead of
                 // `libc::read`/`libc::write` so it compiles on Windows.
+                //
+                // Stash a clone for the post-supervise shutdown hook so we
+                // can wake the reader out of its blocking `read()` when the
+                // supervisor exits.
+                backend_for_shutdown = Some(backend.clone());
+
                 let (persist_read_tx, persist_read_rx) =
                     tokio::sync::mpsc::channel::<Bytes>(4096);
                 let (persist_write_tx, mut persist_write_rx) =
@@ -632,6 +646,16 @@ pub async fn run(
         )
         .await;
         tracing::info!(category = "runtime", "shutdown.start");
+        // Wake up the Backend reader thread if it's blocked in `read()`.
+        // The trait's default `shutdown_hint` is a no-op; backends that
+        // block (Wintun) override it to flip an internal cancel flag so
+        // the next `read()` returns Err and the reader exits. Without
+        // this, the persistent reader holds the backend Arc forever
+        // after supervise unwinds — adapter zombie state.
+        if let Some(b) = backend_for_shutdown {
+            tracing::info!(category = "tun", name = "backend", "shutdown_hint");
+            b.shutdown_hint();
+        }
         // Close the dup'd TUN fd so Android can tear down the VPN interface.
         // Without this, the dup'd fd keeps the TUN device alive even after
         // VpnService closes its ParcelFileDescriptor. Unix-only — the
