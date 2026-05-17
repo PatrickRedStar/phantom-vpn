@@ -30,6 +30,34 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// the tunnel.
     private var verboseLog: Bool = false
 
+    /// Audit PROV-C1 — fires `callStartCompletionOnce` with a timeout
+    /// error if the runtime fails to reach `.connected` within
+    /// `handshakeTimeoutSeconds`. Stays armed until the first
+    /// `.connected` frame, then is cancelled.
+    private var handshakeTimeoutTask: Task<Void, Never>?
+    private static let handshakeTimeoutSeconds: UInt64 = 30
+
+    /// Audit PROV-H1 / PROV-H2 / CONC-C2 — observe path changes so we can
+    /// force a reconnect when interfaces flip (Wi-Fi → cellular, sleep
+    /// teardown re-attach, etc.) instead of waiting for the runtime's
+    /// 45 s idle timeout.
+    ///
+    /// `Network.NWPath` (Swift struct) is qualified so the compiler doesn't
+    /// pick NetworkExtension's deprecated ObjC `NWPath` class — that one
+    /// has no `.status` / `usesInterfaceType` API surface.
+    private var pathMonitor: NWPathMonitor?
+    private var previousPathStatus: Network.NWPath.Status?
+    private var previousPathInterfaces: Set<NWInterface.InterfaceType>?
+    private let pathMonitorQueue = DispatchQueue(
+        label: "com.ghoststream.client.tunnel.pathmonitor",
+        qos: .utility
+    )
+
+    /// Audit IPC-C2 — `updateRoutePolicy` mutates network settings; back-to-back
+    /// invocations would otherwise race `setTunnelNetworkSettings`. Serialise
+    /// through this actor so each apply completes before the next starts.
+    private let routePolicyApplier = RoutePolicyApplier()
+
     /// Last `StatusFrame` received from the runtime (or the synthetic state-only
     /// frame published while connecting). Single source of truth for IPC
     /// `getStatus` responses and snapshot fan-out.
@@ -113,6 +141,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         outboundTask = nil
         routeSettingsTask?.cancel()
         routeSettingsTask = nil
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = nil
+        stopPathMonitor()
         activeProfile = nil
         activeSettings = nil
         emitProviderEvent(
@@ -125,6 +156,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         Task {
             outbound?.cancel()
             _ = await outbound?.value
+            // CONC-H1 — give the system a chance to tear down DNS/routes
+            // before the runtime stops. `nil` clears the previously-applied
+            // NEPacketTunnelNetworkSettings on the active interface.
+            try? await setTunnelNetworkSettings(nil)
             await PhantomBridge.shared.stop()
             LogFileWriter.shared.flush()
             writeDisconnectedSnapshot()
@@ -132,19 +167,197 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    // MARK: - Power management (Audit PROV-H1 / CONC-C2)
+
+    /// macOS NE framework calls `sleep(completionHandler:)` before the
+    /// system suspends. Apple guidance: return ASAP. We don't try to
+    /// preserve the runtime — sockets will be dead on wake anyway. The
+    /// reconnection happens in `wake()`.
+    override func sleep(completionHandler: @escaping () -> Void) {
+        log.info("sleep — system suspending")
+        emitProviderEvent(
+            level: "INF",
+            category: "tunnel",
+            event: "sleep",
+            fields: nil
+        )
+        completionHandler()
+    }
+
+    /// On wake the TCP sockets the runtime owns are typically dead.
+    /// Restart the runtime end-to-end with the previously-loaded profile —
+    /// simplest reliable path. We deliberately don't preserve the previous
+    /// handshakeTimeoutTask: a fresh start re-arms its own.
+    override func wake() {
+        log.info("wake — restarting runtime")
+        emitProviderEvent(
+            level: "INF",
+            category: "tunnel",
+            event: "wake",
+            fields: nil
+        )
+        forceRuntimeReconnect(reason: "wake")
+    }
+
+    /// Audit PROV-H1 — restart `PhantomBridge` while preserving the
+    /// already-loaded profile/settings. Used by both `wake()` and the
+    /// NWPathMonitor handler. Re-arms the handshake timeout via
+    /// `armHandshakeTimeout()`.
+    private func forceRuntimeReconnect(reason: String) {
+        guard let profile = activeProfile, let settings = activeSettings else {
+            log.warning("forceRuntimeReconnect skipped — no active profile")
+            return
+        }
+        let verbose = verboseLog
+        let runtimeProfile = profileForRuntime(profile: profile, settings: settings)
+
+        Task {
+            await PhantomBridge.shared.stop()
+            do {
+                try await PhantomBridge.shared.start(
+                    profile: runtimeProfile,
+                    settings: settings,
+                    verboseLog: verbose,
+                    onStatus: { [weak self] frame in
+                        guard let self else { return }
+                        self.publishStatusFrame(frame)
+                        if frame.state == .connected {
+                            self.emitProviderEvent(
+                                level: "INF",
+                                category: "tunnel",
+                                event: "connected",
+                                fields: [
+                                    "session_secs": String(frame.sessionSecs),
+                                    "n_streams": String(frame.nStreams),
+                                    "streams_up": String(frame.streamsUp),
+                                ]
+                            )
+                            self.cancelHandshakeTimeout()
+                        }
+                    },
+                    onLog: { [weak self] frame in
+                        guard let self else { return }
+                        self.appendProviderLog(frame)
+                    },
+                    onInbound: { [weak self] data in
+                        guard let self else { return }
+                        let proto = Self.afFamily(forFirstByte: data.first ?? 0)
+                        self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: proto)])
+                    }
+                )
+                self.emitProviderEvent(
+                    level: "INF",
+                    category: "tunnel",
+                    event: "reconnect",
+                    fields: ["reason": reason]
+                )
+                self.armHandshakeTimeout()
+            } catch {
+                self.emitProviderEvent(
+                    level: "ERR",
+                    category: "tunnel",
+                    event: "reconnect_failed",
+                    fields: [
+                        "reason": reason,
+                        "error": error.localizedDescription,
+                    ]
+                )
+            }
+        }
+    }
+
+    // MARK: - NWPathMonitor (Audit PROV-H2)
+
+    private func startPathMonitor() {
+        let monitor = NWPathMonitor()
+        previousPathStatus = nil
+        previousPathInterfaces = nil
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.handlePathUpdate(path)
+        }
+        monitor.start(queue: pathMonitorQueue)
+        pathMonitor = monitor
+    }
+
+    private func stopPathMonitor() {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        previousPathStatus = nil
+        previousPathInterfaces = nil
+    }
+
+    private func handlePathUpdate(_ path: Network.NWPath) {
+        let interfaces: Set<NWInterface.InterfaceType> = [
+            .wifi, .cellular, .wiredEthernet, .loopback, .other
+        ].filter { path.usesInterfaceType($0) }.reduce(into: Set()) { $0.insert($1) }
+
+        let prevStatus = previousPathStatus
+        let prevIfaces = previousPathInterfaces
+        previousPathStatus = path.status
+        previousPathInterfaces = interfaces
+
+        // First callback — record baseline, don't reconnect.
+        guard prevStatus != nil else { return }
+
+        let recovered = prevStatus == .unsatisfied && path.status == .satisfied
+        let interfaceChanged = prevIfaces != nil && prevIfaces != interfaces
+        guard recovered || interfaceChanged else { return }
+
+        log.info("path change — forcing reconnect (recovered=\(recovered) ifaceChanged=\(interfaceChanged))")
+        forceRuntimeReconnect(reason: recovered ? "path_recovered" : "iface_changed")
+    }
+
+    private static func afFamily(forFirstByte byte: UInt8) -> Int32 {
+        // IPv4 packets have the version nibble 4 in the high 4 bits; IPv6
+        // uses 6. Anything else falls back to IPv4 (matches the historic
+        // behaviour but won't drop legitimate IPv6 packets).
+        return ((byte >> 4) == 6) ? AF_INET6 : AF_INET
+    }
+
+    private func armHandshakeTimeout() {
+        cancelHandshakeTimeout()
+        let task = Task<Void, Never> { [weak self] in
+            let nanos = Self.handshakeTimeoutSeconds * 1_000_000_000
+            try? await Task.sleep(nanoseconds: nanos)
+            guard !Task.isCancelled, let self else { return }
+            let err = NSError(
+                domain: "GhostStream",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "VPN handshake timed out"]
+            )
+            self.callStartCompletionOnce(err)
+            self.cancelTunnelWithError(err)
+        }
+        handshakeTimeoutTask = task
+    }
+
+    private func cancelHandshakeTimeout() {
+        handshakeTimeoutTask?.cancel()
+        handshakeTimeoutTask = nil
+    }
+
     // MARK: - IPC
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        guard let message = decodeIpcMessage(messageData) else {
-            // ADR 0008 §2: ipc.request emitted before any decode-success path
-            // so we still see malformed messages in the structured stream.
+        let message: TunnelIpcBridge.Message
+        do {
+            // Audit IPC-H2 — canonical Codable only. Legacy JSON-key probing
+            // and plain UTF-8 string strategies were a foot-gun; e.g. any
+            // process able to reach the session could send `"stop"` and
+            // tear down the tunnel.
+            message = try JSONDecoder().decode(TunnelIpcBridge.Message.self, from: messageData)
+        } catch {
             emitProviderEvent(
                 level: "WRN",
                 category: "ipc",
                 event: "request",
-                fields: ["op": "decode_failure"]
+                fields: [
+                    "op": "decode_failure",
+                    "error": error.localizedDescription,
+                ]
             )
-            completionHandler?(nil)
+            let response = TunnelIpcBridge.Response.error("IPC decode failed: \(error.localizedDescription)")
+            completionHandler?(try? JSONEncoder().encode(response))
             return
         }
 
@@ -183,6 +396,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
 
         case .getCurrentProfile:
+            // TODO(IPC-M4 / IPC-H5): Implementer C — extend
+            // TunnelIpcBridge.Response with `extensionVersion` and the
+            // active profile body so the host can sanity-check both wire
+            // format and active session identity without a side-band
+            // UserDefaults read.
             let response = TunnelIpcBridge.Response.ok
             completionHandler?(try? JSONEncoder().encode(response))
             emitProviderEvent(
@@ -193,9 +411,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
 
         case .updateRoutePolicy(let snapshot):
-            Task {
+            // Audit IPC-C2 — serialise concurrent route-policy applies
+            // through `routePolicyApplier`. `routeSettingsTask` is the
+            // task that owns the current apply; cancelling it requests
+            // the older apply to abandon; awaiting its `.value` blocks
+            // the new apply until the cancelled run has unwound.
+            routeSettingsTask?.cancel()
+            let previous = routeSettingsTask
+            let task = Task<Void, Never> { [weak self] in
+                _ = await previous?.value
+                guard let self else { return }
+                if Task.isCancelled { return }
                 do {
-                    try await self.updateRoutePolicy(snapshot)
+                    try await self.routePolicyApplier.apply { [weak self] in
+                        guard let self else { return }
+                        try await self.updateRoutePolicy(snapshot)
+                    }
                     let response = TunnelIpcBridge.Response.ok
                     completionHandler?(try? JSONEncoder().encode(response))
                     self.emitProviderEvent(
@@ -219,6 +450,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     completionHandler?(try? JSONEncoder().encode(response))
                 }
             }
+            routeSettingsTask = task
 
         case .disconnect:
             // Same ordering as stopTunnel: defer cancel/await of the
@@ -228,6 +460,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             outboundTask = nil
             routeSettingsTask?.cancel()
             routeSettingsTask = nil
+            handshakeTimeoutTask?.cancel()
+            handshakeTimeoutTask = nil
+            stopPathMonitor()
             activeProfile = nil
             activeSettings = nil
             emitProviderEvent(
@@ -239,6 +474,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             Task {
                 outbound?.cancel()
                 _ = await outbound?.value
+                // CONC-H1 — clear DNS/routes before the runtime exits.
+                try? await self.setTunnelNetworkSettings(nil)
                 await PhantomBridge.shared.stop()
                 LogFileWriter.shared.flush()
                 writeDisconnectedSnapshot()
@@ -250,6 +487,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     event: "response",
                     fields: ["op": opName, "status": "ok"]
                 )
+                // CONC-H2 — let the NE framework converge to `.disconnected`
+                // so the host doesn't see the tunnel as `.connected` after
+                // an IPC-driven teardown. Apple's docs: pass `nil` for a
+                // user-initiated disconnect.
+                self.cancelTunnelWithError(nil)
             }
         }
     }
@@ -267,51 +509,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func decodeIpcMessage(_ data: Data) -> TunnelIpcBridge.Message? {
-        if let message = try? JSONDecoder().decode(TunnelIpcBridge.Message.self, from: data) {
-            return message
-        }
-
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if object["getStatus"] != nil { return .getStatus }
-            if object["getCurrentProfile"] != nil { return .getCurrentProfile }
-            if object["disconnect"] != nil { return .disconnect }
-            if let payload = object["subscribeLogs"] as? [String: Any] {
-                let since = (payload["sinceMs"] as? NSNumber)?.uint64Value
-                    ?? (payload["since_ms"] as? NSNumber)?.uint64Value
-                    ?? 0
-                return .subscribeLogs(sinceMs: since)
-            }
-            if let payload = object["updateRoutePolicy"] as? [String: Any],
-               let data = try? JSONSerialization.data(withJSONObject: payload),
-               let snapshot = try? JSONDecoder().decode(RoutePolicySnapshot.self, from: data) {
-                return .updateRoutePolicy(snapshot)
-            }
-        }
-
-        guard let raw = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        else { return nil }
-
-        switch raw {
-        case "getstatus", "get_status", "status":
-            return .getStatus
-        case "getcurrentprofile", "get_current_profile", "profile":
-            return .getCurrentProfile
-        case "disconnect", "stop":
-            return .disconnect
-        default:
-            return nil
-        }
-    }
-
     // MARK: - Start
 
     private func startTunnelAsync() async throws {
-        writeStatePayload(VpnStatePayload(kind: .connecting))
-
-        let profile = try loadProfile()
+        let profile: VpnProfile
+        do {
+            profile = try loadProfile()
+        } catch {
+            // PROV-H4 — loadProfile threw before the runtime ever started.
+            // Make sure both the runtime (in case a previous session left
+            // it warm) and NE framework return to a clean state.
+            await PhantomBridge.shared.stop()
+            self.cancelTunnelWithError(error)
+            throw error
+        }
         let settings = loadSettings()
         activeProfile = profile
         activeSettings = settings
@@ -331,7 +542,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
         publishStatusFrame(makeStateOnlyFrame(state: .connecting, profile: profile))
 
-        let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
+        let networkSettings: NEPacketTunnelNetworkSettings
+        do {
+            networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
+        } catch {
+            await PhantomBridge.shared.stop()
+            self.cancelTunnelWithError(error)
+            throw error
+        }
 
         try await setTunnelNetworkSettings(networkSettings)
         emitProviderEvent(
@@ -344,6 +562,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             ]
         )
         let runtimeProfile = profileForRuntime(profile: profile, settings: settings)
+
+        // PROV-H1/H2 — observe network paths from now on so we can react
+        // to interface changes once the tunnel is up.
+        startPathMonitor()
+
+        // PROV-C1 — arm the handshake timeout *before* calling start. The
+        // timer is cancelled once the first `.connected` frame arrives via
+        // `onStatus` below; on expiry it routes through
+        // `callStartCompletionOnce` so racing paths still respect the
+        // single-shot invariant.
+        armHandshakeTimeout()
 
         // Every completion path below routes through `callStartCompletionOnce`
         // (see `startCompletionLock` docstring) so racing callbacks from
@@ -370,6 +599,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                 "streams_up": String(frame.streamsUp),
                             ]
                         )
+                        // PROV-C1 — only signal `nil` (success) to NE after
+                        // the runtime confirms the handshake is up.
+                        self.cancelHandshakeTimeout()
                         self.callStartCompletionOnce(nil)
                     }
                 },
@@ -379,10 +611,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 },
                 onInbound: { [weak self] data in
                     guard let self else { return }
-                    self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: AF_INET)])
+                    // PROV-C3 — IPv6 packets must be tagged with AF_INET6 so
+                    // packetFlow doesn't silently drop them.
+                    let proto = Self.afFamily(forFirstByte: data.first ?? 0)
+                    self.packetFlow.writePackets([data], withProtocols: [NSNumber(value: proto)])
                 }
             )
         } catch {
+            cancelHandshakeTimeout()
+            stopPathMonitor()
             await PhantomBridge.shared.stop()
             emitProviderEvent(
                 level: "ERR",
@@ -393,11 +630,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     "error": error.localizedDescription,
                 ]
             )
+            // PROV-H4 — make sure NE framework also returns to a clean state.
             // Re-throw so the outer Task's catch logs + writes the error
             // snapshot. The completion-handler call is funneled through
             // `callStartCompletionOnce` from that catch — not here — so
             // we don't double-fire if `onStatus` already saw `.connected`
             // before the start coroutine threw.
+            self.cancelTunnelWithError(error)
             throw error
         }
 
@@ -408,7 +647,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             fields: nil
         )
 
-        callStartCompletionOnce(nil)
+        // PROV-C1 — DO NOT call `callStartCompletionOnce(nil)` here. The
+        // runtime only kicks tokio::spawn'd workers — the handshake hasn't
+        // started yet. Signalling success now would tell NE the tunnel is
+        // `.connected` immediately, breaking the system status indicator
+        // and the host's ability to surface a real handshake failure.
+        // Completion fires from the `.connected` onStatus callback above
+        // (success) or via `armHandshakeTimeout()` (timeout).
 
         outboundTask = Task.detached { [weak self] in
             await self?.outboundLoop()
@@ -489,13 +734,42 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         configureIPv4Routes(ipv4, for: profile, settings: settings)
         networkSettings.ipv4Settings = ipv4
 
-        let ipv6 = NEIPv6Settings(addresses: [], networkPrefixLengths: [])
+        // PROV-C2 — apply iOS-equivalent IPv6 settings on macOS. Apple
+        // requires at least one tunnel IPv6 address before NEIPv6Settings
+        // applies; without it the previous empty-addresses path silently
+        // ignored the ipv6Killswitch toggle and real IPv6 traffic kept
+        // routing through the physical interface. We use the same ULA
+        // tunnel address as iOS so unsupported IPv6 traffic is captured
+        // and dropped instead of leaking outside the VPN.
         if settings.ipv6Killswitch {
-            ipv6.includedRoutes = [NEIPv6Route.default()]
+            let ipv6 = NEIPv6Settings(
+                addresses: ["fd00:6768:6f73:7473::1"],
+                networkPrefixLengths: [64]
+            )
+            let directIpv6Cidrs = directIpv6RoutesForRouteComputation(settings: settings)
+            if shouldTunnelIPv6Traffic(settings: settings, directIpv6Cidrs: directIpv6Cidrs) {
+                ipv6.includedRoutes = [NEIPv6Route.default()]
+                let excludedRoutes = directIpv6Cidrs.compactMap(route(forIPv6CIDR:))
+                if !excludedRoutes.isEmpty {
+                    ipv6.excludedRoutes = excludedRoutes
+                }
+            } else {
+                ipv6.excludedRoutes = [NEIPv6Route.default()]
+                log.warning("split routing leaves IPv6 outside tunnel because no routeable IPv6 direct rules are available")
+            }
+            networkSettings.ipv6Settings = ipv6
         } else {
-            ipv6.excludedRoutes = [NEIPv6Route.default()]
+            // killswitch off — still route IPv6 default into the tunnel
+            // (so traffic goes through the VPN rather than the clear
+            // interface). Without a tunnel address NEIPv6Settings is
+            // ignored; supply the ULA so the include actually applies.
+            let ipv6 = NEIPv6Settings(
+                addresses: ["fd00:6768:6f73:7473::1"],
+                networkPrefixLengths: [64]
+            )
+            ipv6.includedRoutes = [NEIPv6Route.default()]
+            networkSettings.ipv6Settings = ipv6
         }
-        networkSettings.ipv6Settings = ipv6
 
         let dnsServers = profile.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
         let dns = NEDNSSettings(servers: dnsServers)
@@ -505,6 +779,37 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         networkSettings.dnsSettings = dns
 
         return networkSettings
+    }
+
+    private func directIpv6RoutesForRouteComputation(settings: TunnelSettings) -> [String] {
+        guard settings.routingMode != .global else { return [] }
+        var cidrs = settings.manualDirectIpv6Cidrs
+        cidrs.append(contentsOf: settings.routePolicy?.manualDirectIpv6Cidrs ?? [])
+        let normalized = RoutePolicySnapshot.normalizedIPv6Cidrs(from: cidrs.joined(separator: "\n")).valid
+        let routeable = RoutePolicySnapshot.routeableIPv6Cidrs(normalized)
+        if normalized.count > RoutePolicySnapshot.maxDirectIPv6RouteCount {
+            log.error(
+                "too many IPv6 direct routes (\(normalized.count, privacy: .public)); skipping IPv6 exceptions to keep tunnel startup reliable"
+            )
+        }
+        return routeable
+    }
+
+    private func shouldTunnelIPv6Traffic(settings: TunnelSettings, directIpv6Cidrs: [String]) -> Bool {
+        if settings.routingMode == .global { return true }
+        return !directIpv6Cidrs.isEmpty
+    }
+
+    private func route(forIPv6CIDR cidr: String) -> NEIPv6Route? {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = Int(parts[1]),
+              (0...128).contains(prefix)
+        else { return nil }
+        return NEIPv6Route(
+            destinationAddress: String(parts[0]),
+            networkPrefixLength: NSNumber(value: prefix)
+        )
     }
 
     private func configureIPv4Routes(
@@ -677,11 +982,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         settings.routingMode = snapshot.mode
         settings.manualDirectCidrs = snapshot.manualDirectCidrs
+        settings.manualDirectIpv6Cidrs = snapshot.manualDirectIpv6Cidrs
         settings.preserveScopedDns = snapshot.preserveScopedDns
         settings.routePolicy = snapshot
         activeSettings = settings
 
-        routeSettingsTask?.cancel()
+        // Serialisation of concurrent applies happens at the caller via
+        // `routePolicyApplier` (see handleAppMessage `.updateRoutePolicy`).
         let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
         try await setTunnelNetworkSettings(networkSettings)
         appendProviderLog(
@@ -721,7 +1028,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// finishes, and any late `readPackets` callback yields into a finished
     /// stream (no-op, no leak).
     private func outboundLoop() async {
-        let packetsStream = AsyncStream<[Data]> { continuation in
+        // PROV-H7 — buffer at most 16 batches of pending packets. Packet
+        // loss is acceptable under back-pressure (TCP will retransmit);
+        // an unbounded buffer would let memory grow without bound while
+        // the Rust runtime falls behind, e.g. during a TLS handshake or
+        // a brief network stall.
+        let packetsStream = AsyncStream<[Data]>(bufferingPolicy: .bufferingNewest(16)) { continuation in
             @Sendable func scheduleRead() {
                 self.packetFlow.readPackets { packets, _ in
                     let result = continuation.yield(packets)
@@ -746,14 +1058,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - State broadcast
 
-    private func writeStatePayload(_ payload: VpnStatePayload) {
-        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.client") else { return }
-        if let data = try? JSONEncoder().encode(payload) {
-            defaults.set(data, forKey: "vpn.state.v1")
-            defaults.synchronize()
-        }
-        DarwinNotifications.post(DarwinNotifications.stateChanged)
-    }
+    // IPC-H3 — `vpn.state.v1` UserDefaults channel + its dedicated Darwin
+    // notification has no reader (snapshot.json + a single Darwin
+    // notification covers both writers and readers). Removed to eliminate
+    // the dead path and the duplicate-write that IPC-M4 also flagged
+    // (the "connecting" payload was written twice per start).
 
     private func writeSnapshot(_ frame: StatusFrame) {
         guard let data = try? JSONEncoder().encode(frame) else { return }
@@ -774,6 +1083,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     withIntermediateDirectories: true
                 )
                 try data.write(to: url, options: .atomic)
+                // PROV-H8 — snapshot.json carries the active StatusFrame
+                // (server IP, SNI, session timings). The App Group container
+                // is shared between host and extension but defaults to umask
+                // (0644) on first write, letting other local users tail it
+                // out of band. Lock to 0600 immediately after every write
+                // so a rotated stat doesn't accidentally widen the perms.
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: NSNumber(value: 0o600)],
+                    ofItemAtPath: url.path
+                )
             } catch {
                 log.error("snapshot write failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -781,22 +1100,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             log.error("snapshot container unavailable")
         }
 
-        let payload: VpnStatePayload
-        switch frame.state {
-        case .disconnected:
-            payload = VpnStatePayload(kind: .disconnected)
-        case .connecting:
-            payload = VpnStatePayload(kind: .connecting)
-        case .reconnecting:
-            payload = VpnStatePayload(kind: .connecting)
-        case .connected:
-            payload = VpnStatePayload(kind: .connected,
-                                       since: Date().timeIntervalSince1970 - Double(frame.sessionSecs),
-                                       serverName: frame.sni ?? frame.serverAddr ?? "")
-        case .error:
-            payload = VpnStatePayload(kind: .error, error: frame.lastError)
-        }
-        writeStatePayload(payload)
+        // Single Darwin notification — consumers re-read snapshot.json.
+        DarwinNotifications.post(DarwinNotifications.stateChanged)
     }
 
     private func writeErrorSnapshot(_ message: String) {
@@ -930,9 +1235,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func currentLogFrames(sinceMs: UInt64) -> [LogFrame] {
         runtimeStateLock.lock()
-        let frames = recentLogFrames.filter { $0.tsUnixMs > sinceMs }
+        let filtered = recentLogFrames.filter { $0.tsUnixMs > sinceMs }
         runtimeStateLock.unlock()
-        return frames
+        // Audit IPC-H1 — the first poll after the host subscribes uses
+        // `sinceMs == 0` which would otherwise return up to
+        // `maxRecentLogFrames` (10 000) frames in one XPC reply. Cap to
+        // the most recent 500; the client advances `sinceMs` on each
+        // poll, so backlog beyond that catches up across subsequent
+        // round-trips without slowing the first response.
+        let maxFrames = 500
+        if filtered.count > maxFrames {
+            return Array(filtered.suffix(maxFrames))
+        }
+        return filtered
     }
 
     /// Maximum number of `LogFrame`s retained in the in-memory ring
@@ -1106,5 +1421,16 @@ private final class OSLogCategoryPool {
         cache[key] = logger
         lock.unlock()
         return logger
+    }
+}
+
+/// Audit IPC-C2 — serialises concurrent `updateRoutePolicy` invocations.
+/// Actor isolation guarantees that any `apply { ... }` closure runs to
+/// completion (or throws) before the next queued closure begins. Without
+/// this two `setTunnelNetworkSettings` could race and leave the route
+/// table in an inconsistent state on rapid Upstream Monitor toggles.
+private actor RoutePolicyApplier {
+    func apply(_ work: @Sendable () async throws -> Void) async throws {
+        try await work()
     }
 }

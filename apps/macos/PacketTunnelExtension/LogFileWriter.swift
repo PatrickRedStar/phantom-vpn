@@ -47,10 +47,15 @@ public final class LogFileWriter {
         return e
     }()
     private let dayFormatter: DateFormatter = {
+        // Audit PROV-H9 — log archives are named by *local* day so the
+        // file the user sees matches when they used the app. UTC was a
+        // surprise for users on UTC+offset timezones (especially around
+        // midnight in Europe/Moscow), where the running day didn't match
+        // the rotated-archive filename.
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
+        f.timeZone = .current
         return f
     }()
 
