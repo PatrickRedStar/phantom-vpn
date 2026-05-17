@@ -21,16 +21,26 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
+import androidx.compose.material3.adaptive.layout.AnimatedPane
+import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
+import androidx.compose.material3.adaptive.navigation.NavigableListDetailPaneScaffold
+import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import com.ghoststream.vpn.ui.components.GhostDialog
 import com.ghoststream.vpn.ui.components.GhostFullDialog
 import com.ghoststream.vpn.ui.components.GhostDialogButton
 import com.ghoststream.vpn.ui.components.ghostTextFieldColors
 import com.ghoststream.vpn.ui.components.GhostTextFieldShape
+import com.ghoststream.vpn.ui.components.isTabletExpanded
+import com.ghoststream.vpn.ui.components.isTabletPortrait
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +48,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -69,7 +80,29 @@ import com.ghoststream.vpn.ui.theme.GsTextFaint
 import com.ghoststream.vpn.ui.theme.GsWarn
 import android.content.Context
 import android.os.PowerManager
+import kotlinx.coroutines.launch
 
+// ── v0.26.2: master-detail selection ─────────────────────────────────────────
+//
+// On tablet/foldable layouts the Settings screen splits into a Master pane
+// (endpoint list + section selectors) and a Detail pane (per-endpoint config,
+// theme, diagnostic). This sealed class tracks which detail to show.
+//
+// Endpoint(profileId) — show server addr/SNI/identity + tunnel settings
+// Tunnel — global tunnel rows (DNS / split routing / per-app / always-on)
+// System — language / theme / app icon
+// Diagnostic — share logs / version info
+//
+// On Compact (phone), this state is unused — the screen falls back to the
+// original 1-column scroll. v0.26.2.
+private sealed class SettingsDetailKind {
+    data class Endpoint(val profileId: String) : SettingsDetailKind()
+    data object Tunnel : SettingsDetailKind()
+    data object System : SettingsDetailKind()
+    data object Diagnostic : SettingsDetailKind()
+}
+
+@OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
@@ -111,219 +144,185 @@ fun SettingsScreen(
         }
     }
 
-    val version = com.ghoststream.vpn.BuildConfig.VERSION_NAME
-    val gitTag = com.ghoststream.vpn.BuildConfig.GIT_TAG
+    // ── v0.26.2: layout branching ───────────────────────────────────────
+    // Compact (phone): keep the original 1-column scroll, pixel-identical
+    // to v0.26.1. NavigableListDetailPaneScaffold _would_ gracefully degrade
+    // to a single pane on Compact, but it adds list/detail history machinery
+    // and an `AnimatedPane` wrapper that re-clips/re-paints sections —
+    // measurable jank on lower-end phones. Cheaper to keep the well-known
+    // Column path on phones.
+    val isExpanded = isTabletExpanded()
+    val isMediumP = isTabletPortrait()
+    val isCompact = !isExpanded && !isMediumP
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(C.bg)
-            .verticalScroll(rememberScrollState()),
-    ) {
-        ScreenHeader(
-            brand = stringResource(R.string.brand_settings),
-            meta = { HeaderMeta(text = stringResource(R.string.version_fmt, version, gitTag)) },
-        )
-
-        // ── Endpoints ────────────────────────────────────────────────────────
-        SectionLabel(
-            text = "${stringResource(R.string.set_endpoints)} · ${"%02d".format(profiles.size)}",
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            profiles.forEach { profile ->
-                ProfileCard(
-                    profile = profile,
-                    active = profile.id == activeProfileId,
-                    latencyMs = pingResults[profile.id],
-                    isPinging = profile.id in pinging,
-                    subscriptionText = profileSubscriptions[profile.id],
-                    onTap = { viewModel.setActiveProfile(profile.id) },
-                    onEdit = {
-                        editingProfile = profile
-                        editName = profile.name
-                    },
-                    onLongPressAdmin = if (profile.cachedIsAdmin == true) {
-                        { onAdminNavigate(profile.id) }
-                    } else null,
-                )
-            }
-
-            DashedGhostCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showAddDialog = true },
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 18.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = stringResource(R.string.profile_add_cta).uppercase(),
-                        style = GsText.labelMono,
-                        color = C.textDim,
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(24.dp))
-
-        // ── Routing ──────────────────────────────────────────────────────────
-        SectionLabel(text = stringResource(R.string.set_routing))
-        SectionCard {
-            SettingRow(
-                label = stringResource(R.string.row_dns),
-                sub = config.dnsServers.joinToString(" · ").ifEmpty { "—" },
-                right = {
-                    Text(
-                        stringResource(R.string.value_custom).uppercase(),
-                        style = GsText.labelMono,
-                        color = C.textDim,
-                    )
-                },
-                onClick = { showDnsPicker = true },
-                showDivider = true,
-            )
-            SettingRow(
-                label = stringResource(R.string.row_split_tunnel),
-                sub = if (config.splitRouting)
-                    stringResource(R.string.sub_split_bypass, config.directCountries.size)
-                else "Off",
-                right = {
-                    GhostToggle(
-                        checked = config.splitRouting,
-                        onToggle = { viewModel.setSplitRouting(!config.splitRouting) },
-                    )
-                },
-                onClick = { showSplitTunnel = true },
-                showDivider = true,
-            )
-            SettingRow(
-                label = stringResource(R.string.row_per_app),
-                sub = when (config.perAppMode) {
-                    "disallowed" -> stringResource(R.string.sub_per_app_excluded, config.perAppList.size)
-                    "allowed"    -> "${config.perAppList.size} apps selected"
-                    else         -> "All through VPN"
-                },
-                right = {
-                    GhostToggle(
-                        checked = config.perAppMode != "none",
-                        onToggle = {
-                            viewModel.setPerAppMode(
-                                if (config.perAppMode == "none") "disallowed" else "none",
-                            )
-                        },
-                    )
-                },
-                onClick = {
-                    if (config.perAppMode == "none") viewModel.setPerAppMode("disallowed")
-                    viewModel.loadInstalledApps()
-                    showPerAppPicker = true
-                },
-                showDivider = true,
-            )
-            SettingRow(
-                label = stringResource(R.string.row_always_on),
-                sub = stringResource(R.string.sub_always_on),
-                right = {
-                    GhostToggle(checked = autoStart, onToggle = { viewModel.setAutoStartOnBoot(!autoStart) })
-                },
-                showDivider = false,
-            )
-        }
-
-        // ── v0.25.1 W3-12/W3-13: OEM lifecycle hints ────────────────────────
-        //
-        // On Xiaomi/MIUI, Huawei/EMUI, Vivo, Oppo/ColorOS, Realme and Honor
-        // the standard Android boot/foreground-service guarantees aren't
-        // enough — the vendor's "Security center" silently kills background
-        // VPNs unless the user explicitly grants two permissions that are
-        // hidden 3-4 settings screens deep. We surface them inline only on
-        // those devices, only when relevant. v0.25.1 W3-12 + W3-13.
-        OemLifecycleHints(
-            autoStart = autoStart,
+    if (isCompact) {
+        PhoneSettingsBody(
             viewModel = viewModel,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp, start = 18.dp, end = 18.dp),
+            config = config,
+            profiles = profiles,
+            activeProfileId = activeProfileId,
+            pingResults = pingResults,
+            pinging = pinging,
+            profileSubscriptions = profileSubscriptions,
+            autoStart = autoStart,
+            languageOverride = languageOverride,
+            theme = theme,
+            appIcon = appIcon,
+            onShowAddDialog = { showAddDialog = true },
+            onShowDnsPicker = { showDnsPicker = true },
+            onShowPerAppPicker = { showPerAppPicker = true },
+            onShowSplitTunnel = { showSplitTunnel = true },
+            onEditProfile = { p -> editingProfile = p; editName = p.name },
+            onAdminNavigate = onAdminNavigate,
         )
-
-        Spacer(Modifier.height(24.dp))
-
-        // ── Appearance ───────────────────────────────────────────────────────
-        SectionLabel(text = stringResource(R.string.set_appearance))
-        SectionCard {
-            SettingRow(
-                label = stringResource(R.string.row_language),
-                sub = stringResource(R.string.sub_interface_locale),
-                right = {
-                    LangSwitch(
-                        selected = languageOverride,
-                        onSelect = { code ->
-                            viewModel.setLanguageOverride(code)
-                            val locales = if (code.isNullOrBlank())
-                                LocaleListCompat.getEmptyLocaleList()
-                            else
-                                LocaleListCompat.forLanguageTags(code)
-                            AppCompatDelegate.setApplicationLocales(locales)
-                        },
-                    )
+    } else {
+        // ── Tablet / foldable: NavigableListDetailPaneScaffold ──────────
+        // Default selection: first endpoint if exists, else Tunnel. Saved
+        // through configuration changes via listSaver — survives rotation
+        // and process death.
+        var selectedDetail by rememberSaveable(
+            stateSaver = listSaver<SettingsDetailKind, Any>(
+                save = { state ->
+                    when (state) {
+                        is SettingsDetailKind.Endpoint -> listOf("endpoint", state.profileId)
+                        SettingsDetailKind.Tunnel -> listOf("tunnel")
+                        SettingsDetailKind.System -> listOf("system")
+                        SettingsDetailKind.Diagnostic -> listOf("diagnostic")
+                    }
                 },
-                showDivider = true,
-            )
-            SettingRow(
-                label = stringResource(R.string.row_theme),
-                sub = stringResource(R.string.sub_theme_descr),
-                right = {
-                    ThemeSwitch(
-                        selected = theme,
-                        onSelect = { viewModel.setTheme(it) },
-                    )
+                restore = { list ->
+                    when (list[0] as String) {
+                        "endpoint" -> SettingsDetailKind.Endpoint(list[1] as String)
+                        "tunnel" -> SettingsDetailKind.Tunnel
+                        "system" -> SettingsDetailKind.System
+                        "diagnostic" -> SettingsDetailKind.Diagnostic
+                        else -> SettingsDetailKind.Tunnel
+                    }
                 },
-                showDivider = true,
-            )
-            SettingRow(
-                label = stringResource(R.string.row_app_icon),
-                sub = stringResource(R.string.sub_app_icon),
-                right = {
-                    IconSwitch(
-                        selected = appIcon,
-                        onSelect = { viewModel.setAppIcon(it) },
-                    )
-                },
-                showDivider = false,
+            ),
+        ) {
+            mutableStateOf<SettingsDetailKind>(
+                profiles.firstOrNull()?.let { SettingsDetailKind.Endpoint(it.id) }
+                    ?: SettingsDetailKind.Tunnel,
             )
         }
 
-        Spacer(Modifier.height(24.dp))
+        // 3-pane extra column with OEM hints + version — only when the
+        // screen is wide enough (≥1100 dp). On Expanded but narrower we
+        // keep hints inline in master pane.
+        val configuration = LocalConfiguration.current
+        val isWideExpanded = isExpanded && configuration.screenWidthDp >= 1100
 
-        // ── Diagnostic ───────────────────────────────────────────────────────
-        SectionLabel(text = stringResource(R.string.set_diagnostic))
-        SectionCard {
-            SettingRow(
-                label = stringResource(R.string.row_share_debug),
-                sub = stringResource(R.string.sub_debug_descr),
-                right = {
-                    Text(
-                        stringResource(R.string.value_export).uppercase(),
-                        style = GsText.labelMono,
-                        color = C.signal,
-                    )
+        val navigator = rememberListDetailPaneScaffoldNavigator<Any>()
+        val coroutineScope = rememberCoroutineScope()
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(C.bg),
+        ) {
+            NavigableListDetailPaneScaffold(
+                navigator = navigator,
+                listPane = {
+                    AnimatedPane {
+                        MasterPane(
+                            viewModel = viewModel,
+                            profiles = profiles,
+                            activeProfileId = activeProfileId,
+                            pingResults = pingResults,
+                            pinging = pinging,
+                            profileSubscriptions = profileSubscriptions,
+                            autoStart = autoStart,
+                            selectedDetail = selectedDetail,
+                            showOemHints = !isWideExpanded,
+                            onSelectEndpoint = { profileId ->
+                                viewModel.setActiveProfile(profileId)
+                                selectedDetail = SettingsDetailKind.Endpoint(profileId)
+                                coroutineScope.launch {
+                                    navigator.navigateTo(ListDetailPaneScaffoldRole.Detail)
+                                }
+                            },
+                            onSelectSection = { kind ->
+                                selectedDetail = kind
+                                coroutineScope.launch {
+                                    navigator.navigateTo(ListDetailPaneScaffoldRole.Detail)
+                                }
+                            },
+                            onAddEndpoint = { showAddDialog = true },
+                            onEditProfile = { p ->
+                                editingProfile = p
+                                editName = p.name
+                            },
+                            onAdminNavigate = onAdminNavigate,
+                        )
+                    }
                 },
-                onClick = { viewModel.shareDebugReport(context) },
-                showDivider = false,
+                detailPane = {
+                    AnimatedPane {
+                        val detail = selectedDetail
+                        // Fallback if the selected endpoint was deleted in
+                        // another pane while we were on it.
+                        val resolvedDetail = if (detail is SettingsDetailKind.Endpoint
+                            && profiles.none { it.id == detail.profileId }) {
+                            profiles.firstOrNull()?.let { SettingsDetailKind.Endpoint(it.id) }
+                                ?: SettingsDetailKind.Tunnel
+                        } else detail
+
+                        when (resolvedDetail) {
+                            is SettingsDetailKind.Endpoint -> {
+                                val profile = profiles.find { it.id == resolvedDetail.profileId }
+                                if (profile != null) {
+                                    ProfileDetailPane(
+                                        viewModel = viewModel,
+                                        profile = profile,
+                                        config = config,
+                                        autoStart = autoStart,
+                                        onShowDnsPicker = { showDnsPicker = true },
+                                        onShowPerAppPicker = { showPerAppPicker = true },
+                                        onShowSplitTunnel = { showSplitTunnel = true },
+                                        onEditProfile = {
+                                            editingProfile = profile
+                                            editName = profile.name
+                                        },
+                                        onAdminNavigate = onAdminNavigate,
+                                    )
+                                } else {
+                                    // No profiles at all — prompt the user.
+                                    EmptyDetailPane(onAddEndpoint = { showAddDialog = true })
+                                }
+                            }
+                            SettingsDetailKind.Tunnel -> TunnelGlobalDetailPane(
+                                viewModel = viewModel,
+                                config = config,
+                                autoStart = autoStart,
+                                onShowDnsPicker = { showDnsPicker = true },
+                                onShowPerAppPicker = { showPerAppPicker = true },
+                                onShowSplitTunnel = { showSplitTunnel = true },
+                            )
+                            SettingsDetailKind.System -> SystemDetailPane(
+                                viewModel = viewModel,
+                                languageOverride = languageOverride,
+                                theme = theme,
+                                appIcon = appIcon,
+                            )
+                            SettingsDetailKind.Diagnostic -> DiagnosticDetailPane(
+                                viewModel = viewModel,
+                            )
+                        }
+                    }
+                },
+                extraPane = if (isWideExpanded) {
+                    {
+                        AnimatedPane {
+                            OemHintsExtraPane(
+                                viewModel = viewModel,
+                                autoStart = autoStart,
+                            )
+                        }
+                    }
+                } else null,
             )
         }
-
-        Spacer(Modifier.height(100.dp))
     }
 
     // ── Split-Tunnel Dialog ─────────────────────────────────────────────
@@ -721,6 +720,714 @@ fun SettingsScreen(
                 showAddDialog = false
             },
         )
+    }
+}
+
+// ── v0.26.2: Compact (phone) body — original 1-column scroll ────────────────
+// Kept structurally identical to v0.26.1's body so phone behaviour is
+// pixel-stable. All callbacks lifted to parent.
+@Composable
+private fun PhoneSettingsBody(
+    viewModel: SettingsViewModel,
+    config: com.ghoststream.vpn.data.VpnConfig,
+    profiles: List<VpnProfile>,
+    activeProfileId: String?,
+    pingResults: Map<String, Long?>,
+    pinging: Set<String>,
+    profileSubscriptions: Map<String, String>,
+    autoStart: Boolean,
+    languageOverride: String?,
+    theme: String,
+    appIcon: String,
+    onShowAddDialog: () -> Unit,
+    onShowDnsPicker: () -> Unit,
+    onShowPerAppPicker: () -> Unit,
+    onShowSplitTunnel: () -> Unit,
+    onEditProfile: (VpnProfile) -> Unit,
+    onAdminNavigate: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val version = com.ghoststream.vpn.BuildConfig.VERSION_NAME
+    val gitTag = com.ghoststream.vpn.BuildConfig.GIT_TAG
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        ScreenHeader(
+            brand = stringResource(R.string.brand_settings),
+            meta = { HeaderMeta(text = stringResource(R.string.version_fmt, version, gitTag)) },
+        )
+
+        // ── Endpoints ───────────────────────────────────────────────
+        SectionLabel(
+            text = "${stringResource(R.string.set_endpoints)} · ${"%02d".format(profiles.size)}",
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            profiles.forEach { profile ->
+                ProfileCard(
+                    profile = profile,
+                    active = profile.id == activeProfileId,
+                    latencyMs = pingResults[profile.id],
+                    isPinging = profile.id in pinging,
+                    subscriptionText = profileSubscriptions[profile.id],
+                    onTap = { viewModel.setActiveProfile(profile.id) },
+                    onEdit = { onEditProfile(profile) },
+                    onLongPressAdmin = if (profile.cachedIsAdmin == true) {
+                        { onAdminNavigate(profile.id) }
+                    } else null,
+                )
+            }
+
+            DashedGhostCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onShowAddDialog() },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 18.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(R.string.profile_add_cta).uppercase(),
+                        style = GsText.labelMono,
+                        color = C.textDim,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // ── Routing ─────────────────────────────────────────────────
+        SectionLabel(text = stringResource(R.string.set_routing))
+        SectionCard {
+            TunnelRows(
+                viewModel = viewModel,
+                config = config,
+                autoStart = autoStart,
+                onShowDnsPicker = onShowDnsPicker,
+                onShowPerAppPicker = onShowPerAppPicker,
+                onShowSplitTunnel = onShowSplitTunnel,
+            )
+        }
+
+        // ── v0.25.1 W3-12/W3-13: OEM lifecycle hints ────────────────
+        OemLifecycleHints(
+            autoStart = autoStart,
+            viewModel = viewModel,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, start = 18.dp, end = 18.dp),
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        // ── Appearance ──────────────────────────────────────────────
+        SectionLabel(text = stringResource(R.string.set_appearance))
+        SectionCard {
+            AppearanceRows(
+                viewModel = viewModel,
+                languageOverride = languageOverride,
+                theme = theme,
+                appIcon = appIcon,
+            )
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // ── Diagnostic ──────────────────────────────────────────────
+        SectionLabel(text = stringResource(R.string.set_diagnostic))
+        SectionCard {
+            SettingRow(
+                label = stringResource(R.string.row_share_debug),
+                sub = stringResource(R.string.sub_debug_descr),
+                right = {
+                    Text(
+                        stringResource(R.string.value_export).uppercase(),
+                        style = GsText.labelMono,
+                        color = C.signal,
+                    )
+                },
+                onClick = { viewModel.shareDebugReport(context) },
+                showDivider = false,
+            )
+        }
+
+        Spacer(Modifier.height(100.dp))
+    }
+}
+
+// ── v0.26.2: Master pane (tablet/foldable) ──────────────────────────────────
+//
+// On tablet and foldable layouts the master pane is the left-hand 240 dp
+// column listing endpoints and section selectors. Tapping a card or a section
+// header swaps the detail pane on the right. On Medium-portrait (overlapping
+// mode), tapping animates the detail pane in from the side; back gesture
+// returns here.
+@Composable
+private fun MasterPane(
+    viewModel: SettingsViewModel,
+    profiles: List<VpnProfile>,
+    activeProfileId: String?,
+    pingResults: Map<String, Long?>,
+    pinging: Set<String>,
+    profileSubscriptions: Map<String, String>,
+    autoStart: Boolean,
+    selectedDetail: SettingsDetailKind,
+    showOemHints: Boolean,
+    onSelectEndpoint: (String) -> Unit,
+    onSelectSection: (SettingsDetailKind) -> Unit,
+    onAddEndpoint: () -> Unit,
+    onEditProfile: (VpnProfile) -> Unit,
+    onAdminNavigate: (String) -> Unit,
+) {
+    val version = com.ghoststream.vpn.BuildConfig.VERSION_NAME
+    val gitTag = com.ghoststream.vpn.BuildConfig.GIT_TAG
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        ScreenHeader(
+            brand = stringResource(R.string.brand_settings),
+            meta = { HeaderMeta(text = stringResource(R.string.version_fmt, version, gitTag)) },
+        )
+
+        // ── Endpoints ───────────────────────────────────────────────
+        SectionLabel(
+            text = "${stringResource(R.string.set_endpoints)} · ${"%02d".format(profiles.size)}",
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            profiles.forEach { profile ->
+                val isSelectedInDetail =
+                    selectedDetail is SettingsDetailKind.Endpoint
+                        && selectedDetail.profileId == profile.id
+                ProfileCard(
+                    profile = profile,
+                    // Active = currently routed; Highlight if also the
+                    // detail-pane selection so master-detail correlation
+                    // is visually clear on Expanded.
+                    active = profile.id == activeProfileId || isSelectedInDetail,
+                    latencyMs = pingResults[profile.id],
+                    isPinging = profile.id in pinging,
+                    subscriptionText = profileSubscriptions[profile.id],
+                    onTap = { onSelectEndpoint(profile.id) },
+                    onEdit = { onEditProfile(profile) },
+                    onLongPressAdmin = if (profile.cachedIsAdmin == true) {
+                        { onAdminNavigate(profile.id) }
+                    } else null,
+                )
+            }
+
+            DashedGhostCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onAddEndpoint() },
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 18.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(R.string.profile_add_cta).uppercase(),
+                        style = GsText.labelMono,
+                        color = C.textDim,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // ── Section selectors ────────────────────────────────────────
+        // Each section header is a tappable row. The active selection
+        // is highlighted in lime — mirrors selected ProfileCard styling
+        // so the user knows where they are.
+        SectionLabel(text = stringResource(R.string.set_sections))
+        SectionCard {
+            SectionSelectorRow(
+                label = stringResource(R.string.set_routing),
+                selected = selectedDetail is SettingsDetailKind.Tunnel,
+                onClick = { onSelectSection(SettingsDetailKind.Tunnel) },
+                showDivider = true,
+            )
+            SectionSelectorRow(
+                label = stringResource(R.string.set_appearance),
+                selected = selectedDetail is SettingsDetailKind.System,
+                onClick = { onSelectSection(SettingsDetailKind.System) },
+                showDivider = true,
+            )
+            SectionSelectorRow(
+                label = stringResource(R.string.set_diagnostic),
+                selected = selectedDetail is SettingsDetailKind.Diagnostic,
+                onClick = { onSelectSection(SettingsDetailKind.Diagnostic) },
+                showDivider = false,
+            )
+        }
+
+        // ── OEM lifecycle hints (W3-12 + W3-13) ─────────────────────
+        // On Compact + Medium / non-wide Expanded — inline in master
+        // pane. On ≥1100 dp Expanded the parent passes showOemHints=false
+        // and hints render in the extra pane instead.
+        if (showOemHints) {
+            OemLifecycleHints(
+                autoStart = autoStart,
+                viewModel = viewModel,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, start = 18.dp, end = 18.dp),
+            )
+        }
+
+        Spacer(Modifier.height(100.dp))
+    }
+}
+
+// ── Section selector row ────────────────────────────────────────────────────
+@Composable
+private fun SectionSelectorRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    showDivider: Boolean,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label.uppercase(),
+                style = GsText.labelMono,
+                color = if (selected) C.signal else C.textDim,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "→",
+                style = GsText.labelMono,
+                color = if (selected) C.signal else C.textFaint,
+            )
+        }
+        if (showDivider) {
+            DashedHairline(modifier = Modifier.padding(horizontal = 14.dp))
+        }
+    }
+}
+
+// ── v0.26.2: Profile detail pane (endpoint info + per-profile tunnel) ───────
+@Composable
+private fun ProfileDetailPane(
+    viewModel: SettingsViewModel,
+    profile: VpnProfile,
+    config: com.ghoststream.vpn.data.VpnConfig,
+    autoStart: Boolean,
+    onShowDnsPicker: () -> Unit,
+    onShowPerAppPicker: () -> Unit,
+    onShowSplitTunnel: () -> Unit,
+    onEditProfile: () -> Unit,
+    onAdminNavigate: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        // Header section — endpoint identity
+        SectionLabel(text = stringResource(R.string.set_endpoints))
+        SectionCard {
+            // Name + edit affordance
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(profile.name, style = GsText.profileName, color = C.bone)
+                    Spacer(Modifier.height(2.dp))
+                    Text(profile.serverAddr.ifEmpty { "—" }, style = GsText.host, color = C.textDim)
+                }
+                Text(
+                    text = stringResource(R.string.value_edit).uppercase(),
+                    style = GsText.labelMono,
+                    color = C.textDim,
+                    modifier = Modifier
+                        .clickable { onEditProfile() }
+                        .padding(4.dp),
+                )
+            }
+            DashedHairline(modifier = Modifier.padding(horizontal = 14.dp))
+            // SNI / TUN — diagnostic readouts
+            KvRow(label = "SNI", value = profile.serverName.ifEmpty { "—" })
+            DashedHairline(modifier = Modifier.padding(horizontal = 14.dp))
+            KvRow(label = "TUN", value = profile.tunAddr.ifEmpty { "—" })
+            if (profile.cachedIsAdmin == true) {
+                DashedHairline(modifier = Modifier.padding(horizontal = 14.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onAdminNavigate(profile.id) }
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.action_admin_panel),
+                        style = GsText.profileName,
+                        color = C.signal,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "→",
+                        style = GsText.labelMono,
+                        color = C.signal,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // Tunnel rows for this profile
+        SectionLabel(text = stringResource(R.string.set_routing))
+        SectionCard {
+            TunnelRows(
+                viewModel = viewModel,
+                config = config,
+                autoStart = autoStart,
+                onShowDnsPicker = onShowDnsPicker,
+                onShowPerAppPicker = onShowPerAppPicker,
+                onShowSplitTunnel = onShowSplitTunnel,
+            )
+        }
+
+        Spacer(Modifier.height(100.dp))
+    }
+}
+
+// ── v0.26.2: Global tunnel detail (when TUNNEL section selected) ────────────
+// Same rows as ProfileDetailPane's tunnel block — just standalone. Used when
+// the user taps TUNNEL in master rather than a specific endpoint.
+@Composable
+private fun TunnelGlobalDetailPane(
+    viewModel: SettingsViewModel,
+    config: com.ghoststream.vpn.data.VpnConfig,
+    autoStart: Boolean,
+    onShowDnsPicker: () -> Unit,
+    onShowPerAppPicker: () -> Unit,
+    onShowSplitTunnel: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        SectionLabel(text = stringResource(R.string.set_routing))
+        SectionCard {
+            TunnelRows(
+                viewModel = viewModel,
+                config = config,
+                autoStart = autoStart,
+                onShowDnsPicker = onShowDnsPicker,
+                onShowPerAppPicker = onShowPerAppPicker,
+                onShowSplitTunnel = onShowSplitTunnel,
+            )
+        }
+        Spacer(Modifier.height(100.dp))
+    }
+}
+
+// ── v0.26.2: System detail pane (language / theme / app icon) ───────────────
+@Composable
+private fun SystemDetailPane(
+    viewModel: SettingsViewModel,
+    languageOverride: String?,
+    theme: String,
+    appIcon: String,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        SectionLabel(text = stringResource(R.string.set_appearance))
+        SectionCard {
+            AppearanceRows(
+                viewModel = viewModel,
+                languageOverride = languageOverride,
+                theme = theme,
+                appIcon = appIcon,
+            )
+        }
+        Spacer(Modifier.height(100.dp))
+    }
+}
+
+// ── v0.26.2: Diagnostic detail pane (share debug, version) ──────────────────
+@Composable
+private fun DiagnosticDetailPane(viewModel: SettingsViewModel) {
+    val context = LocalContext.current
+    val version = com.ghoststream.vpn.BuildConfig.VERSION_NAME
+    val gitTag = com.ghoststream.vpn.BuildConfig.GIT_TAG
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        SectionLabel(text = stringResource(R.string.set_diagnostic))
+        SectionCard {
+            SettingRow(
+                label = stringResource(R.string.row_share_debug),
+                sub = stringResource(R.string.sub_debug_descr),
+                right = {
+                    Text(
+                        stringResource(R.string.value_export).uppercase(),
+                        style = GsText.labelMono,
+                        color = C.signal,
+                    )
+                },
+                onClick = { viewModel.shareDebugReport(context) },
+                showDivider = false,
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+        SectionLabel(text = stringResource(R.string.set_version))
+        SectionCard {
+            KvRow(label = stringResource(R.string.row_version), value = "$version · $gitTag")
+        }
+
+        Spacer(Modifier.height(100.dp))
+    }
+}
+
+// ── v0.26.2: Empty detail when no profiles exist ────────────────────────────
+@Composable
+private fun EmptyDetailPane(onAddEndpoint: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.set_no_endpoint),
+            style = GsText.profileName,
+            color = C.textDim,
+        )
+        Spacer(Modifier.height(16.dp))
+        DashedGhostCard(
+            modifier = Modifier
+                .fillMaxWidth(0.5f)
+                .clickable { onAddEndpoint() },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 18.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = stringResource(R.string.profile_add_cta).uppercase(),
+                    style = GsText.labelMono,
+                    color = C.textDim,
+                )
+            }
+        }
+    }
+}
+
+// ── v0.26.2: OEM hints in extra pane (Expanded ≥1100 dp) ────────────────────
+//
+// On Tab S11 landscape with NavigationDrawer (1280 dp - 220 dp drawer ≈ 1060
+// dp content), this triggers when configuration.screenWidthDp ≥ 1100 — gives
+// the OEM banners their own column instead of competing with endpoint list.
+@Composable
+private fun OemHintsExtraPane(
+    viewModel: SettingsViewModel,
+    autoStart: Boolean,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(C.bg)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        SectionLabel(text = stringResource(R.string.set_oem_hints))
+        OemLifecycleHints(
+            autoStart = autoStart,
+            viewModel = viewModel,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp),
+        )
+        Spacer(Modifier.height(100.dp))
+    }
+}
+
+// ── Tunnel rows — extracted block reused by Phone body + ProfileDetailPane
+// + TunnelGlobalDetailPane. Single source of truth for routing toggles.
+@Composable
+private fun TunnelRows(
+    viewModel: SettingsViewModel,
+    config: com.ghoststream.vpn.data.VpnConfig,
+    autoStart: Boolean,
+    onShowDnsPicker: () -> Unit,
+    onShowPerAppPicker: () -> Unit,
+    onShowSplitTunnel: () -> Unit,
+) {
+    SettingRow(
+        label = stringResource(R.string.row_dns),
+        sub = config.dnsServers.joinToString(" · ").ifEmpty { "—" },
+        right = {
+            Text(
+                stringResource(R.string.value_custom).uppercase(),
+                style = GsText.labelMono,
+                color = C.textDim,
+            )
+        },
+        onClick = { onShowDnsPicker() },
+        showDivider = true,
+    )
+    SettingRow(
+        label = stringResource(R.string.row_split_tunnel),
+        sub = if (config.splitRouting)
+            stringResource(R.string.sub_split_bypass, config.directCountries.size)
+        else "Off",
+        right = {
+            GhostToggle(
+                checked = config.splitRouting,
+                onToggle = { viewModel.setSplitRouting(!config.splitRouting) },
+            )
+        },
+        onClick = { onShowSplitTunnel() },
+        showDivider = true,
+    )
+    SettingRow(
+        label = stringResource(R.string.row_per_app),
+        sub = when (config.perAppMode) {
+            "disallowed" -> stringResource(R.string.sub_per_app_excluded, config.perAppList.size)
+            "allowed" -> "${config.perAppList.size} apps selected"
+            else -> "All through VPN"
+        },
+        right = {
+            GhostToggle(
+                checked = config.perAppMode != "none",
+                onToggle = {
+                    viewModel.setPerAppMode(
+                        if (config.perAppMode == "none") "disallowed" else "none",
+                    )
+                },
+            )
+        },
+        onClick = {
+            if (config.perAppMode == "none") viewModel.setPerAppMode("disallowed")
+            viewModel.loadInstalledApps()
+            onShowPerAppPicker()
+        },
+        showDivider = true,
+    )
+    SettingRow(
+        label = stringResource(R.string.row_always_on),
+        sub = stringResource(R.string.sub_always_on),
+        right = {
+            GhostToggle(checked = autoStart, onToggle = { viewModel.setAutoStartOnBoot(!autoStart) })
+        },
+        showDivider = false,
+    )
+}
+
+// ── Appearance rows — extracted block reused by Phone body + SystemDetailPane
+@Composable
+private fun AppearanceRows(
+    viewModel: SettingsViewModel,
+    languageOverride: String?,
+    theme: String,
+    appIcon: String,
+) {
+    SettingRow(
+        label = stringResource(R.string.row_language),
+        sub = stringResource(R.string.sub_interface_locale),
+        right = {
+            LangSwitch(
+                selected = languageOverride,
+                onSelect = { code ->
+                    viewModel.setLanguageOverride(code)
+                    val locales = if (code.isNullOrBlank())
+                        LocaleListCompat.getEmptyLocaleList()
+                    else
+                        LocaleListCompat.forLanguageTags(code)
+                    AppCompatDelegate.setApplicationLocales(locales)
+                },
+            )
+        },
+        showDivider = true,
+    )
+    SettingRow(
+        label = stringResource(R.string.row_theme),
+        sub = stringResource(R.string.sub_theme_descr),
+        right = {
+            ThemeSwitch(
+                selected = theme,
+                onSelect = { viewModel.setTheme(it) },
+            )
+        },
+        showDivider = true,
+    )
+    SettingRow(
+        label = stringResource(R.string.row_app_icon),
+        sub = stringResource(R.string.sub_app_icon),
+        right = {
+            IconSwitch(
+                selected = appIcon,
+                onSelect = { viewModel.setAppIcon(it) },
+            )
+        },
+        showDivider = false,
+    )
+}
+
+// ── KV-style read-only row (label left, mono value right) ────────────────
+@Composable
+private fun KvRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = GsText.profileName, color = C.bone, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(12.dp))
+        Text(value, style = GsText.host, color = C.textDim)
     }
 }
 

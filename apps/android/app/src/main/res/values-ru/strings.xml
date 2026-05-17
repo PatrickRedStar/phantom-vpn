@@ -52,6 +52,12 @@
     <string name="set_appearance">Внешний вид</string>
     <string name="set_diagnostic">Диагностика</string>
     <string name="set_misc">О приложении</string>
+    <!-- v0.26.2 master-detail -->
+    <string name="set_sections">Разделы</string>
+    <string name="set_oem_hints">Подсказки устройства</string>
+    <string name="set_version">Версия</string>
+    <string name="set_no_endpoint">Пока нет эндпоинтов</string>
+    <string name="row_version">Сборка</string>
 
     <string name="row_dns">DNS</string>
     <string name="row_split_tunnel">Раздельный туннель</string>

@@ -57,6 +57,12 @@
     <string name="set_appearance">Appearance</string>
     <string name="set_diagnostic">Diagnostic</string>
     <string name="set_misc">About</string>
+    <!-- v0.26.2 master-detail -->
+    <string name="set_sections">Sections</string>
+    <string name="set_oem_hints">Device hints</string>
+    <string name="set_version">Version</string>
+    <string name="set_no_endpoint">No endpoints yet</string>
+    <string name="row_version">Build</string>
 
     <string name="row_dns">DNS</string>
     <string name="row_split_tunnel">Split-tunnel</string>
