@@ -1,0 +1,583 @@
+// GhostStream Windows GUI — main window definition.
+//
+// Mirrors the visual language of `apps/linux/gui/ui/` (same Theme, same
+// brand fonts, same GhostFab button shape) but trimmed to the MVP scope:
+// state head, primary action, endpoint chip, stats grid, mux bars,
+// console panel. No admin screen, no oscilloscope, no settings — those
+// land in a later release.
+
+import { Theme } from "theme.slint";
+
+export struct StreamBar {
+    activity: float,
+    label: string,
+    alive: bool,
+}
+
+export struct LogLine {
+    ts: string,
+    severity: string,   // "INF" | "DBG" | "WRN" | "ERR"
+    category: string,
+    message: string,
+}
+
+export component MainWindow inherits Window {
+    // ── Identity / chrome ───────────────────────────────────────
+    title: "GhostStream";
+    // Window icon is set at runtime via slint::Window::set_window_icon
+    // — see src/main.rs. Doing it in .slint would require an .ico/.png
+    // checked into the repo; we ship the icon via app.rc / build.rs.
+    default-font-family: Theme.font_mono;
+    default-font-size: 13px;
+    background: Theme.bg;
+    preferred-width: 480px;
+    preferred-height: 720px;
+    min-width: 420px;
+    min-height: 600px;
+
+    // ── State ───────────────────────────────────────────────────
+    in property <string> version_label: "v0.1.0";
+
+    // "disconnected" | "connecting" | "connected" | "error"
+    in property <string> state_kind: "disconnected";
+    in property <string> state_word: "Dormant";
+    in property <string> session_timer: "00:00:00";
+    in property <bool> session_active: false;
+
+    in property <string> exit_label: "NL";
+    in property <string> exit_server_name: "vdsina";
+    in property <string> exit_endpoint: "89.110.109.128 : 443";
+    in property <string> rtt_text: "23 ms";
+
+    in property <string> rx_value: "0";
+    in property <string> rx_unit: "B/s";
+    in property <string> tx_value: "0";
+    in property <string> tx_unit: "B/s";
+    in property <int> streams_up: 0;
+    in property <int> streams_total: 4;
+    in property <[StreamBar]> streams;
+
+    in property <string> profile_name: "—";
+    in property <string> last_error: "";
+    in property <bool> logs_open: false;
+    in property <[LogLine]> logs;
+
+    // ── Callbacks ───────────────────────────────────────────────
+    callback connect_clicked();
+    callback disconnect_clicked();
+    callback change_profile_clicked();
+    callback toggle_logs_clicked();
+    callback quit_clicked();
+
+    VerticalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 22px;
+        padding-bottom: 18px;
+        spacing: 18px;
+
+        // ── Brand strip ────────────────────────────────────────
+        Rectangle {
+            height: 46px;
+            Rectangle {
+                x: 0; y: parent.height - 1px;
+                width: parent.width; height: 1px;
+                background: Theme.hair;
+            }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 12px;
+                padding-bottom: 14px;
+
+                // Letter-by-letter "Ghoststream" with first letter in signal
+                HorizontalLayout {
+                    spacing: 0px;
+                    vertical-stretch: 0;
+                    Text {
+                        text: "G";
+                        font-family: Theme.font_serif;
+                        font-italic: true;
+                        font-size: 28px;
+                        color: Theme.signal;
+                        letter-spacing: -0.5px;
+                        vertical-alignment: bottom;
+                    }
+                    Text {
+                        text: "hoststream";
+                        font-family: Theme.font_serif;
+                        font-italic: true;
+                        font-size: 28px;
+                        color: Theme.text;
+                        letter-spacing: -0.5px;
+                        vertical-alignment: bottom;
+                    }
+                }
+
+                Rectangle {
+                    border-width: 1px;
+                    border-color: Theme.hair;
+                    horizontal-stretch: 0;
+                    vertical-stretch: 0;
+                    y: parent.height - self.preferred-height - 14px;
+                    HorizontalLayout {
+                        padding-left: 7px;
+                        padding-right: 7px;
+                        padding-top: 3px;
+                        padding-bottom: 3px;
+                        Text {
+                            text: "WIN · STA-01";
+                            font-family: Theme.font_display;
+                            font-size: 9px;
+                            letter-spacing: 1.8px;
+                            color: Theme.text_dim;
+                        }
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Text {
+                    text: version_label;
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    letter-spacing: 1px;
+                    vertical-alignment: bottom;
+                }
+            }
+        }
+
+        // ── State head ─────────────────────────────────────────
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 8px;
+                Text {
+                    text: "TUNNEL STATE";
+                    font-family: Theme.font_display;
+                    font-size: 10px;
+                    color: Theme.text_faint;
+                    letter-spacing: 2.2px;
+                }
+                HorizontalLayout {
+                    spacing: 0px;
+                    Text {
+                        text: state_word;
+                        font-family: Theme.font_serif;
+                        font-italic: true;
+                        font-size: 60px;
+                        color:
+                            state_kind == "connected"  ? Theme.signal :
+                            state_kind == "connecting" ? Theme.text :
+                            state_kind == "error"      ? Theme.warn :
+                                                         Theme.text_dim;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: state_kind == "connecting" ? "…" : ".";
+                        font-family: Theme.font_serif;
+                        font-italic: true;
+                        font-size: 60px;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: end;
+                horizontal-stretch: 0;
+                spacing: 6px;
+                Text {
+                    text: session_timer;
+                    font-family: Theme.font_display;
+                    font-size: 24px;
+                    color: session_active ? Theme.text : Theme.text_faint;
+                    letter-spacing: 1.2px;
+                    horizontal-alignment: right;
+                }
+                Text {
+                    text: session_active ? "SESSION ELAPSED" : "LAST SESSION";
+                    font-family: Theme.font_display;
+                    font-size: 9px;
+                    color: Theme.text_faint;
+                    letter-spacing: 1.6px;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+
+        // ── Primary GhostFab button ────────────────────────────
+        Rectangle {
+            height: 46px;
+            background:
+                state_kind == "connected"  ? Theme.warn :
+                state_kind == "connecting" ? Theme.hair_bold :
+                state_kind == "error"      ? Theme.error :
+                                             Theme.signal;
+            opacity: state_kind == "connecting" ? 0.85 : 1.0;
+            animate background { duration: 200ms; easing: ease-in-out; }
+
+            Text {
+                text:
+                    state_kind == "connected"  ? "■  TERMINATE TUNNEL" :
+                    state_kind == "connecting" ? "◐  HANDSHAKING…" :
+                    state_kind == "error"      ? "⚠  RETRY" :
+                                                 "▶  INITIATE TUNNEL";
+                color:
+                    state_kind == "connecting" ? Theme.text :
+                                                 Theme.bg;
+                font-family: Theme.font_display;
+                font-size: 12px;
+                letter-spacing: 2.2px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            TouchArea {
+                clicked => {
+                    if (state_kind == "connected") {
+                        root.disconnect_clicked();
+                    } else if (state_kind == "connecting") {
+                        // no-op while handshake is in flight
+                    } else {
+                        root.connect_clicked();
+                    }
+                }
+            }
+        }
+
+        // ── Error banner (only when last_error is set) ─────────
+        if last_error != "" : Rectangle {
+            height: 36px;
+            border-width: 1px;
+            border-color: Theme.error;
+            background: Theme.error_bg;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                Text {
+                    text: "⚠  " + last_error;
+                    font-family: Theme.font_mono;
+                    font-size: 11.5px;
+                    color: Theme.warn;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+
+        // ── Endpoint chip (only when connected) ────────────────
+        if state_kind == "connected" : Rectangle {
+            border-width: 1px;
+            border-color: Theme.hair;
+            background: Theme.bg_elev;
+            height: 58px;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 14px;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: "EXIT · " + exit_label;
+                        font-family: Theme.font_display;
+                        font-size: 9px;
+                        color: Theme.text_faint;
+                        letter-spacing: 1.8px;
+                    }
+                    HorizontalLayout {
+                        spacing: 0px;
+                        Text {
+                            text: exit_server_name + "  ·  ";
+                            font-family: Theme.font_mono;
+                            font-size: 13px;
+                            color: Theme.signal;
+                        }
+                        Text {
+                            text: exit_endpoint;
+                            font-family: Theme.font_mono;
+                            font-size: 13px;
+                            color: Theme.text;
+                        }
+                    }
+                }
+                Text {
+                    text: "RTT " + rtt_text;
+                    font-family: Theme.font_display;
+                    font-size: 11px;
+                    color: Theme.signal;
+                    letter-spacing: 1px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+
+        // ── Stats grid (only when connected) ───────────────────
+        if state_kind == "connected" : Rectangle {
+            border-width: 1px;
+            border-color: Theme.hair;
+            background: Theme.bg_elev;
+            height: 64px;
+            HorizontalLayout {
+                spacing: 0px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 4px;
+                        Text {
+                            text: "↓ RX";
+                            font-family: Theme.font_display;
+                            font-size: 9px;
+                            color: Theme.text_faint;
+                            letter-spacing: 1.8px;
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            Text {
+                                text: rx_value;
+                                font-family: Theme.font_display;
+                                font-size: 18px;
+                                color: Theme.signal;
+                                letter-spacing: 0.6px;
+                            }
+                            Text {
+                                text: rx_unit;
+                                font-family: Theme.font_display;
+                                font-size: 10px;
+                                color: Theme.text_dim;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+                Rectangle { width: 1px; background: Theme.hair; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 4px;
+                        Text {
+                            text: "↑ TX";
+                            font-family: Theme.font_display;
+                            font-size: 9px;
+                            color: Theme.text_faint;
+                            letter-spacing: 1.8px;
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            Text {
+                                text: tx_value;
+                                font-family: Theme.font_display;
+                                font-size: 18px;
+                                color: Theme.warn;
+                                letter-spacing: 0.6px;
+                            }
+                            Text {
+                                text: tx_unit;
+                                font-family: Theme.font_display;
+                                font-size: 10px;
+                                color: Theme.text_dim;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+                Rectangle { width: 1px; background: Theme.hair; }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 4px;
+                        Text {
+                            text: "STREAMS";
+                            font-family: Theme.font_display;
+                            font-size: 9px;
+                            color: Theme.text_faint;
+                            letter-spacing: 1.8px;
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            Text {
+                                text: streams_up;
+                                font-family: Theme.font_display;
+                                font-size: 18px;
+                                color: Theme.text;
+                                letter-spacing: 0.6px;
+                            }
+                            Text {
+                                text: "/ " + streams_total;
+                                font-family: Theme.font_display;
+                                font-size: 10px;
+                                color: Theme.text_dim;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Profile row ────────────────────────────────────────
+        Rectangle {
+            border-width: 1px;
+            border-color: Theme.hair;
+            background: Theme.bg_elev;
+            height: 58px;
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 10px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text {
+                        text: "ACTIVE PROFILE";
+                        font-family: Theme.font_display;
+                        font-size: 9px;
+                        color: Theme.text_faint;
+                        letter-spacing: 1.8px;
+                    }
+                    Text {
+                        text: profile_name;
+                        font-family: Theme.font_mono;
+                        font-size: 13px;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                }
+                Rectangle {
+                    width: 78px; height: 30px;
+                    border-width: 1px;
+                    border-color: Theme.signal_dim;
+                    background: transparent;
+                    y: (parent.height - self.height) / 2;
+                    Text {
+                        text: "CHANGE";
+                        font-family: Theme.font_display;
+                        font-size: 10px;
+                        color: Theme.signal;
+                        letter-spacing: 1.8px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => { root.change_profile_clicked(); }
+                    }
+                }
+            }
+        }
+
+        // ── Logs panel ─────────────────────────────────────────
+        Rectangle {
+            vertical-stretch: 1;
+            border-width: 1px;
+            border-color: Theme.hair;
+            background: Theme.bg_elev_2;
+            VerticalLayout {
+                spacing: 0px;
+                Rectangle {
+                    height: 36px;
+                    Rectangle {
+                        x: 0; y: parent.height - 1px;
+                        width: parent.width; height: 1px;
+                        background: Theme.hair;
+                    }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        alignment: space-between;
+                        Text {
+                            text: logs_open ? "▴  CONSOLE" : "▾  CONSOLE";
+                            font-family: Theme.font_display;
+                            font-size: 10px;
+                            color: Theme.text_dim;
+                            letter-spacing: 1.8px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: state_kind == "connected"
+                                ? "LIVE · " + logs.length + " LINES"
+                                : "IDLE";
+                            font-family: Theme.font_display;
+                            font-size: 10px;
+                            color: state_kind == "connected" ? Theme.signal : Theme.text_faint;
+                            letter-spacing: 1.2px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    TouchArea {
+                        clicked => { root.toggle_logs_clicked(); }
+                    }
+                }
+
+                // Either the scrollable log list or an empty placeholder.
+                if logs_open && logs.length > 0 : Flickable {
+                    viewport-height: layout.preferred-height;
+                    vertical-stretch: 1;
+                    layout := VerticalLayout {
+                        padding: 12px;
+                        spacing: 4px;
+                        for line[i] in logs : HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: line.ts;
+                                font-family: Theme.font_mono;
+                                font-size: 11px;
+                                color: Theme.text_faint;
+                            }
+                            Text {
+                                text: line.severity;
+                                font-family: Theme.font_mono;
+                                font-size: 11px;
+                                color:
+                                    line.severity == "INF" ? Theme.signal :
+                                    line.severity == "DBG" ? Theme.debug :
+                                    line.severity == "WRN" ? Theme.warn :
+                                    line.severity == "ERR" ? Theme.error :
+                                                             Theme.text_dim;
+                            }
+                            Text {
+                                text: line.category;
+                                font-family: Theme.font_mono;
+                                font-size: 11px;
+                                color: Theme.text_dim;
+                            }
+                            Text {
+                                text: line.message;
+                                font-family: Theme.font_mono;
+                                font-size: 11px;
+                                color: Theme.text;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
+                    }
+                }
+                if !logs_open || logs.length == 0 : Rectangle {
+                    height: 36px;
+                    Text {
+                        text: state_kind == "connected"
+                            ? "—  TUNNEL UP  —"
+                            : "—  NO ACTIVE TUNNEL  —";
+                        font-family: Theme.font_display;
+                        font-size: 10px;
+                        color: Theme.text_faint;
+                        letter-spacing: 1.8px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

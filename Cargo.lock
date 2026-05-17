@@ -2078,6 +2078,8 @@ dependencies = [
  "client-windows-core",
  "embed-resource",
  "ghoststream-gui-ipc",
+ "slint",
+ "slint-build",
  "tokio",
  "tracing",
  "tracing-subscriber",

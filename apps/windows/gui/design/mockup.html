@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>GHOSTSTREAM — Windows Station</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/departure-mono" rel="stylesheet">
+<style>
+  :root {
+    /* Identical palette to apps/linux/gui/ui/theme.slint and Android/iOS. */
+    --bg:          #0A0908;
+    --bg-elev:    #12110E;
+    --bg-elev-2:  #17150F;
+    --hair:       #2A2619;
+    --hair-bold:  #3D3828;
+    --text:       #E8E2D0;
+    --text-dim:   #948A6F;
+    --text-faint: #5A5240;
+    --signal:     #C4FF3E;
+    --signal-dim: #4A6010;
+    --warn:       #FF7A3D;
+    --error:      #B24438;
+    --error-bg:   #1A1210;
+    --debug:      #6C8BA8;
+    --rx:         #C4FF3E;
+    --tx:         #FF7A3D;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: #1a1a1c;  /* stage background — windows themselves sit on top */
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono { font-family: 'Departure Mono', 'JetBrains Mono', monospace; letter-spacing: 0.05em; }
+  .serif { font-family: 'Instrument Serif', serif; font-weight: 400; letter-spacing: -0.01em; }
+  .up { text-transform: uppercase; letter-spacing: 0.14em; font-size: 10px; }
+  .dim { color: var(--text-dim); }
+  .faint { color: var(--text-faint); }
+  .signal { color: var(--signal); }
+  .warn { color: var(--warn); }
+
+  /* The stage that lays the variant windows out side-by-side. */
+  .stage {
+    display: flex;
+    gap: 36px;
+    padding: 36px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .stage-label {
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-bottom: 12px;
+    text-align: center;
+  }
+
+  /* ─── Windows app shell ─────────────────────────────────────── */
+  .window {
+    width: 460px;
+    background: var(--bg);
+    border: 1px solid var(--hair);
+    border-radius: 4px;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.45);
+    overflow: hidden;
+    position: relative;
+    background-image:
+      radial-gradient(ellipse 700px 500px at 20% -20%, rgba(196,255,62,0.04), transparent 60%),
+      radial-gradient(ellipse 600px 400px at 120% 110%, rgba(255,122,61,0.03), transparent 60%),
+      repeating-linear-gradient(0deg, transparent 0, transparent 3px, rgba(255,255,255,0.008) 3px, rgba(255,255,255,0.008) 4px);
+  }
+
+  /* grain (subtle) */
+  .window::before {
+    content: '';
+    position: absolute; inset: 0;
+    pointer-events: none;
+    opacity: 0.25;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.8  0 0 0 0 0.8  0 0 0 0 0.7  0 0 0 0.09 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    z-index: 1;
+  }
+
+  /* Native Win11 title bar — dark, slim. */
+  .titlebar {
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 0 0 14px;
+    border-bottom: 1px solid var(--hair);
+    position: relative;
+    z-index: 2;
+  }
+  .titlebar-brand {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 13px;
+    letter-spacing: 0;
+    color: var(--text-dim);
+  }
+  .titlebar-brand::first-letter { color: var(--signal); }
+  .titlebar-controls {
+    display: flex;
+    gap: 0;
+  }
+  .titlebar-btn {
+    width: 46px; height: 30px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim);
+    font-family: 'Departure Mono', monospace;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .titlebar-btn:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+  .titlebar-btn.close:hover { background: var(--error); color: #fff; }
+
+  /* Inner content */
+  .content {
+    padding: 28px 28px 22px 28px;
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* Brand strip — Ghoststream wordmark + WIN tag. */
+  .brand-strip {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .brand-mark {
+    font-family: 'Instrument Serif', serif;
+    font-size: 30px;
+    font-style: italic;
+    color: var(--text);
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+  .brand-mark::first-letter { color: var(--signal); }
+  .brand-tag {
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    color: var(--text-dim);
+    padding: 3px 7px;
+    border: 1px solid var(--hair);
+    text-transform: uppercase;
+  }
+  .brand-version {
+    margin-left: auto;
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: 0.1em;
+  }
+
+  /* ─── State headline ────────────────────────────────────────── */
+  .state-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+  }
+  .state-label {
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .state-word {
+    font-family: 'Instrument Serif', serif;
+    font-style: italic;
+    font-size: 64px;
+    line-height: 0.92;
+    letter-spacing: -0.02em;
+    color: var(--text-dim);
+  }
+  .state-word.signal { color: var(--signal); }
+  .state-word.warn { color: var(--warn); }
+  .state-word .punct { color: var(--text); }
+
+  .session-timer {
+    text-align: right;
+  }
+  .session-timer .time {
+    font-family: 'Departure Mono', monospace;
+    font-size: 28px;
+    color: var(--text);
+    letter-spacing: 0.06em;
+    line-height: 1;
+  }
+  .session-timer .lbl {
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    color: var(--text-faint);
+    letter-spacing: 0.18em;
+    margin-top: 6px;
+    text-transform: uppercase;
+  }
+
+  /* ─── Primary GhostFab button ───────────────────────────────── */
+  .ghost-fab {
+    height: 46px;
+    width: 100%;
+    background: var(--signal);
+    color: var(--bg);
+    font-family: 'Departure Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    transition: opacity 0.2s, background 0.2s;
+  }
+  .ghost-fab:hover { opacity: 0.92; }
+  .ghost-fab.disconnect {
+    background: var(--warn);
+    color: var(--bg);
+  }
+  .ghost-fab.connecting {
+    background: var(--hair-bold);
+    color: var(--text);
+    opacity: 0.85;
+  }
+
+  /* Connection endpoint chip below the button (when connected). */
+  .endpoint-chip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border: 1px solid var(--hair);
+    background: var(--bg-elev);
+  }
+  .endpoint-chip .lbl {
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    color: var(--text-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .endpoint-chip .val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .endpoint-chip .val .signal { color: var(--signal); }
+  .endpoint-chip .right {
+    font-family: 'Departure Mono', monospace;
+    font-size: 11px;
+    color: var(--signal);
+    letter-spacing: 0.1em;
+  }
+
+  /* ─── Stats grid — appears only when connected ──────────────── */
+  .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    border: 1px solid var(--hair);
+    background: var(--bg-elev);
+  }
+  .stat {
+    padding: 14px 14px 12px 14px;
+    border-right: 1px solid var(--hair);
+  }
+  .stat:last-child { border-right: none; }
+  .stat .lbl {
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    color: var(--text-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .stat .val {
+    font-family: 'Departure Mono', monospace;
+    font-size: 20px;
+    color: var(--text);
+    letter-spacing: 0.04em;
+    line-height: 1;
+  }
+  .stat .unit {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-left: 4px;
+  }
+
+  /* ─── Mux bars (8 streams) ──────────────────────────────────── */
+  .mux {
+    border: 1px solid var(--hair);
+    background: var(--bg-elev);
+    padding: 14px;
+  }
+  .mux-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 10px;
+  }
+  .mux-header .lbl {
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    color: var(--text-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .mux-header .summary {
+    font-family: 'Departure Mono', monospace;
+    font-size: 11px;
+    color: var(--signal);
+    letter-spacing: 0.08em;
+  }
+  .mux-bars {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 4px;
+    align-items: end;
+    height: 36px;
+  }
+  .mux-bar {
+    background: var(--signal-dim);
+    border-bottom: 2px solid var(--signal);
+  }
+  .mux-bar.idle {
+    background: var(--hair-bold);
+    border-bottom-color: var(--hair-bold);
+  }
+
+  /* ─── Profile + actions row ─────────────────────────────────── */
+  .profile-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    border: 1px solid var(--hair);
+    background: var(--bg-elev);
+  }
+  .profile-row .lbl {
+    font-family: 'Departure Mono', monospace;
+    font-size: 9px;
+    color: var(--text-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .profile-row .val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .profile-row .action {
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--signal);
+    padding: 6px 10px;
+    border: 1px solid var(--signal-dim);
+    background: transparent;
+    cursor: pointer;
+  }
+  .profile-row .action:hover { background: rgba(196,255,62,0.06); }
+
+  /* ─── Logs panel ────────────────────────────────────────────── */
+  .logs {
+    border: 1px solid var(--hair);
+    background: var(--bg-elev-2);
+    overflow: hidden;
+  }
+  .logs-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--hair);
+  }
+  .logs-toggle {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .logs-status {
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    color: var(--signal);
+    letter-spacing: 0.12em;
+  }
+  .logs-body {
+    padding: 10px 14px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log-line .ts { color: var(--text-faint); }
+  .log-line .sev-inf { color: var(--signal); }
+  .log-line .sev-dbg { color: var(--debug); }
+  .log-line .sev-wrn { color: var(--warn); }
+  .log-line .sev-err { color: var(--error); }
+  .log-line .cat { color: var(--text-dim); }
+  .log-line .msg { color: var(--text); }
+
+  /* Empty-state placeholder for logs in disconnected variant. */
+  .logs-empty {
+    padding: 18px 14px;
+    text-align: center;
+    font-family: 'Departure Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--text-faint);
+    text-transform: uppercase;
+  }
+
+  /* ─── Tray preview ──────────────────────────────────────────── */
+  .tray-preview {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding-top: 20px;
+  }
+  .taskbar {
+    background: rgba(20,20,22,0.92);
+    backdrop-filter: blur(20px);
+    border-radius: 6px;
+    padding: 6px 12px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border: 1px solid #2c2c30;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .tray-icon {
+    width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tray-icon svg { width: 22px; height: 22px; }
+  .tray-time {
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 11px;
+    color: #c5c5c5;
+    padding-left: 12px;
+    border-left: 1px solid #3a3a3e;
+    line-height: 1.1;
+    text-align: right;
+  }
+  .tray-menu {
+    background: var(--bg);
+    border: 1px solid var(--hair);
+    width: 240px;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.5);
+  }
+  .tray-menu-status {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--hair);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .tray-menu-status .dot {
+    width: 8px; height: 8px;
+    background: var(--signal);
+    border-radius: 50%;
+    box-shadow: 0 0 6px var(--signal);
+  }
+  .tray-menu-status .dot.off { background: var(--text-faint); box-shadow: none; }
+  .tray-menu-status .text {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .tray-menu-item {
+    padding: 9px 14px;
+    font-family: 'Departure Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+  }
+  .tray-menu-item:hover {
+    background: rgba(196,255,62,0.06);
+    color: var(--text);
+  }
+  .tray-menu-item .sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+    text-transform: none;
+  }
+  .tray-menu-divider {
+    height: 1px;
+    background: var(--hair);
+    margin: 4px 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+
+  <!-- ════════════════ VARIANT 1: DISCONNECTED ════════════════ -->
+  <div>
+    <div class="stage-label">Idle · Dormant</div>
+    <div class="window">
+
+      <div class="titlebar">
+        <div class="titlebar-brand">Ghoststream</div>
+        <div class="titlebar-controls">
+          <div class="titlebar-btn">─</div>
+          <div class="titlebar-btn">▢</div>
+          <div class="titlebar-btn close">✕</div>
+        </div>
+      </div>
+
+      <div class="content">
+
+        <div class="brand-strip">
+          <div class="brand-mark">Ghoststream</div>
+          <div class="brand-tag">Win · STA-01</div>
+          <div class="brand-version">v0.1.0</div>
+        </div>
+
+        <div class="state-head">
+          <div>
+            <div class="state-label">TUNNEL STATE</div>
+            <div class="state-word">Dormant<span class="punct">.</span></div>
+          </div>
+          <div class="session-timer">
+            <div class="time" style="color:var(--text-faint)">00:00:00</div>
+            <div class="lbl">Last session</div>
+          </div>
+        </div>
+
+        <button class="ghost-fab">▶  Initiate Tunnel</button>
+
+        <div class="profile-row">
+          <div>
+            <div class="lbl">Active profile</div>
+            <div class="val">vdsina · NL exit</div>
+          </div>
+          <button class="action">Change</button>
+        </div>
+
+        <div class="logs">
+          <div class="logs-header">
+            <button class="logs-toggle">▾ Console</button>
+            <span class="logs-status" style="color:var(--text-faint)">Idle</span>
+          </div>
+          <div class="logs-empty">— No active tunnel —</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ VARIANT 2: CONNECTED ════════════════ -->
+  <div>
+    <div class="stage-label">Transmitting · Live tunnel</div>
+    <div class="window">
+
+      <div class="titlebar">
+        <div class="titlebar-brand">Ghoststream</div>
+        <div class="titlebar-controls">
+          <div class="titlebar-btn">─</div>
+          <div class="titlebar-btn">▢</div>
+          <div class="titlebar-btn close">✕</div>
+        </div>
+      </div>
+
+      <div class="content">
+
+        <div class="brand-strip">
+          <div class="brand-mark">Ghoststream</div>
+          <div class="brand-tag">Win · STA-01</div>
+          <div class="brand-version">v0.1.0</div>
+        </div>
+
+        <div class="state-head">
+          <div>
+            <div class="state-label">TUNNEL STATE</div>
+            <div class="state-word signal">Transmitting<span class="punct">.</span></div>
+          </div>
+          <div class="session-timer">
+            <div class="time">00:23:41</div>
+            <div class="lbl">Session elapsed</div>
+          </div>
+        </div>
+
+        <button class="ghost-fab disconnect">■  Terminate Tunnel</button>
+
+        <div class="endpoint-chip">
+          <div>
+            <div class="lbl">EXIT · NL</div>
+            <div class="val"><span class="signal">vdsina</span> · 89.110.109.128 : 443</div>
+          </div>
+          <div class="right">RTT 23 ms</div>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <div class="lbl">↓ RX</div>
+            <div class="val">2.14<span class="unit">MB/s</span></div>
+          </div>
+          <div class="stat">
+            <div class="lbl">↑ TX</div>
+            <div class="val" style="color:var(--warn)">145<span class="unit">KB/s</span></div>
+          </div>
+          <div class="stat">
+            <div class="lbl">Streams</div>
+            <div class="val">4<span class="unit">/4</span></div>
+          </div>
+        </div>
+
+        <div class="mux">
+          <div class="mux-header">
+            <span class="lbl">Stream activity</span>
+            <span class="summary">4 OF 4 UP</span>
+          </div>
+          <div class="mux-bars">
+            <div class="mux-bar" style="height:80%"></div>
+            <div class="mux-bar" style="height:60%"></div>
+            <div class="mux-bar" style="height:35%"></div>
+            <div class="mux-bar" style="height:55%"></div>
+            <div class="mux-bar idle" style="height:8%"></div>
+            <div class="mux-bar idle" style="height:8%"></div>
+            <div class="mux-bar idle" style="height:8%"></div>
+            <div class="mux-bar idle" style="height:8%"></div>
+          </div>
+        </div>
+
+        <div class="logs">
+          <div class="logs-header">
+            <button class="logs-toggle">▴ Console</button>
+            <span class="logs-status">LIVE · 6 lines</span>
+          </div>
+          <div class="logs-body">
+<div class="log-line"><span class="ts">19:42:14</span> <span class="sev-inf">INF</span> <span class="cat">tunnel</span> <span class="msg">heartbeat ok · 4 streams</span></div>
+<div class="log-line"><span class="ts">19:42:13</span> <span class="sev-dbg">DBG</span> <span class="cat">h2</span>     <span class="msg">stream 2 window_update +65536</span></div>
+<div class="log-line"><span class="ts">19:42:10</span> <span class="sev-inf">INF</span> <span class="cat">handshake</span> <span class="msg">mtls.cert_verify subject=vdsina-prod</span></div>
+<div class="log-line"><span class="ts">19:42:10</span> <span class="sev-inf">INF</span> <span class="cat">tunnel</span> <span class="msg">tunnel.up · sni=ru-relay</span></div>
+<div class="log-line"><span class="ts">19:42:09</span> <span class="sev-dbg">DBG</span> <span class="cat">tcp</span>    <span class="msg">tcp.connected stream=0</span></div>
+<div class="log-line"><span class="ts">19:42:09</span> <span class="sev-inf">INF</span> <span class="cat">settings</span> <span class="msg">profile.loaded server=vdsina</span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ TRAY ICON ════════════════ -->
+  <div class="tray-preview">
+    <div class="stage-label">System tray · Windows 11 taskbar</div>
+    <div class="taskbar">
+      <!-- off icon: dim ghost silhouette -->
+      <div class="tray-icon">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M5 11c0-4 3-7 7-7s7 3 7 7v8l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5-2 1.5v-8z" stroke="#5A5240" stroke-width="1.5"/>
+          <circle cx="10" cy="11" r="1" fill="#5A5240"/>
+          <circle cx="14" cy="11" r="1" fill="#5A5240"/>
+        </svg>
+      </div>
+      <!-- on icon: lime ghost with glow -->
+      <div class="tray-icon">
+        <svg viewBox="0 0 24 24" fill="none">
+          <defs>
+            <filter id="glow"><feGaussianBlur stdDeviation="1"/></filter>
+          </defs>
+          <path d="M5 11c0-4 3-7 7-7s7 3 7 7v8l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5-2 1.5v-8z" fill="#C4FF3E" filter="url(#glow)" opacity="0.5"/>
+          <path d="M5 11c0-4 3-7 7-7s7 3 7 7v8l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5-2 1.5v-8z" stroke="#C4FF3E" stroke-width="1.5" fill="#0A0908"/>
+          <circle cx="10" cy="11" r="1" fill="#0A0908"/>
+          <circle cx="14" cy="11" r="1" fill="#0A0908"/>
+        </svg>
+      </div>
+      <div class="tray-time">19:42<br>17 Май</div>
+    </div>
+
+    <div class="stage-label" style="margin-top:10px">Right-click menu</div>
+    <div class="tray-menu">
+      <div class="tray-menu-status">
+        <span class="dot"></span>
+        <div>
+          <div class="text">Transmitting · vdsina</div>
+          <div style="font-family:'Departure Mono',monospace;font-size:9px;color:var(--text-faint);letter-spacing:0.1em;margin-top:2px">23 ms · 4/4 streams</div>
+        </div>
+      </div>
+      <div class="tray-menu-item">
+        <span>Show window</span>
+        <span class="sub">Ctrl+G</span>
+      </div>
+      <div class="tray-menu-item">Terminate tunnel</div>
+      <div class="tray-menu-divider"></div>
+      <div class="tray-menu-item">Switch profile…</div>
+      <div class="tray-menu-item">Edit profile</div>
+      <div class="tray-menu-divider"></div>
+      <div class="tray-menu-item">Quit GhostStream</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

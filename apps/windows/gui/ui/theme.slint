@@ -1,0 +1,27 @@
+// Color palette mirroring the design mockup (apps/linux-gui/design/mockup.html).
+// Single source of truth for all colors and typographic tokens.
+
+export global Theme {
+    out property <color> bg:          #0A0908;
+    out property <color> bg_elev:     #12110E;
+    out property <color> bg_elev_2:   #17150F;
+    out property <color> hair:        #2A2619;
+    out property <color> hair_bold:   #3D3828;
+    out property <color> text:        #E8E2D0;
+    out property <color> text_dim:    #948A6F;
+    out property <color> text_faint:  #5A5240;
+    out property <color> signal:      #C4FF3E;
+    out property <color> signal_dim:  #4A6010;
+    out property <color> warn:        #FF7A3D;
+    out property <color> error:       #B24438;
+    out property <color> error_bg:    #1A1210;
+    out property <color> debug:       #6C8BA8;
+    out property <color> overlay:     #000000BB;
+    out property <color> rx:          #C4FF3E;
+    out property <color> tx:          #FF7A3D;
+
+    // Font families (must match names registered via register_font_from_memory in main.rs)
+    out property <string> font_serif:    "Instrument Serif";
+    out property <string> font_mono:     "JetBrains Mono";
+    out property <string> font_display:  "Departure Mono";
+}
