@@ -54,4 +54,17 @@ fi
 
 hdiutil verify "$DMG_PATH"
 
+# Auto-notarize + staple the DMG so it opens cleanly on machines without
+# internet (Gatekeeper accepts the embedded stapler ticket). Without this
+# step, recipients see "Не удаётся открыть программу" when the DMG has a
+# `com.apple.quarantine` attribute (Telegram / AirDrop / iCloud Drive).
+#
+# Enable by setting `GHOSTSTREAM_NOTARIZE_DMG=1` and providing notary
+# credentials (see scripts/notarize.sh).  Skipped by default so a quick
+# local DMG build does not require Apple notary roundtrip.
+if [[ "${GHOSTSTREAM_NOTARIZE_DMG:-0}" == "1" ]]; then
+  echo "==> notarizing DMG"
+  "$(dirname "$0")/notarize.sh" "$DMG_PATH"
+fi
+
 echo "$DMG_PATH"
