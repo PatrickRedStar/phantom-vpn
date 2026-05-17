@@ -137,7 +137,15 @@ public final class VpnTunnelController: ObservableObject {
         let profileData: Data
         let settingsData: Data
         do {
-            profileData = try JSONEncoder().encode(providerProfile.sanitizedForProviderConfiguration)
+            // Round 6 HOTFIX: revert SEC-C2 sanitization. System extension runs
+            // as root and does NOT have access to the user's Data Protection
+            // Keychain where ProfilesStore writes cert/key. Hydration through
+            // Keychain.get() returns nil → BridgeError.encoding → instant
+            // cancel. Until shared keychain access works for system extensions,
+            // ship the PEM material through providerConfiguration as we did
+            // before. SEC-C2 trade-off documented in audit; readable by
+            // sudo'd processes is preferable to a tunnel that never starts.
+            profileData = try JSONEncoder().encode(providerProfile)
             let settings = TunnelSettings(
                 dnsLeakProtection: dnsLeakProtection,
                 ipv6Killswitch: ipv6Killswitch,
