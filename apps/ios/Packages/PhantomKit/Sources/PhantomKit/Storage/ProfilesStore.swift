@@ -36,6 +36,18 @@ public final class ProfilesStore {
     private let activeIdKey = "active_id"
     private let log = Logger(subsystem: "com.ghoststream.client", category: "ProfilesStore")
 
+    /// Notification name posted by the macOS host's `LegacyMigration` after
+    /// its asynchronous Keychain re-import phase finishes. We can't import
+    /// the macOS-only `LegacyMigration` type from this iOS package, so we
+    /// match by the well-known string name (kept in sync via grep — there
+    /// are exactly two references in the repo: the poster and this
+    /// subscriber). Harmless on iOS where nothing posts it.
+    nonisolated public static let didFinishKeychainImportNotification = Notification.Name(
+        "io.ghoststream.LegacyMigration.didFinishKeychainImport"
+    )
+
+    private var keychainImportObserver: NSObjectProtocol?
+
     private init() {
         // App Group UserDefaults must be configured for the main app and
         // extension to agree on stored state. If the suite is unavailable
@@ -49,7 +61,27 @@ public final class ProfilesStore {
             self.defaults = UserDefaults.standard
         }
         load()
+
+        // CONC-R2-N10 follow-up: the macOS host runs Keychain re-import
+        // asynchronously after launch (so the UI isn't blocked by
+        // Keychain enumeration). When that completes the imported items
+        // become visible under the new access group — reload the profile
+        // list so PEM secrets re-hydrate without a manual restart.
+        keychainImportObserver = NotificationCenter.default.addObserver(
+            forName: Self.didFinishKeychainImportNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.load()
+            }
+        }
     }
+
+    // No `deinit` cleanup: `ProfilesStore.shared` is a process-wide
+    // singleton, so the observer's lifetime is the process's lifetime.
+    // Adding `deinit { NotificationCenter… }` here would emit a
+    // Swift-6 main-actor-isolation warning for no practical benefit.
 
     // MARK: - Derived
 

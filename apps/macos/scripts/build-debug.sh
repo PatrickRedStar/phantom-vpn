@@ -2,6 +2,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Repo root resolved relative to this script — see build-release.sh for
+# why we avoid `git rev-parse` here.
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+# OPS-R2-01: always rebuild PhantomCore.xcframework from the Rust sources
+# before the Debug build. Skip with GHOSTSTREAM_SKIP_XCFRAMEWORK=1 when
+# you know nothing in `crates/` changed (Cargo is incremental but the
+# cbindgen + lipo + xcodebuild -create-xcframework re-run takes a few
+# seconds on a warm cache).
+if [[ "${GHOSTSTREAM_SKIP_XCFRAMEWORK:-0}" != "1" ]]; then
+  echo ""
+  echo "==> [pre] Rebuild PhantomCore.xcframework if Rust changed"
+  "$REPO_ROOT/crates/client-apple/build-xcframework.sh"
+fi
+
 TEAM_ID="${GHOSTSTREAM_DEVELOPMENT_TEAM:-UPG896A272}"
 SIGN_IDENTITY="${GHOSTSTREAM_CODE_SIGN_IDENTITY:-Apple Development}"
 DESTINATION="${GHOSTSTREAM_DESTINATION:-platform=macOS,arch=$(uname -m)}"

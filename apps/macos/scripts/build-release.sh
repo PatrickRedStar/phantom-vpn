@@ -2,6 +2,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Repo root resolved relative to this script — used to invoke the Rust
+# xcframework build that produces PhantomCore.xcframework. We can't rely
+# on `pwd` after the `cd` above (it points at apps/macos), and `git rev-parse`
+# would fail in a non-git tarball release context.
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+# OPS-R2-01: always rebuild PhantomCore.xcframework from the Rust sources
+# before archiving. Previously a Rust change wouldn't propagate into the
+# .app unless the developer remembered to invoke the xcframework script
+# manually, leading to silently-stale binaries in release DMGs. The build
+# script is idempotent and incremental — Cargo skips unchanged crates,
+# so the cost is one no-op cargo invocation per target when nothing has
+# changed.
+echo ""
+echo "==> [pre] Rebuild PhantomCore.xcframework if Rust changed"
+"$REPO_ROOT/crates/client-apple/build-xcframework.sh"
+
 TEAM_ID="${GHOSTSTREAM_DEVELOPMENT_TEAM:-UPG896A272}"
 CONFIGURATION="${GHOSTSTREAM_CONFIGURATION:-Release}"
 DESTINATION="${GHOSTSTREAM_DESTINATION:-generic/platform=macOS}"

@@ -64,14 +64,14 @@ public final class VpnStateManager {
     }
 
     private init() {
-        // IPC-C4: legacy v0.23 → v0.24 migration runs **before** we touch
-        // the new App Group container. This is intentionally the first
-        // host-side I/O of the process. AppDelegate would be the textbook
-        // call site, but it is owned by Implementer D; running here keeps
-        // the migration close to the first store that reads the new App
-        // Group. TODO: relocate to `AppDelegate.applicationDidFinishLaunching`
-        // when the host-app start-up sequence is consolidated.
-        LegacyMigration.runIfNeeded()
+        // IPC-C4: the v0.23 → v0.24 legacy migration that used to live
+        // here has moved to `AppDelegate.applicationWillFinishLaunching(_:)`
+        // (OPS-R2-04 / SEC-R2-N01). It MUST run before SwiftUI evaluates
+        // `GhostStreamApp.body`, which evaluates `@State` singletons (in
+        // particular `ProfilesStore.shared`) before `VpnStateManager.shared`
+        // — calling migration from this init was too late and caused
+        // ProfilesStore to read empty defaults, then clobber the migrated
+        // data on the next `save()`.
 
         // App Group access can fail when entitlements/codesign are broken;
         // crashing here meant the whole host UI never came up. Fall back to

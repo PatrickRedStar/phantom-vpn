@@ -15,6 +15,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let log = Logger(subsystem: "com.ghoststream.client", category: "AppDelegate")
 
+    /// SwiftUI 14+: `applicationWillFinishLaunching(_:)` is called BEFORE
+    /// the App's `body` is first evaluated — so any singletons that the
+    /// scene captures via `@State` (ProfilesStore.shared, PreferencesStore.shared,
+    /// VpnStateManager.shared, …) initialise *after* this hook returns.
+    ///
+    /// We run the v0.23 → v0.24 legacy migration's synchronous phase here
+    /// so the ProfilesStore.init() that fires from `GhostStreamApp.body`
+    /// reads the migrated `profiles.json` on its very first `load()`
+    /// instead of seeing an empty UserDefaults and then clobbering the
+    /// migrated data on the next `save()` (OPS-R2-04 / SEC-R2-N01 — see
+    /// docs/knowledge/audits/2026-05-17-macos-bug-hunt-round2.md).
+    ///
+    /// The slow phase of the migration (Keychain re-import, file copies,
+    /// NETunnelProviderManager prune) is dispatched onto a detached task
+    /// from `LegacyMigration.runIfNeeded()` so the UI launch isn't
+    /// blocked by Keychain enumeration (CONC-R2-N10).
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        LegacyMigration.runIfNeeded()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Programmatic font registration — UIAppFonts is iOS-only.
         FontRegistration.register()
