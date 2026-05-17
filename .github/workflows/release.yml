@@ -154,8 +154,15 @@ jobs:
       # If Play rejects because versionCode already used (e.g. manual upload
       # of the same build): this step fails — bump version via
       # `tools/ship-android.sh --bump --tag` to push a new code.
+      #
+      # continue-on-error: Play upload is best-effort. Failure here (e.g.
+      # GCP API not enabled, transient Google outage, versionCode collision)
+      # must NOT block the GitHub Release job that runs after Android.
+      # AAB stays as a GitHub artifact regardless — promote manually if Play
+      # auto-upload doesn't work.
       - name: Publish to Play Console (internal track)
         uses: r0adkll/upload-google-play@v1
+        continue-on-error: true
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           packageName: io.ghoststream.vpn
