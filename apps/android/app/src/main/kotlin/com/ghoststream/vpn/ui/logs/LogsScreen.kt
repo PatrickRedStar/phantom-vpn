@@ -129,6 +129,9 @@ fun LogsScreen(viewModel: LogsViewModel) {
                         .fillMaxHeight(),
                     logs = logs,
                     listState = listState,
+                    // Tablet/foldable: no bottom-nav capsule overlay,
+                    // only the system gesture-pill inset.
+                    bottomPadding = 16.dp,
                 )
             }
         } else {
@@ -404,6 +407,7 @@ private fun LogList(
     modifier: Modifier = Modifier,
     logs: List<LogEntry>,
     listState: LazyListState,
+    bottomPadding: androidx.compose.ui.unit.Dp = 80.dp,
 ) {
     Box(modifier) {
         LazyColumn(
@@ -411,7 +415,7 @@ private fun LogList(
             modifier = Modifier.fillMaxSize(),
             reverseLayout = true,
             contentPadding = PaddingValues(
-                start = 16.dp, end = 16.dp, top = 8.dp, bottom = 80.dp,
+                start = 16.dp, end = 16.dp, top = 8.dp, bottom = bottomPadding,
             ),
         ) {
             items(logs.asReversed(), key = { it.seq }) { entry ->
