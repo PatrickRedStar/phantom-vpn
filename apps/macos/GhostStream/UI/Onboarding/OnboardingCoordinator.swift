@@ -55,6 +55,15 @@ public final class OnboardingCoordinator {
     private let log = Logger(subsystem: "com.ghoststream.client", category: "OnboardingCoordinator")
     private var pollTask: Task<Void, Never>?
     private var statusObserver: NSObjectProtocol?
+    /// UI-R4-R03: race between `configureVpn` and `dismissedBeforeReady`.
+    /// The install call (`tunnel.installOnly`) can take seconds to round
+    /// trip through the SystemExtensions XPC; if the user closes the
+    /// Welcome window during that window the coordinator was reset to
+    /// `.paste` but the in-flight Task could still arrive and transition
+    /// back to `.ready`, leaving the FSM at the wrong step. We now
+    /// keep a handle on the live install Task so `dismissedBeforeReady`
+    /// can cancel it before resetting.
+    private var installTask: Task<Void, Never>?
 
     public init() {}
 
@@ -127,6 +136,14 @@ public final class OnboardingCoordinator {
     /// Step 3 → Step 4: extension is `.activated`, install the
     /// NETunnelProviderManager. macOS will show the "VPN configurations"
     /// allow dialog; we observe `NEVPNStatusDidChange` to detect success.
+    ///
+    /// UI-R4-R03: the underlying `installOnly` call can sit in XPC for
+    /// several seconds. If the user closes the Welcome window during
+    /// that window, `dismissedBeforeReady` resets the FSM — but the
+    /// in-flight Task used to keep running and call `transition(to:
+    /// .ready)` afterwards. We now run the install through a stashed
+    /// `Task` handle so the dismiss path can cancel it, and we re-check
+    /// `Task.isCancelled` before mutating state in the completion arm.
     public func configureVpn() async {
         guard let profiles, let tunnel,
               let profile = profiles.activeProfile else {
@@ -136,21 +153,36 @@ public final class OnboardingCoordinator {
         }
         log.info("configuring NETunnelProviderManager for profile \(profile.id, privacy: .public)")
         awaitingVpnApproval = true
-        do {
-            // Install but DON'T start the tunnel yet — we just want the
-            // user to grant the system VPN config permission. Starting
-            // happens from the menu / dashboard once wizard finishes.
-            try await tunnel.installOnly(profile: profile)
-            awaitingVpnApproval = false
-            lastError = nil
-            sysExt?.assumeActivatedFromInstalledManager()
-            log.info("NEManager saved — wizard complete")
-            transition(to: .ready)
-        } catch {
-            awaitingVpnApproval = false
-            lastError = error.localizedDescription
-            log.error("VPN configure failed: \(error.localizedDescription, privacy: .public)")
+
+        installTask?.cancel()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                // Install but DON'T start the tunnel yet — we just want the
+                // user to grant the system VPN config permission. Starting
+                // happens from the menu / dashboard once wizard finishes.
+                try await tunnel.installOnly(profile: profile)
+                if Task.isCancelled {
+                    self.log.info("configureVpn task cancelled before completion")
+                    return
+                }
+                self.awaitingVpnApproval = false
+                self.lastError = nil
+                self.sysExt?.assumeActivatedFromInstalledManager()
+                self.log.info("NEManager saved — wizard complete")
+                self.transition(to: .ready)
+            } catch {
+                if Task.isCancelled {
+                    self.log.info("configureVpn task cancelled before completion (error swallowed)")
+                    return
+                }
+                self.awaitingVpnApproval = false
+                self.lastError = error.localizedDescription
+                self.log.error("VPN configure failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
+        installTask = task
+        await task.value
     }
 
     /// Wizard finished — caller closes the Welcome window.
@@ -164,8 +196,13 @@ public final class OnboardingCoordinator {
     /// opens setup we don't show "Жду разрешения" stuck on an
     /// approval the user can't actually grant from the missing
     /// window. Idempotent on `.ready`.
+    ///
+    /// UI-R4-R03: also cancel any in-flight `installOnly` Task so it
+    /// can't race past the reset and re-transition to `.ready`.
     public func dismissedBeforeReady() {
         stopPolling()
+        installTask?.cancel()
+        installTask = nil
         awaitingVpnApproval = false
         lastError = nil
         if step != .ready {

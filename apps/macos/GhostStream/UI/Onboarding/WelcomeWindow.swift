@@ -34,6 +34,11 @@ public struct WelcomeWindow: View {
 
     @State private var coordinator = OnboardingCoordinator()
 
+    /// UI-R4-R02: we observe `NSWindow.willCloseNotification` rather
+    /// than relying on `.onDisappear`. The observer token is retained
+    /// here so it is properly removed when the view is torn down.
+    @State private var willCloseObserver: NSObjectProtocol?
+
     public init() {}
 
     public var body: some View {
@@ -77,18 +82,56 @@ public struct WelcomeWindow: View {
             coordinator.tunnel = tunnel
             coordinator.preferences = prefs
             Task { await coordinator.resync() }
+            installWillCloseObserver()
         }
-        // UI-R2-N23: when the user closes the Welcome window with ⌘W
-        // (or by clicking the red traffic light) before the wizard
+        // UI-R2-N23 / UI-R4-R02: when the user closes the Welcome window
+        // with ⌘W (or by clicking the red traffic light) before the wizard
         // reaches `.ready`, the coordinator was getting stuck on the
         // pending step — subsequent CONNECT taps would either show
         // nothing (`.awaitingApproval`) or replay the failed sys-ext
-        // install. Resetting to `.paste` lets the user start fresh
-        // when they next open setup, and `.resync()` on the next
-        // .onAppear immediately re-detects which step is actually
-        // needed based on real state.
+        // install.
+        //
+        // Round 2 used `.onDisappear` which also fired on ⌘H (hide app),
+        // app-minimise, and Space switches — those hide the window but
+        // don't close it, so the wizard was being reset out from under
+        // the user mid-flow. Round 5 listens for the explicit
+        // `NSWindow.willCloseNotification` so the reset only runs when
+        // the window is actually closing.
         .onDisappear {
-            coordinator.dismissedBeforeReady()
+            if let token = willCloseObserver {
+                NotificationCenter.default.removeObserver(token)
+                willCloseObserver = nil
+            }
+        }
+    }
+
+    private func installWillCloseObserver() {
+        guard willCloseObserver == nil else { return }
+        // Defer one runloop tick — `.onAppear` can fire before AppKit
+        // has fully wired the NSWindow into `NSApp.windows`, especially
+        // for SwiftUI `Window(_:id:)` scenes opened via `openWindow`.
+        // Without the trampoline, the observer was occasionally missed
+        // on cold open. We use `Task { @MainActor in ... }` so we can
+        // update the `@State` observer token from the closure body.
+        let capturedCoordinator = coordinator
+        Task { @MainActor in
+            // One main-loop tick so SwiftUI's window scene has handed
+            // the NSWindow to AppKit before we ask for it by id.
+            try? await Task.sleep(nanoseconds: 16_000_000)
+            guard willCloseObserver == nil else { return }
+            guard let window = NSApp.windows.first(where: {
+                $0.identifier?.rawValue == "welcome" || $0.title == "Welcome"
+            }) else { return }
+            let token = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: window,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    capturedCoordinator.dismissedBeforeReady()
+                }
+            }
+            willCloseObserver = token
         }
     }
 

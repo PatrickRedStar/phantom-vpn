@@ -53,6 +53,14 @@ public struct TailView: View {
     // naïve singleton would need keyed caches. Out of scope for this
     // sweep.
     @State private var cachedFilteredLogs: [LogFrame] = []
+    /// UI-R4-R05: confirmation gate before flushing the in-memory log
+    /// buffer. The previous ⌘⌫ shortcut collided with the standard
+    /// TextField "delete to start of line" chord, so the buffer could
+    /// be wiped while the user was deleting a word in the filter input.
+    /// We now require an explicit Clear tap through a confirmation
+    /// dialog *and* moved the chord to ⇧⌘⌫ so it can't fire from
+    /// inside a TextField.
+    @State private var showClearConfirm: Bool = false
     @FocusState private var searchFieldFocused: Bool
 
     /// Static formatter — UI-C2. Allocating a fresh `DateFormatter`
@@ -100,6 +108,15 @@ public struct TailView: View {
             regexDebounceTask = task
         }
         .onChange(of: searchText) { _, _ in
+            // UI-R4-R09: cancel the previous debounce *first* — even
+            // when we early-return for an invalid regex. Round 2 left
+            // the task armed, so the next keystroke after typing an
+            // invalid pattern would fire two recomputes (the stale
+            // debounce from the prior valid input + the fresh one).
+            // Cancelling unconditionally guarantees exactly one
+            // recompute per pause.
+            searchDebounceTask?.cancel()
+
             // UI-R2-R05: when regex mode is on and the pattern is
             // currently invalid, zero out the cache *synchronously*
             // so the table doesn't keep showing stale matches against
@@ -116,7 +133,6 @@ public struct TailView: View {
             }
             // Debounce search keystrokes — typing in a 50k-row buffer
             // should not lock the main thread on every character.
-            searchDebounceTask?.cancel()
             let task = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 guard !Task.isCancelled else { return }
@@ -263,7 +279,7 @@ public struct TailView: View {
                 .buttonStyle(.plain)
                 .help("Toggle regex search")
                 Button {
-                    clearLogs()
+                    showClearConfirm = true
                 } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 12))
@@ -272,15 +288,32 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .help("Clear log buffer (⌘⌫)")
-                // UI-R2-R01: ⌘⌫ (Cmd-Delete) to clear the log buffer.
-                // Round 1 used ⌘K to dodge a macOS collision but that
-                // bound the same chord to CONNECT on the dashboard —
-                // when both views live in the responder tree (detached
-                // logs + visible dashboard), the chord became
-                // non-deterministic. Cmd-Delete is the platform idiom
-                // for "trash this" and has no collisions in our UI.
-                .keyboardShortcut(.delete, modifiers: .command)
+                .help("Clear log buffer (⇧⌘⌫)")
+                // UI-R4-R05: ⇧⌘⌫ (Shift+Cmd+Delete) to clear the log
+                // buffer. Round 1 used ⌘K (collided with the dashboard
+                // CONNECT chord), Round 2 moved to ⌘⌫ — but that
+                // chord is the AppKit standard for "delete to start of
+                // line" inside a TextField, so any user editing the
+                // filter input could wipe the log buffer with a habit
+                // keystroke. Shift+Cmd+Delete is unbound by AppKit
+                // text input handling and is the macOS norm for
+                // "Empty Trash" — exactly the right metaphor here.
+                // We also gate the action behind a confirmation
+                // dialog so even direct trash-button clicks need a
+                // second tap to commit (the buffer can't be undone).
+                .keyboardShortcut(.delete, modifiers: [.command, .shift])
+                .confirmationDialog(
+                    String(localized: "logs.clear.confirm.title"),
+                    isPresented: $showClearConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button(String(localized: "logs.clear.confirm.confirm"), role: .destructive) {
+                        clearLogs()
+                    }
+                    Button(String(localized: "logs.clear.confirm.cancel"), role: .cancel) {}
+                } message: {
+                    Text(String(localized: "logs.clear.confirm.message"))
+                }
                 Button {
                     copyVisibleLogs()
                 } label: {
@@ -334,7 +367,7 @@ public struct TailView: View {
                 .buttonStyle(.plain)
                 .help("Toggle follow tail")
                 KeyboardShortcutHint("⌘F")
-                KeyboardShortcutHint("⌘⌫")
+                KeyboardShortcutHint("⇧⌘⌫")
                 KeyboardShortcutHint("⇧⌘C")
                 KeyboardShortcutHint("⇧⌘E")
 

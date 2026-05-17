@@ -245,6 +245,34 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Logs" } },
         "ru" : { "stringUnit" : { "state" : "translated", "value" : "Логи" } }
       }
+    },
+    "logs.clear.confirm.title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear log buffer?" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Очистить буфер логов?" } }
+      }
+    },
+    "logs.clear.confirm.message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This removes every log entry currently held in memory. The action cannot be undone." } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Это удалит все записи лога из буфера. Действие нельзя отменить." } }
+      }
+    },
+    "logs.clear.confirm.confirm" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Clear" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Очистить" } }
+      }
+    },
+    "logs.clear.confirm.cancel" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Cancel" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Отмена" } }
+      }
     }
   },
   "version" : "1.0"

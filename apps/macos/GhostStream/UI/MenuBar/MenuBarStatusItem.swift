@@ -27,13 +27,27 @@ public struct MenuBarStatusItem: View {
     /// palette manually. Round 1 hard-coded `.dark` which left the
     /// state dot at dark-mode values when the user had explicitly
     /// switched to the light theme — most visible as the wrong shade
-    /// of green for the "connected" dot on a light menu bar. We now
-    /// read `ThemeOverride.current` (App Group UserDefaults) and fall
-    /// back to the system colour scheme when the user picked "system".
+    /// of green for the "connected" dot on a light menu bar.
+    ///
+    /// UI-R4-R01: keep reactivity to runtime theme changes. The Round 2
+    /// fix read `ThemeOverride.current` — a static computed property
+    /// backed by UserDefaults. SwiftUI has no dependency on that read,
+    /// so flipping the theme in Settings did not invalidate the body.
+    /// We now read `prefs.theme` through the @Observable
+    /// `PreferencesStore.shared` singleton, which SwiftUI tracks via
+    /// the Observation framework — so the menu bar palette refreshes
+    /// the moment the user toggles Light/Dark/System.
     @Environment(\.colorScheme) private var systemScheme
 
+    /// `@State` holding the shared singleton — SwiftUI installs
+    /// Observation tracking on every property read inside `body`, so
+    /// `prefs.theme` becomes a real dependency without us needing to
+    /// pipe `PreferencesStore` through the environment (which the
+    /// `MenuBarExtra` label view does not get on macOS 14).
+    @State private var prefs = PreferencesStore.shared
+
     private var palette: GsColorSet {
-        switch ThemeOverride.current {
+        switch ThemeOverride(rawValue: prefs.theme) ?? .system {
         case .dark:   return .dark
         case .light:  return .light
         case .system: return systemScheme == .light ? .light : .dark

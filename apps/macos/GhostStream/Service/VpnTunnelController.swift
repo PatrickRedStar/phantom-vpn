@@ -36,6 +36,18 @@ public final class VpnTunnelController: ObservableObject {
     @Published public private(set) var manager: NETunnelProviderManager?
     @Published public var lastError: String?
 
+    /// UI-R4-R06: a session is "successful" once it has been observed in
+    /// the `.connected` state at least once since the last error reset.
+    /// Round 2 tracked this via `@State wasConnected` on every consumer
+    /// view (DashboardView, MenuBarPopover) which had two failure modes:
+    /// (a) the state vanished when the user switched between the popover
+    /// and the dashboard (each view owned its own copy), and (b) the
+    /// "clear `lastError` after a successful round-trip" effect raced
+    /// per-view. We hoist the flag into the Service layer so the
+    /// truth is shared across all surfaces and survives view
+    /// reparenting.
+    @Published public var hadSuccessfulConnect: Bool = false
+
     /// macOS system-extension bundle id. Hardcoded against the project.yml
     /// extension bundle id; on iOS this would be derived from the host
     /// bundle id, but on macOS the system extension is a sibling, not a
@@ -45,6 +57,29 @@ public final class VpnTunnelController: ObservableObject {
     private let log = Logger(subsystem: "com.ghoststream.client", category: "VpnTunnelController")
 
     public init() {}
+
+    /// UI-R4-R06: drive the `hadSuccessfulConnect` flag from the
+    /// canonical `VpnStateManager.statusFrame.state` stream. Views
+    /// (DashboardView / MenuBarPopover / TailView) used to race on
+    /// `wasConnected` from local `@State`; we now centralise the
+    /// transition logic here. Callers feed every state change in via
+    /// this entry point so the flag flips exactly once per session
+    /// boundary, independent of which surface is mounted at the time.
+    ///
+    /// Side effect: when the tunnel returns to `.disconnected` after a
+    /// successful `.connected` round-trip, `lastError` is cleared too
+    /// — that's the same "benign disconnect" semantics the per-view
+    /// `.onChange` handlers had before.
+    public func observeStateForSuccessTracking(_ newState: ConnState) {
+        if newState == .connected {
+            if !hadSuccessfulConnect {
+                hadSuccessfulConnect = true
+            }
+        } else if newState == .disconnected && hadSuccessfulConnect {
+            lastError = nil
+            hadSuccessfulConnect = false
+        }
+    }
 
     public func loadFromPreferences(expectedProfileId: String? = nil) async throws {
         let all = try await NETunnelProviderManager.loadAllFromPreferences()

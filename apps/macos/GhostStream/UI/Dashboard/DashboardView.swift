@@ -33,14 +33,13 @@ public struct DashboardView: View {
     @EnvironmentObject private var tunnel: VpnTunnelController
 
     @State private var scopeWindow: ScopeWindow = .m5
-    // UI-R2-R03/R04: Track whether we transitioned through `.connected`
-    // since the last error. Round 1's UI-H3 fix cleared `lastError` on
-    // every `.disconnected` arrival — but the natural failure flow is
-    // `.connecting → .error → .disconnected`, which means the error
-    // text vanished ~100ms after surfacing. We now only clear on the
-    // benign path: user explicitly disconnected from `.connected`.
-    @State private var wasConnected = false
-
+    // UI-R2-R03/R04 / UI-R4-R06: track whether we transitioned through
+    // `.connected` since the last error so we can clear `lastError`
+    // only on a benign disconnect. The state lives in
+    // `VpnTunnelController.hadSuccessfulConnect` (Service layer) so it
+    // survives view churn — switching between the popover and the
+    // dashboard used to lose the flag, leaving stale errors visible
+    // after a clean session.
     public init() {}
 
     public var body: some View {
@@ -58,20 +57,15 @@ public struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
-        // UI-R2-R03/R04 (was UI-H3): clear the inline error chip only
-        // when the tunnel transitioned through a successful
-        // `.connected` state and is now `.disconnected`. The previous
-        // implementation cleared on any `.disconnected` arrival, which
-        // wiped errors raised on the failure path
-        // `.connecting → .error → .disconnected` before the user could
-        // read them.
+        // UI-R2-R03/R04 (was UI-H3) / UI-R4-R06: clear the inline error
+        // chip only when the tunnel transitioned through a successful
+        // `.connected` state and is now `.disconnected`. Round 2 stored
+        // `wasConnected` per-view; we now route through
+        // `tunnel.observeStateForSuccessTracking(_:)` so the flag is
+        // shared between dashboard and menu-bar popover and doesn't
+        // reset when the user toggles between surfaces.
         .onChange(of: stateMgr.statusFrame.state) { _, newState in
-            if newState == .connected {
-                wasConnected = true
-            } else if newState == .disconnected && wasConnected {
-                Task { @MainActor in tunnel.lastError = nil }
-                wasConnected = false
-            }
+            tunnel.observeStateForSuccessTracking(newState)
         }
     }
 

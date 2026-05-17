@@ -46,13 +46,12 @@ public struct MenuBarPopover: View {
     @Environment(DockPolicyController.self) private var dock
     @EnvironmentObject private var tunnel: VpnTunnelController
 
-    // UI-R2-R03/R04: clear `lastError` only after a successful
-    // `.connected` round-trip. The Round 1 fix wiped errors on every
-    // `.disconnected` arrival, swallowing the failure-path message
-    // (`.connecting → .error → .disconnected`) before users could read
-    // it. Tracked independently per view because both the dashboard
-    // and the popover own their own `.onChange` watchers.
-    @State private var wasConnected = false
+    // UI-R2-R03/R04 / UI-R4-R06: track whether we transitioned through
+    // `.connected` since the last error in the Service layer
+    // (`tunnel.hadSuccessfulConnect`) rather than per-view. The Round 2
+    // implementation used `@State wasConnected` on both this view and
+    // the dashboard — they could disagree after a channel switch,
+    // leaving stale `lastError` text on screen across surfaces.
 
     public init() {}
 
@@ -68,17 +67,14 @@ public struct MenuBarPopover: View {
         .frame(width: 380, height: 520, alignment: .top)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
-        // UI-R2-R03/R04 (was UI-H3): only clear `lastError` when the
-        // tunnel transitioned through `.connected` first. Errors from
-        // the connecting path now stay visible until the next
-        // successful session.
+        // UI-R2-R03/R04 / UI-R4-R06: forward state transitions into the
+        // shared `tunnel.observeStateForSuccessTracking(_:)` so all
+        // surfaces (popover, dashboard) agree on the
+        // `hadSuccessfulConnect` flag. Errors raised on the failure
+        // path (`.connecting → .error → .disconnected`) survive until
+        // the next live session; benign disconnects clear cleanly.
         .onChange(of: stateMgr.statusFrame.state) { _, newState in
-            if newState == .connected {
-                wasConnected = true
-            } else if newState == .disconnected && wasConnected {
-                Task { @MainActor in tunnel.lastError = nil }
-                wasConnected = false
-            }
+            tunnel.observeStateForSuccessTracking(newState)
         }
     }
 
@@ -242,11 +238,17 @@ public struct MenuBarPopover: View {
         // disabled "TUNING…" pill. The Round 1 race on parallel
         // `installAndStart` is still prevented because `toggleConnect`
         // routes any non-disconnected state through `stop()`.
-        // MIG-R4-N01: when the v0.23→v0.24 migration's phase B is
-        // still running we render a faint "IMPORTING…" label and the
-        // tap is rejected inside `toggleConnect()` — Keychain
-        // cert/key items aren't re-imported yet, so a CONNECT here
-        // would fail mTLS handshake silently.
+        //
+        // MIG-R4-N01: when the v0.23→v0.24 migration's phase B is still
+        // running we render a faint "IMPORTING…" label and the tap is
+        // rejected inside `toggleConnect()` — Keychain cert/key items
+        // aren't re-imported yet, so a CONNECT here would fail mTLS
+        // handshake silently.
+        //
+        // UI-R4-R07: the CANCEL pill renders a `ProgressView` alongside
+        // the label via the new `busy` parameter so users get visual
+        // confirmation a teardown is in flight — TSPU servers can sit
+        // on TLS for up to 75s and a static "CANCEL" gave no feedback.
         let state = stateMgr.statusFrame.state
         let live = state == .connected
         let busy = state == .connecting || state == .reconnecting
@@ -262,7 +264,8 @@ public struct MenuBarPopover: View {
             GhostFab(
                 text: label,
                 outline: !live,
-                tint: tint
+                tint: tint,
+                busy: busy
             ) {
                 popoverLog.info("GhostFab tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public) migrating=\(migrating, privacy: .public)")
                 Task { await toggleConnect() }
