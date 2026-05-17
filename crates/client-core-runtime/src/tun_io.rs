@@ -1,6 +1,7 @@
 //! TUN I/O abstraction layer — lets the tunnel runtime work with different
 //! platform-specific TUN implementations without caring about the details.
 
+#[cfg(unix)]
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use bytes::Bytes;
@@ -13,6 +14,22 @@ pub trait PacketIo: Send + Sync {
     fn submit_outbound_batch(&self, pkts: Vec<Bytes>);
 }
 
+/// Blocking-style TUN packet I/O. The runtime drives this trait from a
+/// dedicated pair of OS threads (one for each direction) so per-call
+/// blocking is fine.
+///
+/// `read` returns one inbound packet (local stack → tunnel); `write`
+/// accepts one outbound packet (tunnel → local stack). Both calls may
+/// return `io::ErrorKind::WouldBlock` so the reader/writer threads can
+/// re-check the cancel flag and exit cleanly.
+///
+/// Concrete impls: `WintunBackend` on Windows (`client-windows-core`),
+/// `MockBackend` on any host for headless tests.
+pub trait TunBackend: Send + Sync + 'static {
+    fn read(&self, buf: &mut [u8]) -> std::io::Result<usize>;
+    fn write(&self, packet: &[u8]) -> std::io::Result<usize>;
+}
+
 /// Platform TUN I/O variant. Determines how the runtime reads from / writes to
 /// the local TUN interface.
 pub enum TunIo {
@@ -22,9 +39,14 @@ pub enum TunIo {
     Uring(RawFd),
     /// Blocking-thread TUN I/O using libc read/write. Works on Android and Linux.
     /// Suitable for Android JNI where io_uring is unavailable.
+    #[cfg(unix)]
     BlockingThreads(RawFd),
     /// iOS NEPacketTunnelProvider: inbound packets are pushed by the caller via
     /// the returned `RuntimeHandles::inbound_tx`; outbound packets are delivered
     /// via the `PacketIo::submit_outbound_batch` callback.
     Callback(Arc<dyn PacketIo>),
+    /// Generic trait-object TUN backend. Used by Windows (Wintun) and by
+    /// headless tests (MockBackend). Reader/writer threads in the runtime
+    /// drive `TunBackend::read` / `::write` directly — no fd, no libc.
+    Backend(Arc<dyn TunBackend>),
 }

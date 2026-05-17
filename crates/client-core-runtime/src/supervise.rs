@@ -9,6 +9,7 @@
 use anyhow::Context;
 use bytes::Bytes;
 use std::net::SocketAddr;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -405,6 +406,11 @@ async fn drive_tunnel(
         // only the per-stream events that need a `stream_id` correlator
         // (mtls.cert_verify, h2.*, stream.*).
         let stream_priority = if idx == 0 { "high" } else { "normal" };
+        // VpnService.protect() is Android-only; on Windows the block that
+        // uses `socket.as_raw_fd()` won't compile, so we cfg-gate the two
+        // code paths. Windows callers always pass `None` for protect_socket
+        // (the type is a no-arg dummy on non-Unix targets).
+        #[cfg(unix)]
         let (r, mut w) = if let Some(ref protect) = protect_socket {
             // Android: create socket, protect it from VPN routing, then connect.
             let socket = if server_addr.is_ipv4() {
@@ -435,6 +441,22 @@ async fn drive_tunnel(
             res
         } else {
             // Linux/iOS/macOS: no socket protection needed.
+            let res = tls_connect(server_addr, server_name.clone(), client_tls.clone())
+                .await
+                .with_context(|| format!("stream {} tls connect", idx))?;
+            tracing::debug!(
+                category = "handshake",
+                result = "ok",
+                subject = %server_name,
+                stream_id = idx as u64,
+                "mtls.cert_verify"
+            );
+            res
+        };
+
+        #[cfg(not(unix))]
+        let (r, mut w) = {
+            let _ = &protect_socket; // VpnService.protect is Android-only
             let res = tls_connect(server_addr, server_name.clone(), client_tls.clone())
                 .await
                 .with_context(|| format!("stream {} tls connect", idx))?;

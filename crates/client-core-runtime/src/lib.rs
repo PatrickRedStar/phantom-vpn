@@ -45,8 +45,9 @@ pub use ghoststream_gui_ipc::{
     ConnState, ConnectProfile, LogFrame, StatusFrame, TunnelSettings,
 };
 pub use telemetry::Telemetry;
-pub use tun_io::{PacketIo, TunIo};
+pub use tun_io::{PacketIo, TunBackend, TunIo};
 
+#[cfg(unix)]
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use bytes::Bytes;
@@ -58,8 +59,14 @@ use tokio::sync::{watch, Mutex};
 /// On Android, calls `VpnService.protect(fd)` via JNI so the socket
 /// bypasses the TUN interface. Returns `true` on success.
 /// Other platforms pass `None` (Linux uses RouteGuard, iOS routes
-/// extension-sockets automatically).
+/// extension-sockets automatically). On Windows this trait exists only as
+/// a placeholder type — VpnService is Android-only and Windows callers
+/// always pass `None`.
+#[cfg(unix)]
 pub type ProtectSocket = Arc<dyn Fn(RawFd) -> bool + Send + Sync>;
+
+#[cfg(not(unix))]
+pub type ProtectSocket = Arc<dyn Fn() -> bool + Send + Sync>;
 
 // ── Public constants ─────────────────────────────────────────────────────────
 
@@ -233,8 +240,12 @@ pub async fn run(
 
     // Build TUN factory: called once per reconnect attempt.
     // For Callback mode we also build an inbound mpsc channel.
-    // fd to close when supervisor exits (BlockingThreads only).
-    let mut tun_fd_to_close: Option<RawFd> = None;
+    // fd to close when supervisor exits (BlockingThreads only). Typed as
+    // `i32` rather than `RawFd` so the field compiles on Windows too
+    // (the post-supervise `libc::close` is itself cfg(unix)-gated). `mut`
+    // is needed only on Unix where the BlockingThreads arm assigns it.
+    #[allow(unused_mut)]
+    let mut tun_fd_to_close: Option<i32> = None;
 
     let (tun_factory, inbound_tx): (supervise::TunFactory, tokio::sync::mpsc::Sender<Bytes>) =
         match tun {
@@ -247,6 +258,7 @@ pub async fn run(
                 let (dummy_tx, _) = tokio::sync::mpsc::channel::<Bytes>(1);
                 (factory, dummy_tx)
             }
+            #[cfg(unix)]
             TunIo::BlockingThreads(fd) => {
                 // Inline blocking-thread TUN I/O — works on Android and Linux.
                 // We dup() the fd so it's owned independently of the JNI layer.
@@ -486,6 +498,116 @@ pub async fn run(
                 });
                 (factory, inbound_tx)
             }
+            TunIo::Backend(backend) => {
+                // Generic trait-object backend (Windows Wintun + headless
+                // tests). Two persistent OS threads drive `TunBackend::read`
+                // and `::write`; per-attempt forwarder tasks bridge them to
+                // the supervisor's ephemeral channels — same shape as the
+                // BlockingThreads arm, but driven by trait calls instead of
+                // `libc::read`/`libc::write` so it compiles on Windows.
+                let (persist_read_tx, persist_read_rx) =
+                    tokio::sync::mpsc::channel::<Bytes>(4096);
+                let (persist_write_tx, mut persist_write_rx) =
+                    tokio::sync::mpsc::channel::<Bytes>(4096);
+
+                let reader_backend = backend.clone();
+                std::thread::Builder::new()
+                    .name("phantom-tun-rd".into())
+                    .spawn(move || {
+                        tracing::debug!(category = "tun", name = "backend", "reader thread started (persistent)");
+                        let mut buf = vec![0u8; 4096];
+                        loop {
+                            match reader_backend.read(&mut buf) {
+                                Ok(0) => {
+                                    tracing::info!(category = "tun", name = "backend", "reader: EOF, exiting");
+                                    break;
+                                }
+                                Ok(n) => {
+                                    let pkt = Bytes::copy_from_slice(&buf[..n]);
+                                    if persist_read_tx.blocking_send(pkt).is_err() {
+                                        tracing::debug!(category = "tun", name = "backend", "reader: channel closed");
+                                        break;
+                                    }
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    // Wintun returns no packets right now —
+                                    // brief sleep to avoid burning CPU. The
+                                    // Wintun adapter wakes us via internal
+                                    // event so 10 ms is a soft cap, not a
+                                    // poll cadence.
+                                    std::thread::sleep(std::time::Duration::from_millis(10));
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::info!(category = "tun", name = "backend", %e, "reader thread exiting");
+                                    break;
+                                }
+                            }
+                        }
+                    })
+                    .expect("spawn tun reader thread");
+
+                let writer_backend = backend.clone();
+                std::thread::Builder::new()
+                    .name("phantom-tun-wr".into())
+                    .spawn(move || {
+                        tracing::debug!(category = "tun", name = "backend", "writer thread started (persistent)");
+                        while let Some(pkt) = persist_write_rx.blocking_recv() {
+                            if let Err(e) = writer_backend.write(&pkt) {
+                                tracing::error!(category = "tun", name = "backend", %e, "write failed");
+                                if e.kind() != std::io::ErrorKind::WouldBlock {
+                                    break;
+                                }
+                            }
+                        }
+                        tracing::debug!(category = "tun", name = "backend", "writer: channel closed");
+                    })
+                    .expect("spawn tun writer thread");
+
+                // Same per-attempt forwarder pattern as BlockingThreads: one
+                // pair of persistent OS threads, one shared receiver, attempt-
+                // local forwarders aborted on reconnect.
+                let shared_read_rx = Arc::new(tokio::sync::Mutex::new(persist_read_rx));
+                let prev_handles: Arc<parking_lot::Mutex<Option<(
+                    tokio::task::JoinHandle<()>,
+                    tokio::task::JoinHandle<()>,
+                )>>> = Arc::new(parking_lot::Mutex::new(None));
+
+                let factory: supervise::TunFactory = Arc::new(move || {
+                    if let Some((in_h, out_h)) = prev_handles.lock().take() {
+                        in_h.abort();
+                        out_h.abort();
+                    }
+                    let (attempt_read_tx, attempt_read_rx) =
+                        tokio::sync::mpsc::channel::<Bytes>(4096);
+                    let (attempt_write_tx, mut attempt_write_rx) =
+                        tokio::sync::mpsc::channel::<Bytes>(4096);
+
+                    let shared_for_in = shared_read_rx.clone();
+                    let in_handle = tokio::spawn(async move {
+                        let mut guard = shared_for_in.lock().await;
+                        while let Some(pkt) = guard.recv().await {
+                            if attempt_read_tx.send(pkt).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+
+                    let write_tx_for_out = persist_write_tx.clone();
+                    let out_handle = tokio::spawn(async move {
+                        while let Some(pkt) = attempt_write_rx.recv().await {
+                            if write_tx_for_out.send(pkt).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
+
+                    *prev_handles.lock() = Some((in_handle, out_handle));
+                    Ok((attempt_read_rx, attempt_write_tx))
+                });
+                let (dummy_tx, _) = tokio::sync::mpsc::channel::<Bytes>(1);
+                (factory, dummy_tx)
+            }
         };
 
     // v0.25.1 (W3-2): watch::channel(bool) replaces Arc<Notify>. The
@@ -512,11 +634,15 @@ pub async fn run(
         tracing::info!(category = "runtime", "shutdown.start");
         // Close the dup'd TUN fd so Android can tear down the VPN interface.
         // Without this, the dup'd fd keeps the TUN device alive even after
-        // VpnService closes its ParcelFileDescriptor.
+        // VpnService closes its ParcelFileDescriptor. Unix-only — the
+        // Backend arm has no fd to close.
+        #[cfg(unix)]
         if let Some(fd) = tun_fd_to_close {
             tracing::info!(category = "tun", name = "blocking", tun_fd = fd, "torn_down");
             unsafe { libc::close(fd); }
         }
+        #[cfg(not(unix))]
+        let _ = tun_fd_to_close;
         let duration_ms = shutdown_started_at.elapsed().as_millis() as u64;
         tracing::info!(category = "runtime", duration_ms, "shutdown.complete");
         Ok(())

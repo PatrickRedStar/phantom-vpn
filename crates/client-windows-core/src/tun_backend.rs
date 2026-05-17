@@ -1,10 +1,13 @@
-//! TUN backend abstraction.
+//! TUN backend implementations.
 //!
-//! `TunBackend` is the trait the runtime drives to move packets in and out
-//! of the local TUN adapter. On Windows the concrete impl wraps a Wintun
-//! session; for headless tests on any host we ship `MockBackend` — a pair
-//! of in-memory queues that lets us drive the full tunnel pipeline without
-//! a real adapter.
+//! The `TunBackend` trait itself lives in `client-core-runtime` so the
+//! tunnel runtime can drive any backend through a single Arc<dyn _>. This
+//! module provides two concrete impls:
+//!
+//! * `WintunBackend` — production Wintun session (cfg(windows)).
+//! * `MockBackend` — in-memory packet queues for headless tests on Mac/
+//!   Linux/Windows. Used by `cargo test -p client-windows-core` and by any
+//!   integration test that needs to drive the runtime without a real TUN.
 
 use std::collections::VecDeque;
 use std::io;
@@ -12,25 +15,11 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-/// Blocking-style TUN packet I/O. `read` returns one inbound packet (from
-/// the local network stack into the tunnel); `write` accepts one outbound
-/// packet (from the tunnel back to the local stack). Both calls are
-/// expected to be cheap and non-blocking from the runtime's point of view —
-/// the runtime owns dedicated reader/writer threads that wrap each call.
-pub trait TunBackend: Send + Sync + 'static {
-    /// Read one packet into `buf`. Returns the number of bytes written.
-    /// Implementations should block until a packet is available or return
-    /// `io::ErrorKind::WouldBlock` so the caller can retry / cancel.
-    fn read(&self, buf: &mut [u8]) -> io::Result<usize>;
+pub use client_core_runtime::TunBackend;
 
-    /// Write one outbound packet. Returns the number of bytes accepted.
-    fn write(&self, packet: &[u8]) -> io::Result<usize>;
-}
-
-/// In-memory mock TUN. Used by `cargo test -p client-windows-core` on any
-/// host (Mac, Linux, Windows). Packets pushed into `rx_queue` are surfaced
-/// to the runtime via `read()`; packets the runtime writes are captured in
-/// `tx_queue` for the test to assert on.
+/// In-memory mock TUN. Packets pushed into `rx_queue` are surfaced to the
+/// runtime via `read()`; packets the runtime writes are captured in
+/// `tx_queue` for tests to assert on.
 pub struct MockBackend {
     rx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
     tx_queue: Arc<Mutex<VecDeque<Vec<u8>>>>,
