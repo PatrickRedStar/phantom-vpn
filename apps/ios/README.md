@@ -67,7 +67,7 @@ is therefore not supported on iOS.
 
 ## App Group
 
-All shared state flows through App Group `group.com.ghoststream.vpn`:
+All shared state flows through App Group `group.com.ghoststream.client`:
 - `files/profiles.json` — profile list (ProfilesStore)
 - `UserDefaults(suiteName:)` — preferences (PreferencesStore)
 - `snapshot.json` — last known StatusFrame (written by extension, read by host)

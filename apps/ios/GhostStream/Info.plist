@@ -25,7 +25,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>GhostStream uses the camera to scan QR codes containing connection profiles.</string>
+	<string>GhostStream uses the camera to scan QR codes containing VPN connection strings.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>space_grotesk.ttf</string>

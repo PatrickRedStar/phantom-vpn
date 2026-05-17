@@ -1,6 +1,6 @@
 name: GhostStream
 options:
-  bundleIdPrefix: com.ghoststream.vpn
+  bundleIdPrefix: com.ghoststream.client
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -67,12 +67,12 @@ targets:
         com.apple.developer.networking.networkextension:
           - packet-tunnel-provider
         com.apple.security.application-groups:
-          - group.com.ghoststream.vpn
+          - group.com.ghoststream.client
         keychain-access-groups:
-          - $(AppIdentifierPrefix)group.com.ghoststream.vpn
+          - $(AppIdentifierPrefix)group.com.ghoststream.client
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client
         INFOPLIST_FILE: GhostStream/Info.plist
         CODE_SIGN_ENTITLEMENTS: GhostStream/GhostStream.entitlements
         TARGETED_DEVICE_FAMILY: "1"
@@ -115,12 +115,18 @@ targets:
         com.apple.developer.networking.networkextension:
           - packet-tunnel-provider
         com.apple.security.application-groups:
-          - group.com.ghoststream.vpn
+          - group.com.ghoststream.client
         keychain-access-groups:
-          - $(AppIdentifierPrefix)group.com.ghoststream.vpn
+          - $(AppIdentifierPrefix)group.com.ghoststream.client
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn.PacketTunnelProvider
+        # NOTE: iOS Swift code (VpnTunnelController.swift:42, LogsViewModel.swift:267)
+        # currently hardcodes "<host>.PacketTunnelProvider" as the extension bundle id.
+        # macOS Round 1 adopted .tunnel suffix; iOS keeps .PacketTunnelProvider until
+        # Round 4 updates the Swift constants. Do NOT change this without also fixing
+        # both Swift sites — otherwise NETunnelProviderManager.loadAllFromPreferences()
+        # will never match and VPN will silently fail to start.
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client.PacketTunnelProvider
         INFOPLIST_FILE: PacketTunnelProvider/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnelProvider/PacketTunnelProvider.entitlements
         TARGETED_DEVICE_FAMILY: "1"
@@ -143,7 +149,7 @@ targets:
       - path: GhostStreamTests
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.vpn.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client.tests
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1"
     dependencies:
