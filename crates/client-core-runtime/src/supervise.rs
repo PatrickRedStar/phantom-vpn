@@ -85,7 +85,11 @@ pub async fn supervise(
         let cfg = match client_common::helpers::parse_conn_string(&profile.conn_string) {
             Ok(c) => c,
             Err(e) => {
-                fail(&status_tx, format!("parse conn_string: {:#}", e), "parse_conn_string");
+                // SEC-R2-N06: only the top-level context — never the full chain.
+                // `format!("{:#}", e)` can leak raw bytes through
+                // `base64::DecodeError` and `FromUtf8Error` Display impls
+                // which surface offset/surrounding bytes from invalid PEM.
+                fail(&status_tx, format!("parse conn_string: {}", e), "parse_conn_string");
                 break;
             }
         };
@@ -241,7 +245,8 @@ pub async fn supervise(
                 );
             }
             Err(e) => {
-                let err_str = format!("{:#}", e);
+                // SEC-R2-N06: top-level context only — see parse_conn_string note.
+                let err_str = format!("{}", e);
                 last_error_str = Some(err_str.clone());
                 tracing::error!(
                     category = "tunnel",
@@ -266,7 +271,8 @@ pub async fn supervise(
 
         if let Err(e) = &result {
             let mut f = status_tx.borrow().clone();
-            f.last_error = Some(format!("{:#}", e));
+            // SEC-R2-N06: see parse_conn_string note — top-level only.
+            f.last_error = Some(format!("{}", e));
             let _ = status_tx.send(f);
         }
 
@@ -679,7 +685,7 @@ async fn drive_tunnel(
                 Err(e) => tracing::warn!(
                     category = "stream",
                     stream_id = idx as u64,
-                    error = %format!("{:#}", e),
+                    error = %format!("{}", e),
                     "kill"
                 ),
             }
@@ -712,7 +718,7 @@ async fn drive_tunnel(
                 Err(e) => tracing::warn!(
                     category = "stream",
                     stream_id = idx as u64,
-                    error = %format!("{:#}", e),
+                    error = %format!("{}", e),
                     "kill"
                 ),
             }
