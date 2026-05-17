@@ -221,7 +221,7 @@ struct GhostStreamApp: App {
               let proto = manager.protocolConfiguration as? NETunnelProviderProtocol
         else { return false }
 
-        return proto.providerBundleIdentifier == "com.ghoststream.vpn.tunnel" && manager.isEnabled
+        return proto.providerBundleIdentifier == "com.ghoststream.client.tunnel" && manager.isEnabled
     }
 
     private func notificationToken(from frame: StatusFrame) -> String {

@@ -80,7 +80,7 @@ final class LogsViewModel {
     private var pollTask: Task<Void, Never>?
     private var ipc: TunnelIpcBridge?
     private let maxEntries = 50_000
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "LogsVM")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "LogsVM")
 
     // MARK: - Derived
 

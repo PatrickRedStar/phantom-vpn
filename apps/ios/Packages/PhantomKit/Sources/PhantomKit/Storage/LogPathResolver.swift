@@ -6,7 +6,7 @@ import Foundation
 /// `.libraryDirectory` resolves to `/var/root/Library/Logs/...` —
 /// invisible to the user. We anchor the log file in the App Group
 /// container instead, which resolves to the user-home
-/// `~/Library/Group Containers/group.com.ghoststream.vpn/Logs/` from
+/// `~/Library/Group Containers/group.com.ghoststream.client/Logs/` from
 /// both the host (running as the user) and the system extension
 /// (running as root).
 ///
@@ -19,13 +19,13 @@ public enum LogPathResolver {
 
     /// Shared App Group identifier — must match `group.*` listed in
     /// both the host and the extension entitlements.
-    public static let appGroupIdentifier = "group.com.ghoststream.vpn"
+    public static let appGroupIdentifier = "group.com.ghoststream.client"
 
     /// Default log directory.
     ///
     /// Resolution order (per ADR 0008 §4 + sandbox/root realities):
     ///   1. App Group container `Logs/` — primary. Resolves to
-    ///      `~/Library/Group Containers/group.com.ghoststream.vpn/Logs/`
+    ///      `~/Library/Group Containers/group.com.ghoststream.client/Logs/`
     ///      from both host and extension.
     ///   2. User-domain `~/Library/Logs/GhostStream/` — fallback for the
     ///      host app when the App Group is somehow unreachable. Lands

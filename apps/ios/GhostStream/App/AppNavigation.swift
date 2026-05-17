@@ -51,7 +51,7 @@ struct AppNavigation: View {
     @State private var routePolicyReconciled = false
 
     private let routePolicyLog = Logger(
-        subsystem: "com.ghoststream.vpn",
+        subsystem: "com.ghoststream.client",
         category: "RoutePolicyLaunch"
     )
 

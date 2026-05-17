@@ -40,9 +40,9 @@ public final class VpnTunnelController: ObservableObject {
     /// extension bundle id; on iOS this would be derived from the host
     /// bundle id, but on macOS the system extension is a sibling, not a
     /// child.
-    private let providerBundleId = "com.ghoststream.vpn.tunnel"
+    private let providerBundleId = "com.ghoststream.client.tunnel"
 
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "VpnTunnelController")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "VpnTunnelController")
 
     public init() {}
 
@@ -91,10 +91,18 @@ public final class VpnTunnelController: ObservableObject {
         )
         let routePolicy = await UpstreamVpnRouteDetector().snapshot(routePolicyInput)
 
+        // CRITICAL privacy: NETunnelProviderProtocol.providerConfiguration is
+        // persisted by the system in plaintext under
+        // `/Library/Preferences/com.apple.networkextension*.plist`. Any
+        // PEM material or the original `ghs://` conn-string (its userinfo
+        // is base64-PEM) would be readable by every process with sudo.
+        // The extension hydrates cert/key from the shared Keychain at
+        // start time via `resolveProfile(id:)`, so we never need to ship
+        // them through this dictionary.
         let profileData: Data
         let settingsData: Data
         do {
-            profileData = try JSONEncoder().encode(providerProfile)
+            profileData = try JSONEncoder().encode(providerProfile.sanitizedForProviderConfiguration)
             let settings = TunnelSettings(
                 dnsLeakProtection: dnsLeakProtection,
                 ipv6Killswitch: ipv6Killswitch,

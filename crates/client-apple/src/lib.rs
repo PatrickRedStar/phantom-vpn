@@ -54,47 +54,49 @@ fn default_log_spec() -> &'static str {
     }
 }
 
-/// Resolve and apply the active filter spec for this `phantom_runtime_start`
-/// invocation, per the ADR 0008 §3 priority chain. Idempotent — safe to call
-/// multiple times across sessions.
-fn apply_log_filter(verbose: bool) {
+/// Compute the active filter spec for a `phantom_runtime_start` invocation,
+/// per the ADR 0008 §3 priority chain. Pure function — easy to test, no
+/// observable side effects.
+fn resolve_log_spec(verbose: bool) -> String {
     // 1. env `GHOSTSTREAM_LOG` wins over everything (engineers can pin a spec
-    //    while debugging without rebuilding).
+    //    while debugging without rebuilding). Reading env is fine — only
+    //    *writing* it is unsafe under Rust 2024.
     let from_env = std::env::var("GHOSTSTREAM_LOG").ok().filter(|s| !s.is_empty());
 
     // 2. Swift verbose toggle.
     // 3. Build-config default.
-    let spec = match (from_env, verbose) {
+    match (from_env, verbose) {
         (Some(s), _) => s,
         (None, true) => "trace".to_string(),
         (None, false) => default_log_spec().to_string(),
-    };
-
-    // Mirror into `RUST_LOG` *before* the first `logsink::install()` so the
-    // initial filter matches. SAFETY: `set_var` is unsafe in Rust 2024 due to
-    // multi-threaded races on env. We call this once per session from the FFI
-    // entry, before any worker threads consult the env. Keep it in a small
-    // unsafe block to make the contract explicit.
-    // NOTE: phantom_runtime_start is the only writer; readers are the
-    // `logsink::install()` call below and `tracing-subscriber::EnvFilter`
-    // internals, which run on the same thread we just spawned from.
-    std::env::set_var("RUST_LOG", &spec);
-
-    // Force-install the global subscriber now (no-op on second call) so
-    // `set_level` below has a `FILTER_HANDLE` to drive.
-    client_core_runtime::logsink::install();
-
-    // For reload: convert spec to a single canonical level when possible. The
-    // logsink `set_level` API takes a single bare level (e.g. "trace") and
-    // appends the noisy-crate suppression suffix itself. If we have a complex
-    // spec we leave it alone (the `RUST_LOG` mirror above already drove
-    // `install()` correctly on first call).
-    if matches!(
-        spec.as_str(),
-        "trace" | "debug" | "info" | "warn" | "error"
-    ) {
-        client_core_runtime::logsink::set_level(&spec);
     }
+}
+
+/// Resolve and apply the active filter spec for this `phantom_runtime_start`
+/// invocation, per the ADR 0008 §3 priority chain. Idempotent — safe to call
+/// multiple times across sessions.
+///
+/// v0.25.2 (CRIT-4): no longer touches `std::env::set_var`. Rust 2024 makes
+/// that `unsafe` because concurrent env readers — `EnvFilter`, libc
+/// internals, third-party tokio worker plugins — can observe a torn pointer
+/// during the write and SIGSEGV. We now feed the resolved spec straight to
+/// the subscriber via `logsink::install_with_spec()` (first call) and
+/// `logsink::set_filter_spec()` (subsequent calls), keeping the live
+/// filter exactly in sync without mutating shared process state.
+fn apply_log_filter(verbose: bool) {
+    let spec = resolve_log_spec(verbose);
+
+    // Install the global subscriber with our resolved spec on the very first
+    // call; subsequent calls are a no-op inside `logsink` and the live filter
+    // is driven by `set_filter_spec` below instead.
+    client_core_runtime::logsink::install_with_spec(&spec);
+
+    // Re-apply on every entry so that a flip of `verbose_log` between
+    // sessions takes effect even when `install()` is already a no-op.
+    // Accepts the full EnvFilter syntax — single bare levels are still
+    // routed through `set_level` internally so the noisy-crate suppression
+    // suffix is applied.
+    client_core_runtime::logsink::set_filter_spec(&spec);
 }
 
 // ─── Tokio runtime singleton ─────────────────────────────────────────────────
@@ -184,7 +186,18 @@ pub extern "C" fn phantom_runtime_start(
         let mut cfg: ConnectProfile = match serde_json::from_str(cfg_str) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("phantom_runtime_start: bad cfg_json: {}", e);
+                // SECURITY: never include `e.to_string()` in the log — when
+                // the parser fails mid-userinfo (base64-PEM inside a
+                // `ghs://` conn-string), serde_json's Display impl echoes
+                // the surrounding bytes verbatim, leaking the private key
+                // into the persisted NDJSON runtime log. Surface only the
+                // structural position so the operator can still diagnose
+                // bad payloads.
+                tracing::error!(
+                    "phantom_runtime_start: cfg_json parse failed (line: {}, column: {})",
+                    e.line(),
+                    e.column()
+                );
                 return ERR_BAD_CONFIG;
             }
         };
@@ -200,13 +213,25 @@ pub extern "C" fn phantom_runtime_start(
             }
         }
 
-        // Guard against double-start.
-        {
-            let g = STATE.lock();
-            if g.is_some() {
-                tracing::warn!("phantom_runtime_start: already running");
-                return ERR_ALREADY_RUNNING;
-            }
+        // ── Atomic "reserve the slot or bail" (CRIT-1) ───────────────────────
+        //
+        // v0.25.2: hold the `STATE` lock across the entire init path so that
+        // two concurrent FFI callers can't both observe `None`, both proceed
+        // to `run()`, and both end up creating a tunnel while only the second
+        // one is tracked. The previous pattern released the lock after the
+        // `is_some()` check, leaving a wide TOCTOU window through
+        // `apply_log_filter` and `rt.block_on(run(...))`.
+        //
+        // Concurrent `phantom_runtime_submit_inbound` callers briefly contend
+        // on the same `parking_lot::Mutex`, but they only clone a channel
+        // sender under the lock — sub-microsecond — and the start path is
+        // not on any hot path (called once per Swift `startTunnel`). The
+        // shared lock is the simplest correct shape, no placeholder dance
+        // required.
+        let mut state_guard = STATE.lock();
+        if state_guard.is_some() {
+            tracing::warn!("phantom_runtime_start: already running");
+            return ERR_ALREADY_RUNNING;
         }
 
         // ── Log gating (ADR 0008 §3) ────────────────────────────────────────
@@ -215,12 +240,9 @@ pub extern "C" fn phantom_runtime_start(
         //   2. `verbose_log == true` (UserDefaults-driven Swift toggle) ⇒ TRACE
         //   3. Build-config default (debug vs release).
         //
-        // `client_core_runtime::logsink::install()` (called transitively from
-        // `run()`) reads `RUST_LOG` for its initial filter. We mirror our
-        // resolved spec into `RUST_LOG` *before* `run()` so the very first
-        // event of the session honours it, then call `set_level()` for the
-        // verbose override path so a runtime toggle takes effect even after
-        // `install()` is already a no-op.
+        // v0.25.2 (CRIT-4): `apply_log_filter` no longer mutates env vars.
+        // The resolved spec is handed straight to `logsink::install_with_spec`
+        // and `logsink::set_filter_spec`.
         apply_log_filter(verbose_log);
 
         let rt = match get_or_init_rt() {
@@ -250,11 +272,17 @@ pub extern "C" fn phantom_runtime_start(
         // Log channel: mpsc → task that calls log_cb.
         let (log_tx, mut log_rx) = mpsc::channel::<client_core_runtime::LogFrame>(256);
 
-        // Start the runtime (blocking until run() returns).
+        // Start the runtime. `run()` is async but does only synchronous
+        // setup internally (channel allocations + a single `tokio::spawn`
+        // for the supervisor), so this `block_on` returns near-instantly
+        // and the Swift `startTunnel` thread is held for microseconds.
+        // The actual tunnel lifecycle runs on tokio workers via the
+        // spawned supervisor (`join` below).
         let (handles, join) = match rt.block_on(client_core_runtime::run(cfg, tun, status_tx, log_tx, None)) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("phantom_runtime_start: run() failed: {}", e);
+                // No state inserted; another start may now proceed.
                 return ERR_BAD_CONFIG;
             }
         };
@@ -286,7 +314,10 @@ pub extern "C" fn phantom_runtime_start(
             });
         }
 
-        *STATE.lock() = Some(RuntimeState { handles, _join: join });
+        // Commit the slot atomically — same guard we acquired at the top of
+        // the function, so no other thread has observed a stale `None` in
+        // the meantime.
+        *state_guard = Some(RuntimeState { handles, _join: join });
         0
     }))
     .unwrap_or_else(|_| {
@@ -373,7 +404,14 @@ pub extern "C" fn phantom_parse_conn_string(input: *const c_char) -> *mut c_char
         let cfg = match client_common::helpers::parse_conn_string(s) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("phantom_parse_conn_string: {}", e);
+                // SECURITY: `parse_conn_string` errors carry safe `.context`
+                // messages today, but the underlying `base64::DecodeError`
+                // and `FromUtf8Error` impls can leak raw bytes from the
+                // userinfo (base64-PEM) section if anyhow's chain ever
+                // changes. Log only the top-level context, never the full
+                // chain.
+                let top = format!("{}", e);
+                tracing::error!("phantom_parse_conn_string: {}", top);
                 return std::ptr::null_mut();
             }
         };
@@ -536,32 +574,31 @@ mod tests {
     }
 
     /// ADR 0008 §3 priority 1: if `GHOSTSTREAM_LOG` is set, it must override
-    /// both the verbose toggle and the build default. We exercise the
-    /// resolution logic indirectly by inspecting `RUST_LOG` after
-    /// `apply_log_filter`. The test is `#[serial]`-style — guarded by a
-    /// process-wide mutex against the other env-mutating tests.
+    /// both the verbose toggle and the build default. We exercise the pure
+    /// resolver directly so the test never mutates the global subscriber.
+    /// The test is `#[serial]`-style — guarded by a process-wide mutex
+    /// against the other env-reading tests (because they share
+    /// `GHOSTSTREAM_LOG`).
+    ///
+    /// v0.25.2 (CRIT-4): no longer asserts on `RUST_LOG` — `apply_log_filter`
+    /// no longer mutates env vars. Setting `GHOSTSTREAM_LOG` for the test
+    /// fixture is still safe because tests run single-threaded under
+    /// `--test-threads=1` semantics via `ENV_LOCK` and no other code is
+    /// reading env concurrently in this binary's test harness.
     #[test]
     fn ghoststream_log_env_overrides_verbose_toggle() {
         let _guard = ENV_LOCK.lock();
 
-        // Save and restore `GHOSTSTREAM_LOG` and `RUST_LOG` to keep the
-        // test hermetic across runs.
         let prev_gs = std::env::var_os("GHOSTSTREAM_LOG");
-        let prev_rust = std::env::var_os("RUST_LOG");
 
         std::env::set_var("GHOSTSTREAM_LOG", "warn,h2=trace");
         // Even with verbose=true, the env wins.
-        apply_log_filter(true);
-        assert_eq!(std::env::var("RUST_LOG").as_deref(), Ok("warn,h2=trace"));
+        assert_eq!(resolve_log_spec(true), "warn,h2=trace");
+        assert_eq!(resolve_log_spec(false), "warn,h2=trace");
 
-        // Cleanup.
         match prev_gs {
             Some(v) => std::env::set_var("GHOSTSTREAM_LOG", v),
             None => std::env::remove_var("GHOSTSTREAM_LOG"),
-        }
-        match prev_rust {
-            Some(v) => std::env::set_var("RUST_LOG", v),
-            None => std::env::remove_var("RUST_LOG"),
         }
     }
 
@@ -572,23 +609,34 @@ mod tests {
         let _guard = ENV_LOCK.lock();
 
         let prev_gs = std::env::var_os("GHOSTSTREAM_LOG");
-        let prev_rust = std::env::var_os("RUST_LOG");
 
         std::env::remove_var("GHOSTSTREAM_LOG");
-        apply_log_filter(true);
-        assert_eq!(std::env::var("RUST_LOG").as_deref(), Ok("trace"));
+        assert_eq!(resolve_log_spec(true), "trace");
 
         match prev_gs {
             Some(v) => std::env::set_var("GHOSTSTREAM_LOG", v),
             None => std::env::remove_var("GHOSTSTREAM_LOG"),
         }
-        match prev_rust {
-            Some(v) => std::env::set_var("RUST_LOG", v),
-            None => std::env::remove_var("RUST_LOG"),
+    }
+
+    /// ADR 0008 §3 priority 3: with no env set and verbose off, the
+    /// build-config default applies.
+    #[test]
+    fn build_default_applies_when_env_unset_and_verbose_off() {
+        let _guard = ENV_LOCK.lock();
+
+        let prev_gs = std::env::var_os("GHOSTSTREAM_LOG");
+
+        std::env::remove_var("GHOSTSTREAM_LOG");
+        assert_eq!(resolve_log_spec(false), default_log_spec());
+
+        match prev_gs {
+            Some(v) => std::env::set_var("GHOSTSTREAM_LOG", v),
+            None => std::env::remove_var("GHOSTSTREAM_LOG"),
         }
     }
 
-    /// Process-wide lock so tests that touch `RUST_LOG` / `GHOSTSTREAM_LOG`
-    /// don't race when `cargo test` runs them in parallel.
+    /// Process-wide lock so tests that touch `GHOSTSTREAM_LOG` (read or
+    /// fixture-set) don't race when `cargo test` runs them in parallel.
     static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 }

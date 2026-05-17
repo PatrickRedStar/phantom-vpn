@@ -41,7 +41,7 @@ public final class VpnTunnelController: ObservableObject {
     private var providerBundleId: String {
         "\(Bundle.main.bundleIdentifier!).PacketTunnelProvider"
     }
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "VpnTunnelController")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "VpnTunnelController")
 
     public init() {}
 

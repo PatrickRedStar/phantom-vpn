@@ -84,4 +84,20 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         copy.keyPem = nil
         return copy
     }
+
+    /// Returns a copy safe to embed inside a `NETunnelProviderProtocol`'s
+    /// `providerConfiguration` dictionary. Everything that gets serialised
+    /// through this path is **persisted by the system in plaintext** under
+    /// `/Library/Preferences/com.apple.networkextension*.plist`, so any
+    /// PEM material or original `ghs://` connection string (whose userinfo
+    /// is base64-encoded PEM) would be world-readable by any process with
+    /// root. Strip them — the extension hydrates the cert / key from the
+    /// shared Keychain at start time via `resolveProfile(id:)`.
+    public var sanitizedForProviderConfiguration: VpnProfile {
+        var copy = self
+        copy.certPem = nil
+        copy.keyPem = nil
+        copy.connString = nil
+        return copy
+    }
 }

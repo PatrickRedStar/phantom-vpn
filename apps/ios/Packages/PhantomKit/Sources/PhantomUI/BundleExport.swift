@@ -23,7 +23,7 @@ public enum PhantomUIResources {
     /// `Font.custom("DepartureMono-Regular", size: 11)` resolves correctly
     /// on macOS hosts that don't read `UIAppFonts`.
     public static func registerFonts() {
-        let log = Logger(subsystem: "com.ghoststream.vpn.PhantomUI", category: "fonts")
+        let log = Logger(subsystem: "com.ghoststream.client.PhantomUI", category: "fonts")
         let fontDirectory = bundle.url(forResource: "Fonts", withExtension: nil) ?? bundle.bundleURL
         let extensions = ["ttf", "otf"]
 

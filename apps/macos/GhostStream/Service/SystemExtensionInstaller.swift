@@ -38,9 +38,9 @@ public final class SystemExtensionInstaller: NSObject {
 
     /// Bundle id of the system extension target (must match
     /// PacketTunnelExtension/Info.plist CFBundleIdentifier).
-    public let extensionBundleId = "com.ghoststream.vpn.tunnel"
+    public let extensionBundleId = "com.ghoststream.client.tunnel"
 
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "SystemExtensionInstaller")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "SystemExtensionInstaller")
     private enum PendingAction { case activation, deactivation }
     private var pendingAction: PendingAction?
     private var pendingRequest: OSSystemExtensionRequest?

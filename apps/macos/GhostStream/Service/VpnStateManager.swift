@@ -23,6 +23,7 @@ import Darwin
 import NetworkExtension
 import Observation
 import PhantomKit
+import os.log
 
 @MainActor
 @Observable
@@ -35,7 +36,7 @@ public final class VpnStateManager {
     private let defaults: UserDefaults
     private let snapshotPayloadKey = "vpn.statusFrame.v1"
     private let snapshotUpdatedAtKey = "vpn.statusFrame.updatedAt"
-    private let providerBundleId = "com.ghoststream.vpn.tunnel"
+    private let providerBundleId = "com.ghoststream.client.tunnel"
     private let snapshotFreshnessInterval: TimeInterval = 3
     private let safetyNetInterval: UInt64 = 10_000_000_000
 
@@ -47,7 +48,7 @@ public final class VpnStateManager {
 
     private var containerURL: URL? {
         FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn"
+            forSecurityApplicationGroupIdentifier: "group.com.ghoststream.client"
         )
     }
 
@@ -56,7 +57,18 @@ public final class VpnStateManager {
     }
 
     private init() {
-        self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
+        // App Group access can fail when entitlements/codesign are broken;
+        // crashing here meant the whole host UI never came up. Fall back to
+        // standard UserDefaults so the rest of the app boots — the snapshot
+        // sync from the extension will be no-op until the entitlement is
+        // restored.
+        if let suite = UserDefaults(suiteName: "group.com.ghoststream.client") {
+            self.defaults = suite
+        } else {
+            Logger(subsystem: "com.ghoststream.client", category: "vpnstate")
+                .fault("App Group container unavailable, falling back to standard UserDefaults (state will not sync with extension)")
+            self.defaults = UserDefaults.standard
+        }
         self.loadSnapshot()
         self.observeDarwinNotifications()
         Task { @MainActor [weak self] in

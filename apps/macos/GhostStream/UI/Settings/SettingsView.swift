@@ -942,7 +942,11 @@ private enum DiagnosticsBundleExporter {
             DiagnosticsPreferencesSnapshot(preferences: preferences),
             to: destination.appendingPathComponent("preferences.json")
         )
-        try writeJSON(
+        // PRIVACY: StatusFrame echoes `serverAddr` / `sni` / `tunAddr` and
+        // per-stream identifiers. Route the encode through the same JSON
+        // redaction pipeline used by `snapshot-file.json` so support
+        // bundles never reveal which server / network the user was on.
+        try writeSanitisedEncodable(
             stateManager.statusFrame,
             to: destination.appendingPathComponent("status-frame.json")
         )
@@ -956,14 +960,97 @@ private enum DiagnosticsBundleExporter {
         )
 
         if let snapshotURL = fm
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn")?
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.client")?
             .appendingPathComponent("snapshot.json"),
            fm.fileExists(atPath: snapshotURL.path) {
-            try? fm.copyItem(
-                at: snapshotURL,
+            // PRIVACY: snapshot.json carries the most recent StatusFrame —
+            // tunAddr / serverAddr / sni / per-stream identifiers. A
+            // bundle uploaded to support must not echo the user's server
+            // back to the recipient (it correlates them to a specific
+            // server in the fleet). Decode → redact → re-serialise rather
+            // than `copyItem` the raw file.
+            try? writeSanitisedSnapshot(
+                from: snapshotURL,
                 to: destination.appendingPathComponent("snapshot-file.json")
             )
         }
+    }
+
+    /// Best-effort redaction of the live snapshot. Reads as generic JSON
+    /// so we don't have to maintain a Swift mirror of the wire struct
+    /// (which lives in `gui-ipc` on the Rust side and drifts as fields
+    /// are added). Walks the object tree and replaces values for any key
+    /// in `sensitiveSnapshotKeys`. Failure-tolerant: a malformed file
+    /// makes us skip the snapshot entirely rather than leak the raw
+    /// bytes.
+    private static func writeSanitisedSnapshot(from source: URL, to destination: URL) throws {
+        let data = try Data(contentsOf: source)
+        guard let json = try? JSONSerialization.jsonObject(
+            with: data,
+            options: [.fragmentsAllowed]
+        ) else { return }
+        let redacted = redactSnapshotNode(json)
+        let outData = try JSONSerialization.data(
+            withJSONObject: redacted,
+            options: [.prettyPrinted, .fragmentsAllowed, .sortedKeys]
+        )
+        try outData.write(to: destination, options: .atomic)
+    }
+
+    /// Same redaction pipeline as `writeSanitisedSnapshot` but driven by
+    /// a Codable in-memory value. Encodes via `JSONEncoder`, re-parses
+    /// through `JSONSerialization` to walk the tree, then writes the
+    /// redacted form back out. Used for `status-frame.json`, which is
+    /// produced from `StatusFrame` rather than read from disk.
+    private static func writeSanitisedEncodable<T: Encodable>(
+        _ value: T,
+        to destination: URL
+    ) throws {
+        let raw = try JSONEncoder().encode(value)
+        guard let json = try? JSONSerialization.jsonObject(
+            with: raw,
+            options: [.fragmentsAllowed]
+        ) else {
+            // Fall back to writing the raw bytes — better than skipping
+            // the artefact entirely. The wire struct must encode to a
+            // JSON object/array for any production payload, so this
+            // branch is reserved for future scalar-only types.
+            try raw.write(to: destination, options: .atomic)
+            return
+        }
+        let redacted = redactSnapshotNode(json)
+        let outData = try JSONSerialization.data(
+            withJSONObject: redacted,
+            options: [.prettyPrinted, .fragmentsAllowed, .sortedKeys]
+        )
+        try outData.write(to: destination, options: .atomic)
+    }
+
+    private static let sensitiveSnapshotKeys: Set<String> = [
+        "server", "server_addr", "serverAddr",
+        "sni", "server_name", "serverName",
+        "tun_addr", "tunAddr",
+        "host", "remote", "remote_addr",
+        "cert_fingerprint", "certFingerprint",
+        "admin_server_cert_fp", "adminServerCertFp",
+    ]
+
+    private static func redactSnapshotNode(_ node: Any) -> Any {
+        if let dict = node as? [String: Any] {
+            var redacted = dict
+            for key in dict.keys {
+                if sensitiveSnapshotKeys.contains(key) {
+                    redacted[key] = "<redacted>"
+                } else if let child = dict[key] {
+                    redacted[key] = redactSnapshotNode(child)
+                }
+            }
+            return redacted
+        }
+        if let array = node as? [Any] {
+            return array.map(redactSnapshotNode(_:))
+        }
+        return node
     }
 
     private static func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
@@ -975,11 +1062,63 @@ private enum DiagnosticsBundleExporter {
     private static func writeLogs(_ frames: [LogFrame], to url: URL) throws {
         let encoder = JSONEncoder()
         let lines = try frames.map { frame in
-            let data = try encoder.encode(frame)
+            let sanitized = sanitizeLogFrame(frame)
+            let data = try encoder.encode(sanitized)
             return String(data: data, encoding: .utf8) ?? "{}"
         }
         .joined(separator: "\n")
         try (lines + "\n").data(using: .utf8)?.write(to: url, options: .atomic)
+    }
+
+    /// Fields that identify the user's server, tunnel network, or active
+    /// stream — redacted from any structured event whose category is in
+    /// `sensitiveLogCategories`. Diagnostics bundles routinely get
+    /// e-mailed to support, dropped into Slack, or attached to GitHub
+    /// issues; the runtime log on disk keeps the full value so engineers
+    /// can still debug locally.
+    private static let sensitiveLogFields: Set<String> = [
+        "server",
+        "server_addr",
+        "serverAddr",
+        "host",
+        "sni",
+        "server_name",
+        "serverName",
+        "tun_addr",
+        "tunAddr",
+        "stream",
+        "stream_id",
+        "streamId",
+        "remote",
+        "remote_addr",
+        "peer",
+    ]
+
+    /// Categories whose structured fields carry network identifiers.
+    /// Kept in sync with the OSLog mirror redaction list in
+    /// `PacketTunnelProvider.isSensitiveOSLogCategory(_:)`.
+    private static let sensitiveLogCategories: Set<String> = [
+        "tunnel",
+        "handshake",
+        "network",
+        "stream",
+    ]
+
+    private static func sanitizeLogFrame(_ frame: LogFrame) -> LogFrame {
+        guard
+            let category = frame.category?.lowercased(),
+            sensitiveLogCategories.contains(category),
+            let fields = frame.fields,
+            !fields.isEmpty
+        else { return frame }
+
+        var redacted = fields
+        for key in fields.keys where sensitiveLogFields.contains(key) {
+            redacted[key] = "<redacted>"
+        }
+        var copy = frame
+        copy.fields = redacted
+        return copy
     }
 }
 
@@ -1040,7 +1179,14 @@ private struct DiagnosticsProfileSnapshot: Codable {
     let cachedExpiresAt: Int64?
     let cachedEnabled: Bool?
     let cachedIsAdmin: Bool?
-    let cachedAdminServerCertFp: String?
+    /// 8-char prefix of the admin server cert fingerprint. Full SHA-256
+    /// is **not** included — even a fingerprint correlated with a server
+    /// IP narrows a user's identity if the bundle leaves the device. The
+    /// prefix is long enough for engineering to disambiguate which
+    /// server the user was talking to, but short enough that it cannot
+    /// be used to verify a specific cert in a database. nil if no
+    /// fingerprint cached.
+    let cachedAdminServerCertFpPrefix: String?
 
     init(profile: VpnProfile) {
         id = profile.id
@@ -1055,6 +1201,7 @@ private struct DiagnosticsProfileSnapshot: Codable {
         cachedExpiresAt = profile.cachedExpiresAt
         cachedEnabled = profile.cachedEnabled
         cachedIsAdmin = profile.cachedIsAdmin
-        cachedAdminServerCertFp = profile.cachedAdminServerCertFp
+        cachedAdminServerCertFpPrefix = profile.cachedAdminServerCertFp
+            .map { String($0.prefix(8)) }
     }
 }

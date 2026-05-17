@@ -3,7 +3,7 @@
 //  GhostStream
 //
 //  Reads the user's theme choice from the shared App Group
-//  UserDefaults(suiteName: "group.com.ghoststream.vpn") — key "theme" —
+//  UserDefaults(suiteName: "group.com.ghoststream.client") — key "theme" —
 //  and resolves it to a GsColorSet (environment) + .preferredColorScheme.
 //
 //  Usage:
@@ -27,7 +27,7 @@ public enum ThemeOverride: String, CaseIterable {
     case light  = "light"
 
     public static let userDefaultsKey = "theme"
-    public static let appGroupSuite   = "group.com.ghoststream.vpn"
+    public static let appGroupSuite   = "group.com.ghoststream.client"
 
     /// Read the current persisted value; falls back to `.system` on missing /
     /// unrecognised input.
@@ -93,7 +93,7 @@ public struct GsTheme: ViewModifier {
 extension View {
     /// Apply the Ghoststream theme, optionally forcing a specific override.
     /// When `override` is `nil`, reads the user's saved choice from the shared
-    /// App Group UserDefaults (`group.com.ghoststream.vpn`, key `"theme"`).
+    /// App Group UserDefaults (`group.com.ghoststream.client`, key `"theme"`).
     public func gsTheme(override: ThemeOverride? = nil) -> some View {
         modifier(GsTheme(override: override))
     }

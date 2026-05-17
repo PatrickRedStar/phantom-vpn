@@ -18,7 +18,7 @@ public final class LoginItemController {
 
     public private(set) var enabled: Bool = false
 
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "LoginItem")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "LoginItem")
 
     private init() {
         refresh()

@@ -42,7 +42,7 @@ if command -v xattr >/dev/null 2>&1; then
 fi
 rm -rf "$DEBUG_PRODUCTS_DIR/GhostStream.app" \
        "$DEBUG_PRODUCTS_DIR/PacketTunnelExtension.systemextension" \
-       "$DEBUG_PRODUCTS_DIR/com.ghoststream.vpn.tunnel.systemextension" \
+       "$DEBUG_PRODUCTS_DIR/com.ghoststream.client.tunnel.systemextension" \
        "$DEBUG_PRODUCTS_DIR"/PhantomKit_*.bundle
 
 xcodegen generate

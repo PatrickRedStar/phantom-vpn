@@ -262,45 +262,89 @@ pub async fn run(
                 }
                 tun_fd_to_close = Some(raw_fd);
                 tracing::info!(category = "tun", name = "blocking", mtu = 0, addr = "", tun_fd = raw_fd, "created");
-                let factory: supervise::TunFactory = Arc::new(move || {
-                    let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
-                    let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
-                    let tun_fd = raw_fd;
-                    tracing::debug!(category = "tun", tun_fd, "factory spawning reader+writer");
-                    // Reader thread: blocking libc::read → async channel
-                    std::thread::spawn(move || {
-                        tracing::debug!(category = "tun", tun_fd, "reader thread started");
+
+                // ── Persistent reader/writer threads (CRIT-2, v0.25.2) ──────
+                //
+                // We spawn the two OS-blocking I/O threads ONCE per `run()`
+                // call and reuse their channels across every reconnect.
+                // The previous implementation spawned a fresh reader+writer
+                // pair inside the factory closure (called on every reconnect
+                // attempt), and the old threads stayed blocked on
+                // `libc::read(tun_fd)`. Two threads racing on the same TUN
+                // fd is a kernel-level data race: each packet wakes only
+                // one of them, so packets get sprayed across both the live
+                // and the dead channel — the dead one's send fails and
+                // drops the packet. Symptom: long stalls / "packet went to
+                // wrong stream" after a reconnect.
+                //
+                // The fix: one reader, one writer, persistent for the
+                // entire tunnel lifetime. Per-attempt isolation is provided
+                // by ephemeral forwarder *tasks* (tokio, async) that bridge
+                // the persistent OS channels to attempt-local channels.
+                // Shutdown is driven by closing the dup'd fd (TUN read
+                // returns EBADF → reader exits) and dropping the persistent
+                // write_tx (writer drains then exits).
+                let (persist_read_tx, persist_read_rx) =
+                    tokio::sync::mpsc::channel::<Bytes>(4096);
+                let (persist_write_tx, mut persist_write_rx) =
+                    tokio::sync::mpsc::channel::<Bytes>(4096);
+
+                let tun_fd_reader = raw_fd;
+                std::thread::Builder::new()
+                    .name("phantom-tun-rd".into())
+                    .spawn(move || {
+                        tracing::debug!(category = "tun", tun_fd = tun_fd_reader, "reader thread started (persistent)");
                         let mut buf = vec![0u8; 4096];
                         loop {
-                            let n = unsafe { libc::read(tun_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+                            let n = unsafe {
+                                libc::read(
+                                    tun_fd_reader,
+                                    buf.as_mut_ptr() as *mut libc::c_void,
+                                    buf.len(),
+                                )
+                            };
                             if n <= 0 {
                                 let err = std::io::Error::last_os_error();
-                                tracing::error!(category = "tun", tun_fd, n, %err, "read failed");
+                                // EBADF / closed fd is the expected shutdown
+                                // path (we close raw_fd when supervise exits);
+                                // EINTR can spuriously fire — retry.
+                                if err.raw_os_error() == Some(libc::EINTR) {
+                                    continue;
+                                }
+                                tracing::info!(
+                                    category = "tun",
+                                    tun_fd = tun_fd_reader,
+                                    n,
+                                    %err,
+                                    "reader thread exiting"
+                                );
                                 break;
                             }
                             let pkt = Bytes::copy_from_slice(&buf[..n as usize]);
-                            if read_tx.blocking_send(pkt).is_err() {
-                                tracing::debug!(category = "tun", tun_fd, "reader: channel closed");
+                            if persist_read_tx.blocking_send(pkt).is_err() {
+                                tracing::debug!(category = "tun", tun_fd = tun_fd_reader, "reader: channel closed");
                                 break;
                             }
                         }
-                    });
-                    // Writer thread: blocking_recv() → blocking libc::write on a
-                    // dedicated OS thread (NOT tokio worker). Putting blocking
-                    // syscalls inside `tokio::spawn` freezes a tokio worker on
-                    // every TUN buffer-full and starves async tasks (TLS RX/TX,
-                    // dispatcher) — see incident 2026-05-06. Partial-write loop
-                    // + EINTR retry are required because the TUN fd is in
-                    // blocking mode and large packets may not write atomically.
-                    std::thread::spawn(move || {
-                        tracing::debug!(category = "tun", tun_fd, "writer thread started");
-                        while let Some(pkt) = write_rx.blocking_recv() {
+                    })
+                    .expect("spawn tun reader thread");
+
+                // Writer thread: persistent. Same rationale as reader, plus
+                // the original blocking-on-tokio-worker concern (incident
+                // 2026-05-06) — keep on a dedicated OS thread, NEVER move
+                // to `tokio::spawn`. Partial-write loop + EINTR retry.
+                let tun_fd_writer = raw_fd;
+                std::thread::Builder::new()
+                    .name("phantom-tun-wr".into())
+                    .spawn(move || {
+                        tracing::debug!(category = "tun", tun_fd = tun_fd_writer, "writer thread started (persistent)");
+                        while let Some(pkt) = persist_write_rx.blocking_recv() {
                             let mut written = 0usize;
                             let len = pkt.len();
                             while written < len {
                                 let n = unsafe {
                                     libc::write(
-                                        tun_fd,
+                                        tun_fd_writer,
                                         pkt.as_ptr().add(written) as *const libc::c_void,
                                         len - written,
                                     )
@@ -313,13 +357,95 @@ pub async fn run(
                                 if err.raw_os_error() == Some(libc::EINTR) {
                                     continue;
                                 }
-                                tracing::error!(category = "tun", tun_fd, n, %err, "write failed");
-                                return;
+                                tracing::error!(category = "tun", tun_fd = tun_fd_writer, n, %err, "write failed");
+                                // Don't `return` — keep draining `persist_write_rx`
+                                // so we don't deadlock the upstream forwarder. A
+                                // single failed write doesn't mean every future
+                                // write will fail; if the fd is genuinely dead
+                                // we'll hit EBADF on every iteration and the
+                                // channel will eventually close on shutdown.
+                                break;
                             }
                         }
-                        tracing::debug!(category = "tun", tun_fd, "writer: channel closed");
+                        tracing::debug!(category = "tun", tun_fd = tun_fd_writer, "writer: channel closed");
+                    })
+                    .expect("spawn tun writer thread");
+
+                // Wrap the single persistent read receiver behind an async
+                // mutex so the per-attempt forwarder task can take exclusive
+                // access of it. Only one forwarder ever holds the lock at a
+                // time; on reconnect we abort the previous one (releasing
+                // its guard) before spawning the next.
+                let shared_read_rx = Arc::new(tokio::sync::Mutex::new(persist_read_rx));
+
+                // Track the previous attempt's forwarder handles so we can
+                // abort them on the next factory call. `parking_lot::Mutex`
+                // is fine — held only for a few microseconds inside the
+                // factory closure to swap handles.
+                let prev_handles: Arc<parking_lot::Mutex<Option<(
+                    tokio::task::JoinHandle<()>,
+                    tokio::task::JoinHandle<()>,
+                )>>> = Arc::new(parking_lot::Mutex::new(None));
+
+                let factory: supervise::TunFactory = Arc::new(move || {
+                    // Abort the previous attempt's forwarders (if any) BEFORE
+                    // spawning new ones. Without this, the previous inbound
+                    // forwarder would still be holding `shared_read_rx`'s
+                    // lock while suspended in `.recv().await`, and the new
+                    // forwarder would block on `.lock().await` until the next
+                    // TUN packet arrived (potentially forever on an idle
+                    // network) — defeating the whole reconnect.
+                    //
+                    // Aborting a tokio task that holds a `tokio::sync::Mutex`
+                    // guard releases the lock automatically (the guard is
+                    // dropped as part of the task's stack unwind).
+                    if let Some((in_h, out_h)) = prev_handles.lock().take() {
+                        in_h.abort();
+                        out_h.abort();
+                    }
+
+                    // Per-attempt ephemeral channels. The supervisor consumes
+                    // these for the duration of one `drive_tunnel()` run, and
+                    // they get dropped on attempt teardown. The persistent OS
+                    // threads above keep running across reconnects untouched.
+                    let (attempt_read_tx, attempt_read_rx) =
+                        tokio::sync::mpsc::channel::<Bytes>(4096);
+                    let (attempt_write_tx, mut attempt_write_rx) =
+                        tokio::sync::mpsc::channel::<Bytes>(4096);
+
+                    // Inbound forwarder: persist_read_rx → attempt_read_tx.
+                    // Holds the shared mutex for the entire attempt; aborted
+                    // explicitly by the next factory call.
+                    let shared_for_in = shared_read_rx.clone();
+                    let in_handle = tokio::spawn(async move {
+                        let mut guard = shared_for_in.lock().await;
+                        while let Some(pkt) = guard.recv().await {
+                            if attempt_read_tx.send(pkt).await.is_err() {
+                                // Supervisor's receiver dropped — attempt is
+                                // tearing down. The next factory call will
+                                // abort us if we don't exit ourselves first.
+                                break;
+                            }
+                        }
                     });
-                    Ok((read_rx, write_tx))
+
+                    // Outbound forwarder: attempt_write_rx → persist_write_tx.
+                    // No shared lock needed — write_tx is cheap to clone and
+                    // every forwarder owns its own clone.
+                    let write_tx_for_out = persist_write_tx.clone();
+                    let out_handle = tokio::spawn(async move {
+                        while let Some(pkt) = attempt_write_rx.recv().await {
+                            if write_tx_for_out.send(pkt).await.is_err() {
+                                // Persistent writer thread exited (fd closed).
+                                break;
+                            }
+                        }
+                    });
+
+                    *prev_handles.lock() = Some((in_handle, out_handle));
+
+                    tracing::debug!(category = "tun", tun_fd = raw_fd, "factory: per-attempt forwarders spawned");
+                    Ok((attempt_read_rx, attempt_write_tx))
                 });
                 let (dummy_tx, _) = tokio::sync::mpsc::channel::<Bytes>(1);
                 (factory, dummy_tx)

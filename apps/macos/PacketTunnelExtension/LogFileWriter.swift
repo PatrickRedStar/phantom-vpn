@@ -30,9 +30,9 @@ public final class LogFileWriter {
 
     public static let shared = LogFileWriter()
 
-    private let queue = DispatchQueue(label: "com.ghoststream.vpn.logwriter", qos: .utility)
+    private let queue = DispatchQueue(label: "com.ghoststream.client.logwriter", qos: .utility)
     private let fileManager = FileManager.default
-    private let osLog = Logger(subsystem: "com.ghoststream.vpn.tunnel", category: "logwriter")
+    private let osLog = Logger(subsystem: "com.ghoststream.client.tunnel", category: "logwriter")
     private let maxFileBytes: UInt64 = 100 * 1024 * 1024
     private let retentionDays = 7
 
@@ -95,11 +95,24 @@ public final class LogFileWriter {
 
     /// Force-flush the underlying file handle. Used on `stopTunnel` to
     /// ensure the last few frames hit disk before the extension exits.
-    public func flush() {
-        queue.sync {
-            guard let handle = handle else { return }
-            try? handle.synchronize()
+    ///
+    /// Implementation note: `queue.sync` blocks the caller until **all**
+    /// pending writes drain. In TRACE mode the writer can have thousands
+    /// of pending NDJSON lines queued; a blocking flush there pushed
+    /// `stopTunnel` past the NE extension takedown deadline (~5 s) and
+    /// the system killed the extension mid-flush. We now dispatch the
+    /// synchronize asynchronously and wait with a bounded `DispatchSemaphore`
+    /// so worst case we lose the tail of the queue instead of the whole
+    /// shutdown sequence.
+    public func flush(timeout: DispatchTime = .now() + 1.0) {
+        let sem = DispatchSemaphore(value: 0)
+        queue.async { [weak self] in
+            if let handle = self?.handle {
+                try? handle.synchronize()
+            }
+            sem.signal()
         }
+        _ = sem.wait(timeout: timeout)
     }
 
     // MARK: - Internal
@@ -139,6 +152,14 @@ public final class LogFileWriter {
             // Touch a fresh file. atomic write so any interrupted state is
             // not left behind.
             try Data().write(to: currentURL, options: .atomic)
+            // PRIVACY: runtime.log contains the structured event stream
+            // including SNI / server IP / tun_addr / handshake fields.
+            // Default user-home permissions (0644) would let any other
+            // local user read it. Lock it to 0600 right after create.
+            try lockdownPermissions(currentURL)
+        } else {
+            // Existing file may pre-date the privacy fix — re-apply 0600.
+            try? lockdownPermissions(currentURL)
         }
         handle = try FileHandle(forWritingTo: currentURL)
         try handle?.seekToEnd()
@@ -155,6 +176,7 @@ public final class LogFileWriter {
                 handle = nil
                 try rotateForDay(previousKey: mtimeKey)
                 try Data().write(to: currentURL, options: .atomic)
+                try lockdownPermissions(currentURL)
                 handle = try FileHandle(forWritingTo: currentURL)
                 try handle?.seekToEnd()
                 bytesWritten = 0
@@ -186,8 +208,22 @@ public final class LogFileWriter {
         try fileManager.moveItem(at: currentURL, to: archive)
         bytesWritten = 0
         try Data().write(to: currentURL, options: .atomic)
+        // PRIVACY: see `openHandle()` — keep the new active file at 0600
+        // so a rotated batch never becomes world-readable for a window.
+        try lockdownPermissions(currentURL)
         handle = try FileHandle(forWritingTo: currentURL)
         try handle?.seekToEnd()
+    }
+
+    /// Restrict a freshly-created log file to owner read/write only.
+    /// Required for /Users/<user>/Library/Logs/GhostStream/runtime.log
+    /// — the directory inherits 0755 from HOME and would otherwise leave
+    /// the structured log readable by any other local account.
+    private func lockdownPermissions(_ url: URL) throws {
+        try fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)],
+            ofItemAtPath: url.path
+        )
     }
 
     private func sweepOldFiles() {

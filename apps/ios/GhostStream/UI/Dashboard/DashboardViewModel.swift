@@ -37,7 +37,7 @@ final class DashboardViewModel {
     // MARK: - Dependencies
 
     private let tunnel = VpnTunnelController()
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "DashboardVM")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "DashboardVM")
     private let maxSamples = 3600
 
     nonisolated(unsafe) private var sampleTask: Task<Void, Never>?

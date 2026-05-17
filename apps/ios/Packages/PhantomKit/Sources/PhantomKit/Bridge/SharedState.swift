@@ -33,7 +33,7 @@ public struct VpnStatePayload: Codable, Equatable {
 /// processes and cannot share memory).
 public enum DarwinNotifications {
     /// Notification name broadcast when the extension updates VPN state.
-    public static let stateChanged = "com.ghoststream.vpn.stateChanged"
+    public static let stateChanged = "com.ghoststream.client.stateChanged"
 
     /// Posts a Darwin notification with `name`. Safe to call from any
     /// thread.

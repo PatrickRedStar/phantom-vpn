@@ -37,7 +37,7 @@ final class DashboardPresentationTests: XCTestCase {
     }
 
     func testLanguageOverrideSelectsExplicitLocalizationBundle() {
-        let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")
+        let defaults = UserDefaults(suiteName: "group.com.ghoststream.client")
         defaults?.set("en", forKey: "language_override")
         XCTAssertEqual(AppStrings.localized("nav_settings", fallback: "Settings"), "Settings")
 

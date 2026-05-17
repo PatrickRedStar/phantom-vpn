@@ -2,9 +2,10 @@
 
 import Foundation
 import Observation
+import os.log
 
 /// Global application preferences. Backed by
-/// `UserDefaults(suiteName: "group.com.ghoststream.vpn")` so the Packet
+/// `UserDefaults(suiteName: "group.com.ghoststream.client")` so the Packet
 /// Tunnel Provider extension can read the same keys the main app writes.
 ///
 /// Semantic notes (iOS vs Android):
@@ -140,7 +141,19 @@ public final class PreferencesStore {
     }
 
     private init() {
-        self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
+        // App Group container may be unavailable when codesigning/entitlements
+        // are broken (notably in dev builds without provisioning). Falling
+        // back to UserDefaults.standard keeps the host process from
+        // trapping on launch; the extension will simply not see writes
+        // — which is the same observable state as before the fix, just
+        // without a crash.
+        if let suite = UserDefaults(suiteName: "group.com.ghoststream.client") {
+            self.defaults = suite
+        } else {
+            Logger(subsystem: "com.ghoststream.client", category: "preferences")
+                .fault("App Group container unavailable, falling back to standard UserDefaults (state will not sync with extension)")
+            self.defaults = UserDefaults.standard
+        }
         // Hydrate stored properties from UserDefaults
         self.theme = defaults.string(forKey: Key.theme) ?? "dark"
         self.languageOverride = defaults.string(forKey: Key.languageOverride)

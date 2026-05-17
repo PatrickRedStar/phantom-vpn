@@ -10,7 +10,7 @@
     <true/>
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.com.ghoststream.vpn</string>
+        <string>group.com.ghoststream.client</string>
     </array>
     <key>com.apple.security.app-sandbox</key>
     <true/>
@@ -22,7 +22,7 @@
     <true/>
     <key>keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)group.com.ghoststream.vpn</string>
+        <string>$(AppIdentifierPrefix)group.com.ghoststream.client</string>
     </array>
 </dict>
 </plist>

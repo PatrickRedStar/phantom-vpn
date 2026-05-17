@@ -13,7 +13,7 @@ import os.log
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "AppDelegate")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "AppDelegate")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Programmatic font registration — UIAppFonts is iOS-only.

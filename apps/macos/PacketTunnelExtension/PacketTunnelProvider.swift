@@ -21,7 +21,7 @@ extension LogFrame: LogFrameLike {}
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
 
-    private let log = Logger(subsystem: "com.ghoststream.vpn.tunnel", category: "tunnel")
+    private let log = Logger(subsystem: "com.ghoststream.client.tunnel", category: "tunnel")
     private let osLogPool = OSLogCategoryPool()
     private var outboundTask: Task<Void, Never>?
     private var routeSettingsTask: Task<Void, Never>?
@@ -45,21 +45,57 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
 
+    /// Apple forbids calling the `startTunnel` completionHandler more than
+    /// once — the second call traps the extension. The handler can fire
+    /// from multiple racing paths (the `onStatus` `.connected` callback,
+    /// the fallback after `PhantomBridge.start` returns, and the outer
+    /// `startTunnel` Task's `catch` block on a throw). All of them go
+    /// through `callStartCompletionOnce(...)` so the check-and-set is
+    /// atomic. The handler reference is cleared once fired so a fresh
+    /// `startTunnel` cycle can install a new one.
+    private let startCompletionLock = NSLock()
+    private var startCompletionHandler: ((Error?) -> Void)?
+    private var startCompletionFired = false
+
     // MARK: - Lifecycle
 
     override func startTunnel(
         options: [String: NSObject]?,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        // Stash the handler under the lock so every completion path (the
+        // .connected onStatus callback, the post-`start` fallback, the
+        // catch below) routes through a single atomic guard.
+        startCompletionLock.lock()
+        startCompletionHandler = completionHandler
+        startCompletionFired = false
+        startCompletionLock.unlock()
+
         Task {
             do {
-                try await self.startTunnelAsync(completionHandler: completionHandler)
+                try await self.startTunnelAsync()
             } catch {
                 self.log.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
                 self.writeErrorSnapshot(error.localizedDescription)
-                completionHandler(error)
+                self.callStartCompletionOnce(error)
             }
         }
+    }
+
+    /// Atomic single-shot dispatcher for the `startTunnel` completion
+    /// handler. Subsequent calls are dropped — see `startCompletionLock`
+    /// docstring for why this guard exists.
+    private func callStartCompletionOnce(_ error: Error?) {
+        startCompletionLock.lock()
+        if startCompletionFired {
+            startCompletionLock.unlock()
+            return
+        }
+        startCompletionFired = true
+        let handler = startCompletionHandler
+        startCompletionHandler = nil
+        startCompletionLock.unlock()
+        handler?(error)
     }
 
     override func stopTunnel(
@@ -67,7 +103,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         completionHandler: @escaping () -> Void
     ) {
         log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
-        outboundTask?.cancel()
+        // Snapshot the task references on the calling thread, but defer
+        // cancellation + await into the Task below so we can wait for the
+        // outbound loop to drain *before* PhantomBridge tears the runtime
+        // down. Otherwise a late `submitInbound` from the AsyncStream
+        // callback hits a bridge with cleared handlers and silently
+        // drops the packet — see audit Fix 2.
+        let outbound = outboundTask
         outboundTask = nil
         routeSettingsTask?.cancel()
         routeSettingsTask = nil
@@ -81,6 +123,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
 
         Task {
+            outbound?.cancel()
+            _ = await outbound?.value
             await PhantomBridge.shared.stop()
             LogFileWriter.shared.flush()
             writeDisconnectedSnapshot()
@@ -177,7 +221,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
 
         case .disconnect:
-            outboundTask?.cancel()
+            // Same ordering as stopTunnel: defer cancel/await of the
+            // outbound loop into the Task so the AsyncStream drains
+            // before PhantomBridge.stop clears the runtime handlers.
+            let outbound = outboundTask
+            outboundTask = nil
             routeSettingsTask?.cancel()
             routeSettingsTask = nil
             activeProfile = nil
@@ -189,6 +237,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 fields: ["reason": "ipc"]
             )
             Task {
+                outbound?.cancel()
+                _ = await outbound?.value
                 await PhantomBridge.shared.stop()
                 LogFileWriter.shared.flush()
                 writeDisconnectedSnapshot()
@@ -258,7 +308,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Start
 
-    private func startTunnelAsync(completionHandler: @escaping (Error?) -> Void) async throws {
+    private func startTunnelAsync() async throws {
         writeStatePayload(VpnStatePayload(kind: .connecting))
 
         let profile = try loadProfile()
@@ -295,8 +345,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         )
         let runtimeProfile = profileForRuntime(profile: profile, settings: settings)
 
-        var didCallCompletion = false
-
+        // Every completion path below routes through `callStartCompletionOnce`
+        // (see `startCompletionLock` docstring) so racing callbacks from
+        // the runtime can't trigger the "completionHandler called twice"
+        // trap that Apple enforces for `NEPacketTunnelProvider`.
         do {
             try await PhantomBridge.shared.start(
                 profile: runtimeProfile,
@@ -307,8 +359,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     // Per ADR 0007 the runtime frame is authoritative — relay
                     // verbatim. No mutation, no enrichment.
                     self.publishStatusFrame(frame)
-                    if frame.state == .connected && !didCallCompletion {
-                        didCallCompletion = true
+                    if frame.state == .connected {
                         self.emitProviderEvent(
                             level: "INF",
                             category: "tunnel",
@@ -319,7 +370,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                 "streams_up": String(frame.streamsUp),
                             ]
                         )
-                        completionHandler(nil)
+                        self.callStartCompletionOnce(nil)
                     }
                 },
                 onLog: { [weak self] frame in
@@ -342,6 +393,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     "error": error.localizedDescription,
                 ]
             )
+            // Re-throw so the outer Task's catch logs + writes the error
+            // snapshot. The completion-handler call is funneled through
+            // `callStartCompletionOnce` from that catch — not here — so
+            // we don't double-fire if `onStatus` already saw `.connected`
+            // before the start coroutine threw.
             throw error
         }
 
@@ -352,10 +408,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             fields: nil
         )
 
-        if !didCallCompletion {
-            didCallCompletion = true
-            completionHandler(nil)
-        }
+        callStartCompletionOnce(nil)
 
         outboundTask = Task.detached { [weak self] in
             await self?.outboundLoop()
@@ -366,7 +419,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// the host writes via `PreferencesStore.verboseLog`. Defaults to
     /// `false` when unset or the suite is unreachable.
     private func readVerboseLogPreference() -> Bool {
-        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn") else {
+        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.client") else {
             return false
         }
         return defaults.object(forKey: "verbose_log") as? Bool ?? false
@@ -381,7 +434,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         if let profileData = proto.providerConfiguration?["profile"] as? Data {
             do {
-                let profile = try JSONDecoder().decode(VpnProfile.self, from: profileData)
+                var profile = try JSONDecoder().decode(VpnProfile.self, from: profileData)
+                // Privacy fix: the host sanitises certPem/keyPem out of the
+                // embedded blob (NE persists `providerConfiguration` in
+                // plaintext under /Library/Preferences/...). Hydrate them
+                // from the shared Keychain — the same path the legacy
+                // profileId-only branch uses below.
+                if profile.certPem?.isEmpty != false {
+                    profile.certPem = Keychain.get("profile.\(profile.id).cert")
+                }
+                if profile.keyPem?.isEmpty != false {
+                    profile.keyPem = Keychain.get("profile.\(profile.id).key")
+                }
                 log.info("loaded embedded provider profile id=\(profile.id, privacy: .public)")
                 return profile
             } catch {
@@ -627,7 +691,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func resolveProfile(id: String) -> VpnProfile? {
-        let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")
+        let defaults = UserDefaults(suiteName: "group.com.ghoststream.client")
         guard
             let data = defaults?.data(forKey: "profiles.json"),
             let profiles = try? JSONDecoder().decode([VpnProfile].self, from: data),
@@ -683,7 +747,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - State broadcast
 
     private func writeStatePayload(_ payload: VpnStatePayload) {
-        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn") else { return }
+        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.client") else { return }
         if let data = try? JSONEncoder().encode(payload) {
             defaults.set(data, forKey: "vpn.state.v1")
             defaults.synchronize()
@@ -694,14 +758,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func writeSnapshot(_ frame: StatusFrame) {
         guard let data = try? JSONEncoder().encode(frame) else { return }
 
-        if let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn") {
+        if let defaults = UserDefaults(suiteName: "group.com.ghoststream.client") {
             defaults.set(data, forKey: snapshotPayloadKey)
             defaults.set(Date().timeIntervalSince1970, forKey: snapshotUpdatedAtKey)
             defaults.synchronize()
         }
 
         if let url = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn")?
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.client")?
             .appendingPathComponent("snapshot.json")
         {
             do {
@@ -887,14 +951,41 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // Mirror to OSLog for live `log stream` consumers — one logger
         // per category keeps the predicate filter clean. The level
         // mapping follows ADR 0008 §3.
-        osLogPool.logger(for: frame.category).log(
-            level: Self.osLogType(for: frame.level),
-            "\(frame.msg, privacy: .public)"
-        )
+        //
+        // PRIVACY: OSLog persists into sysdiagnose bundles and (with the
+        // Analytics & Improvements toggle on) iCloud Analytics. Categories
+        // whose `msg` typically carries server IP, SNI, tun_addr, or
+        // stream identifiers must mask their payload — `privacy: .private`
+        // redacts to `<private>` in Console.app and sysdiagnose so the
+        // identifier never reaches Apple. The msg is still preserved
+        // verbatim in our in-process LogFileWriter NDJSON for engineering
+        // use; this only affects the OSLog mirror.
+        let logger = osLogPool.logger(for: frame.category)
+        let level = Self.osLogType(for: frame.level)
+        if Self.isSensitiveOSLogCategory(frame.category) {
+            logger.log(level: level, "\(frame.msg, privacy: .private)")
+        } else {
+            logger.log(level: level, "\(frame.msg, privacy: .public)")
+        }
 
         // Persist to the NDJSON runtime log. Non-blocking — the writer
         // queue absorbs back-pressure for us.
         LogFileWriter.shared.append(frame)
+    }
+
+    /// Categories whose `msg` regularly carries network identifiers
+    /// (server IP/host, SNI, tun_addr, stream id). These get redacted
+    /// when mirrored to OSLog so sysdiagnose bundles and iCloud Analytics
+    /// never see the raw value. The full payload still lives in the
+    /// in-process NDJSON runtime log under `~/Library/Logs/GhostStream/`.
+    private static func isSensitiveOSLogCategory(_ category: String?) -> Bool {
+        guard let category = category?.lowercased() else { return false }
+        switch category {
+        case "tunnel", "handshake", "network", "stream":
+            return true
+        default:
+            return false
+        }
     }
 
     private static func osLogType(for level: String) -> OSLogType {
@@ -997,10 +1088,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
 /// Lazy pool of `os.Logger`s, one per logical category. Mirrors LogFrame
 /// events to the unified Apple logging facility so `log stream
-/// --predicate 'subsystem == "com.ghoststream.vpn.tunnel"'` lets a
+/// --predicate 'subsystem == "com.ghoststream.client.tunnel"'` lets a
 /// developer follow events live without parsing the runtime log file.
 private final class OSLogCategoryPool {
-    private let subsystem = "com.ghoststream.vpn.tunnel"
+    private let subsystem = "com.ghoststream.client.tunnel"
     private let lock = NSLock()
     private var cache: [String: Logger] = [:]
 

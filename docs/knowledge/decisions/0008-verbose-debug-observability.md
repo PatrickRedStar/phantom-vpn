@@ -171,7 +171,7 @@ extension'а — нужен `EnvFilter` reload через `tracing_subscriber::H
 ### 4. Файловый лог
 
 Путь: **App Group container** —
-`~/Library/Group Containers/group.com.ghoststream.vpn/Logs/runtime.log`.
+`~/Library/Group Containers/group.com.ghoststream.client/Logs/runtime.log`.
 
 Это **единственный** путь — host UI (SettingsView, TailView reveal-
 buttons) и extension `LogFileWriter` оба резолвят через

@@ -815,7 +815,7 @@ private struct AnyEncodable: Encodable {
 /// profile is refreshed automatically.
 @MainActor
 enum ProfileEntitlementRefresher {
-    private static let log = Logger(subsystem: "com.ghoststream.vpn", category: "entitlements")
+    private static let log = Logger(subsystem: "com.ghoststream.client", category: "entitlements")
 
     static func refreshActiveProfileIfConnected(
         profilesStore: ProfilesStore

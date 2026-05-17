@@ -105,13 +105,39 @@ where
 /// `client_core_runtime=debug` and `client_common=debug`. Override with
 /// the env var `GHOSTSTREAM_LOG`.
 pub fn install() {
-    let filter = EnvFilter::try_from_env("GHOSTSTREAM_LOG")
-        .or_else(|_| EnvFilter::try_from_default_env())
-        .unwrap_or_else(|_| {
-            EnvFilter::new(
-                "info,client_core_runtime=debug,phantom_core=info,client_common=debug,jni=warn,rustls=warn,h2=warn,hyper=warn",
-            )
-        });
+    install_with_spec_inner(None);
+}
+
+/// Like [`install`] but uses `spec` as the initial filter instead of
+/// consulting `GHOSTSTREAM_LOG` / `RUST_LOG` env vars. Subsequent calls
+/// are no-ops (use [`set_filter_spec`] to change the active filter
+/// after install).
+///
+/// Introduced for the Apple FFI so the runtime can hand a resolved
+/// spec straight to the subscriber without mutating `std::env`. Rust
+/// 2024 makes `std::env::set_var` `unsafe` because concurrent env
+/// readers (EnvFilter, getlogin, etc.) can observe a torn pointer
+/// and SIGSEGV — see Apple `apply_log_filter`.
+pub fn install_with_spec(spec: &str) {
+    install_with_spec_inner(Some(spec));
+}
+
+fn install_with_spec_inner(explicit: Option<&str>) {
+    let filter = if let Some(spec) = explicit {
+        // Honour the caller's resolved spec verbatim. The caller is
+        // responsible for any noisy-crate suppression (Apple's
+        // `default_log_spec` already encodes it, and the verbose path
+        // appends it via `set_filter_spec` below).
+        EnvFilter::try_new(spec).unwrap_or_else(|_| EnvFilter::new("info"))
+    } else {
+        EnvFilter::try_from_env("GHOSTSTREAM_LOG")
+            .or_else(|_| EnvFilter::try_from_default_env())
+            .unwrap_or_else(|_| {
+                EnvFilter::new(
+                    "info,client_core_runtime=debug,phantom_core=info,client_common=debug,jni=warn,rustls=warn,h2=warn,hyper=warn",
+                )
+            })
+    };
 
     let (filter_layer, handle) = reload::Layer::new(filter);
 
@@ -145,5 +171,25 @@ pub fn set_level(level: &str) {
         let filter_str = format!("{},jni=warn,rustls=warn,h2=warn,hyper=warn", level);
         let new_filter = EnvFilter::new(filter_str);
         let _ = handle.reload(new_filter);
+    }
+}
+
+/// Apply a full EnvFilter spec at runtime (e.g. `"info,h2=warn,my_crate=trace"`).
+/// Used by the Apple FFI where `apply_log_filter` may produce a multi-target
+/// spec rather than a single level. If the spec is a single bare level we
+/// route through [`set_level`] so the noisy-crate suppression suffix is
+/// applied; otherwise we install it verbatim.
+///
+/// Silent no-op if the subscriber wasn't installed or the spec fails to
+/// parse — the caller has already chosen a fallback in either case.
+pub fn set_filter_spec(spec: &str) {
+    if matches!(spec, "trace" | "debug" | "info" | "warn" | "error") {
+        set_level(spec);
+        return;
+    }
+    if let Some(handle) = FILTER_HANDLE.get() {
+        if let Ok(new_filter) = EnvFilter::try_new(spec) {
+            let _ = handle.reload(new_filter);
+        }
     }
 }

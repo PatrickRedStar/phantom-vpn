@@ -34,12 +34,20 @@ public final class ProfilesStore {
     private let defaults: UserDefaults
     private let profilesKey = "profiles.json"
     private let activeIdKey = "active_id"
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "ProfilesStore")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "ProfilesStore")
 
     private init() {
-        // App Group UserDefaults must be configured — otherwise main app
-        // and extension can't agree on stored state.
-        self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
+        // App Group UserDefaults must be configured for the main app and
+        // extension to agree on stored state. If the suite is unavailable
+        // (broken entitlement / unsigned dev build) we fall back to
+        // UserDefaults.standard so the host doesn't trap on launch.
+        // The fault log makes the misconfiguration obvious in Console.
+        if let suite = UserDefaults(suiteName: "group.com.ghoststream.client") {
+            self.defaults = suite
+        } else {
+            log.fault("App Group container unavailable, falling back to standard UserDefaults (profiles will not sync with extension)")
+            self.defaults = UserDefaults.standard
+        }
         load()
     }
 

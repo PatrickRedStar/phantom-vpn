@@ -68,7 +68,7 @@ struct GhostStreamApp: App {
 
 enum AppStrings {
     private static let languageKey = "language_override"
-    private static let appGroup = "group.com.ghoststream.vpn"
+    private static let appGroup = "group.com.ghoststream.client"
 
     static func localized(_ key: String, fallback: String? = nil) -> String {
         let override = UserDefaults(suiteName: appGroup)?

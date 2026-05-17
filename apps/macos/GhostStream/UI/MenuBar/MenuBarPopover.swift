@@ -30,7 +30,7 @@ import PhantomUI
 import SwiftUI
 import os.log
 
-private let popoverLog = Logger(subsystem: "com.ghoststream.vpn", category: "MenuBarPopover")
+private let popoverLog = Logger(subsystem: "com.ghoststream.client", category: "MenuBarPopover")
 
 public struct MenuBarPopover: View {
 

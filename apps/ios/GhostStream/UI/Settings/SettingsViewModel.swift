@@ -36,7 +36,7 @@ public final class SettingsViewModel {
     private let profilesStore: ProfilesStore
     private let preferencesStore: PreferencesStore
     private let tunnelController: VpnTunnelController
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "SettingsViewModel")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "SettingsViewModel")
 
     // MARK: - Public state
 

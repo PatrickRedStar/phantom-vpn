@@ -10,6 +10,7 @@
 import AppKit
 import Foundation
 import Observation
+import os.log
 
 @MainActor
 @Observable
@@ -28,7 +29,17 @@ public final class DockPolicyController {
     private static let key = "showInDock"
 
     private init() {
-        self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
+        // App Group lookup can fail when entitlements are broken; the host
+        // would then trap before reaching any UI. Fall back to standard
+        // UserDefaults so the Dock policy still works locally even if the
+        // pref no longer survives across containers.
+        if let suite = UserDefaults(suiteName: "group.com.ghoststream.client") {
+            self.defaults = suite
+        } else {
+            Logger(subsystem: "com.ghoststream.client", category: "dock")
+                .fault("App Group container unavailable, falling back to standard UserDefaults (Dock pref will not sync)")
+            self.defaults = UserDefaults.standard
+        }
         // Default = true (Dock visible); user can hide via Settings.
         if defaults.object(forKey: Self.key) == nil {
             self.showInDock = true

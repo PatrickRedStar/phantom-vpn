@@ -97,7 +97,7 @@ public final class RoutingRulesManager {
         .init(source: .geosite, code: "mailru", labelKey: "settings.geosite.mailru")
     ]
 
-    private static let appGroupId = "group.com.ghoststream.vpn"
+    private static let appGroupId = "group.com.ghoststream.client"
     private static let geoipBaseURL = "https://raw.githubusercontent.com/v2fly/geoip/release/text"
     private static let geositeBaseURL = "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data"
     private static let maxIPv4Prefix = 13

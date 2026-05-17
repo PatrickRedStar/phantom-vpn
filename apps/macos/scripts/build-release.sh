@@ -109,8 +109,8 @@ PLIST
 if [[ "$EXPORT_SIGNING_STYLE" == "manual" ]]; then
   /usr/libexec/PlistBuddy -c "Add :signingCertificate string $EXPORT_SIGNING_CERTIFICATE" "$EXPORT_OPTIONS_PLIST"
   /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS_PLIST"
-  /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.ghoststream.vpn string $APP_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
-  /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.ghoststream.vpn.tunnel string $TUNNEL_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.ghoststream.client string $APP_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
+  /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.ghoststream.client.tunnel string $TUNNEL_PROFILE_SPECIFIER" "$EXPORT_OPTIONS_PLIST"
 fi
 
 export_command=(

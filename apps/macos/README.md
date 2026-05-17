@@ -88,8 +88,8 @@ GitHub Actions делает то же самое в `.github/workflows/release.y
 - `MACOS_DEVELOPER_ID_CERTIFICATE_BASE64` — публичный Developer ID Application `.cer`, который соответствует private key из `.p12`.
 - `APPLE_TEAM_ID` — Team ID, по умолчанию используется `UPG896A272`.
 - `APP_STORE_CONNECT_API_KEY_BASE64`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID` — API key для automatic provisioning и notarization.
-- `MACOS_APP_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.vpn`.
-- `MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.vpn.tunnel`.
+- `MACOS_APP_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.client`.
+- `MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64` — Developer ID profile для `com.ghoststream.client.tunnel`.
 
 Если App Store Connect API key не используется, notarization можно выполнить
 через Apple ID:
@@ -132,7 +132,7 @@ open /Applications/GhostStream.app
 
 ```bash
 systemextensionsctl list
-# должен показать com.ghoststream.vpn.tunnel: activated enabled
+# должен показать com.ghoststream.client.tunnel: activated enabled
 ```
 
 **Recovery / clean reinstall:**
@@ -140,7 +140,7 @@ systemextensionsctl list
 ```bash
 sudo systemextensionsctl reset       # сносит все system extensions
 # или адресно:
-sudo systemextensionsctl uninstall <TEAM_ID> com.ghoststream.vpn.tunnel
+sudo systemextensionsctl uninstall <TEAM_ID> com.ghoststream.client.tunnel
 ```
 
 ## Шрифты

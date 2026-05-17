@@ -52,7 +52,7 @@ public final class OnboardingCoordinator {
     public weak var tunnel: VpnTunnelController?
     public weak var preferences: PreferencesStore?
 
-    private let log = Logger(subsystem: "com.ghoststream.vpn", category: "OnboardingCoordinator")
+    private let log = Logger(subsystem: "com.ghoststream.client", category: "OnboardingCoordinator")
     private var pollTask: Task<Void, Never>?
     private var statusObserver: NSObjectProtocol?
 
@@ -86,7 +86,7 @@ public final class OnboardingCoordinator {
             }
             if let mgr = tunnel?.manager,
                let proto = mgr.protocolConfiguration as? NETunnelProviderProtocol,
-               proto.providerBundleIdentifier == "com.ghoststream.vpn.tunnel",
+               proto.providerBundleIdentifier == "com.ghoststream.client.tunnel",
                mgr.isEnabled {
                 transition(to: .ready)
             } else {
@@ -218,6 +218,6 @@ public final class OnboardingCoordinator {
               let proto = manager.protocolConfiguration as? NETunnelProviderProtocol
         else { return false }
 
-        return proto.providerBundleIdentifier == "com.ghoststream.vpn.tunnel" && manager.isEnabled
+        return proto.providerBundleIdentifier == "com.ghoststream.client.tunnel" && manager.isEnabled
     }
 }

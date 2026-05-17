@@ -12,7 +12,7 @@ import Security
 /// the concrete access group from the running binary instead of hardcoding it.
 public enum Keychain {
     /// App Group id used as keychain access group (must match entitlements).
-    public static let appGroupIdentifier = "group.com.ghoststream.vpn"
+    public static let appGroupIdentifier = "group.com.ghoststream.client"
     private static let appIdentifierPrefix = "UPG896A272."
 
     public static var accessGroup: String {
@@ -20,7 +20,7 @@ public enum Keychain {
     }
 
     /// Service identifier scoping all GhostStream secrets.
-    public static let service = "com.ghoststream.vpn"
+    public static let service = "com.ghoststream.client"
 
     /// Errors raised by this wrapper. `notFound` is reserved for explicit
     /// "key does not exist" semantics in `delete`.

@@ -18,6 +18,7 @@ import Observation
 // a local typealias or wait until the Xcode project is wired up.
 // For now we import it conditionally; the compiler will fail fast if absent.
 import PhantomKit
+import os.log
 
 /// High-level VPN connection state rendered in the UI.
 public enum VpnState: Equatable {
@@ -88,7 +89,7 @@ public final class VpnStateManager {
     /// App Group container URL — used to locate snapshot.json.
     private var containerURL: URL? {
         FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn"
+            forSecurityApplicationGroupIdentifier: "group.com.ghoststream.client"
         )
     }
 
@@ -97,7 +98,18 @@ public final class VpnStateManager {
     }
 
     private init() {
-        self.defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")!
+        // App Group container can fail to materialise on a misconfigured
+        // build; trapping here meant the iOS app crashed at first launch.
+        // Fall back to standard UserDefaults so the rest of the app boots —
+        // state syncing with the extension will be a no-op until the
+        // entitlement is restored.
+        if let suite = UserDefaults(suiteName: "group.com.ghoststream.client") {
+            self.defaults = suite
+        } else {
+            Logger(subsystem: "com.ghoststream.client", category: "vpnstate")
+                .fault("App Group container unavailable, falling back to standard UserDefaults (state will not sync with extension)")
+            self.defaults = UserDefaults.standard
+        }
         self.loadPayload()
         self.loadSnapshot()
         self.observeDarwinNotifications()

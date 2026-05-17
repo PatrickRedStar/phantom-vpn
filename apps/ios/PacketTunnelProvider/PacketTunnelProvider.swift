@@ -10,7 +10,7 @@ import os.log
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
 
-    private let log = Logger(subsystem: "com.ghoststream.vpn.PacketTunnel", category: "tunnel")
+    private let log = Logger(subsystem: "com.ghoststream.client.PacketTunnel", category: "tunnel")
 
     private var outboundTask: Task<Void, Never>?
 
@@ -378,7 +378,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func loadLastTunnelParams() -> LastTunnelParams? {
         guard
-            let raw = UserDefaults(suiteName: "group.com.ghoststream.vpn")?
+            let raw = UserDefaults(suiteName: "group.com.ghoststream.client")?
                 .string(forKey: "last_tunnel_params"),
             let data = raw.data(using: .utf8)
         else { return nil }
@@ -403,7 +403,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func resolveProfile(id: String) -> VpnProfile? {
-        let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn")
+        let defaults = UserDefaults(suiteName: "group.com.ghoststream.client")
         guard
             let data = defaults?.data(forKey: "profiles.json"),
             let profiles = try? JSONDecoder().decode([VpnProfile].self, from: data),
@@ -638,7 +638,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - State broadcast
 
     private func writeStatePayload(_ payload: VpnStatePayload) {
-        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.vpn") else { return }
+        guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.client") else { return }
         if let data = try? JSONEncoder().encode(payload) {
             defaults.set(data, forKey: "vpn.state.v1")
             defaults.set(Date().timeIntervalSince1970, forKey: "vpn.state.updatedAt.v1")
@@ -648,7 +648,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func writeSnapshot(_ frame: StatusFrame) {
         if let url = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.vpn")?
+            .containerURL(forSecurityApplicationGroupIdentifier: "group.com.ghoststream.client")?
             .appendingPathComponent("snapshot.json"),
            let data = try? JSONEncoder().encode(frame) {
             try? data.write(to: url, options: .atomic)

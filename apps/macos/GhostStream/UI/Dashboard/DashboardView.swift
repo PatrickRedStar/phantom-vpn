@@ -18,7 +18,7 @@ import PhantomUI
 import SwiftUI
 import os.log
 
-private let dashLog = Logger(subsystem: "com.ghoststream.vpn", category: "DashboardView")
+private let dashLog = Logger(subsystem: "com.ghoststream.client", category: "DashboardView")
 
 public struct DashboardView: View {
 
