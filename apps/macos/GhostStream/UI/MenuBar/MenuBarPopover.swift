@@ -60,6 +60,16 @@ public struct MenuBarPopover: View {
         .frame(width: 380, height: 520, alignment: .top)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
+        // UI-H3 workaround: when the tunnel returns to `disconnected`
+        // the inline error chip is stale — the user explicitly tore
+        // the session down and the red text now feels like a fresh
+        // failure. Clear it from the UI here. A proper Service-layer
+        // fix would clear on transition inside `VpnTunnelController`.
+        .onChange(of: stateMgr.statusFrame.state) { _, newState in
+            if newState == .disconnected {
+                Task { @MainActor in tunnel.lastError = nil }
+            }
+        }
     }
 
     // MARK: - Header (1)
@@ -217,16 +227,25 @@ public struct MenuBarPopover: View {
 
     @ViewBuilder
     private var fabRow: some View {
-        let live = stateMgr.statusFrame.state == .connected
+        // UI-H1: when the tunnel is mid-handshake (`connecting`) or
+        // mid-recovery (`reconnecting`) we must not let the user
+        // start a *second* `installAndStart` — each one spawns its
+        // own `saveToPreferences` round-trip plus a fresh Rust
+        // runtime, racing the first.
+        let state = stateMgr.statusFrame.state
+        let live = state == .connected
+        let busy = state == .connecting || state == .reconnecting
         VStack(alignment: .leading, spacing: 8) {
             GhostFab(
-                text: live ? "DISCONNECT" : "CONNECT",
+                text: live ? "DISCONNECT" : (busy ? "TUNING…" : "CONNECT"),
                 outline: !live,
                 tint: live ? C.danger : C.signal
             ) {
                 popoverLog.info("GhostFab tapped — live=\(live, privacy: .public)")
                 Task { await toggleConnect() }
             }
+            .disabled(busy)
+            .opacity(busy ? 0.6 : 1.0)
             if let err = inlineConnectError {
                 Text(err)
                     .font(.custom("JetBrainsMono-Regular", size: 11))
@@ -392,17 +411,32 @@ public struct MenuBarPopover: View {
                 openForegroundWindow("console")
                 router.commandPaletteOpen = true
             }
-            footerRow(
-                systemImage: stateMgr.statusFrame.state == .connected ? "clock" : "power",
-                title: stateMgr.statusFrame.state == .connected ? "Логи" : String(localized: "menu.quit"),
-                kbd: stateMgr.statusFrame.state == .connected ? "⌘⇧L" : "⌘Q",
-                color: stateMgr.statusFrame.state == .connected ? C.bone : C.danger
-            ) {
-                if stateMgr.statusFrame.state == .connected {
+            // UI-C5: Quit is now *always* the last footer row,
+            // regardless of connection state. Previously the row
+            // toggled between "Logs" (connected) and "Quit"
+            // (disconnected), which left users in accessory mode
+            // — `showInDock=false` — with no visible way to quit
+            // while the tunnel was live.
+            //
+            // UI-H2: "Logs" is read from the catalog instead of the
+            // hardcoded "Логи" so EN locale renders correctly.
+            if stateMgr.statusFrame.state == .connected {
+                footerRow(
+                    systemImage: "clock",
+                    title: String(localized: "menu.logs"),
+                    kbd: "⌘⇧L",
+                    color: C.bone
+                ) {
                     openForegroundWindow("logs")
-                } else {
-                    NSApplication.shared.terminate(nil)
                 }
+            }
+            footerRow(
+                systemImage: "power",
+                title: String(localized: "menu.quit"),
+                kbd: "⌘Q",
+                color: C.danger
+            ) {
+                NSApplication.shared.terminate(nil)
             }
         }
         .padding(.horizontal, 18)

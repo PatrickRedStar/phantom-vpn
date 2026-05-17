@@ -28,11 +28,28 @@ public struct ServerRosterView: View {
 
     @State private var rttCache: [String: UInt32] = [:]
     @State private var showAddSheet = false
-    @State private var rosterStatus: String?
+    @State private var rosterStatusBanner: RosterStatusBanner?
+    @State private var rosterStatusTtlTask: Task<Void, Never>?
     @State private var probeStatus: String = "RTT PROBE UNAVAILABLE"
     @State private var sortOrder: [KeyPathComparator<RosterRow>] = [
         .init(\.name, order: .forward)
     ]
+
+    /// Tagged status message — UI-M5 fix. The old `String?` flag
+    /// coloured every transient banner in warn-yellow, so a
+    /// *successful* "Imported …" looked indistinguishable from
+    /// "Failed to import". Tagging the kind separates them and
+    /// lets us auto-expire success banners.
+    private enum RosterStatusKind {
+        case success
+        case info
+        case error
+    }
+
+    private struct RosterStatusBanner: Equatable {
+        let message: String
+        let kind: RosterStatusKind
+    }
 
     public init() {}
 
@@ -128,11 +145,45 @@ public struct ServerRosterView: View {
 
             Spacer()
 
-            Text(rosterStatus ?? "\(profiles.profiles.count) PROFILES · \(activeCount) ACTIVE · \(probeStatus)")
+            // UI-M5: colour reflects status kind — green for success,
+            // yellow for warn/info, red for failures. Previously every
+            // transient was yellow, so successful imports read as
+            // warnings.
+            Text(rosterStatusBanner?.message
+                 ?? "\(profiles.profiles.count) PROFILES · \(activeCount) ACTIVE · \(probeStatus)")
                 .font(.custom("DepartureMono-Regular", size: 10.5))
                 .tracking(0.14 * 10.5)
-                .foregroundStyle(rosterStatus == nil ? C.textFaint : C.warn)
+                .foregroundStyle(rosterStatusColor)
         }
+    }
+
+    private var rosterStatusColor: Color {
+        guard let banner = rosterStatusBanner else { return C.textFaint }
+        switch banner.kind {
+        case .success: return C.signal
+        case .info:    return C.textDim
+        case .error:   return C.danger
+        }
+    }
+
+    /// Show a transient banner. Success banners auto-clear after 5s
+    /// so they don't sit on screen forever pretending to be a
+    /// warning. Errors stick around until the next user action.
+    private func setRosterStatus(_ message: String, kind: RosterStatusKind) {
+        rosterStatusBanner = RosterStatusBanner(message: message, kind: kind)
+        rosterStatusTtlTask?.cancel()
+        guard kind == .success || kind == .info else { return }
+        let captured = rosterStatusBanner
+        let task = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            // Only clear if we still own the banner — another update
+            // may have replaced it in the meantime.
+            if rosterStatusBanner == captured {
+                rosterStatusBanner = nil
+            }
+        }
+        rosterStatusTtlTask = task
     }
 
     private var activeCount: Int {
@@ -395,20 +446,20 @@ public struct ServerRosterView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard let str, !str.isEmpty else {
-            rosterStatus = "Clipboard is empty"
+            setRosterStatus("Clipboard is empty", kind: .error)
             return
         }
 
         guard str.hasPrefix("ghs://") else {
-            rosterStatus = "Clipboard does not contain a ghs:// profile"
+            setRosterStatus("Clipboard does not contain a ghs:// profile", kind: .error)
             return
         }
 
         do {
             let profile = try profiles.importFromConnString(str)
-            rosterStatus = "Imported \(profile.name)"
+            setRosterStatus("Imported \(profile.name)", kind: .success)
         } catch {
-            rosterStatus = "Failed to import ghs:// profile"
+            setRosterStatus("Failed to import ghs:// profile", kind: .error)
         }
     }
 
@@ -422,7 +473,7 @@ public struct ServerRosterView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 profiles.setActive(id: row.id)
-                rosterStatus = "Active profile: \(row.name)"
+                setRosterStatus("Active profile: \(row.name)", kind: .success)
             }
             .contextMenu {
                 rowMenuCommands(row)
@@ -449,7 +500,7 @@ public struct ServerRosterView: View {
     private func rowMenuCommands(_ row: RosterRow) -> some View {
         Button("Set Active") {
             profiles.setActive(id: row.id)
-            rosterStatus = "Active profile: \(row.name)"
+            setRosterStatus("Active profile: \(row.name)", kind: .success)
         }
         Button("Edit") {
             profiles.setActive(id: row.id)
@@ -457,17 +508,17 @@ public struct ServerRosterView: View {
         }
         Button("Copy endpoint") {
             copy(row.endpoint)
-            rosterStatus = "Endpoint copied"
+            setRosterStatus("Endpoint copied", kind: .info)
         }
         if let connString = row.connString, !connString.isEmpty {
             Button("Copy ghs://") {
                 copy(connString)
-                rosterStatus = "ghs:// copied"
+                setRosterStatus("ghs:// copied", kind: .info)
             }
         }
         Button("Delete", role: .destructive) {
             profiles.remove(id: row.id)
-            rosterStatus = "Deleted \(row.name)"
+            setRosterStatus("Deleted \(row.name)", kind: .info)
         }
     }
 

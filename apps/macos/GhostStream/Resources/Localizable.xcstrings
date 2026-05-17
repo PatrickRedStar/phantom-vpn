@@ -231,6 +231,20 @@
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Type a command or profile…" } },
         "ru" : { "stringUnit" : { "state" : "translated", "value" : "Введите команду или профиль…" } }
       }
+    },
+    "palette.no_matches" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No matches" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Нет совпадений" } }
+      }
+    },
+    "menu.logs" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Logs" } },
+        "ru" : { "stringUnit" : { "state" : "translated", "value" : "Логи" } }
+      }
     }
   },
   "version" : "1.0"

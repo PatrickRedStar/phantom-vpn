@@ -51,6 +51,15 @@ public struct DashboardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
+        // UI-H3 workaround: clear the inline error chip when the
+        // tunnel returns to disconnected. Without this, a previous
+        // failure stays red on the dashboard forever, looking like a
+        // *fresh* failure each time the user opens the app.
+        .onChange(of: stateMgr.statusFrame.state) { _, newState in
+            if newState == .disconnected {
+                Task { @MainActor in tunnel.lastError = nil }
+            }
+        }
     }
 
     // MARK: - 1. detail-head
@@ -155,6 +164,16 @@ public struct DashboardView: View {
 
     @ViewBuilder
     private var endpointRow: some View {
+        // UI-H1: button disabled state — busy means we're already
+        // mid-handshake or mid-recovery, additional clicks would
+        // spawn parallel `installAndStart` tasks.
+        let state = stateMgr.statusFrame.state
+        let live = state == .connected
+        let busy = state == .connecting || state == .reconnecting
+        let buttonTint: Color = busy ? C.warn : (live ? C.danger : C.signal)
+        let buttonLabel: String = busy
+            ? (state == .connecting ? "TUNING…" : "REGROUPING…")
+            : (live ? "DISCONNECT" : "CONNECT")
         HStack(alignment: .bottom, spacing: 24) {
             kvLabel(label: "ENDPOINT") {
                 if let host = profiles.activeProfile?.serverAddr, !host.isEmpty {
@@ -172,6 +191,12 @@ public struct DashboardView: View {
                                 .foregroundStyle(C.signal)
                         }
                     }
+                    // UI-H4: clamp the line + middle-truncate when
+                    // the endpoint is a long DNS name or IPv6 — it
+                    // used to push the CONNECT button off-screen.
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(host)
                 } else {
                     Text("—")
                         .font(.custom("JetBrainsMono-Regular", size: 14))
@@ -183,39 +208,55 @@ public struct DashboardView: View {
                 Text(profiles.activeProfile?.serverName ?? "—")
                     .font(.custom("JetBrainsMono-Regular", size: 14))
                     .foregroundStyle(C.bone)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(profiles.activeProfile?.serverName ?? "")
             }
 
             kvLabel(label: "TUN IP") {
                 Text(tunAddrText)
                     .font(.custom("JetBrainsMono-Regular", size: 14))
                     .foregroundStyle(C.bone)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(tunAddrText)
             }
 
             Spacer()
 
             // Connect / disconnect compact GhostFab
-            let live = stateMgr.statusFrame.state == .connected
             VStack(alignment: .trailing, spacing: 6) {
                 Button {
                     dashLog.info("Connect button tapped — live=\(live, privacy: .public)")
                     Task { await toggle() }
                 } label: {
                     HStack(spacing: 8) {
-                        Text(live ? "DISCONNECT" : "CONNECT")
+                        Text(buttonLabel)
                             .font(.custom("DepartureMono-Regular", size: 11))
                             .tracking(0.20 * 11)
-                        KeyboardShortcutHint("⌘K")
+                        if busy {
+                            // Tiny progress indicator beside the
+                            // label so the user knows the click was
+                            // received even when the button itself
+                            // is disabled.
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            KeyboardShortcutHint("⌘K")
+                        }
                     }
-                    .foregroundStyle(live ? C.danger : C.signal)
+                    .foregroundStyle(buttonTint)
                     .padding(.horizontal, 22)
                     .padding(.vertical, 12)
                     .overlay(
-                        Rectangle().stroke(live ? C.danger : C.signal, lineWidth: 1)
+                        Rectangle().stroke(buttonTint, lineWidth: 1)
                     )
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut("k", modifiers: .command)
+                .disabled(busy)
+                .opacity(busy ? 0.7 : 1.0)
 
                 if let err = inlineConnectError {
                     Text(err)

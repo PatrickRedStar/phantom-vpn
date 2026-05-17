@@ -34,8 +34,24 @@ public struct TailView: View {
     @State private var followTail: Bool = true
     @State private var selectedCategories: Set<String> = []
     @State private var actionStatus: TailStatus?
-    @State private var keyMonitor: Any?
+    @State private var searchDebounceTask: Task<Void, Never>?
+    // UI-C1: cached filter result. The previous `var filteredLogs`
+    // computed property re-ran `TailViewFilter.filter` 3+ times per
+    // body invocation (counts + ForEach + status strip). On a 50k row
+    // buffer that's tens of ms × 3 every time `logStore.logs` changed.
+    // We now recompute exactly once whenever the inputs change.
+    @State private var cachedFilteredLogs: [LogFrame] = []
     @FocusState private var searchFieldFocused: Bool
+
+    /// Static formatter — UI-C2. Allocating a fresh `DateFormatter`
+    /// for every row (potentially thousands per scroll) is heavy:
+    /// each instance pulls locale/calendar data. The format itself
+    /// is locale-independent so a singleton is safe.
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
 
     public init() {}
 
@@ -52,9 +68,41 @@ public struct TailView: View {
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
-        .onAppear { installShortcutMonitor() }
-        .onDisappear { removeShortcutMonitor() }
+        // UI-C1: recompute the filter cache exactly when one of its
+        // inputs flips. The body never recomputes — readers just
+        // observe `cachedFilteredLogs`.
+        .onAppear { recomputeFilteredLogs() }
+        .onChange(of: logStore.logs.count) { _, _ in recomputeFilteredLogs() }
+        .onChange(of: activeFilter) { _, _ in recomputeFilteredLogs() }
+        .onChange(of: selectedCategories) { _, _ in recomputeFilteredLogs() }
+        .onChange(of: regexSearch) { _, _ in recomputeFilteredLogs() }
+        .onChange(of: searchText) { _, _ in
+            // Debounce search keystrokes — typing in a 50k-row buffer
+            // should not lock the main thread on every character.
+            searchDebounceTask?.cancel()
+            let task = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                guard !Task.isCancelled else { return }
+                recomputeFilteredLogs()
+            }
+            searchDebounceTask = task
+        }
+        .onDisappear { searchDebounceTask?.cancel() }
         .task { logStore.start(stateManager: stateMgr) }
+    }
+
+    /// Run the filter and stash the result. Cheap on the happy path
+    /// because the underlying buffer is bounded — but called only
+    /// when inputs actually change, so cost doesn't multiply across
+    /// body re-evaluations.
+    private func recomputeFilteredLogs() {
+        cachedFilteredLogs = TailViewFilter.filter(
+            frames: logStore.logs,
+            level: activeFilter,
+            categories: selectedCategories,
+            search: searchText,
+            useRegex: regexSearch
+        )
     }
 
     // MARK: - 1. detail-head
@@ -83,7 +131,7 @@ public struct TailView: View {
                     size: 8,
                     pulse: !prefs.reduceMotion && stateMgr.statusFrame.state == .connected
                 )
-                Text("\(filteredLogs.count) LINES · \(stateMgr.statusFrame.state == .connected ? "STREAMING" : "STANDBY")")
+                Text("\(cachedFilteredLogs.count) LINES · \(stateMgr.statusFrame.state == .connected ? "STREAMING" : "STANDBY")")
                     .font(.custom("DepartureMono-Regular", size: 10.5))
                     .tracking(0.16 * 10.5)
                     .foregroundStyle(C.textDim)
@@ -179,7 +227,11 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .help("Clear log buffer")
+                .help("Clear log buffer (⌘K)")
+                // UI-C3: ⌘K (was ⌘L which collides with macOS) — scoped
+                // SwiftUI shortcut, fires only when TailView is focused,
+                // so it never hijacks Copy/Find in other text fields.
+                .keyboardShortcut("k", modifiers: .command)
                 Button {
                     copyVisibleLogs()
                 } label: {
@@ -190,7 +242,11 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .help("Copy visible logs (⌘C)")
+                .help("Copy visible logs (⇧⌘C)")
+                // UI-C3: ⇧⌘C — explicit "Copy visible logs" shortcut.
+                // Plain ⌘C is deliberately left to the system so the
+                // user can still copy selected text in any TextField.
+                .keyboardShortcut("c", modifiers: [.command, .shift])
                 Button {
                     exportVisibleLogs()
                 } label: {
@@ -201,7 +257,8 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .help("Export visible logs (⌘E)")
+                .help("Export visible logs (⇧⌘E)")
+                .keyboardShortcut("e", modifiers: [.command, .shift])
                 Button {
                     revealRuntimeLogFile()
                 } label: {
@@ -228,9 +285,25 @@ public struct TailView: View {
                 .buttonStyle(.plain)
                 .help("Toggle follow tail")
                 KeyboardShortcutHint("⌘F")
-                KeyboardShortcutHint("⌘L")
-                KeyboardShortcutHint("⌘C")
-                KeyboardShortcutHint("⌘E")
+                KeyboardShortcutHint("⌘K")
+                KeyboardShortcutHint("⇧⌘C")
+                KeyboardShortcutHint("⇧⌘E")
+
+                // UI-C3 hidden chord: ⌘F focuses the filter field.
+                // Implemented as a zero-size Button so the SwiftUI
+                // shortcut system can route the key without us
+                // installing a global NSEvent monitor that hijacks
+                // every ⌘C/⌘F/⌘L/⌘E in the app.
+                Button {
+                    focusSearchField()
+                } label: {
+                    EmptyView()
+                }
+                .buttonStyle(.plain)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+                .keyboardShortcut("f", modifiers: .command)
             }
         }
     }
@@ -336,14 +409,14 @@ public struct TailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if filteredLogs.isEmpty {
+                    if cachedFilteredLogs.isEmpty {
                         Text(String(localized: "logs.empty"))
                             .font(.custom("JetBrainsMono-Regular", size: 12))
                             .foregroundStyle(C.textFaint)
                             .padding(40)
                             .frame(maxWidth: .infinity)
                     } else {
-                        ForEach(Array(filteredLogs.enumerated()), id: \.element.id) { idx, row in
+                        ForEach(Array(cachedFilteredLogs.enumerated()), id: \.element.id) { idx, row in
                             tailRow(row, index: idx)
                             Rectangle().fill(C.hair.opacity(0.5)).frame(height: 1)
                         }
@@ -353,7 +426,7 @@ public struct TailView: View {
                     // anchor when it is at the tail of the layout — not
                     // wrapped inside the empty-state branch. Height is
                     // explicitly small (not 0) so SwiftUI keeps it in the
-                    // layout pass even when filteredLogs is empty.
+                    // layout pass even when cachedFilteredLogs is empty.
                     Color.clear
                         .frame(height: 2)
                         .id("tail-bottom")
@@ -363,11 +436,14 @@ public struct TailView: View {
             // reliable than scrolling to the last row's `id` because the
             // anchor is always materialised. Defer one runloop tick so
             // the LazyVStack has actually inserted the new row first.
-            .onChange(of: logStore.logs.count) { _, _ in
-                guard followTail else { return }
-                scrollToBottom(proxy: proxy, animated: true)
-            }
-            .onChange(of: filteredLogs.count) { _, _ in
+            //
+            // UI-H8: previously two `.onChange` handlers raced on every
+            // inbound log (one watched `logStore.logs.count`, one watched
+            // `filteredLogs.count`). Now a single watcher on the cached
+            // list — which is updated together with the source — drives
+            // the scroll, animation off so follow-tail looks like a
+            // ticker rather than an easing.
+            .onChange(of: cachedFilteredLogs.count) { _, _ in
                 guard followTail else { return }
                 scrollToBottom(proxy: proxy, animated: false)
             }
@@ -583,17 +659,6 @@ public struct TailView: View {
 
     // MARK: - Helpers
 
-    private var filteredLogs: [LogFrame] {
-        guard regexSearchError == nil else { return [] }
-        return TailViewFilter.filter(
-            frames: logStore.logs,
-            level: activeFilter,
-            categories: selectedCategories,
-            search: searchText,
-            useRegex: regexSearch
-        )
-    }
-
     private var activeSearchRegex: NSRegularExpression? {
         guard regexSearch, !searchText.isEmpty else { return nil }
         return try? NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
@@ -645,7 +710,7 @@ public struct TailView: View {
             actionStatus = TailStatus(message: "Copy failed: pasteboard rejected the log text", tone: .danger)
             return
         }
-        actionStatus = TailStatus(message: "Copied \(filteredLogs.count) visible log lines", tone: .info)
+        actionStatus = TailStatus(message: "Copied \(cachedFilteredLogs.count) visible log lines", tone: .info)
     }
 
     private func clearLogs() {
@@ -668,41 +733,14 @@ public struct TailView: View {
         }
     }
 
-    private func installShortcutMonitor() {
-        guard keyMonitor == nil else { return }
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard isTailCommandShortcut(event) else { return event }
-
-            switch event.charactersIgnoringModifiers?.lowercased() {
-            case "f":
-                Task { @MainActor in focusSearchField() }
-                return nil
-            case "l":
-                Task { @MainActor in clearFilters() }
-                return nil
-            case "c":
-                Task { @MainActor in copyVisibleLogs() }
-                return nil
-            case "e":
-                Task { @MainActor in exportVisibleLogs() }
-                return nil
-            default:
-                return event
-            }
-        }
-    }
-
-    private func removeShortcutMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-        }
-        keyMonitor = nil
-    }
-
-    private func isTailCommandShortcut(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        return flags == .command
-    }
+    // UI-C3/C6/H11: shortcut handling moved to per-button SwiftUI
+    // `.keyboardShortcut(...)` modifiers (⇧⌘C copy, ⇧⌘E export, ⌘K
+    // clear, ⌘F focus filter). SwiftUI scopes shortcuts to the
+    // hosting window's responder chain, so the previous
+    // `NSEvent.addLocalMonitorForEvents` global monitor — which
+    // hijacked Copy/Find for every TextField in the app and would
+    // double-fire when a detached Logs window was open — is
+    // deliberately removed.
 
     private func exportVisibleLogs() {
         let output = renderVisibleLogs()
@@ -717,14 +755,14 @@ public struct TailView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try output.write(to: url, atomically: true, encoding: .utf8)
-            actionStatus = TailStatus(message: "Exported \(filteredLogs.count) visible log lines", tone: .info)
+            actionStatus = TailStatus(message: "Exported \(cachedFilteredLogs.count) visible log lines", tone: .info)
         } catch {
             actionStatus = TailStatus(message: "Export failed: \(error.localizedDescription)", tone: .danger)
         }
     }
 
     private func renderVisibleLogs() -> String {
-        filteredLogs.map(formatLogLine).joined(separator: "\n")
+        cachedFilteredLogs.map(formatLogLine).joined(separator: "\n")
     }
 
     private func formatLogLine(_ row: LogFrame) -> String {
@@ -758,9 +796,7 @@ public struct TailView: View {
 
     private func formatTs(_ tsUs: UInt64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(tsUs) / 1_000_000.0)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter.string(from: date)
+        return Self.timestampFormatter.string(from: date)
     }
 }
 

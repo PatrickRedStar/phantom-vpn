@@ -77,10 +77,10 @@ public struct CommandPalette: View {
             moveSelection(1)
             return .handled
         }
-        .onKeyPress(.return) {
-            runSelected()
-            return .handled
-        }
+        // UI-C4: Enter is handled exclusively by the TextField's
+        // `.onSubmit`. The previous view-level `.onKeyPress(.return)`
+        // ran in parallel and produced two `runSelected()` calls per
+        // press — manifesting as duplicate `installAndStart` tasks.
         .onKeyPress(.escape) {
             router.commandPaletteOpen = false
             return .handled
@@ -148,21 +148,33 @@ public struct CommandPalette: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 let groups = filteredGroups
+                // UI-H7: precompute the running flat-index offsets so
+                // each row knows its position in the linearised list
+                // without mutating a `var` from inside a ViewBuilder
+                // (that produced stale selection highlighting on
+                // rapid typing because SwiftUI re-evaluates body in
+                // unspecified order).
+                let groupOffsets: [Int] = {
+                    var offsets: [Int] = []
+                    var running = 0
+                    for group in groups {
+                        offsets.append(running)
+                        running += group.items.count
+                    }
+                    return offsets
+                }()
                 if groups.isEmpty {
-                    Text("Нет совпадений")
+                    Text(String(localized: "palette.no_matches"))
                         .font(.custom("JetBrainsMono-Regular", size: 13))
                         .foregroundStyle(C.textFaint)
                         .padding(.vertical, 30)
                         .frame(maxWidth: .infinity)
                 } else {
-                    var index = 0
-                    ForEach(groups, id: \.section) { group in
+                    ForEach(Array(groups.enumerated()), id: \.offset) { groupIndex, group in
                         sectionLabel(group.section)
-                        ForEach(group.items) { item in
-                            let activeIdx = index
-                            rowView(item, active: activeIdx == selection)
-                            // Track ordering — mutate before next item.
-                            let _ = (index += 1)
+                        ForEach(Array(group.items.enumerated()), id: \.offset) { itemIndex, item in
+                            let flatIndex = groupOffsets[groupIndex] + itemIndex
+                            rowView(item, active: flatIndex == selection)
                         }
                     }
                 }
@@ -552,6 +564,13 @@ public struct CommandPalette: View {
     }
 
     private func openSetupWithError(_ message: String) -> PaletteActionResult {
+        // UI-H13 partial: surface the error in the palette's own
+        // status banner AND on `tunnel.lastError` because the Welcome
+        // window reads the latter. A full single-source-of-truth
+        // refactor needs the Service layer (out of UI scope here),
+        // so this is the minimum-invasive seam: the palette
+        // dismisses immediately after `openSetupWithError`, so the
+        // user never sees both banners at once.
         tunnel.lastError = message
         statusMessage = .init(text: message, kind: .error)
         openForegroundWindow("welcome")
