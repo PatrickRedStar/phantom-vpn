@@ -15,6 +15,7 @@
 
 mod bridge;
 mod controller;
+mod tray;
 
 #[cfg(windows)]
 mod wintun_loader;
@@ -44,6 +45,27 @@ fn main() -> Result<()> {
     seed_initial_state(&window);
 
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<UiCommand>();
+
+    // System-tray icon. We keep the handle alive in `_tray` for the
+    // lifetime of `main()` — dropping the value removes the icon.
+    let tray = match tray::Tray::build() {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!(error = ?e, "tray icon disabled");
+            None
+        }
+    };
+    if let Some(t) = tray.as_ref() {
+        let ids = tray::TrayMenuIds::from(t);
+        let weak_show = window.as_weak();
+        let cmd_for_tray = cmd_tx.clone();
+        tray::install_event_pump(ids, cmd_for_tray, move || {
+            if let Some(w) = weak_show.upgrade() {
+                let _ = w.show();
+            }
+        });
+    }
+    let _tray = tray;
 
     // Wire UI callbacks → tokio commands.
     {
@@ -150,15 +172,22 @@ async fn run_worker(
                 }
             }
             UiCommand::ChangeProfile => {
-                // Phase 4.5 will open the profile editor. For now log
-                // and surface a hint via last_error so it's discoverable.
-                tracing::info!("change profile not implemented yet");
-                let weak2 = weak.clone();
-                let _ = weak2.upgrade_in_event_loop(move |w| {
-                    w.set_last_error(SharedString::from(
-                        "Profile editor coming in next release",
-                    ));
-                });
+                // Phase 4.5 (light version): open the profile directory
+                // in the platform's native file manager. The full
+                // in-app editor lands in a later release; for now this
+                // keeps users unblocked — they can edit profile.json
+                // directly with any text editor.
+                match open_profile_dir() {
+                    Ok(()) => tracing::info!("opened profile directory"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "open profile dir failed");
+                        let weak2 = weak.clone();
+                        let msg = format!("Could not open profile dir: {:#}", e);
+                        let _ = weak2.upgrade_in_event_loop(move |w| {
+                            w.set_last_error(SharedString::from(msg));
+                        });
+                    }
+                }
             }
             UiCommand::Quit => {
                 if let Some(tunnel) = active.take() {
@@ -219,5 +248,42 @@ fn demo_profile() -> ConnectProfile {
         conn_string: "ghs://example/replace-with-real-conn-string".into(),
         settings: TunnelSettings::default(),
     }
+}
+
+/// Open the directory that holds `profile.json` in the platform's
+/// native file manager. Phase 4.5 light: users edit the JSON manually
+/// while the full in-app editor lands later.
+fn open_profile_dir() -> anyhow::Result<()> {
+    use anyhow::Context;
+    let path = client_windows_core::profile::profile_path()?;
+    let dir = path
+        .parent()
+        .context("profile path has no parent directory")?;
+    if !dir.exists() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("create {}", dir.display()))?;
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer")
+            .arg(dir)
+            .spawn()
+            .with_context(|| format!("spawn explorer {}", dir.display()))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(dir)
+            .spawn()
+            .with_context(|| format!("spawn open {}", dir.display()))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .with_context(|| format!("spawn xdg-open {}", dir.display()))?;
+    }
+    Ok(())
 }
 

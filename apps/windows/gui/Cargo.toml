@@ -18,6 +18,7 @@ client-windows-core = { path = "../../../crates/client-windows-core" }
 client-core-runtime = { path = "../../../crates/client-core-runtime" }
 ghoststream-gui-ipc = { path = "../../../crates/gui-ipc" }
 slint = { version = "1.8", default-features = false, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2"] }
+tray-icon = "0.20"
 
 [build-dependencies]
 embed-resource = "2.5"
