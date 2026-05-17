@@ -43,13 +43,45 @@ jobs:
       - name: Build release binary
         run: cargo build --release -p ghoststream-windows
 
-      - name: Download wintun.dll
+      - name: Download and verify wintun.dll
         shell: pwsh
+        env:
+          WINTUN_SHA256: 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
         run: |
+          $ErrorActionPreference = 'Stop'
+
           $url = "https://www.wintun.net/builds/wintun-$env:WINTUN_VERSION.zip"
-          Invoke-WebRequest -Uri $url -OutFile wintun.zip
-          Expand-Archive wintun.zip -DestinationPath wintun-extracted
-          Copy-Item wintun-extracted/wintun/bin/amd64/wintun.dll -Destination wintun.dll
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile wintun.zip -UseBasicParsing -MaximumRetryCount 3
+
+          if (-not (Test-Path wintun.zip)) {
+              throw "wintun.zip was not created — download silently failed"
+          }
+
+          $actualHash = (Get-FileHash wintun.zip -Algorithm SHA256).Hash.ToLower()
+          $expectedHash = $env:WINTUN_SHA256.ToLower()
+          if ($actualHash -ne $expectedHash) {
+              throw "wintun-$env:WINTUN_VERSION.zip SHA256 mismatch: expected $expectedHash, got $actualHash"
+          }
+          Write-Host "SHA256 verified: $actualHash"
+
+          Expand-Archive wintun.zip -DestinationPath wintun-extracted -Force
+
+          $dllPath = "wintun-extracted/wintun/bin/amd64/wintun.dll"
+          if (-not (Test-Path $dllPath)) {
+              # Try a defensive search in case the archive layout changes upstream.
+              $found = Get-ChildItem -Path wintun-extracted -Recurse -Filter wintun.dll |
+                       Where-Object { $_.FullName -like "*amd64*" } |
+                       Select-Object -First 1
+              if ($null -eq $found) {
+                  throw "wintun.dll (amd64) not found inside the ZIP — upstream layout changed?"
+              }
+              $dllPath = $found.FullName
+              Write-Host "Found wintun.dll at non-standard path: $dllPath"
+          }
+
+          Copy-Item $dllPath -Destination wintun.dll
+          Write-Host "wintun.dll ready"
 
       - name: Assemble distributable
         shell: pwsh
