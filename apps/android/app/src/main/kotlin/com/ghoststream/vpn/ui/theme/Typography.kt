@@ -56,14 +56,17 @@ object GsText {
     //   Compact (phone, sw < 600)              → 54sp / 56sp
     //   Medium  (tablet portrait, sw ≥ 600,     → 72sp / 75sp
     //            current width < 840)
-    //   Expanded (tablet landscape / unfolded,  → 96sp / 100sp
+    //   Expanded (tablet landscape / unfolded,  → 80sp / 84sp
     //            sw ≥ 600 ∧ width ≥ 840)
+    // Expanded picked at 80sp (not 96sp) so the Russian word
+    // "Настройка..." fits one line in the 42% left pane of Dashboard
+    // 2-col hero. Increase only if we ever switch to auto-shrink.
     val stateHeadline: TextStyle
         @Composable get() {
             val cfg = LocalConfiguration.current
             val (fs, lh) = when {
                 cfg.smallestScreenWidthDp >= 600 && cfg.screenWidthDp >= 840 ->
-                    96.sp to 100.sp
+                    80.sp to 84.sp
                 cfg.smallestScreenWidthDp >= 600 ->
                     72.sp to 75.sp
                 else ->
