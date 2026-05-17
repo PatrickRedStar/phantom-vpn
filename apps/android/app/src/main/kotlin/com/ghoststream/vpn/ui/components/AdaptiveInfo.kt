@@ -46,3 +46,36 @@ fun rememberAdaptiveNavType(): NavigationSuiteType {
         }
     }
 }
+
+/**
+ * Per-screen branching for the v0.26.1 tablet layout pass.
+ *
+ * True when we have a real tablet/foldable AND current width ≥ 840 dp
+ * (Material Expanded class). On Tab S11 landscape, foldable unfolded
+ * landscape, ChromeOS large windows. Use to switch to 2-col layouts.
+ *
+ * Mirrors the breakpoint logic in [rememberAdaptiveNavType] — kept in
+ * sync deliberately so a screen knows it's getting an Expanded chrome
+ * (Drawer) when this returns true.
+ *
+ * Spec: docs/superpowers/specs/2026-05-16-tablet-layout-design.md §1.
+ */
+@Composable
+fun isTabletExpanded(): Boolean {
+    val cfg = LocalConfiguration.current
+    return cfg.smallestScreenWidthDp >= 600 && cfg.screenWidthDp >= 840
+}
+
+/**
+ * True when we have a real tablet/foldable in portrait — `sw ≥ 600` but
+ * current width < 840 dp. Used to apply max-content-width clamps so
+ * single-column content stays readable on a 9.7"+ portrait without
+ * stretching across the whole pane.
+ *
+ * Spec: docs/superpowers/specs/2026-05-16-tablet-layout-design.md §1.
+ */
+@Composable
+fun isTabletPortrait(): Boolean {
+    val cfg = LocalConfiguration.current
+    return cfg.smallestScreenWidthDp >= 600 && cfg.screenWidthDp < 840
+}

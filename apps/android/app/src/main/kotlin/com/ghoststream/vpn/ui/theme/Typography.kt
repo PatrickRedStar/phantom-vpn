@@ -1,6 +1,8 @@
 package com.ghoststream.vpn.ui.theme
 
 import androidx.compose.material3.Typography
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -47,13 +49,34 @@ object GsText {
         fontSize = 42.sp,
         letterSpacing = (-0.02).em,
     )
-    val stateHeadline = TextStyle(
-        fontFamily = SpaceGrotesk,
-        fontWeight = FontWeight.Bold,
-        fontSize = 54.sp,
-        lineHeight = 56.sp,
-        letterSpacing = (-0.035).em,
-    )
+    // v0.26.1: responsive по WindowSizeClass. Phone хороший, но на Tab S11
+    // 54sp выглядит карликом в huge headline pane — масштабируется по форм-
+    // фактору. lineHeight держим proportional (≈ 1.037× от fontSize, как в
+    // оригинале 54/56).
+    //   Compact (phone, sw < 600)              → 54sp / 56sp
+    //   Medium  (tablet portrait, sw ≥ 600,     → 72sp / 75sp
+    //            current width < 840)
+    //   Expanded (tablet landscape / unfolded,  → 96sp / 100sp
+    //            sw ≥ 600 ∧ width ≥ 840)
+    val stateHeadline: TextStyle
+        @Composable get() {
+            val cfg = LocalConfiguration.current
+            val (fs, lh) = when {
+                cfg.smallestScreenWidthDp >= 600 && cfg.screenWidthDp >= 840 ->
+                    96.sp to 100.sp
+                cfg.smallestScreenWidthDp >= 600 ->
+                    72.sp to 75.sp
+                else ->
+                    54.sp to 56.sp
+            }
+            return TextStyle(
+                fontFamily = SpaceGrotesk,
+                fontWeight = FontWeight.Bold,
+                fontSize = fs,
+                lineHeight = lh,
+                letterSpacing = (-0.035).em,
+            )
+        }
     val profileName = TextStyle(
         fontFamily = SpaceGrotesk,
         fontWeight = FontWeight.Bold,

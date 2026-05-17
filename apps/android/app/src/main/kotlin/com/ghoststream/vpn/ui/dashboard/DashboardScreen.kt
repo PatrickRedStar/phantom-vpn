@@ -18,12 +18,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +59,8 @@ import com.ghoststream.vpn.ui.components.HeaderMeta
 import com.ghoststream.vpn.ui.components.MuxBars
 import com.ghoststream.vpn.ui.components.ScopeChart
 import com.ghoststream.vpn.ui.components.ScreenHeader
+import com.ghoststream.vpn.ui.components.isTabletExpanded
+import com.ghoststream.vpn.ui.components.isTabletPortrait
 import com.ghoststream.vpn.ui.components.serifAccent
 import com.ghoststream.vpn.ui.theme.C
 import kotlinx.coroutines.delay
@@ -192,237 +198,231 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         else                     -> "Ожидание"
     }
 
-    Column(Modifier.fillMaxSize().background(C.bg)) {
-        ScreenHeader(
-            brand = stringResource(R.string.brand_stream),
-            meta = { HeaderMeta(headerMeta, pulse = metaPulse) },
-        )
+    // ── Per-screen layout branching (v0.26.1) ────────────────────────────
+    // All shared state is captured above (rxBuffer/txBuffer/lastRx/lastTx/
+    // accRx/accTx/scopeWindowSecs/barHeights). MainActivity declares
+    // `configChanges="orientation|screenSize|...|screenLayout"` so rotation
+    // does NOT recreate the Activity — Compose keeps `remember { ... }`
+    // state across rotation regardless of which branch renders.
+    val isExpanded = isTabletExpanded()
+    val isMediumP  = isTabletPortrait()
 
-        // Invisible TalkBack live region — announces only the state word,
-        // not the changing bytes/timer in HeaderMeta. Rendered at 1.dp /
-        // alpha 0 so Compose keeps it in the semantics tree without it
-        // appearing on screen. v0.25.1.
-        Text(
-            text = stateLabel,
-            modifier = Modifier
-                .size(1.dp)
-                .alpha(0f)
-                .semantics {
-                    liveRegion = LiveRegionMode.Polite
-                    contentDescription = stateLabel
+    // ── Section composables — captured lambdas read enclosing state ──────
+    // Defined inside DashboardScreen so they can pull profile/stats/
+    // viewModel/buffers without prop drilling. Each one is the building
+    // block reused across the three layouts.
+    val stateHeadlineSection: @Composable () -> Unit = {
+        Column(Modifier.padding(horizontal = 22.dp, vertical = 16.dp).padding(top = 12.dp)) {
+            Text(
+                text = stringResource(R.string.lbl_tunnel_state).uppercase(),
+                style = com.ghoststream.vpn.ui.theme.GsText.labelMono,
+                color = C.textFaint,
+            )
+            Spacer(Modifier.height(10.dp))
+            AnimatedContent(
+                targetState = vpnState,
+                transitionSpec = {
+                    (fadeIn() + slideInVertically { it / 3 }) togetherWith
+                        (fadeOut() + slideOutVertically { -it / 3 })
                 },
-        )
-
-        Column(
-            Modifier.weight(1f).fillMaxWidth(),
-        ) {
-            // State headline
-            Column(Modifier.padding(horizontal = 22.dp, vertical = 16.dp).padding(top = 12.dp)) {
-                Text(
-                    text = stringResource(R.string.lbl_tunnel_state).uppercase(),
-                    style = com.ghoststream.vpn.ui.theme.GsText.labelMono,
-                    color = C.textFaint,
-                )
-                Spacer(Modifier.height(10.dp))
-                AnimatedContent(
-                    targetState = vpnState,
-                    transitionSpec = {
-                        (fadeIn() + slideInVertically { it / 3 }) togetherWith
-                            (fadeOut() + slideOutVertically { -it / 3 })
-                    },
-                    label = "state_headline",
-                ) { state ->
-                    val (verb, tail) = when (state) {
-                        is VpnState.Connected     -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
-                        is VpnState.Stale         -> stringResource(R.string.state_stale_verb) to " ${state.idleRxSecs}s${stringResource(R.string.state_period)}"
-                        is VpnState.Throttled     -> stringResource(R.string.state_throttled_verb) to " ${state.currentKbps} kbps${stringResource(R.string.state_period)}"
-                        is VpnState.Reconnecting  -> stringResource(R.string.state_reconnecting_verb) to " ${state.attempt}/8${stringResource(R.string.state_ellipsis)}"
-                        is VpnState.Connecting    -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
-                        is VpnState.Error         -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
-                        is VpnState.Disconnecting -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
-                        else                      -> stringResource(R.string.state_standby_verb) to stringResource(R.string.state_period)
-                    }
-                    val accent = when (state) {
-                        is VpnState.Connected      -> C.signal
-                        is VpnState.Stale          -> C.warn
-                        is VpnState.Throttled      -> C.warn
-                        is VpnState.Reconnecting   -> C.danger
-                        is VpnState.Error          -> C.danger
-                        is VpnState.Connecting,
-                        is VpnState.Disconnecting  -> C.warn
-                        else                       -> C.textDim
-                    }
-                    Text(
-                        text = serifAccent(verb, tail, accent),
-                        style = com.ghoststream.vpn.ui.theme.GsText.stateHeadline,
-                        color = C.bone,
-                    )
+                label = "state_headline",
+            ) { state ->
+                val (verb, tail) = when (state) {
+                    is VpnState.Connected     -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
+                    is VpnState.Stale         -> stringResource(R.string.state_stale_verb) to " ${state.idleRxSecs}s${stringResource(R.string.state_period)}"
+                    is VpnState.Throttled     -> stringResource(R.string.state_throttled_verb) to " ${state.currentKbps} kbps${stringResource(R.string.state_period)}"
+                    is VpnState.Reconnecting  -> stringResource(R.string.state_reconnecting_verb) to " ${state.attempt}/8${stringResource(R.string.state_ellipsis)}"
+                    is VpnState.Connecting    -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
+                    is VpnState.Error         -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
+                    is VpnState.Disconnecting -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
+                    else                      -> stringResource(R.string.state_standby_verb) to stringResource(R.string.state_period)
                 }
+                val accent = when (state) {
+                    is VpnState.Connected      -> C.signal
+                    is VpnState.Stale          -> C.warn
+                    is VpnState.Throttled      -> C.warn
+                    is VpnState.Reconnecting   -> C.danger
+                    is VpnState.Error          -> C.danger
+                    is VpnState.Connecting,
+                    is VpnState.Disconnecting  -> C.warn
+                    else                       -> C.textDim
+                }
+                Text(
+                    text = serifAccent(verb, tail, accent),
+                    style = com.ghoststream.vpn.ui.theme.GsText.stateHeadline,
+                    color = C.bone,
+                )
             }
+        }
+    }
 
-            // Timer row
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 22.dp).padding(bottom = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom,
+    val timerRowSection: @Composable () -> Unit = {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 22.dp).padding(bottom = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Text(
+                // Timer keeps running across Connected/Stale/Throttled —
+                // the session is the same wall-clock event even if the
+                // wire went quiet. v0.24.0.
+                text = if (vpnState.isLive()) timerText else "--:--:--",
+                style = com.ghoststream.vpn.ui.theme.GsText.ticker,
+                color = when (vpnState) {
+                    is VpnState.Connected -> C.bone
+                    is VpnState.Stale,
+                    is VpnState.Throttled -> C.warn
+                    is VpnState.Reconnecting -> C.danger
+                    else -> C.textFaint
+                },
+            )
+            Text(
+                text = stringResource(R.string.lbl_session).uppercase(),
+                style = com.ghoststream.vpn.ui.theme.GsText.labelMonoSmall,
+                color = C.textFaint,
+            )
+        }
+    }
+
+    val emptyHintSection: @Composable () -> Unit = {
+        if (activeProfile == null && vpnState is VpnState.Disconnected) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 22.dp, vertical = 8.dp)
+                    .background(C.bgElev)
+                    .border(1.dp, C.hair)
+                    .padding(14.dp),
             ) {
                 Text(
-                    // Timer keeps running across Connected/Stale/Throttled —
-                    // the session is the same wall-clock event even if the
-                    // wire went quiet. v0.24.0.
-                    text = if (vpnState.isLive()) timerText else "--:--:--",
-                    style = com.ghoststream.vpn.ui.theme.GsText.ticker,
-                    color = when (vpnState) {
-                        is VpnState.Connected -> C.bone
-                        is VpnState.Stale,
-                        is VpnState.Throttled -> C.warn
-                        is VpnState.Reconnecting -> C.danger
-                        else -> C.textFaint
+                    text = stringResource(R.string.hint_add_profile),
+                    style = com.ghoststream.vpn.ui.theme.GsText.body,
+                    color = C.textDim,
+                )
+            }
+        }
+    }
+
+    val preflightSection: @Composable () -> Unit = {
+        if (preflightWarning != null) {
+            Box(
+                Modifier.fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 6.dp)
+                    .background(C.danger.copy(alpha = 0.1f))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    preflightWarning!!,
+                    style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
+                    color = C.danger,
+                )
+            }
+        }
+    }
+
+    val scopeCardSection: @Composable () -> Unit = {
+        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    LabelValueLegend("RX", formatMbps(rxBuffer.lastOrNull() ?: 0f), C.signal)
+                    LabelValueLegend("TX", formatMbps(txBuffer.lastOrNull() ?: 0f), C.warn)
+                }
+                Text(
+                    text = scopeLabel.uppercase(),
+                    style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
+                    color = C.textFaint,
+                    modifier = Modifier.clickable {
+                        scopeWindowSecs = when (scopeWindowSecs) {
+                            60 -> 300
+                            300 -> 1800
+                            1800 -> 3600
+                            3600 -> 60
+                            else -> 60
+                        }
+                        // Clear buffers when changing window
+                        rxBuffer.clear()
+                        txBuffer.clear()
                     },
                 )
+            }
+            Box(Modifier.height(1.dp).fillMaxWidth().background(C.hair))
+            ScopeChart(rxSamples = rxBuffer.toList(), txSamples = txBuffer.toList())
+        }
+    }
+
+    val muxCardSection: @Composable () -> Unit = {
+        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
                 Text(
-                    text = stringResource(R.string.lbl_session).uppercase(),
-                    style = com.ghoststream.vpn.ui.theme.GsText.labelMonoSmall,
-                    color = C.textFaint,
+                    stringResource(R.string.lbl_stream_multiplex).uppercase(),
+                    style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
+                    color = C.textDim,
+                )
+                Text(
+                    text = String.format(stringResource(R.string.lbl_streams_up), 8, 8),
+                    style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
+                    color = C.signal,
                 )
             }
-
-            // Empty state hint — nudge to Settings
-            if (activeProfile == null && vpnState is VpnState.Disconnected) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 22.dp, vertical = 8.dp)
-                        .background(C.bgElev)
-                        .border(1.dp, C.hair)
-                        .padding(14.dp),
-                ) {
-                    Text(
-                        text = stringResource(R.string.hint_add_profile),
-                        style = com.ghoststream.vpn.ui.theme.GsText.body,
-                        color = C.textDim,
-                    )
-                }
-            }
-
-            // Preflight warning
-            if (preflightWarning != null) {
-                Box(
-                    Modifier.fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 6.dp)
-                        .background(C.danger.copy(alpha = 0.1f))
-                        .padding(10.dp),
-                ) {
-                    Text(
-                        preflightWarning!!,
-                        style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
-                        color = C.danger,
-                    )
-                }
-            }
-
-            // Scope card
-            GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        LabelValueLegend("RX", formatMbps(rxBuffer.lastOrNull() ?: 0f), C.signal)
-                        LabelValueLegend("TX", formatMbps(txBuffer.lastOrNull() ?: 0f), C.warn)
-                    }
-                    Text(
-                        text = scopeLabel.uppercase(),
-                        style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
-                        color = C.textFaint,
-                        modifier = Modifier.clickable {
-                            scopeWindowSecs = when (scopeWindowSecs) {
-                                60 -> 300
-                                300 -> 1800
-                                1800 -> 3600
-                                3600 -> 60
-                                else -> 60
-                            }
-                            // Clear buffers when changing window
-                            rxBuffer.clear()
-                            txBuffer.clear()
-                        },
-                    )
-                }
-                Box(Modifier.height(1.dp).fillMaxWidth().background(C.hair))
-                ScopeChart(rxSamples = rxBuffer.toList(), txSamples = txBuffer.toList())
-            }
-
-            // Mux card
-            GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        stringResource(R.string.lbl_stream_multiplex).uppercase(),
-                        style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
-                        color = C.textDim,
-                    )
-                    Text(
-                        text = String.format(stringResource(R.string.lbl_streams_up), 8, 8),
-                        style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
-                        color = C.signal,
-                    )
-                }
-                Box(Modifier.height(1.dp).fillMaxWidth().background(C.hair))
-                MuxBars(heights = barHeights.toList())
-            }
-
-            // KV card
-            GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
-                Column(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-                    KvRow(
-                        stringResource(R.string.kv_identity),
-                        activeProfile?.name ?: "—",
-                        C.bone,
-                    )
-                    DashedHairline()
-                    val relayActive = activeProfile?.relayEnabled == true && !activeProfile?.relayAddr.isNullOrBlank()
-                    KvRow(
-                        stringResource(R.string.kv_route),
-                        if (relayActive)
-                            "${stringResource(R.string.kv_route_relay)} · ${activeProfile!!.relayAddr}"
-                        else
-                            stringResource(R.string.kv_route_direct),
-                        if (relayActive) C.signal else C.bone,
-                    )
-                    DashedHairline()
-                    KvRow(
-                        stringResource(R.string.kv_assigned),
-                        activeProfile?.tunAddr ?: "—",
-                        C.bone,
-                    )
-                    DashedHairline()
-                    val subColour = when {
-                        subscriptionText == null -> C.bone
-                        subscriptionText!!.contains("⚠") -> C.danger
-                        subscriptionText!!.contains("истек", true) -> C.danger
-                        subscriptionText!!.contains("expire", true) -> C.danger
-                        else -> C.signal
-                    }
-                    KvRow(
-                        stringResource(R.string.kv_subscription),
-                        subscriptionText ?: stringResource(R.string.kv_value_dash),
-                        subColour,
-                    )
-                }
-            }
-
-            Spacer(Modifier.weight(1f))
+            Box(Modifier.height(1.dp).fillMaxWidth().background(C.hair))
+            MuxBars(heights = barHeights.toList())
         }
+    }
 
-        // FAB bar — Stop button is available across *every* "VPN is up-ish"
-        // state so the user can bail out of a degraded session without
-        // toggling Airplane mode. v0.24.0: include Stale/Throttled/Reconnecting
-        // alongside the legacy Connected/Connecting/Disconnecting.
-        Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+    val kvCardSection: @Composable () -> Unit = {
+        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+                KvRow(
+                    stringResource(R.string.kv_identity),
+                    activeProfile?.name ?: "—",
+                    C.bone,
+                )
+                DashedHairline()
+                val relayActive = activeProfile?.relayEnabled == true && !activeProfile?.relayAddr.isNullOrBlank()
+                KvRow(
+                    stringResource(R.string.kv_route),
+                    if (relayActive)
+                        "${stringResource(R.string.kv_route_relay)} · ${activeProfile!!.relayAddr}"
+                    else
+                        stringResource(R.string.kv_route_direct),
+                    if (relayActive) C.signal else C.bone,
+                )
+                DashedHairline()
+                KvRow(
+                    stringResource(R.string.kv_assigned),
+                    activeProfile?.tunAddr ?: "—",
+                    C.bone,
+                )
+                DashedHairline()
+                val subColour = when {
+                    subscriptionText == null -> C.bone
+                    subscriptionText!!.contains("⚠") -> C.danger
+                    subscriptionText!!.contains("истек", true) -> C.danger
+                    subscriptionText!!.contains("expire", true) -> C.danger
+                    else -> C.signal
+                }
+                KvRow(
+                    stringResource(R.string.kv_subscription),
+                    subscriptionText ?: stringResource(R.string.kv_value_dash),
+                    subColour,
+                )
+            }
+        }
+    }
+
+    // FAB bar — Stop button is available across *every* "VPN is up-ish"
+    // state so the user can bail out of a degraded session without
+    // toggling Airplane mode. v0.24.0: include Stale/Throttled/Reconnecting
+    // alongside the legacy Connected/Connecting/Disconnecting.
+    val fabSection: @Composable (Modifier) -> Unit = { fabModifier ->
+        Box(fabModifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
             val isConnectedOrBusy = vpnState is VpnState.Connected ||
                 vpnState is VpnState.Stale ||
                 vpnState is VpnState.Throttled ||
@@ -448,8 +448,121 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 },
             )
         }
+    }
 
-        Spacer(Modifier.height(80.dp))
+    Column(Modifier.fillMaxSize().background(C.bg)) {
+        ScreenHeader(
+            brand = stringResource(R.string.brand_stream),
+            meta = { HeaderMeta(headerMeta, pulse = metaPulse) },
+        )
+
+        // Invisible TalkBack live region — announces only the state word,
+        // not the changing bytes/timer in HeaderMeta. Rendered at 1.dp /
+        // alpha 0 so Compose keeps it in the semantics tree without it
+        // appearing on screen. v0.25.1.
+        Text(
+            text = stateLabel,
+            modifier = Modifier
+                .size(1.dp)
+                .alpha(0f)
+                .semantics {
+                    liveRegion = LiveRegionMode.Polite
+                    contentDescription = stateLabel
+                },
+        )
+
+        when {
+            // ── Expanded: tablet landscape / unfolded foldable ───────────
+            // 2-col hero: left = STATE + SESSION + CONNECT pinned bottom.
+            // right = SCOPE / MUX / KV stacked, independently scrollable.
+            // Bottom-nav is replaced by NavigationDrawer at this width, so
+            // no 80 dp tail padding is needed.
+            isExpanded -> {
+                Row(Modifier.weight(1f).fillMaxWidth()) {
+                    // Left pane 42% — hero copy + CONNECT
+                    Column(
+                        modifier = Modifier
+                            .weight(0.42f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        stateHeadlineSection()
+                        timerRowSection()
+                        emptyHintSection()
+                        preflightSection()
+                        Spacer(Modifier.weight(1f))
+                        fabSection(Modifier)
+                    }
+                    // Vertical divider between panes
+                    Box(
+                        Modifier
+                            .width(1.dp)
+                            .fillMaxHeight()
+                            .background(C.hair),
+                    )
+                    // Right pane 58% — telemetry cards
+                    Column(
+                        modifier = Modifier
+                            .weight(0.58f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState())
+                            .padding(top = 16.dp),
+                    ) {
+                        scopeCardSection()
+                        muxCardSection()
+                        kvCardSection()
+                        Spacer(Modifier.height(16.dp))
+                    }
+                }
+            }
+
+            // ── Medium portrait: tablet portrait (sw ≥ 600, w < 840) ─────
+            // Single column, but max-content-width clamp 720 dp so 10"
+            // portrait doesn't stretch lines to absurd lengths.
+            isMediumP -> {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .widthIn(max = 720.dp)
+                            .align(Alignment.TopCenter)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        stateHeadlineSection()
+                        timerRowSection()
+                        emptyHintSection()
+                        preflightSection()
+                        scopeCardSection()
+                        muxCardSection()
+                        kvCardSection()
+                        Spacer(Modifier.height(12.dp))
+                        fabSection(Modifier)
+                        // Bottom-nav is a NavigationRail on medium portrait
+                        // (see rememberAdaptiveNavType), so no 80 dp tail
+                        // padding needed.
+                        Spacer(Modifier.height(16.dp))
+                    }
+                }
+            }
+
+            // ── Compact: phone, any orientation ──────────────────────────
+            // Original layout — preserved verbatim including the 80 dp
+            // tail spacer for the floating bottom NavigationBar.
+            else -> {
+                Column(Modifier.weight(1f).fillMaxWidth()) {
+                    stateHeadlineSection()
+                    timerRowSection()
+                    emptyHintSection()
+                    preflightSection()
+                    scopeCardSection()
+                    muxCardSection()
+                    kvCardSection()
+                    Spacer(Modifier.weight(1f))
+                }
+                fabSection(Modifier)
+                Spacer(Modifier.height(80.dp))
+            }
+        }
     }
 }
 
