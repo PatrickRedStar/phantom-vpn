@@ -85,7 +85,10 @@ impl Tray {
     /// Update tray icon + tooltip to reflect the current state. Called
     /// from the UI thread whenever ConnState changes.
     pub fn set_state(&self, new_state: TrayState, tooltip: &str) {
-        let mut current = self.state.lock().expect("tray state poisoned");
+        let mut current = self.state.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!(category = "tray", "recovered from poisoned mutex");
+            poisoned.into_inner()
+        });
         if *current == new_state {
             return;
         }
