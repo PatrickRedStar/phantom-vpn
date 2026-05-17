@@ -1119,6 +1119,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 if profile.keyPem?.isEmpty != false {
                     profile.keyPem = Keychain.get("profile.\(profile.id).key")
                 }
+                // INVARIANT (do NOT remove without reading
+                // docs/knowledge/incidents/2026-05-17-cert-pem-keychain-regression.md):
+                // On macOS the system extension runs as root and has no access
+                // to the user's Data Protection Keychain. Until host XPC bridge
+                // is in place, cert/key MUST be present in providerConfiguration
+                // (no sanitization in VpnTunnelController.installOnly). If we
+                // got here with cert nil, the host either sanitized them out or
+                // never persisted them — surface this explicitly so the user
+                // sees something actionable instead of silent BridgeError.encoding.
+                if profile.certPem?.isEmpty != false || profile.keyPem?.isEmpty != false {
+                    log.error("cert/key missing from providerConfiguration AND Keychain (profile id=\(profile.id, privacy: .public)) — re-import ghs:// URL via Settings; see incidents/2026-05-17-cert-pem-keychain-regression.md")
+                    throw ProviderError.decodeFailed("VPN credentials missing — re-import the ghs:// URL in Settings → Profiles")
+                }
                 log.info("loaded embedded provider profile id=\(profile.id, privacy: .public)")
                 return profile
             } catch {

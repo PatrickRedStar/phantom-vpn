@@ -64,6 +64,7 @@ gstack CLI (обязателен): [docs/knowledge/tools/gstack.md](docs/knowled
 4. **Сборка / деплой / релиз** → [docs/knowledge/build.md](docs/knowledge/build.md).
 5. **Ошибка / странное поведение** → [docs/knowledge/troubleshooting.md](docs/knowledge/troubleshooting.md).
 6. **Крупная задача (>5 файлов, ≥3 зон)** → [docs/knowledge/workflow.md](docs/knowledge/workflow.md) — мульти-агентный workflow.
+7. **macOS правка cross-process boundary** (PacketTunnelProvider / VpnTunnelController / Keychain / PhantomBridge / client-apple / entitlements) → после fix ОБЯЗАТЕЛЬНО прогнать `apps/macos/scripts/smoke-test.sh` ДО следующего audit/round. Static checks lie на macOS sandbox + system extension boundary — единственный надёжный gate это real Connect. Постмортем: [incidents/2026-05-17-cert-pem-keychain-regression.md](docs/knowledge/incidents/2026-05-17-cert-pem-keychain-regression.md). ADR: [0009-cert-pem-providerConfiguration.md](docs/knowledge/decisions/0009-cert-pem-providerConfiguration.md).
 
 ## По окончании работы (обязательно)
 

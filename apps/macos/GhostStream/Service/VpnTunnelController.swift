@@ -137,14 +137,32 @@ public final class VpnTunnelController: ObservableObject {
         let profileData: Data
         let settingsData: Data
         do {
-            // Round 6 HOTFIX: revert SEC-C2 sanitization. System extension runs
-            // as root and does NOT have access to the user's Data Protection
-            // Keychain where ProfilesStore writes cert/key. Hydration through
-            // Keychain.get() returns nil → BridgeError.encoding → instant
-            // cancel. Until shared keychain access works for system extensions,
-            // ship the PEM material through providerConfiguration as we did
-            // before. SEC-C2 trade-off documented in audit; readable by
-            // sudo'd processes is preferable to a tunnel that never starts.
+            // ━━━ INVARIANT — DO NOT SANITIZE certPem/keyPem ON macOS ━━━
+            //
+            // The macOS system extension runs as ROOT and does NOT have access
+            // to the user's Data Protection Keychain where `ProfilesStore.save`
+            // writes the PEM secrets. If we sanitize them out here, the
+            // extension's `Keychain.get("profile.<id>.cert")` returns nil →
+            // `ConnStringBuilder.build` returns nil → `BridgeError.encoding`
+            // is thrown immediately after `tun_addr` is registered, the
+            // tunnel cancels in ~5ms with no diagnostic in the UI logs.
+            //
+            // This took 5 rounds of audit→fix cycles to detect because the
+            // bug only surfaces at RUNTIME — static analysis kept "patching"
+            // the wrong invariant. See:
+            //   docs/knowledge/incidents/2026-05-17-cert-pem-keychain-regression.md
+            //   docs/knowledge/decisions/0009-cert-pem-providerConfiguration.md
+            //
+            // Trade-off: NEManager persists `providerConfiguration` in
+            // `/Library/Preferences/com.apple.networkextension*.plist` which is
+            // readable by `sudo`-privileged processes. A future fix (host XPC
+            // bridge to forward PEM into extension on demand, or unprivileged
+            // extension model) can revisit this; until then a working tunnel
+            // beats a "secure" tunnel that never establishes.
+            //
+            // If you must change this — first add a runtime smoke test
+            // (`apps/macos/scripts/smoke-test.sh`) that verifies an end-to-end
+            // Connect succeeds AFTER your change. Static checks lie here.
             profileData = try JSONEncoder().encode(providerProfile)
             let settings = TunnelSettings(
                 dnsLeakProtection: dnsLeakProtection,
