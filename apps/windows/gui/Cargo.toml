@@ -2,7 +2,8 @@
 name = "ghoststream-windows"
 version = "0.1.0"
 edition = "2021"
-description = "GhostStream Windows desktop client (Slint UI, Phase 1 skeleton)"
+description = "GhostStream Windows desktop client (Slint UI)"
+build = "build.rs"
 
 [[bin]]
 name = "ghoststream-windows"
@@ -14,4 +15,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 client-windows-core = { path = "../../../crates/client-windows-core" }
+client-core-runtime = { path = "../../../crates/client-core-runtime" }
 ghoststream-gui-ipc = { path = "../../../crates/gui-ipc" }
+
+[build-dependencies]
+embed-resource = "2.5"

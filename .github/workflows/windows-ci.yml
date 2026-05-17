@@ -1,0 +1,67 @@
+name: Windows CI
+
+on:
+  push:
+    branches:
+      - master
+      - feature/windows-client
+  pull_request:
+    paths:
+      - 'apps/windows/**'
+      - 'crates/client-windows-core/**'
+      - 'crates/client-core-runtime/**'
+      - 'crates/client-common/**'
+      - 'crates/core/**'
+      - 'crates/gui-ipc/**'
+      - '.github/workflows/windows-ci.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+
+env:
+  CARGO_TERM_COLOR: always
+  WINTUN_VERSION: "0.14.1"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Headless tests (cross-platform)
+        run: cargo test -p client-windows-core --no-fail-fast
+
+      - name: Build release binary
+        run: cargo build --release -p ghoststream-windows
+
+      - name: Download wintun.dll
+        shell: pwsh
+        run: |
+          $url = "https://www.wintun.net/builds/wintun-$env:WINTUN_VERSION.zip"
+          Invoke-WebRequest -Uri $url -OutFile wintun.zip
+          Expand-Archive wintun.zip -DestinationPath wintun-extracted
+          Copy-Item wintun-extracted/wintun/bin/amd64/wintun.dll -Destination wintun.dll
+
+      - name: Assemble distributable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/ghoststream-windows.exe -Destination dist/ghoststream.exe
+          Copy-Item wintun.dll -Destination dist/wintun.dll
+          Compress-Archive -Path dist/* -DestinationPath GhostStream-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GhostStream-Windows
+          path: GhostStream-Windows.zip
+          if-no-files-found: error
+          retention-days: 30
