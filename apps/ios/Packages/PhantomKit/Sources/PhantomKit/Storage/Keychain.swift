@@ -3,6 +3,7 @@
 
 import Foundation
 import Security
+import os.log
 
 /// Namespace for Keychain helpers used by `ProfilesStore` to persist PEM
 /// secrets in the shared access group.
@@ -10,10 +11,17 @@ import Security
 /// The Xcode project must declare the matching keychain access group on both
 /// targets. The signed entitlement includes the Team ID prefix, so we resolve
 /// the concrete access group from the running binary instead of hardcoding it.
+///
+/// SEC-C2: there is **no** fallback to the default user keychain. If the
+/// access-group entitlement is missing we refuse to operate, rather than
+/// leaking VPN secrets into a world-readable login keychain. The audit
+/// (`docs/knowledge/audits/2026-05-17-macos-bug-hunt.md` §SEC-C2) traces the
+/// data-loss / privacy implications of the previous behaviour.
 public enum Keychain {
     /// App Group id used as keychain access group (must match entitlements).
     public static let appGroupIdentifier = "group.com.ghoststream.client"
     private static let appIdentifierPrefix = "UPG896A272."
+    private static let log = Logger(subsystem: "com.ghoststream.client", category: "Keychain")
 
     public static var accessGroup: String {
         resolvedAccessGroup()
@@ -28,6 +36,9 @@ public enum Keychain {
         case unhandled(OSStatus)
         case notFound
         case encoding
+        /// Access-group entitlement is missing. Raised instead of silently
+        /// falling back to the default keychain (SEC-C2).
+        case missingAccessGroup
     }
 
     private static func applyPlatformOptions(_ query: inout [String: Any]) {
@@ -62,6 +73,8 @@ public enum Keychain {
     /// surprises).
     ///
     /// - Throws: `KeychainError.encoding` if `value` isn't UTF-8 encodable,
+    ///   `KeychainError.missingAccessGroup` if the binary is missing its
+    ///   access-group entitlement (no fallback — fail closed), or
     ///   `KeychainError.unhandled` on any unexpected SecItem status.
     public static func set(_ value: String, forKey key: String) throws {
         guard let data = value.data(using: .utf8) else {
@@ -81,10 +94,12 @@ public enum Keychain {
         ]
         applyPlatformOptions(&addQuery)
 
-        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
         if status == errSecMissingEntitlement {
-            addQuery.removeValue(forKey: kSecAttrAccessGroup as String)
-            status = SecItemAdd(addQuery as CFDictionary, nil)
+            log.fault(
+                "Keychain access-group entitlement missing — refusing to fall back to default keychain (SEC-C2). Item not stored."
+            )
+            throw KeychainError.missingAccessGroup
         }
         guard status == errSecSuccess else {
             throw KeychainError.unhandled(status)
@@ -92,15 +107,12 @@ public enum Keychain {
     }
 
     /// Returns the string stored under `key`, or nil if missing or unreadable.
-    /// Silently falls back to a non-access-group lookup if the entitlement
-    /// is missing.
+    ///
+    /// SEC-C2: when the access-group entitlement is missing we **do not**
+    /// fall back to the default keychain — we log a fault and return nil.
+    /// Any previously-leaked secret in the default keychain stays orphaned;
+    /// the caller treats this as "no secret" and can re-import.
     public static func get(_ key: String) -> String? {
-        func copy(query: [String: Any]) -> (OSStatus, CFTypeRef?) {
-            var item: CFTypeRef?
-            let status = SecItemCopyMatching(query as CFDictionary, &item)
-            return (status, item)
-        }
-
         let accessGroup = resolvedAccessGroup()
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -112,10 +124,14 @@ public enum Keychain {
         ]
         applyPlatformOptions(&query)
 
-        var (status, item) = copy(query: query)
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+
         if status == errSecMissingEntitlement {
-            query.removeValue(forKey: kSecAttrAccessGroup as String)
-            (status, item) = copy(query: query)
+            log.fault(
+                "Keychain access-group entitlement missing — refusing to read from default keychain (SEC-C2)."
+            )
+            return nil
         }
 
         guard status == errSecSuccess, let data = item as? Data else {
@@ -125,6 +141,11 @@ public enum Keychain {
     }
 
     /// Deletes the item under `key`. `errSecItemNotFound` is swallowed.
+    ///
+    /// SEC-C2: deletes only target the access-group scope. We will not
+    /// attempt to clean up items that may have leaked into the default
+    /// keychain in a broken build — that's a one-shot manual recovery the
+    /// user has to perform via Keychain Access.
     public static func delete(_ key: String) throws {
         let accessGroup = resolvedAccessGroup()
         var query: [String: Any] = [
@@ -134,10 +155,12 @@ public enum Keychain {
             kSecAttrAccessGroup as String: accessGroup,
         ]
         applyPlatformOptions(&query)
-        var status = SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
         if status == errSecMissingEntitlement {
-            query.removeValue(forKey: kSecAttrAccessGroup as String)
-            status = SecItemDelete(query as CFDictionary)
+            log.fault(
+                "Keychain access-group entitlement missing — cannot delete \(key, privacy: .public) (SEC-C2)."
+            )
+            throw KeychainError.missingAccessGroup
         }
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unhandled(status)

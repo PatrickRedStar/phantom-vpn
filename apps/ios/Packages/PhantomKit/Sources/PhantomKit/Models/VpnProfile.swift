@@ -76,6 +76,43 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         self.connString = connString
     }
 
+    // CodingKeys must be enumerated so the explicit `init(from:)` below can
+    // address each field individually. Mirrors the synthesised keys verbatim.
+    enum CodingKeys: String, CodingKey {
+        case id, name, serverAddr, serverName, insecure
+        case certPem, keyPem
+        case tunAddr, dnsServers, splitRouting, directCountries
+        case perAppMode, perAppList
+        case cachedExpiresAt, cachedEnabled, cachedIsAdmin, cachedAdminServerCertFp
+        case connString
+    }
+
+    /// Forgiving decoder: every non-Optional field falls back to the
+    /// matching `init(…)` default when absent. Lets us add fields in Rust
+    /// (or upstream Android) without silently breaking decoded profiles
+    /// from older app installs.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Подключение"
+        self.serverAddr = try c.decodeIfPresent(String.self, forKey: .serverAddr) ?? ""
+        self.serverName = try c.decodeIfPresent(String.self, forKey: .serverName) ?? ""
+        self.insecure = try c.decodeIfPresent(Bool.self, forKey: .insecure) ?? false
+        self.certPem = try c.decodeIfPresent(String.self, forKey: .certPem)
+        self.keyPem = try c.decodeIfPresent(String.self, forKey: .keyPem)
+        self.tunAddr = try c.decodeIfPresent(String.self, forKey: .tunAddr) ?? "10.7.0.2/24"
+        self.dnsServers = try c.decodeIfPresent([String].self, forKey: .dnsServers)
+        self.splitRouting = try c.decodeIfPresent(Bool.self, forKey: .splitRouting)
+        self.directCountries = try c.decodeIfPresent([String].self, forKey: .directCountries)
+        self.perAppMode = try c.decodeIfPresent(String.self, forKey: .perAppMode)
+        self.perAppList = try c.decodeIfPresent([String].self, forKey: .perAppList)
+        self.cachedExpiresAt = try c.decodeIfPresent(Int64.self, forKey: .cachedExpiresAt)
+        self.cachedEnabled = try c.decodeIfPresent(Bool.self, forKey: .cachedEnabled)
+        self.cachedIsAdmin = try c.decodeIfPresent(Bool.self, forKey: .cachedIsAdmin)
+        self.cachedAdminServerCertFp = try c.decodeIfPresent(String.self, forKey: .cachedAdminServerCertFp)
+        self.connString = try c.decodeIfPresent(String.self, forKey: .connString)
+    }
+
     /// Returns a copy with PEM secrets stripped — for persistence to
     /// UserDefaults while PEMs live in the Keychain.
     public var sanitizedForUserDefaults: VpnProfile {

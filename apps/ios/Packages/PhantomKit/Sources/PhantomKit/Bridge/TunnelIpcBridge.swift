@@ -24,6 +24,11 @@ public final class TunnelIpcBridge {
     public enum Response: Codable {
         case status(StatusFrame)
         case logs([LogFrame])
+        // TODO(IPC-H5): provider currently answers `.getCurrentProfile` with
+        //   `.ok` instead of `.profile(...)`. Owned by Implementer A — see
+        //   `apps/macos/PacketTunnelExtension/PacketTunnelProvider.swift:394`.
+        //   Leave the case in place so host parsers stay forward-compatible
+        //   once the provider is fixed.
         case profile(VpnProfile?)
         case ok
         case error(String)

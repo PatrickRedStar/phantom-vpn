@@ -19,6 +19,7 @@
 		39C9936B348FE813522099E2 /* OnboardingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A380C0C517545C4A72D369B /* OnboardingCoordinator.swift */; };
 		3A6B9CAA10CA7EAE2028B3A8 /* PasteGhsField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 750B9134D64C078874D2F5CA /* PasteGhsField.swift */; };
 		3D8504537781E58EF705919E /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 206B1279E7E37C0862FEC03F /* main.swift */; };
+		402B5A68469B69DD852C660E /* LegacyMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEF6CE9DB53F62594C06F184 /* LegacyMigration.swift */; };
 		423A69B5839190D55AD04276 /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
 		44882E92C4B6B7088F24E6BE /* PhantomKit in Frameworks */ = {isa = PBXBuildFile; productRef = 192F28EAB815474C93A38DAF /* PhantomKit */; };
 		449C6816999C68805F28407E /* TrafficSeriesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */; };
@@ -106,6 +107,7 @@
 		9B89D6EDEA25F404BBC533F4 /* TailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailView.swift; sourceTree = "<group>"; };
 		A1BF7582D129D427A55BF228 /* LoginItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemController.swift; sourceTree = "<group>"; };
 		AE6742D4E48EC28BBC72622E /* SystemExtensions.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemExtensions.framework; path = System/Library/Frameworks/SystemExtensions.framework; sourceTree = SDKROOT; };
+		AEF6CE9DB53F62594C06F184 /* LegacyMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacyMigration.swift; sourceTree = "<group>"; };
 		B50B75A842C64C2669ADB7F5 /* ServerRosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerRosterView.swift; sourceTree = "<group>"; };
 		B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = PacketTunnelExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 		B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopover.swift; sourceTree = "<group>"; };
@@ -194,6 +196,7 @@
 			isa = PBXGroup;
 			children = (
 				E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */,
+				AEF6CE9DB53F62594C06F184 /* LegacyMigration.swift */,
 				A1BF7582D129D427A55BF228 /* LoginItemController.swift */,
 				C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */,
 				4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */,
@@ -469,6 +472,7 @@
 				79C9C49C81ACB0CFF7C6CF63 /* FontRegistration.swift in Sources */,
 				856469DBCB4079F628A8EA90 /* GhostStreamApp.swift in Sources */,
 				1D4AE3DFB7E2576885B5D556 /* KeyboardShortcutHint.swift in Sources */,
+				402B5A68469B69DD852C660E /* LegacyMigration.swift in Sources */,
 				53CB2B107A76ABC8F70FC547 /* LoginItemController.swift in Sources */,
 				A8F99F92967F66EB987F52FD /* MainConsoleWindow.swift in Sources */,
 				CD7E358B0D6284D85507B910 /* MenuBarPopover.swift in Sources */,

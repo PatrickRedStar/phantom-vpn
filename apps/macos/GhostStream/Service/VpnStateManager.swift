@@ -44,6 +44,13 @@ public final class VpnStateManager {
 
     private var cachedManager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
+    /// Identity of the NETunnelProviderManager the current `statusObserver`
+    /// is attached to. When a new manager arrives (e.g. after profile
+    /// rotation) we tear the old observer down and rewire to the new
+    /// `manager.connection` so `NEVPNStatusDidChange` keeps firing.
+    /// Without this, the observer sits silently on a stale manager and the
+    /// host shows last-seen status forever (CONC-H3).
+    private var observedManagerId: ObjectIdentifier?
     private var safetyNetTask: Task<Void, Never>?
 
     private var containerURL: URL? {
@@ -57,6 +64,15 @@ public final class VpnStateManager {
     }
 
     private init() {
+        // IPC-C4: legacy v0.23 → v0.24 migration runs **before** we touch
+        // the new App Group container. This is intentionally the first
+        // host-side I/O of the process. AppDelegate would be the textbook
+        // call site, but it is owned by Implementer D; running here keeps
+        // the migration close to the first store that reads the new App
+        // Group. TODO: relocate to `AppDelegate.applicationDidFinishLaunching`
+        // when the host-app start-up sequence is consolidated.
+        LegacyMigration.runIfNeeded()
+
         // App Group access can fail when entitlements/codesign are broken;
         // crashing here meant the whole host UI never came up. Fall back to
         // standard UserDefaults so the rest of the app boots — the snapshot
@@ -105,12 +121,30 @@ public final class VpnStateManager {
             let managers = try await NETunnelProviderManager.loadAllFromPreferences()
             let manager = selectGhostStreamManager(from: managers)
             cachedManager = manager
-            if statusObserver == nil, let manager {
-                installStatusObserver(for: manager)
-            }
+            rewireStatusObserver(to: manager)
             return manager
         } catch {
             return cachedManager
+        }
+    }
+
+    /// CONC-H3: rebinds `NEVPNStatusDidChange` to the freshly-cached
+    /// manager whenever the selected manager identity changes (profile
+    /// rotation, fresh install, manual reconfigure). Without this the
+    /// observer keeps pointing at the old manager and the status frame
+    /// freezes from the host's perspective.
+    private func rewireStatusObserver(to manager: NETunnelProviderManager?) {
+        let newId = manager.map(ObjectIdentifier.init)
+        if newId == observedManagerId, statusObserver != nil {
+            return
+        }
+        if let existing = statusObserver {
+            NotificationCenter.default.removeObserver(existing)
+            statusObserver = nil
+        }
+        observedManagerId = newId
+        if let manager {
+            installStatusObserver(for: manager)
         }
     }
 

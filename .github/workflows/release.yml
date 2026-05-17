@@ -341,8 +341,8 @@ jobs:
             echo "Installed provisioning profile $name: $profile_name ($uuid)"
           }
 
-          install_profile "$MACOS_APP_PROVISIONING_PROFILE_BASE64" app com.ghoststream.vpn GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER
-          install_profile "$MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64" tunnel com.ghoststream.vpn.tunnel GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER
+          install_profile "$MACOS_APP_PROVISIONING_PROFILE_BASE64" app com.ghoststream.client GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER
+          install_profile "$MACOS_TUNNEL_PROVISIONING_PROFILE_BASE64" tunnel com.ghoststream.client.tunnel GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER
 
       - name: Prepare App Store Connect API key
         env:
