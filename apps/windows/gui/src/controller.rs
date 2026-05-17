@@ -114,25 +114,51 @@ async fn start_real_tunnel(
     tokio::task::JoinHandle<Result<()>>,
     client_windows_core::RouteScope,
 )> {
+    use client_common::helpers::parse_conn_string;
     use client_core_runtime::TunIo;
     use client_windows_core::{WintunBackend, WintunConfig};
-    use std::net::Ipv4Addr;
 
     // Resolve wintun.dll path next to the .exe.
     let dll_path = crate::wintun_loader::locate_wintun_dll()
         .context("locate wintun.dll")?;
 
-    // For Phase 4 MVP we hard-code the tunnel-side IP / netmask / MTU
-    // (10.7.0.2/30, MTU 1350) — these are the GhostStream defaults shared
-    // with every other client. Future work: derive from the server
-    // response or expose them in the profile editor (Phase 4.5+).
+    // ── Parse conn_string (P0-2 / P1-6 / P1-7) ────────────────────────
+    //
+    // Pull tunnel-side IP, netmask, MTU and the server address out of
+    // the user's profile rather than hardcoding `10.7.0.2/30`. If parse
+    // fails Connect surfaces a clear error to the UI instead of bringing
+    // the tunnel up with a wrong address.
+    let parsed = parse_conn_string(&profile.conn_string)
+        .with_context(|| format!("parse conn_string for profile {}", profile.name))?;
+
+    // tun_addr is CIDR form `10.7.0.2/24` (or `/30`). Split into address
+    // and prefix length; convert the prefix to a Wintun netmask.
+    let tun_cidr = parsed
+        .network
+        .tun_addr
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("conn_string missing tun=<cidr>"))?;
+    let (tun_address, tun_netmask) = parse_cidr_v4(tun_cidr)
+        .with_context(|| format!("parse tun CIDR {}", tun_cidr))?;
+
+    // MTU: explicit value from conn_string if present, else GhostStream
+    // default (1350). cfg.network.tun_mtu is u32; Wintun expects u16.
+    let tun_mtu: u16 = parsed
+        .network
+        .tun_mtu
+        .map(|m| m.min(u16::MAX as u32) as u16)
+        .unwrap_or(1350);
+
+    // Server IP for the routing exclude — DNS-resolve if it's a hostname.
+    let server_ip = resolve_server_ipv4(&parsed.network.server_addr).await?;
+
     let cfg = WintunConfig {
         adapter_name: "GhostStream".into(),
         tunnel_type: "GhostStream Tunnel".into(),
         dll_path,
-        address: Ipv4Addr::new(10, 7, 0, 2),
-        netmask: Ipv4Addr::new(255, 255, 255, 252),
-        mtu: 1350,
+        address: tun_address,
+        netmask: tun_netmask,
+        mtu: tun_mtu,
         dns_servers: vec![],
     };
     let backend = WintunBackend::new(&cfg).context("create wintun backend")?;
@@ -144,8 +170,8 @@ async fn start_real_tunnel(
     //      own default — otherwise our `0.0.0.0/1 → Wintun` would
     //      shadow the lookup.
     //   2. Add the `/32` host route to the VPN server via the physical
-    //      gateway, so the TLS handshake reaches `vdsina` instead of
-    //      recursing into the tunnel (P0-2).
+    //      gateway, so the TLS handshake reaches the configured exit
+    //      instead of recursing into the tunnel (P0-2).
     //   3. Install the split default route via Wintun (P0-1).
     //   4. Pin the Wintun adapter metric to 1 (P1-5).
     //   5. Route IPv6 into Wintun (P1-1).
@@ -157,11 +183,6 @@ async fn start_real_tunnel(
         .context("get wintun adapter index")?;
     let gw = client_windows_core::discover_default_gateway()
         .context("discover default gateway")?;
-    // TODO(Task 5): parse the server IP out of `profile.conn_string`
-    // (`helpers::parse_conn_string` returns a `network.server_addr` we
-    // can DNS-resolve). For Task 1 we hard-code `vdsina` so we have
-    // something to route around for end-to-end testing.
-    let server_ip = Ipv4Addr::new(89, 110, 109, 128);
 
     let mut routes = client_windows_core::RouteScope::new();
     routes
@@ -188,6 +209,74 @@ async fn start_real_tunnel(
     .context("client-core-runtime::run")?;
 
     Ok((handles.cancel, join, routes))
+}
+
+/// Parse a CIDR-form IPv4 address like `"10.7.0.2/30"` into the address
+/// and the corresponding netmask. Wintun's `set_address` / `set_netmask`
+/// API takes them separately, so we have to split the CIDR ourselves.
+///
+/// Accepts prefix lengths 0..=32. Returns the all-zeros netmask for /0
+/// and `255.255.255.255` for /32.
+#[cfg(windows)]
+fn parse_cidr_v4(cidr: &str) -> Result<(std::net::Ipv4Addr, std::net::Ipv4Addr)> {
+    use std::net::Ipv4Addr;
+    let (ip_str, prefix_str) = cidr
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("expected `<ip>/<prefix>`, got {:?}", cidr))?;
+    let addr: Ipv4Addr = ip_str
+        .parse()
+        .with_context(|| format!("parse IPv4 {:?}", ip_str))?;
+    let prefix: u8 = prefix_str
+        .parse()
+        .with_context(|| format!("parse prefix length {:?}", prefix_str))?;
+    if prefix > 32 {
+        anyhow::bail!("invalid IPv4 prefix length {} (must be 0..=32)", prefix);
+    }
+    // Build mask: high `prefix` bits set, low (32-prefix) bits clear.
+    // Special-case /0 because a left-shift by 32 is UB on u32.
+    let mask_u32: u32 = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    Ok((addr, Ipv4Addr::from(mask_u32)))
+}
+
+/// Parse the `server_addr` field of the parsed conn_string (could be
+/// `"<ipv4>:port"`, `"[<ipv6>]:port"` or `"<hostname>:port"`) and extract
+/// an IPv4 address suitable for installing a Windows host-route exclude.
+///
+/// Hostnames are DNS-resolved via `tokio::net::lookup_host`; we pick the
+/// first IPv4 result. IPv6-only resolutions error out for now — the
+/// Windows routing code only supports IPv4 host excludes today.
+#[cfg(windows)]
+async fn resolve_server_ipv4(server_addr: &str) -> Result<std::net::Ipv4Addr> {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use tokio::net::lookup_host;
+
+    // Fast path: literal `ip:port` parses straight into a SocketAddr.
+    if let Ok(sa) = server_addr.parse::<SocketAddr>() {
+        return match sa.ip() {
+            IpAddr::V4(v4) => Ok(v4),
+            IpAddr::V6(_) => Err(anyhow::anyhow!(
+                "IPv6 server addresses are not yet supported for Windows routing exclude (got {})",
+                server_addr
+            )),
+        };
+    }
+
+    // Otherwise treat as hostname:port and resolve. lookup_host returns
+    // an iterator of SocketAddr; pick the first IPv4 entry.
+    let iter = lookup_host(server_addr)
+        .await
+        .with_context(|| format!("DNS lookup for {}", server_addr))?;
+
+    let v4: Option<Ipv4Addr> = iter.into_iter().find_map(|sa| match sa.ip() {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(_) => None,
+    });
+
+    v4.ok_or_else(|| anyhow::anyhow!("no IPv4 address found for {}", server_addr))
 }
 
 // ── Non-Windows: simulated tunnel for the dev loop ────────────────────────

@@ -243,8 +243,12 @@ fn load_profile_or_default() -> ConnectProfile {
 }
 
 fn demo_profile() -> ConnectProfile {
+    // Placeholder profile shipped with first-run installs. The
+    // `conn_string` deliberately fails to parse so Connect surfaces a
+    // clear "edit profile.json" error rather than silently bringing up
+    // a tunnel to a fake server (P1-9).
     ConnectProfile {
-        name: "vdsina · NL exit".into(),
+        name: "vdsina · NL exit (placeholder — edit profile.json)".into(),
         conn_string: "ghs://example/replace-with-real-conn-string".into(),
         settings: TunnelSettings::default(),
     }
