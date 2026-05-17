@@ -16,7 +16,7 @@ use std::time::Duration;
 use ghoststream_gui_ipc::{ConnState, LogFrame, StatusFrame};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
 
-use crate::{LogLine, MainWindow};
+use crate::{LogLine, MainWindow, StreamBar};
 
 /// Maximum number of log lines kept in the UI buffer. Beyond this we drop
 /// the oldest to prevent unbounded memory growth on a long-running
@@ -73,6 +73,23 @@ pub fn apply_status_to_ui(weak: Weak<MainWindow>, status: StatusFrame) {
         w.set_last_error(SharedString::from(
             status.last_error.as_deref().unwrap_or(""),
         ));
+
+        // Per-stream activity model. `status.n_streams` says how many H2
+        // streams the runtime spun up (1..=16, typically 4 for
+        // GhostStream). The `stream_activity` array is fixed-size
+        // [f32; 16] — entries past `n_streams` are 0. `streams_up` is the
+        // count actually carrying data; we mark the first `up` entries
+        // as alive and the rest as dead so the UI can dim them.
+        let n = (status.n_streams as usize).min(16);
+        let up = (status.streams_up as usize).min(n);
+        let stream_bars: Vec<StreamBar> = (0..n)
+            .map(|i| StreamBar {
+                activity: status.stream_activity.get(i).copied().unwrap_or(0.0),
+                label: SharedString::from(format!("s{}", i)),
+                alive: i < up,
+            })
+            .collect();
+        w.set_streams(ModelRc::new(Rc::new(VecModel::from(stream_bars))));
     });
 }
 
