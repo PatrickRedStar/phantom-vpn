@@ -6,6 +6,7 @@ members = [
     "crates/client-core-runtime",
     "crates/client-android",
     "crates/client-apple",
+    "crates/client-windows-core",
     "crates/gui-ipc",
     # Server
     "server/server",
@@ -15,6 +16,7 @@ members = [
     "apps/linux/gui",
     "apps/linux/helper",
     "apps/openwrt/client",
+    "apps/windows/gui",
 ]
 resolver = "2"
 

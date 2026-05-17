@@ -1,0 +1,19 @@
+[package]
+name = "client-windows-core"
+version = "0.1.0"
+edition = "2021"
+description = "Headless Rust core for the GhostStream Windows client (Wintun + mock backend)"
+
+[dependencies]
+bytes = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["sync", "rt"] }
+tracing = "0.1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+directories = "5"
+ghoststream-gui-ipc = { path = "../gui-ipc" }
+
+[target.'cfg(windows)'.dependencies]
+wintun = "0.5"
