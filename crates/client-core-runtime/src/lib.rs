@@ -35,6 +35,7 @@
 //! # }
 //! ```
 
+pub mod cover;
 pub mod log_bridge;
 pub mod logsink;
 pub mod supervise;
@@ -529,9 +530,15 @@ pub async fn run(
 
     let supervisor_telem = shared_telem.clone();
     let settings = cfg.settings.clone();
+    let cover_protect = protect_socket.clone();
 
     let join = tokio::spawn(async move {
         let shutdown_started_at = std::time::Instant::now();
+        // v0.27.0 (W9): cover-traffic warmup before the first real handshake.
+        // Best-effort, ~3 × 120 ms wall-clock at minimum, ~9 s worst case if
+        // the carrier is also blocking the cover hosts. Skipped silently on
+        // failure — never blocks the tunnel. See cover.rs for rationale.
+        cover::do_cover_traffic(cover_protect).await;
         supervise::supervise(
             cfg,
             settings,
