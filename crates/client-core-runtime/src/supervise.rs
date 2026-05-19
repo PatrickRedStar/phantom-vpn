@@ -21,7 +21,11 @@ use phantom_core::wire::{flow_stream_idx, n_data_streams_with_override};
 use tokio::sync::{watch, Mutex};
 
 use crate::log_bridge::{packet_rx_log_sample_should_emit, packet_tx_log_sample_should_emit};
-use crate::telemetry::{spawn_telem_task, Telemetry};
+use crate::telemetry::{
+    classify_error, disconnect_kind_label, spawn_telem_task, tls_state_label, Telemetry,
+    KIND_RX_FORWARDER_DEAD, KIND_USER_DISCONNECT, TLS_CLOSED, TLS_CLOSING, TLS_ESTABLISHED,
+    TLS_HANDSHAKING,
+};
 use crate::{ProtectSocket, BACKOFF_SECS, MAX_ATTEMPTS};
 
 /// Callback invoked by `supervise()` each attempt to create fresh TUN I/O
@@ -252,6 +256,7 @@ pub async fn supervise(
                     category = "tunnel",
                     phase = "drive",
                     error = %err_str,
+                    err_kind = %disconnect_kind_label(classify_error(&err_str)),
                     "error"
                 );
             }
@@ -278,10 +283,12 @@ pub async fn supervise(
 
         if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, last_error_str.as_deref()).await {
             // tunnel.reconnect.giveup — all retries exhausted (or auto_reconnect off).
+            let last = last_error_str.clone().unwrap_or_default();
             tracing::error!(
                 category = "tunnel",
                 attempts = (attempt + 1) as u64,
-                last_error = %last_error_str.clone().unwrap_or_default(),
+                last_error = %last,
+                err_kind = %disconnect_kind_label(classify_error(&last)),
                 "reconnect.giveup"
             );
             let mut f = status_tx.borrow().clone();
@@ -296,7 +303,13 @@ pub async fn supervise(
 }
 
 fn fail(status_tx: &watch::Sender<StatusFrame>, msg: String, phase: &str) {
-    tracing::error!(category = "tunnel", phase = %phase, error = %msg, "error");
+    tracing::error!(
+        category = "tunnel",
+        phase = %phase,
+        error = %msg,
+        err_kind = %disconnect_kind_label(classify_error(&msg)),
+        "error"
+    );
     let mut f = status_tx.borrow().clone();
     f.state = ConnState::Error;
     f.last_error = Some(msg);
@@ -412,6 +425,7 @@ async fn drive_tunnel(
     // `tls_connect` / `tls_connect_with_tcp` are also bounded by the
     // `HANDSHAKE_TIMEOUT` from `client_common::tls_handshake`, giving us a
     // hard ceiling even when cancel never arrives.
+    telemetry.tls_state.store(TLS_HANDSHAKING, Ordering::Relaxed);
     let handshake_fut = async {
         let mut tls_writers = Vec::with_capacity(n_streams);
         let mut tls_readers = Vec::with_capacity(n_streams);
@@ -505,10 +519,12 @@ async fn drive_tunnel(
         }
         result = handshake_fut => result?,
     };
+    telemetry.tls_state.store(TLS_ESTABLISHED, Ordering::Relaxed);
     // handshake.h2.ready — all streams complete the H2-equivalent setup.
     tracing::info!(
         category = "handshake",
         n_streams_open = n_streams as u64,
+        tls_state = %tls_state_label(TLS_ESTABLISHED),
         "h2.ready"
     );
     // tunnel.connected — top-level lifecycle.
@@ -682,12 +698,21 @@ async fn drive_tunnel(
                     lifetime_ms,
                     "close"
                 ),
-                Err(e) => tracing::warn!(
-                    category = "stream",
-                    stream_id = idx as u64,
-                    error = %format!("{}", e),
-                    "kill"
-                ),
+                Err(e) => {
+                    // v0.27.0 W4-3: classify + record so tunnel teardown can
+                    // surface "h2_goaway", "tcp_reset" etc. as the cause.
+                    let err_str = format!("{}", e);
+                    let kind = classify_error(&err_str);
+                    tele.disconnect_kind.store(kind, Ordering::Relaxed);
+                    tele.last_failed_stream.store(idx as i8, Ordering::Relaxed);
+                    tracing::warn!(
+                        category = "stream",
+                        stream_id = idx as u64,
+                        error = %err_str,
+                        err_kind = %disconnect_kind_label(kind),
+                        "kill"
+                    );
+                }
             }
             res
         }));
@@ -715,12 +740,21 @@ async fn drive_tunnel(
                     lifetime_ms,
                     "close"
                 ),
-                Err(e) => tracing::warn!(
-                    category = "stream",
-                    stream_id = idx as u64,
-                    error = %format!("{}", e),
-                    "kill"
-                ),
+                Err(e) => {
+                    // v0.27.0 W4-3: classify + record so tunnel teardown can
+                    // surface "h2_goaway", "tcp_reset" etc. as the cause.
+                    let err_str = format!("{}", e);
+                    let kind = classify_error(&err_str);
+                    tele.disconnect_kind.store(kind, Ordering::Relaxed);
+                    tele.last_failed_stream.store(idx as i8, Ordering::Relaxed);
+                    tracing::warn!(
+                        category = "stream",
+                        stream_id = idx as u64,
+                        error = %err_str,
+                        err_kind = %disconnect_kind_label(kind),
+                        "kill"
+                    );
+                }
             }
             res
         }));
@@ -756,18 +790,31 @@ async fn drive_tunnel(
 
     tokio::select! {
         _ = crate::wait_cancelled(&mut cancel) => {
-            tracing::info!(category = "tunnel", reason = "user", "disconnect");
+            telemetry.disconnect_kind.store(KIND_USER_DISCONNECT, Ordering::Relaxed);
+            tracing::info!(
+                category = "tunnel",
+                reason = "user",
+                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
+                "disconnect"
+            );
             telemetry.shutdown.store(true, Ordering::SeqCst);
         }
         _ = shutdown_poll => {
-            tracing::info!(category = "tunnel", reason = "shutdown_flag", "disconnect");
+            tracing::info!(
+                category = "tunnel",
+                reason = "shutdown_flag",
+                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
+                "disconnect"
+            );
         }
         _ = &mut forwarder_dead_rx => {
             // v0.25.1 (W3-1): rx_forwarder timed out on TUN write — the
             // packet-IO side is structurally hung. Force reconnect.
+            telemetry.disconnect_kind.store(KIND_RX_FORWARDER_DEAD, Ordering::Relaxed);
             tracing::error!(
                 category = "tunnel",
                 reason = "rx_forwarder_dead",
+                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
                 "RX forwarder timed out on TUN write — disconnecting"
             );
             forwarder_dead = true;
@@ -775,16 +822,43 @@ async fn drive_tunnel(
         _ = async {
             for h in &mut tx_handles { let _ = h.await; }
         } => {
-            tracing::warn!(category = "tunnel", reason = "tx_drained", "disconnect");
+            let kind = telemetry.disconnect_kind.load(Ordering::Relaxed);
+            let failed_stream = telemetry.last_failed_stream.load(Ordering::Relaxed);
+            let bytes_rx_since_start = telemetry.bytes_rx.load(Ordering::Relaxed);
+            tracing::warn!(
+                category = "tunnel",
+                reason = "tx_drained",
+                err_kind = %disconnect_kind_label(kind),
+                failed_stream,
+                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
+                bytes_rx_since_start,
+                "disconnect"
+            );
         }
         _ = async {
             for h in &mut rx_handles { let _ = h.await; }
         } => {
-            tracing::warn!(category = "tunnel", reason = "rx_drained", "disconnect");
+            let kind = telemetry.disconnect_kind.load(Ordering::Relaxed);
+            let failed_stream = telemetry.last_failed_stream.load(Ordering::Relaxed);
+            let bytes_rx_since_start = telemetry.bytes_rx.load(Ordering::Relaxed);
+            tracing::warn!(
+                category = "tunnel",
+                reason = "rx_drained",
+                err_kind = %disconnect_kind_label(kind),
+                failed_stream,
+                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
+                bytes_rx_since_start,
+                "disconnect"
+            );
         }
     }
 
-    tracing::debug!(category = "tunnel", "teardown.start");
+    telemetry.tls_state.store(TLS_CLOSING, Ordering::Relaxed);
+    tracing::debug!(
+        category = "tunnel",
+        tls_state = %tls_state_label(TLS_CLOSING),
+        "teardown.start"
+    );
 
     for h in tx_handles {
         h.abort();
@@ -797,7 +871,12 @@ async fn drive_tunnel(
     rx_forwarder.abort();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    tracing::debug!(category = "tunnel", "teardown.complete");
+    telemetry.tls_state.store(TLS_CLOSED, Ordering::Relaxed);
+    tracing::debug!(
+        category = "tunnel",
+        tls_state = %tls_state_label(TLS_CLOSED),
+        "teardown.complete"
+    );
 
     if forwarder_dead {
         // Surface as error so the supervisor classifies this as a drop and

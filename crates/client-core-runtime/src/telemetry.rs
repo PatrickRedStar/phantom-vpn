@@ -5,7 +5,7 @@
 //! (α = 0.35), derives per-stream activity levels, and publishes a
 //! `StatusFrame` to the watch channel for the GUI.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -74,6 +74,92 @@ pub fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+// ── Disconnect diagnostics (v0.27.0, W4-3) ────────────────────────────────
+//
+// Atomic codes that the tunnel + stream tasks update on errors / state
+// transitions. Read at teardown time and emitted as `tracing::warn!` fields
+// so the user's debug report shows *why* a drop happened — not just that
+// it happened.
+
+/// TLS lifecycle state. Read by tunnel teardown events.
+pub const TLS_UNKNOWN: u8 = 0;
+pub const TLS_HANDSHAKING: u8 = 1;
+pub const TLS_ESTABLISHED: u8 = 2;
+pub const TLS_CLOSING: u8 = 3;
+pub const TLS_CLOSED: u8 = 4;
+
+/// Coarse classification of the last terminal error seen by a stream task.
+/// Set on stream-level Err; read by tunnel teardown.
+pub const KIND_UNKNOWN: u8 = 0;
+pub const KIND_H2_GOAWAY: u8 = 1;
+pub const KIND_TLS_CLOSE_NOTIFY: u8 = 2;
+pub const KIND_TCP_RESET: u8 = 3;
+pub const KIND_TCP_BROKEN_PIPE: u8 = 4;
+pub const KIND_TIMEOUT: u8 = 5;
+pub const KIND_TLS_HANDSHAKE: u8 = 6;
+pub const KIND_SERVER_CLOSE: u8 = 7;
+pub const KIND_RX_FORWARDER_DEAD: u8 = 8;
+pub const KIND_USER_DISCONNECT: u8 = 9;
+
+#[inline]
+pub fn tls_state_label(s: u8) -> &'static str {
+    match s {
+        TLS_HANDSHAKING => "handshaking",
+        TLS_ESTABLISHED => "established",
+        TLS_CLOSING => "closing",
+        TLS_CLOSED => "closed",
+        _ => "unknown",
+    }
+}
+
+#[inline]
+pub fn disconnect_kind_label(k: u8) -> &'static str {
+    match k {
+        KIND_H2_GOAWAY => "h2_goaway",
+        KIND_TLS_CLOSE_NOTIFY => "tls_close_notify",
+        KIND_TCP_RESET => "tcp_reset",
+        KIND_TCP_BROKEN_PIPE => "tcp_broken_pipe",
+        KIND_TIMEOUT => "timeout",
+        KIND_TLS_HANDSHAKE => "tls_handshake",
+        KIND_SERVER_CLOSE => "server_close",
+        KIND_RX_FORWARDER_DEAD => "rx_forwarder_dead",
+        KIND_USER_DISCONNECT => "user_disconnect",
+        _ => "unknown",
+    }
+}
+
+/// Coarse-classify an error's string form into a `KIND_*` code. Used by
+/// stream tasks on Err and by supervisor teardown when a top-level error
+/// string is in hand.
+pub fn classify_error(s: &str) -> u8 {
+    let s = s.to_lowercase();
+    if s.contains("goaway") {
+        return KIND_H2_GOAWAY;
+    }
+    if s.contains("close_notify") || s.contains("close notify") {
+        return KIND_TLS_CLOSE_NOTIFY;
+    }
+    if s.contains("connection reset") || s.contains("econnreset") {
+        return KIND_TCP_RESET;
+    }
+    if s.contains("broken pipe") || s.contains("epipe") {
+        return KIND_TCP_BROKEN_PIPE;
+    }
+    if s.contains("timed out") || s.contains("timeout") {
+        return KIND_TIMEOUT;
+    }
+    if s.contains("handshake") {
+        return KIND_TLS_HANDSHAKE;
+    }
+    if s.contains("eof") || s.contains("unexpected end") {
+        return KIND_SERVER_CLOSE;
+    }
+    if s.contains("rx_forwarder") && s.contains("dead") {
+        return KIND_RX_FORWARDER_DEAD;
+    }
+    KIND_UNKNOWN
+}
+
 /// Live counters for one tunnel attempt. Shared between the dispatcher,
 /// per-stream loops, and `telem_task`.
 pub struct Telemetry {
@@ -96,6 +182,22 @@ pub struct Telemetry {
     pub sni: String,
     /// Set to `true` by `Manager::disconnect()` to signal an orderly stop.
     pub shutdown: AtomicBool,
+    /// TLS lifecycle state (one of `TLS_*` constants). v0.27.0 W4-3 —
+    /// emitted as a tracing field at every tunnel teardown event so the
+    /// debug report shows whether we died during handshake, mid-session,
+    /// etc. Read with `tls_state.load(Ordering::Relaxed)` →
+    /// `tls_state_label(...)`.
+    pub tls_state: AtomicU8,
+    /// Last terminal-error classification seen by a stream task (one of
+    /// `KIND_*` constants). Updated by `classify_error(&format!("{e}"))`
+    /// when a tx/rx stream loop returns `Err`. Read by tunnel-level
+    /// teardown emits so the debug report shows the *cause*, not just the
+    /// fact that a stream drained.
+    pub disconnect_kind: AtomicU8,
+    /// Stream index whose terminal error most recently populated
+    /// `disconnect_kind`. `-1` = none yet. Range `0..16` matches the
+    /// `MAX_N_STREAMS` cap.
+    pub last_failed_stream: AtomicI8,
 }
 
 impl Telemetry {
@@ -118,6 +220,9 @@ impl Telemetry {
             server_addr,
             sni,
             shutdown: AtomicBool::new(false),
+            tls_state: AtomicU8::new(TLS_UNKNOWN),
+            disconnect_kind: AtomicU8::new(KIND_UNKNOWN),
+            last_failed_stream: AtomicI8::new(-1),
         }
     }
 }
