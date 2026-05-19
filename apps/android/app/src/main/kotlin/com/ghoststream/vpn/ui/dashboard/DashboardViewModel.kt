@@ -64,6 +64,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             directCountries = p?.directCountries ?: prefs.directCountries,
             perAppMode      = p?.perAppMode ?: prefs.perAppMode,
             perAppList      = p?.perAppList ?: prefs.perAppList,
+            // v0.27.0 (W10): DPI recycle is a global preference, not profile-bound.
+            // Without this line, startVpn always passed dpiRecycleSecs=null even
+            // when the user had the experimental toggle on.
+            dpiRecycleSecs  = prefs.dpiRecycleSecs,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 

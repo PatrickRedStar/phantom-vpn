@@ -65,6 +65,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             directCountries = p?.directCountries ?: prefs.directCountries,
             perAppMode      = p?.perAppMode ?: prefs.perAppMode,
             perAppList      = p?.perAppList ?: prefs.perAppList,
+            // v0.27.0 (W10): DPI recycle is a global setting (carrier-side
+            // detection doesn't depend on which profile/endpoint you pick),
+            // so we never sourced it from profile — just preferences.
+            dpiRecycleSecs  = prefs.dpiRecycleSecs,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
