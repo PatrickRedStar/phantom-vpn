@@ -520,21 +520,22 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             sb.appendLine("--- Состояние VPN ---")
             sb.appendLine("Состояние: ${VpnStateManager.state.value}")
             sb.appendLine()
-            sb.appendLine("--- Логи (последние 500 строк) ---")
+            sb.appendLine("--- Логи (последние 2000 строк) ---")
+            // v0.27.0 (W4-2): read from the on-disk persist file owned by
+            // LogPersister. Previously called `nativeGetLogs(-1L)` which is
+            // a stub returning null since the push-based bridge replaced it
+            // (client-android/src/lib.rs:510), so the report was always
+            // "Логи пусты" regardless of actual tunnel activity.
             try {
-                val json = GhostStreamVpnService.nativeGetLogs(-1L)
-                if (json != null && json != "[]") {
-                    val arr = JSONArray(json)
-                    val start = maxOf(0, arr.length() - 500)
-                    for (i in start until arr.length()) {
-                        val o = arr.getJSONObject(i)
-                        sb.appendLine("${o.optString("ts")} [${o.optString("level")}] ${o.optString("msg")}")
-                    }
+                com.ghoststream.vpn.service.LogPersister.flushPending()
+                val lines = com.ghoststream.vpn.service.LogPersister.tailLines(context, 2000)
+                if (lines.isEmpty()) {
+                    sb.appendLine("Логи пусты — запустите туннель чтобы накопить.")
                 } else {
-                    sb.appendLine("Логи пусты")
+                    lines.forEach { sb.appendLine(it) }
                 }
             } catch (e: Exception) {
-                sb.appendLine("Ошибка получения логов: ${e.message}")
+                sb.appendLine("Ошибка чтения логов: ${e.message}")
             }
 
             val dir = File(context.cacheDir, "debug")

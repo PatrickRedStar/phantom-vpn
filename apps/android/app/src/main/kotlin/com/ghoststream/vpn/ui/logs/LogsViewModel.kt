@@ -10,19 +10,14 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ghoststream.vpn.service.GhostStreamVpnService
+import com.ghoststream.vpn.service.LogPersister
 import com.ghoststream.vpn.service.VpnStateManager
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.BufferedWriter
 import java.io.File
-import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,10 +44,6 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         private val LEVEL_ORDER = listOf("TRACE", "DEBUG", "INFO", "WARN", "ERROR")
         /** Max lines kept in RAM for the live tail. */
         private const val MAX_LIVE_LINES = 50_000
-        /** Each persistent log file caps at this size before rotation. */
-        private const val ROTATE_AT_BYTES = 2L * 1024 * 1024 // 2 MB
-        /** Number of rotated files to keep on disk (.0 newest, .4 oldest). */
-        private const val ROTATE_KEEP = 5
         const val ALL_CATEGORIES = "all"
     }
 
@@ -84,53 +75,23 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
     private var nextSeq = 0L
     private val tsFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
-    private val fileTsFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
-
-    private val logsDir: File by lazy {
-        File(application.filesDir, "logs").apply { mkdirs() }
-    }
-    private val activeLogFile: File get() = File(logsDir, "ghoststream.log")
-    private var currentWriter: BufferedWriter? = null
-
-    /**
-     * Single-producer/single-consumer channel for persistent log writes.
-     * Replaces the per-frame `viewModelScope.launch { appendPersisted(...) }`
-     * which spawned a fresh coroutine on every log frame and raced on the
-     * shared writer. v0.25.0.
-     *
-     * v0.25.1: raised capacity from BUFFERED (64) → 4096 and switched to
-     * DROP_OLDEST. At TRACE level Rust emits 100+ frames/sec; the old
-     * 64-slot buffer dropped *new* lines silently via `trySend = false`,
-     * meaning the most useful entries (errors after a reconnect) would be
-     * lost exactly when needed. DROP_OLDEST keeps the freshest history
-     * and `trySend` is now always successful — overflow drops the oldest
-     * undrained entry, which is generally fine for a tail log buffer.
-     */
-    private val persistQueue = kotlinx.coroutines.channels.Channel<Pair<LogEntry, Long>>(
-        capacity = 4096,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
 
     init {
         // Ensure Rust sends all log levels — filtering is UI-only.
         try { GhostStreamVpnService.nativeSetLogLevel("trace") } catch (_: Exception) {}
 
         // Replay previously persisted logs so the user has context across
-        // app restarts. Latest rotation file only — earlier ones are still
-        // on disk and included in `shareLogs`.
+        // app restarts. v0.27.0 (W4-1): persist file is owned by
+        // `LogPersister` (service-scoped) — tailLines() is safe to call
+        // even before the service has started writing this session.
         viewModelScope.launch(Dispatchers.IO) {
-            replayPersistedLogs()
+            replayPersistedLogs(application.applicationContext)
         }
 
-        // Single consumer that drains the persistQueue and writes sequentially.
-        // Survives the lifetime of the ViewModel.
-        viewModelScope.launch(Dispatchers.IO) {
-            for ((entry, ts) in persistQueue) {
-                appendPersisted(entry, ts)
-            }
-        }
-
-        // Collect push-based log frames from Rust via VpnStateManager.
+        // Collect push-based log frames from Rust via VpnStateManager for UI
+        // display. Persistence is handled by `LogPersister` (service-scoped),
+        // independently of this ViewModel's lifecycle — moved off
+        // viewModelScope in v0.27.0 (W4-1) so logs survive Logs-screen close.
         viewModelScope.launch {
             VpnStateManager.logFrames.collect { frame ->
                 val levelNorm = when (frame.level) {
@@ -158,13 +119,6 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                         _availableCategories.value = seenCategories.toList()
                     }
                 }
-
-                // Persist to file (off the main thread). trySend is non-blocking;
-                // with DROP_OLDEST + capacity 4096 it effectively never fails —
-                // backpressure drops the oldest pending entry instead, so the
-                // newest log lines (errors after reconnect, etc.) are preserved.
-                // v0.25.1.
-                persistQueue.trySend(entry to frame.tsUnixMs)
 
                 applyFilter()
             }
@@ -217,68 +171,17 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         _availableCategories.value = emptyList()
     }
 
-    private fun formatForFile(entry: LogEntry, tsUnixMs: Long): String {
-        val ts = fileTsFormat.format(Date(tsUnixMs))
-        val cat = entry.category?.let { "[$it] " } ?: ""
-        val fields = if (entry.fields.isEmpty()) {
-            ""
-        } else {
-            " " + entry.fields.entries.joinToString(" ") { (k, v) -> "$k=$v" }
-        }
-        return "$ts ${entry.level} $cat${entry.message}$fields"
-    }
-
     /**
-     * Append a single line to the active log file, rotating when it grows
-     * past [ROTATE_AT_BYTES]. v0.24.0.
+     * Read previously-persisted log lines from `LogPersister`'s on-disk file
+     * and seed `allLogs` so the user has historical context across app
+     * restarts and across Logs-screen open/close cycles. Best-effort; parse
+     * failures fall through as plain-text rows. v0.24.0; v0.27.0: source
+     * moved to LogPersister (service-scoped).
      */
-    private suspend fun appendPersisted(entry: LogEntry, tsUnixMs: Long) = withContext(Dispatchers.IO) {
+    private fun replayPersistedLogs(context: Context) {
         runCatching {
-            // Lazy open + size-based rotation.
-            if (activeLogFile.length() >= ROTATE_AT_BYTES) {
-                currentWriter?.flush()
-                currentWriter?.close()
-                currentWriter = null
-                rotateFiles()
-            }
-            if (currentWriter == null) {
-                currentWriter = BufferedWriter(FileWriter(activeLogFile, true))
-            }
-            currentWriter?.appendLine(formatForFile(entry, tsUnixMs))
-            currentWriter?.flush()
-        }
-    }
-
-    /**
-     * Push `.4` → discard, `.3 → .4`, ... `.0 → .1`, then move the active
-     * file to `.0` for archival. Active file is recreated on next append.
-     */
-    private fun rotateFiles() {
-        val base = activeLogFile.absolutePath
-        // Discard oldest if it exists.
-        val oldest = File("$base.${ROTATE_KEEP - 1}")
-        if (oldest.exists()) oldest.delete()
-        // Shift .N → .N+1
-        for (n in (ROTATE_KEEP - 2) downTo 0) {
-            val src = File("$base.$n")
-            val dst = File("$base.${n + 1}")
-            if (src.exists()) src.renameTo(dst)
-        }
-        // Current active → .0
-        activeLogFile.renameTo(File("$base.0"))
-    }
-
-    /**
-     * Read the previously-persisted active log file (no rotation predecessors
-     * — they're served by `shareLogs`) and seed `allLogs` so the user has
-     * historical context. Best-effort; failures are silent. v0.24.0.
-     */
-    private fun replayPersistedLogs() {
-        runCatching {
-            if (!activeLogFile.exists()) return@runCatching
-            val lines = activeLogFile.readLines()
-            // Cap replay at a reasonable amount to avoid OOM on a 2 MB log.
-            val take = lines.takeLast(MAX_LIVE_LINES)
+            val take = LogPersister.tailLines(context, MAX_LIVE_LINES)
+            if (take.isEmpty()) return@runCatching
             val parsed = mutableListOf<LogEntry>()
             for (line in take) {
                 // Format: "yyyy-MM-dd HH:mm:ss.SSS LEVEL [cat] msg k=v k=v"
@@ -351,15 +254,9 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 // Flush any buffered live writes so the share captures the
-                // very latest entries.
-                currentWriter?.flush()
-                val parts = mutableListOf<File>()
-                val base = activeLogFile.absolutePath
-                for (n in (ROTATE_KEEP - 1) downTo 0) {
-                    val f = File("$base.$n")
-                    if (f.exists()) parts.add(f)
-                }
-                if (activeLogFile.exists()) parts.add(activeLogFile)
+                // very latest entries. v0.27.0: writer owned by LogPersister.
+                LogPersister.flushPending()
+                val parts = LogPersister.allLogFiles(context)
 
                 val out = File(context.cacheDir.apply { mkdirs() }, "ghoststream-session.log")
                 out.bufferedWriter().use { w ->
@@ -410,7 +307,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        runCatching { persistQueue.close() }
-        runCatching { currentWriter?.flush(); currentWriter?.close() }
+        // v0.27.0: persistence lifecycle moved to LogPersister (service-scoped).
+        // Nothing to tear down here — viewModelScope cancels its own coroutines.
     }
 }

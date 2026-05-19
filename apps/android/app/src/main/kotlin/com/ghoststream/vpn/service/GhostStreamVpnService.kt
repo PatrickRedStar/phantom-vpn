@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import com.ghoststream.vpn.BuildConfig
 import com.ghoststream.vpn.R
@@ -154,6 +155,14 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     /** Latest status pushed from Rust via onStatusFrame. Used by the watchdog. */
     @Volatile private var lastStatusJson: String? = null
 
+    /** v0.27.0 W4-4: rate-limit `Log.d(TAG, "status: ...")` to 1 per 5 s in
+     *  debug builds. Without this, the 250 ms status cadence × ~1 KB JSON
+     *  fills the 256 KB logcat ring buffer in ~60 s and evicts every other
+     *  diagnostic line — making `adb logcat` useless during debug sessions.
+     *  Status frames remain at 4 Hz for UI/watchdog; only the logcat mirror
+     *  is throttled. */
+    @Volatile private var lastStatusLogMs: Long = 0L
+
     @Volatile private var vpnInterface: ParcelFileDescriptor? = null
     private var watchdogThread: Thread? = null
     private var startupThread: Thread? = null
@@ -239,7 +248,16 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      * instead of polling nativeGetStats().
      */
     override fun onStatusFrame(json: String) {
-        if (BuildConfig.DEBUG) Log.d(TAG, "status: $json")
+        if (BuildConfig.DEBUG) {
+            // v0.27.0 W4-4: emit at most once per 5 s so the logcat ring
+            // buffer keeps room for actual diagnostic events. UI / watchdog
+            // get every frame via VpnStateManager.pushStatusFrame() below.
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastStatusLogMs >= 5_000L) {
+                lastStatusLogMs = now
+                Log.d(TAG, "status: $json")
+            }
+        }
         // Store for watchdog polling via readNativeStats().
         lastStatusJson = json
         // Push to VpnStateManager so DashboardViewModel can observe.
@@ -285,6 +303,10 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         super.onCreate()
         prefs = PreferencesStore(applicationContext)
         registerNetworkCallback()
+        // v0.27.0 (W4-1): persist Rust log frames to disk independently of
+        // any UI lifecycle. Survives Logs screen being closed; survives the
+        // app being backgrounded. Idempotent — safe across Service rebinds.
+        LogPersister.start(applicationContext, serviceScope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
