@@ -12,9 +12,9 @@ android {
         applicationId = "io.ghoststream.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 81
-        versionName = "0.26.7"
-        buildConfigField("String", "GIT_TAG", "\"v0.26.7\"")
+        versionCode = 82
+        versionName = "0.26.8"
+        buildConfigField("String", "GIT_TAG", "\"v0.26.8\"")
     }
 
     signingConfigs {
