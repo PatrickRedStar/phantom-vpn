@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -80,6 +81,7 @@ fun GhostFab(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     outline: Boolean = false,
+    enabled: Boolean = true,
     contentDescription: String? = null,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -88,11 +90,19 @@ fun GhostFab(
     val bg = if (outline) Color.Transparent else signalColor
     val fg = if (outline) signalColor else bgColor
     val a11yLabel = contentDescription ?: text
+    // v0.27.0: dim while disabled so the user can see the button is in a
+    // transitional state ("Отключение...") and not just visually identical to
+    // the active form. Click is consumed by clickable(enabled=false) below.
+    val alpha = if (enabled) 1f else 0.45f
     Box(
         modifier
             .fillMaxWidth()
             .height(48.dp)
-            .clickable(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onClick() })
+            .alpha(alpha)
+            .clickable(enabled = enabled) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
             .semantics {
                 role = Role.Button
                 this.contentDescription = a11yLabel

@@ -422,6 +422,15 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     // state so the user can bail out of a degraded session without
     // toggling Airplane mode. v0.24.0: include Stale/Throttled/Reconnecting
     // alongside the legacy Connected/Connecting/Disconnecting.
+    //
+    // v0.27.0 (W5): button label + enabled gating reflect transitional state.
+    // - Connecting / Reconnecting → "Подключение…", tap = cancel (stopVpn)
+    // - Disconnecting → "Отключение…", **disabled** (no point re-tapping)
+    // - Connected / Stale / Throttled → "Отключить"
+    // - Disconnected / Error → "Подключить"
+    // Prevents the start → stop → start thrash a rapid-fire user produced
+    // before, where a tap in the Disconnecting state would slip past the
+    // Service's tunnelGeneration guard via a fresh startVpn() launch.
     val fabSection: @Composable (Modifier) -> Unit = { fabModifier ->
         Box(fabModifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
             val isConnectedOrBusy = vpnState is VpnState.Connected ||
@@ -430,9 +439,20 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 vpnState is VpnState.Reconnecting ||
                 vpnState is VpnState.Connecting ||
                 vpnState is VpnState.Disconnecting
+            val fabText = when (vpnState) {
+                is VpnState.Connecting -> stringResource(R.string.action_connecting)
+                is VpnState.Disconnecting -> stringResource(R.string.action_disconnecting)
+                is VpnState.Connected,
+                is VpnState.Stale,
+                is VpnState.Throttled,
+                is VpnState.Reconnecting -> stringResource(R.string.action_disconnect)
+                else -> stringResource(R.string.action_connect)
+            }
+            val fabEnabled = vpnState !is VpnState.Disconnecting
             GhostFab(
-                text = if (isConnectedOrBusy) stringResource(R.string.action_disconnect) else stringResource(R.string.action_connect),
+                text = fabText,
                 outline = !isConnectedOrBusy,
+                enabled = fabEnabled,
                 onClick = {
                     when (vpnState) {
                         is VpnState.Connected,

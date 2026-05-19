@@ -33,6 +33,8 @@
     <string name="kv_value_dash">—</string>
     <string name="action_disconnect">Отключить</string>
     <string name="action_connect">Подключить</string>
+    <string name="action_connecting">Подключение…</string>
+    <string name="action_disconnecting">Отключение…</string>
     <string name="action_retry">Повторить</string>
     <string name="hdr_meta_live">онлайн</string>
     <string name="hdr_meta_lines">%1$s строк</string>

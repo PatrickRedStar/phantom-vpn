@@ -17,7 +17,17 @@ class ToggleVpnAction : ActionCallback {
         parameters: ActionParameters,
     ) {
         val state = VpnStateManager.state.value
-        if (state is VpnState.Connected || state is VpnState.Connecting) {
+        // v0.27.0 (W5): no-op during transitional states so a rapid widget
+        // tap can't drive a start → stop → start race past the Service's
+        // tunnelGeneration guard. Matches the Dashboard FAB lock.
+        if (state is VpnState.Disconnecting || state is VpnState.Connecting) {
+            return
+        }
+        if (state is VpnState.Connected ||
+            state is VpnState.Stale ||
+            state is VpnState.Throttled ||
+            state is VpnState.Reconnecting
+        ) {
             // Disconnect
             try {
                 val intent = Intent(context, GhostStreamVpnService::class.java)

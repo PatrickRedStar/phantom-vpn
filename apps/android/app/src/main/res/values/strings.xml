@@ -36,6 +36,8 @@
     <string name="kv_value_dash">—</string>
     <string name="action_disconnect">Disconnect</string>
     <string name="action_connect">Connect</string>
+    <string name="action_connecting">Connecting…</string>
+    <string name="action_disconnecting">Disconnecting…</string>
     <string name="action_retry">Retry</string>
     <string name="hdr_meta_live">live</string>
     <string name="hdr_meta_lines">%1$s lines</string>

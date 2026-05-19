@@ -194,6 +194,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     fun dismissPreflightWarning() { _preflightWarning.value = null }
 
     fun startVpn() {
+        // v0.27.0 (W5): refuse a fresh start when we're mid-transition or
+        // already up. The Dashboard FAB and widget are now disabled in
+        // Disconnecting and route Connecting taps to stopVpn, but external
+        // entry points (BootReceiver, future TileService) could still drive
+        // a race. This guard is the floor.
+        when (VpnStateManager.state.value) {
+            is VpnState.Connecting,
+            is VpnState.Connected,
+            is VpnState.Stale,
+            is VpnState.Throttled,
+            is VpnState.Reconnecting,
+            is VpnState.Disconnecting -> return
+            else -> Unit
+        }
         var cfg = config.value
         if (cfg.serverAddr.isBlank()) return
 
@@ -279,6 +293,15 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun stopVpn() {
+        // v0.27.0 (W5): no-op if we're already tearing down or off.
+        // The user's only legit reason to tap "Disconnect" from these
+        // states is impatience — Service.ACTION_STOP is idempotent but
+        // a redundant Intent still churns startService binder traffic.
+        when (VpnStateManager.state.value) {
+            is VpnState.Disconnecting,
+            is VpnState.Disconnected -> return
+            else -> Unit
+        }
         VpnStateManager.update(VpnState.Disconnecting)
         val ctx = getApplication<Application>()
         ctx.startService(Intent(ctx, GhostStreamVpnService::class.java).apply {
