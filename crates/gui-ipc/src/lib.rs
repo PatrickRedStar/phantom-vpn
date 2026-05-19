@@ -44,6 +44,15 @@ pub struct TunnelSettings {
     /// None = automatic CPU-derived stream count; Some(n) is clamped by runtime.
     #[serde(default)]
     pub streams: Option<usize>,
+    /// v0.27.0 (W10): periodically tear down + re-handshake the tunnel to defeat
+    /// net4people #490 "TSPU freezes the connection after ~25 packets / ~16 KB
+    /// payload" behaviour. `None`/`Some(0)` = disabled. Recommended range when
+    /// enabled: 12-25 seconds — long enough that the recycle overhead doesn't
+    /// dominate, short enough that no individual TCP connection crosses the
+    /// censor's freeze threshold. Off by default; user must opt in via the
+    /// Settings UI under "Эксперимент: обход DPI шейпинга".
+    #[serde(default)]
+    pub dpi_recycle_secs: Option<u32>,
 }
 
 fn default_true() -> bool { true }
@@ -55,6 +64,7 @@ impl Default for TunnelSettings {
             ipv6_killswitch: true,
             auto_reconnect: true,
             streams: None,
+            dpi_recycle_secs: None,
         }
     }
 }

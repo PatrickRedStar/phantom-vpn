@@ -287,6 +287,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (profile?.relayEnabled == true && !profile.relayAddr.isNullOrBlank()) {
                     putExtra(GhostStreamVpnService.EXTRA_RELAY_ADDR, profile.relayAddr)
                 }
+                // v0.27.0 (W10): DPI evasion recycle interval (0 = off).
+                cfg.dpiRecycleSecs?.takeIf { it > 0 }?.let {
+                    putExtra(GhostStreamVpnService.EXTRA_DPI_RECYCLE_SECS, it)
+                }
             }
             ctx.startForegroundService(intent)
         }

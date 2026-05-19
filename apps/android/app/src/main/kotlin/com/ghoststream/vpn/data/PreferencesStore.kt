@@ -33,6 +33,8 @@ class PreferencesStore(private val context: Context) {
         private val LAST_TUNNEL_PARAMS = stringPreferencesKey("last_tunnel_params")
         private val LANGUAGE_OVERRIDE  = stringPreferencesKey("language_override")
         private val APP_ICON           = stringPreferencesKey("app_icon")
+        // v0.27.0 (W10): null/0 = disabled, >0 = recycle interval in seconds.
+        private val DPI_RECYCLE_SECS   = androidx.datastore.preferences.core.intPreferencesKey("dpi_recycle_secs")
     }
 
     /** "ru" | "en" | null (follow system) */
@@ -89,6 +91,7 @@ class PreferencesStore(private val context: Context) {
             perAppMode      = prefs[PER_APP_MODE] ?: "none",
             perAppList      = (prefs[PER_APP_LIST] ?: "")
                 .split(",").filter { it.isNotBlank() },
+            dpiRecycleSecs  = prefs[DPI_RECYCLE_SECS]?.takeIf { it > 0 },
         )
     }
 
@@ -105,6 +108,7 @@ class PreferencesStore(private val context: Context) {
             prefs[DIRECT_COUNTRIES] = config.directCountries.joinToString(",")
             prefs[PER_APP_MODE]     = config.perAppMode
             prefs[PER_APP_LIST]     = config.perAppList.joinToString(",")
+            prefs[DPI_RECYCLE_SECS] = config.dpiRecycleSecs ?: 0
         }
     }
 

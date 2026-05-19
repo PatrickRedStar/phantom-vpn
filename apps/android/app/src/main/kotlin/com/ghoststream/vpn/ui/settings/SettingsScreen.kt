@@ -1362,6 +1362,25 @@ private fun TunnelRows(
         right = {
             GhostToggle(checked = autoStart, onToggle = { viewModel.setAutoStartOnBoot(!autoStart) })
         },
+        showDivider = true,
+    )
+    // v0.27.0 (W10): experimental DPI evasion. Off by default. When on, the
+    // tunnel tears down + re-handshakes every N seconds (default 15) so no
+    // individual TCP connection accumulates the ~16 KB / ~25 packets that
+    // trigger the carrier's silent-freeze rule (net4people #490).
+    val dpiOn = (config.dpiRecycleSecs ?: 0) > 0
+    SettingRow(
+        label = "Эксперимент: обход DPI шейпинга",
+        sub = if (dpiOn) "Перезапуск каждые ${config.dpiRecycleSecs}с" else "Выкл",
+        right = {
+            GhostToggle(
+                checked = dpiOn,
+                onToggle = {
+                    // Toggle between off and the recommended default (15 s).
+                    viewModel.setDpiRecycleSecs(if (dpiOn) null else 15)
+                },
+            )
+        },
         showDivider = false,
     )
 }

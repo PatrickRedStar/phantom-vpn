@@ -227,6 +227,7 @@ pub async fn supervise(
             n_streams,
             protect_socket.clone(),
             cancel.clone(),
+            settings.dpi_recycle_secs,
         )
         .await;
 
@@ -272,6 +273,23 @@ pub async fn supervise(
             f.reconnect_next_delay_secs = None;
             let _ = status_tx.send(f);
             break;
+        }
+
+        // v0.27.0 (W10): DPI recycle path. drive_tunnel returned the
+        // sentinel string when its periodic recycle timer fired. Skip the
+        // attempt counter, last_error_str, status frame Error churn, and
+        // backoff sleep — go straight to the next handshake. status_tx
+        // already shows Connected from the live session, so the UI sees
+        // no transitional flicker beyond the natural handshake latency.
+        if matches!(&result, Err(e) if e.to_string().starts_with("recycle requested")) {
+            tracing::info!(
+                category = "tunnel",
+                reason = "recycle",
+                "session refreshed — reconnecting immediately"
+            );
+            last_error_str = None;
+            attempt = 0;
+            continue;
         }
 
         if let Err(e) = &result {
@@ -403,6 +421,12 @@ async fn drive_tunnel(
     n_streams: usize,
     protect_socket: Option<ProtectSocket>,
     mut cancel: watch::Receiver<bool>,
+    // v0.27.0 (W10): if `Some(secs)` and > 0, tear down + re-handshake the
+    // tunnel every `secs` seconds. Each TLS connection lives short enough
+    // that none crosses the net4people #490 freeze threshold (~25 packets /
+    // ~16 KB / ~15-20 s). `None` / `Some(0)` = disabled. Set by user via
+    // the Android Settings "Эксперимент: обход DPI шейпинга" toggle.
+    dpi_recycle_secs: Option<u32>,
 ) -> anyhow::Result<()> {
     let client_tls =
         phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
@@ -787,6 +811,24 @@ async fn drive_tunnel(
     // Ok(()) and the user-facing "everything is fine" path runs even though
     // the TUN side froze and we triggered an internal reconnect.
     let mut forwarder_dead = false;
+    // v0.27.0 (W10): track whether the periodic DPI-recycle timer fired so
+    // we can return a sentinel Err that the supervisor recognises as
+    // "intentional, reconnect immediately, don't bump the attempt counter".
+    let mut recycle_fired = false;
+
+    // Recycle sleep future. Pinned so the select! arm can be `&mut`-borrowed
+    // alongside the other arms. When the feature is disabled (None / 0) we
+    // park on `pending()` forever — costs nothing because the future is
+    // never polled by the executor outside the select!.
+    let recycle_sleep = async {
+        match dpi_recycle_secs {
+            Some(s) if s > 0 => {
+                tokio::time::sleep(std::time::Duration::from_secs(s as u64)).await;
+            }
+            _ => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(recycle_sleep);
 
     tokio::select! {
         _ = crate::wait_cancelled(&mut cancel) => {
@@ -818,6 +860,23 @@ async fn drive_tunnel(
                 "RX forwarder timed out on TUN write — disconnecting"
             );
             forwarder_dead = true;
+        }
+        _ = &mut recycle_sleep => {
+            // v0.27.0 (W10): periodic recycle — drop this session before
+            // any individual TCP connection accumulates enough payload to
+            // cross the net4people #490 freeze threshold. Don't set
+            // telemetry.shutdown — that's the user-disconnect flag and
+            // would prevent reconnect. The supervisor pattern-matches the
+            // sentinel Err string we return after teardown and reconnects
+            // immediately with attempt counter reset.
+            tracing::warn!(
+                category = "tunnel",
+                reason = "recycle.deadline",
+                recycle_secs = dpi_recycle_secs.unwrap_or(0) as u64,
+                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
+                "DPI recycle deadline — session refresh"
+            );
+            recycle_fired = true;
         }
         _ = async {
             for h in &mut tx_handles { let _ = h.await; }
@@ -885,6 +944,14 @@ async fn drive_tunnel(
         // pattern, so it falls into `Other` which uses the standard
         // backoff table).
         return Err(anyhow::anyhow!("rx_forwarder dead — TUN write blocked"));
+    }
+    if recycle_fired {
+        // v0.27.0 (W10): sentinel — the supervisor recognises this exact
+        // prefix and treats it as "intentional recycle, reconnect now,
+        // don't increment attempt counter, no backoff". Any other Err
+        // string would route through should_reconnect's exponential
+        // backoff table.
+        return Err(anyhow::anyhow!("recycle requested — DPI session refresh"));
     }
     Ok(())
 }

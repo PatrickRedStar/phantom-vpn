@@ -587,6 +587,17 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    /**
+     * v0.27.0 (W10): set experimental DPI recycle interval. null/0 = off.
+     * Persisted across app restarts via PreferencesStore. Applies on next
+     * tunnel start — does not retroactively change a live connection.
+     */
+    fun setDpiRecycleSecs(secs: Int?) {
+        viewModelScope.launch {
+            preferencesStore.saveConfig(config.value.copy(dpiRecycleSecs = secs?.takeIf { it > 0 }))
+        }
+    }
+
     fun toggleDirectCountry(code: String) {
         val current = config.value.directCountries.toMutableList()
         if (code in current) current.remove(code) else current.add(code)
