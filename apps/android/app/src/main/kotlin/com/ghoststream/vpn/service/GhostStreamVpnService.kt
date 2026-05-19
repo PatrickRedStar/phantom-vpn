@@ -311,10 +311,13 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         super.onCreate()
         prefs = PreferencesStore(applicationContext)
         registerNetworkCallback()
-        // v0.27.0 (W4-1): persist Rust log frames to disk independently of
-        // any UI lifecycle. Survives Logs screen being closed; survives the
-        // app being backgrounded. Idempotent — safe across Service rebinds.
-        LogPersister.start(applicationContext, serviceScope)
+        // v0.27.0 (W4-1): LogPersister is started from MyApplication.onCreate
+        // on Application-lifetime scope. Earlier it was started here on
+        // serviceScope — but Service.onDestroy() cancels that scope on every
+        // Disconnect, leaving the process-singleton LogPersister with its
+        // collector coroutine dead while `started=true` blocked re-launch on
+        // the next Service.onCreate. Persist file stopped growing after
+        // first session.
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

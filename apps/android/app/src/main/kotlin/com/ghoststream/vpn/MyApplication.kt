@@ -3,6 +3,7 @@ package com.ghoststream.vpn
 import android.app.Application
 import android.util.Log
 import com.ghoststream.vpn.data.PreferencesStore
+import com.ghoststream.vpn.service.LogPersister
 import com.ghoststream.vpn.service.VpnStateManager
 import com.ghoststream.vpn.widget.WidgetState
 import kotlinx.coroutines.CoroutineScope
@@ -32,6 +33,17 @@ class MyApplication : Application() {
         // Touch VpnStateManager so its derivedState flow lights up before
         // any subscriber arrives. Cheap (singleton init).
         @Suppress("UNUSED_EXPRESSION") VpnStateManager
+
+        // v0.27.0 (W7): persist Rust log frames on Application scope —
+        // survives every Service create/destroy cycle. Previously bound to
+        // GhostStreamVpnService.serviceScope, which was cancelled in
+        // onDestroy when the user disconnected. LogPersister's
+        // `if (started) return` short-circuit then prevented the *next*
+        // Service.onCreate from re-launching the collector, so persist
+        // file stopped growing after the first session and reconnect
+        // events from later sessions were lost. Application.onCreate runs
+        // once per process — appScope lives as long as the process does.
+        LogPersister.start(this, appScope)
 
         // Restore widget last-known state from persisted `was_running`
         // so the home-screen widget shows accurate state immediately
