@@ -578,6 +578,16 @@ fun SettingsScreen(
         var showDeleteConfirm by remember { mutableStateOf(false) }
         var relayEnabled by remember(editingProfile) { mutableStateOf(editingProfile!!.relayEnabled) }
         var relayAddr by remember(editingProfile) { mutableStateOf(editingProfile!!.relayAddr ?: "") }
+        // v0.27.0 (W12): SNI is now editable from the profile dialog so user
+        // can override the connection-string default to e.g.
+        // `www.yandex.cloud` when carrier DPI is blocking by specific SNI
+        // string. Default — value from the imported ghs:// connection string.
+        var sniOverride by remember(editingProfile) { mutableStateOf(editingProfile!!.serverName) }
+        // v0.27.0 (W12): insecure toggle exposed. Disables TLS hostname
+        // verification on the client side — REQUIRED when overriding SNI to
+        // a domain whose cert we don't own. mTLS client cert still
+        // authenticates protocol-level identity to the server.
+        var insecure by remember(editingProfile) { mutableStateOf(editingProfile!!.insecure) }
         GhostDialog(
             onDismissRequest = { editingProfile = null },
             title = stringResource(R.string.edit_profile_title),
@@ -597,18 +607,50 @@ fun SettingsScreen(
                     style = GsText.host,
                     color = C.textDim,
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "SNI: ${editingProfile!!.serverName}",
-                    style = GsText.host,
-                    color = C.textFaint,
+                Spacer(Modifier.height(8.dp))
+                // SNI editable — used for DPI evasion (override).
+                OutlinedTextField(
+                    value = sniOverride,
+                    onValueChange = { sniOverride = it },
+                    label = { Text("SNI (override для обхода DPI)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = TextStyle(fontFamily = com.ghoststream.vpn.ui.theme.JetBrainsMono, fontSize = 11.sp),
+                    colors = ghostTextFieldColors(),
+                    shape = GhostTextFieldShape,
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     text = "TUN: ${editingProfile!!.tunAddr}",
                     style = GsText.host,
                     color = C.textFaint,
                 )
+                Spacer(Modifier.height(12.dp))
+                // Insecure toggle — required for SNI override to a domain
+                // whose certificate the user doesn't control.
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Insecure TLS (skip hostname check)",
+                            style = GsText.profileName,
+                            color = C.bone,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Включи если SNI отличается от сертификата сервера. mTLS-аутентификация остаётся.",
+                            style = GsText.host,
+                            color = C.textDim,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    GhostToggle(
+                        checked = insecure,
+                        onToggle = { insecure = !insecure },
+                    )
+                }
                 // ── Relay ────────────────────────────────────────────
                 Spacer(Modifier.height(12.dp))
                 DashedHairline()
@@ -687,6 +729,8 @@ fun SettingsScreen(
                         name = editName,
                         relayEnabled = relayEnabled,
                         relayAddr = relayAddr.trim().ifBlank { null },
+                        serverName = sniOverride,
+                        insecure = insecure,
                     )
                     editingProfile = null
                 })

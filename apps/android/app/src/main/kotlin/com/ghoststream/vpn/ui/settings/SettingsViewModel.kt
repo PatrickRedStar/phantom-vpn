@@ -285,13 +285,28 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         profilesStore.updateProfile(profile.copy(name = name.trim().ifEmpty { profile.name }))
     }
 
-    fun updateProfileFields(id: String, name: String, relayEnabled: Boolean, relayAddr: String?) {
+    fun updateProfileFields(
+        id: String,
+        name: String,
+        relayEnabled: Boolean,
+        relayAddr: String?,
+        serverName: String? = null,
+        insecure: Boolean? = null,
+    ) {
         val profile = profilesStore.profiles.value.find { it.id == id } ?: return
         profilesStore.updateProfile(
             profile.copy(
                 name = name.trim().ifEmpty { profile.name },
                 relayEnabled = relayEnabled,
                 relayAddr = relayAddr,
+                // v0.27.0 (W12): allow editing SNI override + insecure flag from
+                // the profile-edit dialog. Used for empirical DPI bypass testing —
+                // m.tinkoff was confirmed blocking traffic by the specific SNI
+                // string (not IP), so the user needs to swap in a whitelisted
+                // popular RU domain like www.yandex.cloud. mTLS still
+                // authenticates protocol-level identity even with insecure=true.
+                serverName = serverName?.trim()?.ifEmpty { null } ?: profile.serverName,
+                insecure = insecure ?: profile.insecure,
             ),
         )
     }
