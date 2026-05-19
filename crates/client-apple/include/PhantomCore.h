@@ -10,9 +10,31 @@
 #include <stdint.h>
 #include <stddef.h>
 
+typedef void (*phantom_ReleaseCb)(void *ctx);
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/**
+ * Register a Swift-side callback that releases the opaque `ctx` pointer
+ * passed to `phantom_runtime_start`. Idempotent — first call wins; later
+ * calls are silently ignored.
+ *
+ * Swift should register this exactly once at app launch:
+ *
+ * ```objc
+ * c_phantom_runtime_set_release_cb({ ctx in
+ *     Unmanaged<BridgeContext>.fromOpaque(ctx).release()
+ * })
+ * ```
+ *
+ * # Safety
+ * `cb` must remain valid for the entire process lifetime and be safe to
+ * call from any thread. The Rust side invokes it from inside
+ * `phantom_runtime_stop` on whatever thread the caller used to call stop.
+ */
+ void phantom_runtime_set_release_cb(phantom_ReleaseCb cb);
 
 /**
  * Start the tunnel runtime.
@@ -20,16 +42,30 @@ extern "C" {
  * * `cfg_json`      — JSON-encoded [`ConnectProfile`] (name + conn_string + settings).
  * * `settings_json` — JSON-encoded [`TunnelSettings`] (overrides settings inside
  *                     cfg_json if present; may be `null` / empty to use defaults).
+ * * `verbose_log`   — when `true`, override the active log filter to TRACE for
+ *                     every category (per ADR 0008 §3, priority 2). When
+ *                     `false`, the default filter applies: `GHOSTSTREAM_LOG`
+ *                     env (priority 1) → build-config default (priority 3).
  * * `status_cb`     — called on every [`StatusFrame`] change; JSON-encoded bytes.
  * * `log_cb`        — called for every [`LogFrame`]; JSON-encoded bytes.
  * * `outbound_cb`   — called for each IP packet from the tunnel destined to the device.
  * * `ctx`           — opaque pointer forwarded to all three callbacks.
  *
  * Returns 0 on success, negative on error.
+ *
+ * # Safety
+ * All pointer parameters must satisfy the contracts above. `cfg_json`,
+ * `settings_json` (when non-null) must point to NUL-terminated UTF-8 strings
+ * of at most [`MAX_FFI_CSTR_LEN`] bytes. The callbacks, when non-null, must
+ * remain valid until [`phantom_runtime_stop`] returns. `ctx` is forwarded
+ * to all three callbacks unchanged and must remain valid until the Swift
+ * release callback registered via [`phantom_runtime_set_release_cb`] has
+ * been invoked.
  */
 
 int32_t phantom_runtime_start(const char *cfg_json,
                               const char *settings_json,
+                              bool verbose_log,
                               void (*status_cb)(const uint8_t*, uintptr_t, void*),
                               void (*log_cb)(const uint8_t*, uintptr_t, void*),
                               void (*outbound_cb)(const uint8_t*, uintptr_t, void*),
@@ -41,13 +77,35 @@ int32_t phantom_runtime_start(const char *cfg_json,
  * Naming convention note: "inbound" here is from the tunnel's perspective —
  * this packet travels inbound to the tunnel (device → network).
  *
- * Returns 0 on accept, -10 on queue full (drop), -11 if no tunnel running.
+ * Returns 0 on accept, -10 on queue full (drop), -11 if no tunnel running,
+ * -1 if `len` is zero, exceeds [`MAX_INBOUND_LEN`], or `ptr` is null.
+ *
+ * # Safety
+ * `ptr` must point to at least `len` readable bytes when non-null. `len`
+ * must not exceed [`MAX_INBOUND_LEN`]; oversized values are rejected.
  */
  int32_t phantom_runtime_submit_inbound(const uint8_t *ptr, uintptr_t len);
 
 /**
- * Signal the running tunnel to shut down gracefully.
- * Returns 0 if a shutdown was signalled, -11 if no tunnel was running.
+ * Synchronously shut down the running tunnel.
+ *
+ * Blocks the caller until:
+ *   1. the supervisor task observes the cancel signal and exits, OR a 5 s
+ *      timeout elapses (the timeout is a safety belt; under normal
+ *      conditions the supervisor exits in <100 ms once cancel fires);
+ *   2. the status + log forwarder tasks have finished draining;
+ *   3. the Swift-registered release callback has been invoked, balancing
+ *      the `Unmanaged.passRetained` that Swift performed before `start`.
+ *
+ * After this returns, none of the C callbacks Swift passed to
+ * `phantom_runtime_start` will be invoked again — Swift may release any
+ * state those callbacks were closing over.
+ *
+ * Returns 0 if a shutdown was performed, -11 if no tunnel was running.
+ *
+ * # Safety
+ * Safe to call from any thread, but callers must serialise with
+ * `phantom_runtime_start` — calling them concurrently is meaningless.
  */
  int32_t phantom_runtime_stop(void);
 
@@ -56,6 +114,10 @@ int32_t phantom_runtime_start(const char *cfg_json,
  * relevant fields: `{"server_addr":"...","server_name":"...","tun_addr":"...",`
  * `"cert_pem":"...","key_pem":"..."}`. Returns NULL on parse error.
  * Caller must free via `phantom_free_string`.
+ *
+ * # Safety
+ * `input` must be NUL-terminated UTF-8 of at most [`MAX_FFI_CSTR_LEN`] bytes
+ * (rejected otherwise — returns NULL).
  */
  char *phantom_parse_conn_string(const char *input);
 
@@ -65,6 +127,10 @@ int32_t phantom_runtime_start(const char *cfg_json,
  * Output: JSON array `[{"addr":"...","prefix":N}]` of routes that should be
  * sent through the VPN (complement of the direct list).
  * Caller must free via `phantom_free_string`.
+ *
+ * # Safety
+ * `direct_cidrs` must be NUL-terminated UTF-8 of at most [`MAX_FFI_CSTR_LEN`]
+ * bytes (rejected otherwise — returns NULL).
  */
  char *phantom_compute_vpn_routes(const char *direct_cidrs);
 
@@ -72,6 +138,11 @@ int32_t phantom_runtime_start(const char *cfg_json,
  * Free a string returned by any `phantom_*` function that returns
  * `*mut c_char`. Passing NULL is a no-op. Passing anything not obtained
  * from this library, or double-freeing, is undefined behavior.
+ *
+ * # Safety
+ * `ptr`, when non-null, must have been obtained from a previous call to a
+ * `phantom_*` function in this library. Double-frees and foreign pointers
+ * are undefined behavior.
  */
  void phantom_free_string(char *ptr);
 

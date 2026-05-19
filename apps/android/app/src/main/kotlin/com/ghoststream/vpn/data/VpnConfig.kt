@@ -13,14 +13,14 @@ data class VpnConfig(
     val perAppMode: String = "none",       // "none", "allowed", "disallowed"
     val perAppList: List<String> = emptyList(),
     /**
-     * v0.27.0 (W10): experimental DPI shaping evasion. Periodically tear down
-     * + re-handshake the tunnel before any individual TCP connection
-     * accumulates the ~25 packets / ~16 KB of payload that triggers the
-     * net4people #490 silent-freeze rule on Russian carrier DPI. Recommended
-     * value when enabled is 15 seconds. `null` or `0` disables. Default off
-     * — user opts in from Settings → Эксперимент: обход DPI шейпинга.
+     * v0.27.0 (W11): experimental DPI shaping evasion. Tear down +
+     * re-handshake the tunnel once the cumulative `bytes_rx + bytes_tx`
+     * crosses this byte cap. Recommended ~100_000 (100 KB). `null` or
+     * `0` disables. Default off — user opts in via Settings →
+     * "Эксперимент: обход DPI шейпинга". Byte-based instead of time-based
+     * so an idle tunnel doesn't get pointlessly recycled.
      */
-    val dpiRecycleSecs: Int? = null,
+    val dpiRecycleBytes: Long? = null,
 )
 
 data class VpnStats(

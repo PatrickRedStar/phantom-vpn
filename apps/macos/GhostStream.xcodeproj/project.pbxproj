@@ -513,7 +513,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -522,7 +522,7 @@
 				INFOPLIST_FILE = GhostStream/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.24.0;
+				MARKETING_VERSION = 0.25.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client;
 				PROVISIONING_PROFILE_SPECIFIER = "$(GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = macosx;
@@ -536,7 +536,7 @@
 				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -545,7 +545,7 @@
 				INFOPLIST_FILE = GhostStream/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.24.0;
+				MARKETING_VERSION = 0.25.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client;
 				PROVISIONING_PROFILE_SPECIFIER = ghoststream;
 				SDKROOT = macosx;
@@ -628,7 +628,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -637,7 +637,7 @@
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.24.0;
+				MARKETING_VERSION = 0.25.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client.tunnel;
 				PRODUCT_MODULE_NAME = PacketTunnelExtension;
 				PRODUCT_NAME = com.ghoststream.client.tunnel;
@@ -653,7 +653,7 @@
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 22;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -662,7 +662,7 @@
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.24.0;
+				MARKETING_VERSION = 0.25.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client.tunnel;
 				PRODUCT_MODULE_NAME = PacketTunnelExtension;
 				PRODUCT_NAME = com.ghoststream.client.tunnel;

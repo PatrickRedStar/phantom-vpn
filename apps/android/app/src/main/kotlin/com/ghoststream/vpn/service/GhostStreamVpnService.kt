@@ -64,8 +64,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val connString: String = "",
         /** Relay host:port — when set, TCP connects here instead of serverAddr (SNI passthrough). */
         val relayAddr: String = "",
-        /** v0.27.0 (W10): periodic recycle interval to evade carrier silent-freeze. 0 = off. */
-        val dpiRecycleSecs: Int = 0,
+        /** v0.27.0 (W11): byte-triggered session recycle to evade carrier silent-freeze. 0 = off. */
+        val dpiRecycleBytes: Long = 0,
     ) {
         fun toJson(): String = JSONObject().apply {
             put("server_addr", serverAddr); put("server_name", serverName)
@@ -75,7 +75,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             put("per_app_mode", perAppMode); put("per_app_list", perAppList.joinToString(","))
             put("conn_string", connString)
             if (relayAddr.isNotBlank()) put("relay_addr", relayAddr)
-            if (dpiRecycleSecs > 0) put("dpi_recycle_secs", dpiRecycleSecs)
+            if (dpiRecycleBytes > 0) put("dpi_recycle_bytes", dpiRecycleBytes)
         }.toString()
 
         companion object {
@@ -97,7 +97,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                         .split(",").filter { it.isNotBlank() },
                     connString = o.optString("conn_string", ""),
                     relayAddr = o.optString("relay_addr", ""),
-                    dpiRecycleSecs = o.optInt("dpi_recycle_secs", 0),
+                    dpiRecycleBytes = o.optLong("dpi_recycle_bytes", 0),
                 )
             }.getOrNull()
         }
@@ -123,7 +123,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     .split(",").filter { it.isNotBlank() },
                 connString = intent.getStringExtra(EXTRA_CONN_STRING) ?: "",
                 relayAddr = intent.getStringExtra(EXTRA_RELAY_ADDR) ?: "",
-                dpiRecycleSecs = intent.getIntExtra(EXTRA_DPI_RECYCLE_SECS, 0),
+                dpiRecycleBytes = intent.getLongExtra(EXTRA_DPI_RECYCLE_BYTES, 0L),
             )
         }
         // Restore from saved prefs. Two cases:
@@ -150,8 +150,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         val connString: String = "",
         /** Relay host:port for SNI passthrough routing. */
         val relayAddr: String = "",
-        /** v0.27.0 (W10): DPI evasion recycle interval. 0 = off. */
-        val dpiRecycleSecs: Int = 0,
+        /** v0.27.0 (W11): DPI evasion recycle byte threshold. 0 = off. */
+        val dpiRecycleBytes: Long = 0,
     )
 
     private data class NativeStatsSnapshot(
@@ -256,7 +256,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         /** Phase 4: full ghs:// connection string, used by new nativeStart. */
         const val EXTRA_CONN_STRING   = "conn_string"
         const val EXTRA_RELAY_ADDR    = "relay_addr"
-        const val EXTRA_DPI_RECYCLE_SECS = "dpi_recycle_secs"
+        const val EXTRA_DPI_RECYCLE_BYTES = "dpi_recycle_bytes"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
@@ -416,14 +416,14 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         val connString = resolved.connString
         val relayAddr = resolved.relayAddr
-        val dpiRecycleSecs = resolved.dpiRecycleSecs
+        val dpiRecycleBytes = resolved.dpiRecycleBytes
         val myGeneration = tunnelGeneration.incrementAndGet()
         startupThread?.interrupt()
         startupThread = Thread {
             startTunnel(
                 serverAddr, serverName, insecure, certPath, keyPath,
                 tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
-                connString, relayAddr, myGeneration, dpiRecycleSecs,
+                connString, relayAddr, myGeneration, dpiRecycleBytes,
             )
         }.apply {
             name = "vpn-startup"
@@ -442,7 +442,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         connString: String = "",
         relayAddr: String = "",
         generation: Int = -1,
-        dpiRecycleSecs: Int = 0,
+        dpiRecycleBytes: Long = 0L,
     ) {
         val parts     = tunAddr.split("/")
         val tunIp     = parts.getOrElse(0) { "10.7.0.2" }
@@ -586,21 +586,20 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             keyPath = keyPath,
             connString = connString,
             relayAddr = relayAddr,
-            dpiRecycleSecs = dpiRecycleSecs,
+            dpiRecycleBytes = dpiRecycleBytes,
         )
 
         val fd = vpnInterface!!.fd
-        // Phase 4: build ConnectProfile JSON for the new nativeStart.
-        val cfgJson = buildConnectProfileJson(name = serverName, connString = connString, serverAddr = effectiveAddr)
-        // v0.27.0 (W10): include dpi_recycle_secs when the user has enabled
-        // the experimental DPI evasion toggle. 0 means feature is off; Rust
-        // side checks Some(secs) where secs > 0.
-        val settingsJson = JSONObject().apply {
-            put("dns_leak_protection", true)
-            put("ipv6_killswitch", true)
-            put("auto_reconnect", true)
-            if (dpiRecycleSecs > 0) put("dpi_recycle_secs", dpiRecycleSecs)
-        }.toString()
+        // Phase 4: build ConnectProfile JSON for the new nativeStart. The DPI
+        // recycle setting MUST live inside cfg.settings (it's the source of
+        // truth on the Rust side — see buildConnectProfileJson comment).
+        val cfgJson = buildConnectProfileJson(
+            name = serverName,
+            connString = connString,
+            serverAddr = effectiveAddr,
+            dpiRecycleBytes = dpiRecycleBytes,
+        )
+        val settingsJson = """{"dns_leak_protection":true,"ipv6_killswitch":true,"auto_reconnect":true}"""
         val result = nativeStart(fd, cfgJson, settingsJson, this)
         if (result != 0) {
             vpnInterface?.close()
@@ -751,18 +750,17 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         } else {
             resolveServerAddrViaUnderlying(params.serverAddr)
         }
-        // Phase 4: build ConnectProfile JSON for the new nativeStart.
-        val cfgJson = buildConnectProfileJson(name = params.serverName, connString = params.connString, serverAddr = effectiveAddr)
-        // v0.27.0 (W10): carry DPI recycle setting across watchdog-initiated
-        // restarts. Without this, an underlying network handoff would drop
-        // back to default (no recycle) and the user's experiment toggle
-        // would silently lose effect on the first cell→wifi switch.
-        val settingsJson = JSONObject().apply {
-            put("dns_leak_protection", true)
-            put("ipv6_killswitch", true)
-            put("auto_reconnect", true)
-            if (params.dpiRecycleSecs > 0) put("dpi_recycle_secs", params.dpiRecycleSecs)
-        }.toString()
+        // Phase 4: build ConnectProfile JSON for the new nativeStart. Carry
+        // the DPI recycle setting across watchdog-initiated restarts —
+        // without this, an underlying network handoff would drop the user's
+        // experiment toggle silently.
+        val cfgJson = buildConnectProfileJson(
+            name = params.serverName,
+            connString = params.connString,
+            serverAddr = effectiveAddr,
+            dpiRecycleBytes = params.dpiRecycleBytes,
+        )
+        val settingsJson = """{"dns_leak_protection":true,"ipv6_killswitch":true,"auto_reconnect":true}"""
         val result = nativeStart(iface.fd, cfgJson, settingsJson, this)
         if (result == 0) {
             Log.i(TAG, "Tunnel restarted")
@@ -818,8 +816,18 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      * We patch the authority in conn_string so Rust doesn't attempt its own DNS
      * resolution (the VPN TUN is already active, DNS would be circular).
      */
-    private fun buildConnectProfileJson(name: String, connString: String, serverAddr: String): String {
+    private fun buildConnectProfileJson(
+        name: String,
+        connString: String,
+        serverAddr: String,
+        dpiRecycleBytes: Long = 0L,
+    ): String {
         val effectiveConnString = patchConnStringAuthority(connString, serverAddr)
+        // v0.27.0 (W11): the Rust side reads TunnelSettings from
+        // `ConnectProfile.settings`, NOT from the separate settingsJson
+        // parameter (that's parsed but immediately discarded as `_settings`
+        // — see crates/client-android/src/lib.rs:207). Any DPI knobs MUST
+        // land here or they silently revert to defaults.
         return JSONObject().apply {
             put("name", name)
             put("conn_string", effectiveConnString)
@@ -827,6 +835,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 put("dns_leak_protection", true)
                 put("ipv6_killswitch", true)
                 put("auto_reconnect", true)
+                if (dpiRecycleBytes > 0) put("dpi_recycle_bytes", dpiRecycleBytes)
             })
         }.toString()
     }

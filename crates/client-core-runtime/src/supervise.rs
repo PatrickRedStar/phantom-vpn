@@ -228,6 +228,7 @@ pub async fn supervise(
             protect_socket.clone(),
             cancel.clone(),
             settings.dpi_recycle_secs,
+            settings.dpi_recycle_bytes,
         )
         .await;
 
@@ -421,12 +422,17 @@ async fn drive_tunnel(
     n_streams: usize,
     protect_socket: Option<ProtectSocket>,
     mut cancel: watch::Receiver<bool>,
-    // v0.27.0 (W10): if `Some(secs)` and > 0, tear down + re-handshake the
-    // tunnel every `secs` seconds. Each TLS connection lives short enough
-    // that none crosses the net4people #490 freeze threshold (~25 packets /
-    // ~16 KB / ~15-20 s). `None` / `Some(0)` = disabled. Set by user via
-    // the Android Settings "Эксперимент: обход DPI шейпинга" toggle.
+    // v0.27.0 (W10/W11): periodic session recycle to defeat net4people #490
+    // silent-freeze. Two flavours:
+    //  - `dpi_recycle_secs` (W10): time-based, fires every N seconds even
+    //    when idle. Kept for debugging.
+    //  - `dpi_recycle_bytes` (W11): byte-based, fires when bytes_rx +
+    //    bytes_tx crosses N. Preferred — idle sessions don't get
+    //    pointlessly recycled. Recommended value ≈ 100 KB (8 streams × ~14
+    //    KB, just under the carrier's per-connection freeze threshold).
+    // If both are set, whichever trips first wins. `None` / 0 = disabled.
     dpi_recycle_secs: Option<u32>,
+    dpi_recycle_bytes: Option<u64>,
 ) -> anyhow::Result<()> {
     let client_tls =
         phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
@@ -816,19 +822,45 @@ async fn drive_tunnel(
     // "intentional, reconnect immediately, don't bump the attempt counter".
     let mut recycle_fired = false;
 
-    // Recycle sleep future. Pinned so the select! arm can be `&mut`-borrowed
-    // alongside the other arms. When the feature is disabled (None / 0) we
-    // park on `pending()` forever — costs nothing because the future is
-    // never polled by the executor outside the select!.
-    let recycle_sleep = async {
-        match dpi_recycle_secs {
-            Some(s) if s > 0 => {
-                tokio::time::sleep(std::time::Duration::from_secs(s as u64)).await;
+    // Recycle trigger future. Pinned so the select! arm can be `&mut`-borrowed
+    // alongside the other arms. Three modes:
+    //   - both `dpi_recycle_secs` and `dpi_recycle_bytes` disabled → park on
+    //     `pending()` forever (zero overhead, future is never polled)
+    //   - `dpi_recycle_secs > 0` → fire at fixed wall-clock interval
+    //   - `dpi_recycle_bytes > 0` → poll telemetry every 500 ms, fire when
+    //     bytes_rx + bytes_tx crosses the threshold
+    //   - both set → whichever trips first wins (select_either-style race
+    //     baked into the closure with `tokio::select!{ ... }`)
+    let recycle_tele = telemetry.clone();
+    let recycle_trigger = async move {
+        let time_arm = async {
+            match dpi_recycle_secs {
+                Some(s) if s > 0 => {
+                    tokio::time::sleep(std::time::Duration::from_secs(s as u64)).await;
+                    "time"
+                }
+                _ => std::future::pending::<&'static str>().await,
             }
-            _ => std::future::pending::<()>().await,
+        };
+        let bytes_arm = async {
+            match dpi_recycle_bytes {
+                Some(cap) if cap > 0 => loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let rx = recycle_tele.bytes_rx.load(Ordering::Relaxed);
+                    let tx = recycle_tele.bytes_tx.load(Ordering::Relaxed);
+                    if rx.saturating_add(tx) >= cap {
+                        break "bytes";
+                    }
+                },
+                _ => std::future::pending::<&'static str>().await,
+            }
+        };
+        tokio::select! {
+            r = time_arm => r,
+            r = bytes_arm => r,
         }
     };
-    tokio::pin!(recycle_sleep);
+    tokio::pin!(recycle_trigger);
 
     tokio::select! {
         _ = crate::wait_cancelled(&mut cancel) => {
@@ -861,20 +893,23 @@ async fn drive_tunnel(
             );
             forwarder_dead = true;
         }
-        _ = &mut recycle_sleep => {
-            // v0.27.0 (W10): periodic recycle — drop this session before
-            // any individual TCP connection accumulates enough payload to
-            // cross the net4people #490 freeze threshold. Don't set
-            // telemetry.shutdown — that's the user-disconnect flag and
-            // would prevent reconnect. The supervisor pattern-matches the
-            // sentinel Err string we return after teardown and reconnects
-            // immediately with attempt counter reset.
+        kind = &mut recycle_trigger => {
+            // v0.27.0 (W10/W11): periodic recycle fired. `kind` is "time"
+            // or "bytes" depending on which arm of the trigger won. The
+            // supervisor sees the sentinel Err and reconnects with
+            // attempt counter reset.
+            let cur_rx = telemetry.bytes_rx.load(Ordering::Relaxed);
+            let cur_tx = telemetry.bytes_tx.load(Ordering::Relaxed);
             tracing::warn!(
                 category = "tunnel",
                 reason = "recycle.deadline",
+                trigger = kind,
                 recycle_secs = dpi_recycle_secs.unwrap_or(0) as u64,
+                recycle_bytes_cap = dpi_recycle_bytes.unwrap_or(0),
+                bytes_rx = cur_rx,
+                bytes_tx = cur_tx,
                 tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
-                "DPI recycle deadline — session refresh"
+                "DPI recycle — session refresh"
             );
             recycle_fired = true;
         }

@@ -44,15 +44,28 @@ pub struct TunnelSettings {
     /// None = automatic CPU-derived stream count; Some(n) is clamped by runtime.
     #[serde(default)]
     pub streams: Option<usize>,
-    /// v0.27.0 (W10): periodically tear down + re-handshake the tunnel to defeat
-    /// net4people #490 "TSPU freezes the connection after ~25 packets / ~16 KB
-    /// payload" behaviour. `None`/`Some(0)` = disabled. Recommended range when
-    /// enabled: 12-25 seconds — long enough that the recycle overhead doesn't
-    /// dominate, short enough that no individual TCP connection crosses the
-    /// censor's freeze threshold. Off by default; user must opt in via the
-    /// Settings UI under "Эксперимент: обход DPI шейпинга".
+    /// v0.27.0 (W10): kept for backward-compat / debugging — time-based
+    /// recycle. Most installs should leave this `None` and use
+    /// `dpi_recycle_bytes` instead, which fires only when traffic actually
+    /// approaches the carrier's freeze threshold (idle sessions don't get
+    /// pointlessly recycled).
     #[serde(default)]
     pub dpi_recycle_secs: Option<u32>,
+    /// v0.27.0 (W11): byte-triggered session recycle. When the *total*
+    /// payload that has flowed through the tunnel (bytes_rx + bytes_tx)
+    /// crosses this threshold, tear down + re-handshake the whole session.
+    /// `None` / `Some(0)` = disabled. Recommended value when enabled is
+    /// 100_000 (100 KB) — just under the aggregate `8 streams × 14 KB`
+    /// threshold that net4people #490 reports as the per-connection
+    /// freeze trigger on Russian carrier DPI. Off by default; user opts
+    /// in via Settings → "Эксперимент: обход DPI шейпинга".
+    ///
+    /// Trade-off vs `dpi_recycle_secs`: byte-based fires only on actual
+    /// throughput, so an idle tunnel (e.g. user looking at a static page)
+    /// doesn't trigger pointless handshakes. Time-based fires regardless
+    /// of activity which wastes battery and DPI surface for no benefit.
+    #[serde(default)]
+    pub dpi_recycle_bytes: Option<u64>,
 }
 
 fn default_true() -> bool { true }
@@ -65,6 +78,7 @@ impl Default for TunnelSettings {
             auto_reconnect: true,
             streams: None,
             dpi_recycle_secs: None,
+            dpi_recycle_bytes: None,
         }
     }
 }

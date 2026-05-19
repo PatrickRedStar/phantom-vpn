@@ -65,10 +65,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             directCountries = p?.directCountries ?: prefs.directCountries,
             perAppMode      = p?.perAppMode ?: prefs.perAppMode,
             perAppList      = p?.perAppList ?: prefs.perAppList,
-            // v0.27.0 (W10): DPI recycle is a global setting (carrier-side
-            // detection doesn't depend on which profile/endpoint you pick),
-            // so we never sourced it from profile — just preferences.
-            dpiRecycleSecs  = prefs.dpiRecycleSecs,
+            // v0.27.0 (W11): DPI recycle byte cap is a global preference
+            // (carrier detection is per-IP/SNI, not per-profile), so we
+            // pull from preferences only.
+            dpiRecycleBytes = prefs.dpiRecycleBytes,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
@@ -592,13 +592,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * v0.27.0 (W10): set experimental DPI recycle interval. null/0 = off.
+     * v0.27.0 (W11): set experimental DPI recycle byte cap. null/0 = off.
      * Persisted across app restarts via PreferencesStore. Applies on next
      * tunnel start — does not retroactively change a live connection.
+     * Recommended: 100_000 (just under aggregate 8 streams × ~14 KB = 112 KB
+     * carrier per-connection freeze threshold).
      */
-    fun setDpiRecycleSecs(secs: Int?) {
+    fun setDpiRecycleBytes(bytes: Long?) {
         viewModelScope.launch {
-            preferencesStore.saveConfig(config.value.copy(dpiRecycleSecs = secs?.takeIf { it > 0 }))
+            preferencesStore.saveConfig(config.value.copy(dpiRecycleBytes = bytes?.takeIf { it > 0 }))
         }
     }
 
