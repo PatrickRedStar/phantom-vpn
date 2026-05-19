@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
 import android.net.ConnectivityManager
@@ -15,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import com.ghoststream.vpn.BuildConfig
@@ -188,6 +190,16 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      *  down the previous VPN network slot, leaving the system with a phantom
      *  `tun1 mtu 0` route in network <vpnId> for minutes after. */
     @Volatile private var teardownInProgress: Boolean = false
+
+    /** v0.27.0 (W8): partial wake lock held while the tunnel is up. Samsung
+     *  One UI 7 throttles CPU scheduling for backgrounded foreground services
+     *  when the screen is locked — Rust telemetry/TLS-read loops were
+     *  effectively single-stepped, status frames dropped to ~1 / 30 s, and
+     *  apps' TCP sessions over the VPN timed out. The wake lock keeps the
+     *  CPU scheduling regular for our UID. Acquired at startTunnel,
+     *  released by stopTunnelAsync and onDestroy. Tagged so battery stats
+     *  attribute correctly. */
+    private var tunnelWakeLock: PowerManager.WakeLock? = null
 
     // Used by watchdog to sleep-with-wakeup. notifyAll() from network callback or stopTunnel
     // short-circuits exponential backoff so reconnect happens immediately.
@@ -580,11 +592,39 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             return
         }
 
+        // v0.27.0 (W8): acquire PARTIAL_WAKE_LOCK now that the tunnel is up.
+        // Released in stopTunnelAsync (clean stop) and onDestroy (safety net).
+        // Without this Samsung One UI 7 throttles CPU scheduling for our
+        // backgrounded foreground service when the screen locks, starving
+        // the Rust telemetry / TLS-read loops and timing out apps' TCP
+        // sessions through the VPN within minutes.
+        acquireTunnelWakeLock()
+
         // Watchdog will transition to Connected once Rust reports state=connected.
         // Note: VpnState.Connecting was already set by DashboardViewModel.startVpn()
         // before the service intent was sent, so no update needed here.
 
         startWatchdog(serverName, serverAddr)
+    }
+
+    private fun acquireTunnelWakeLock() {
+        if (tunnelWakeLock?.isHeld == true) return
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GhostStream:tunnel")
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            tunnelWakeLock = lock
+            Log.i(TAG, "tunnel wake lock acquired")
+        }.onFailure { Log.w(TAG, "wake lock acquire failed", it) }
+    }
+
+    private fun releaseTunnelWakeLock() {
+        val lock = tunnelWakeLock ?: return
+        tunnelWakeLock = null
+        runCatching { if (lock.isHeld) lock.release() }
+            .onFailure { Log.w(TAG, "wake lock release failed", it) }
+        Log.i(TAG, "tunnel wake lock released")
     }
 
     /**
@@ -790,6 +830,10 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // below) so Android's NetworkAgent has time to fully release the VPN
         // network slot before a fresh tunnel attempts to claim it.
         teardownInProgress = true
+        // v0.27.0 (W8): release the tunnel wake lock as soon as we're tearing
+        // down. No reason to keep CPU pinned through the 1500 ms cooldown +
+        // nativeStop teardown — those don't need real-time scheduling.
+        releaseTunnelWakeLock()
         tunnelGeneration.incrementAndGet() // Invalidate any in-flight startTunnel threads
         userStopped = true
         lastStatusJson = null
@@ -871,6 +915,11 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     override fun onDestroy() {
         unregisterNetworkCallback()
         stopTunnel()
+        // v0.27.0 (W8): safety net — stopTunnelAsync already releases on every
+        // user-/system-initiated stop, but onDestroy can also fire from system
+        // resource pressure with the lock still held. Double-release is safe:
+        // releaseTunnelWakeLock() null-checks and isHeld-checks internally.
+        releaseTunnelWakeLock()
         serviceScope.cancel()
         super.onDestroy()
     }

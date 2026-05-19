@@ -12,6 +12,13 @@
          (on MIUI/EMUI/OxygenOS the foreground service alone isn't enough to
          survive screen-off > 30 min) -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- v0.27.0 (W8): PARTIAL_WAKE_LOCK held by GhostStreamVpnService while
+         the tunnel is active. Without it Samsung One UI's "Adaptive Battery"
+         throttles backgrounded foreground-service CPU scheduling, causing
+         the Rust telemetry / TLS-read loops to be starved while the screen
+         is locked. Apps' TCP sessions through the VPN time out within
+         minutes. Normal permission — auto-granted at install. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
