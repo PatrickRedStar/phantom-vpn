@@ -155,6 +155,7 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
     let mut sni: Option<String> = None;
     let mut tun: Option<String> = None;
     let mut version: Option<String> = None;
+    let mut insecure: bool = false;
     for pair in query.split('&') {
         if pair.is_empty() { continue; }
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
@@ -163,6 +164,11 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
             "sni"       => sni = Some(v),
             "tun"       => tun = Some(v),
             "v"         => version = Some(v),
+            // v0.27.0 (W12): explicit opt-in for skipping server hostname
+            // verification. Required when client overrides SNI to a domain
+            // whose cert it doesn't own (DPI evasion preset). mTLS client
+            // auth still binds protocol-level identity to the server.
+            "insecure"  => insecure = matches!(v.as_str(), "1" | "true"),
             _           => {} // forward-compat: ignore unknown params (e.g. legacy "transport")
         }
     }
@@ -193,7 +199,7 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
         network: ClientNetworkConfig {
             server_addr: authority.to_string(),
             server_name: Some(sni),
-            insecure: false,
+            insecure,
             tun_name: None,
             tun_addr: Some(tun),
             tun_mtu: Some(1350),
