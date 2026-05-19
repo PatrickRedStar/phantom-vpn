@@ -181,6 +181,14 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     // startTunnel invocations through the staleness guard.
     private val tunnelGeneration = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /** v0.27.0 (W6): true between stopTunnelAsync start and the post-nativeStop
+     *  cooldown completing. While set, ACTION_START is dropped — preventing the
+     *  rapid Disconnect → Connect race where a fresh `Builder.establish()` ran
+     *  in the same Service instance before Android's NetworkAgent had torn
+     *  down the previous VPN network slot, leaving the system with a phantom
+     *  `tun1 mtu 0` route in network <vpnId> for minutes after. */
+    @Volatile private var teardownInProgress: Boolean = false
+
     // Used by watchdog to sleep-with-wakeup. notifyAll() from network callback or stopTunnel
     // short-circuits exponential backoff so reconnect happens immediately.
     private val watchdogLock = Object()
@@ -314,6 +322,33 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             // User-initiated stop: clear persistence flag so BootReceiver won't resurrect us.
             serviceScope.launch { runCatching { prefs.setWasRunning(false) } }
             stopTunnelAsync()
+            return START_NOT_STICKY
+        }
+
+        // v0.27.0 (W6): reject ACTION_START during the teardown cooldown.
+        // Without this, a rapid Disconnect→Connect tap delivers ACTION_START
+        // to the still-alive Service that's about to stopSelf, cancelling the
+        // stop and creating a fresh Builder.establish() before Android's
+        // NetworkAgent has cleaned up the previous VPN network slot. The
+        // result is a wedged VPN slot with phantom `tun1 mtu 0` routes that
+        // can only be cleared by force-stopping the app. UI guards already
+        // prevent this from the Dashboard FAB and widget, but external entry
+        // points (BootReceiver, future TileService) might still hit here.
+        if (teardownInProgress) {
+            Log.w(TAG, "onStartCommand: ACTION_START dropped — teardown in progress")
+            VpnStateManager.emitLifecycleLog("WARN", "Подключение отклонено — дождитесь завершения отключения")
+            // We were started via startForegroundService — we MUST call
+            // startForeground() within 5s of that, even if we then immediately
+            // stopSelf, otherwise Android kills the process with ANR.
+            createNotificationChannel()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID, buildNotification("Отключение..."),
+                    FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification("Отключение..."))
+            }
             return START_NOT_STICKY
         }
 
@@ -747,6 +782,11 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      * unable to stopSelf().
      */
     private fun stopTunnelAsync(finalState: VpnState = VpnState.Disconnected) {
+        // v0.27.0 (W6): mark teardown so any racing ACTION_START is dropped.
+        // Cleared after the post-nativeStop cooldown (see the spawned thread
+        // below) so Android's NetworkAgent has time to fully release the VPN
+        // network slot before a fresh tunnel attempts to claim it.
+        teardownInProgress = true
         tunnelGeneration.incrementAndGet() // Invalidate any in-flight startTunnel threads
         userStopped = true
         lastStatusJson = null
@@ -783,10 +823,30 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 Log.w(TAG, "nativeStop did not return in 15s — proceeding anyway")
                 VpnStateManager.emitLifecycleLog("WARN", "nativeStop завис (15с) — принудительное завершение")
             }
+            // v0.27.0 (W6): hold the Disconnecting state for an extra 1500ms
+            // beyond nativeStop completion so Android's NetworkAgent can fully
+            // tear down the VPN network slot before we release the lock.
+            // Empirically (from a stuck-state logcat capture) Android needs
+            // ~1s after the TUN fd closes to remove all routes from the VPN
+            // network and to destroy the agent — without this delay, a
+            // tap-to-Connect during that window leaves the slot wedged in a
+            // half-destroyed state ("tun1 mtu 0 No such device" for minutes).
+            try {
+                Thread.sleep(1500L)
+            } catch (_: InterruptedException) {
+                // benign — Thread.interrupt() from elsewhere
+            }
             mainHandler.post {
                 VpnStateManager.update(finalState)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+                // teardownInProgress stays true until onDestroy fires. If
+                // we reset it here, an ACTION_START racing in between this
+                // post and the actual onDestroy would cancel the stop and
+                // reuse this dying Service — exactly the bug we're closing.
+                // A fresh Service instance starts with teardownInProgress
+                // = false (per-instance @Volatile), so the next legitimate
+                // tap goes through cleanly.
             }
         }.apply { name = "vpn-stop"; start() }
     }
