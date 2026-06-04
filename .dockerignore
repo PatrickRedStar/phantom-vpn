@@ -1,0 +1,13 @@
+target/
+.git/
+.github/
+apps/
+docs/
+crates/client-android/
+crates/client-apple/
+crates/client-linux/
+crates/client-core-runtime/
+crates/gui-ipc/
+tools/
+**/*.md
+**/.DS_Store
