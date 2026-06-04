@@ -1,0 +1,30 @@
+services:
+  phantom-relay:
+    image: ghcr.io/${GHCR_OWNER:-ghoststream}/ghoststream-relay:${TAG:-latest}
+    # build:
+    #   context: ../..
+    #   dockerfile: docker/relay/Dockerfile
+    container_name: phantom-relay
+    restart: unless-stopped
+
+    # Bridge — relay чистый TCP proxy, никаких caps/devices не нужно.
+    # Контейнер слушает :5443 (non-root UID 10001 не может биндить порт <1024 без caps);
+    # host-порт :443 проброшен на :5443 внутри.
+    ports:
+      - "443:5443/tcp"
+
+    volumes:
+      - ./config:/config
+
+    environment:
+      UPSTREAM_ADDR: ${UPSTREAM_ADDR}
+      EXPECTED_SNI:  ${EXPECTED_SNI}
+      LISTEN_ADDR:   ${LISTEN_ADDR:-0.0.0.0:5443}
+      FALLBACK_CERT: ${FALLBACK_CERT:-}
+      FALLBACK_KEY:  ${FALLBACK_KEY:-}
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
