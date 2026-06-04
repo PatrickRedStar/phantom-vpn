@@ -11,12 +11,10 @@ Usage (on the server):
 import argparse
 import base64
 import json
-import os
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 try:
     import tomllib
@@ -67,20 +65,6 @@ def load_toml(path):
 
 
 # ─── Server config reader ────────────────────────────────────────────────────
-
-def load_admin_values(server_toml_path):
-    """Читает [admin] секцию из server.toml. Возвращает (admin_addr, admin_token) или (None, None)."""
-    try:
-        data = load_toml(server_toml_path)
-    except Exception:
-        return None, None
-    admin = data.get("admin", {})
-    if not isinstance(admin, dict):
-        return None, None
-    addr  = admin.get("listen_addr") or None
-    token = admin.get("token") or None
-    return addr, token
-
 
 def _split_host_port(addr: str, default_port: str):
     """Split host:port safely for IPv4/IPv6, returning (host, port)."""
@@ -342,34 +326,6 @@ def generate_client_cert(name, ca_cert_path, ca_key_path, out_dir):
     return str(cert_path), str(key_path), fingerprint
 
 
-# ─── Client config renderer ───────────────────────────────────────────────────
-
-def render_client_toml(server_host, server_port, server_name, tun_addr,
-                       cert_path, key_path, transport="h2"):
-    return f"""[network]
-server_addr = "{server_host}:{server_port}"
-server_name = "{server_name}"
-insecure    = false
-tun_addr    = "{tun_addr}"
-tun_mtu     = 1350
-default_gw  = "10.7.0.1"
-
-[tls]
-cert_path = "{cert_path}"
-key_path  = "{key_path}"
-"""
-
-
-def print_android_instructions(name, local_cert, local_key):
-    android_dir = "/sdcard/Android/data/com.ghoststream.vpn/files"
-    print("\nДля Android (через adb):")
-    print(f"  adb push {local_cert} {android_dir}/client.crt")
-    print(f"  adb push {local_key}  {android_dir}/client.key")
-    print(f"\nВ приложении GhostStream укажите пути:")
-    print(f"  Cert: {android_dir}/client.crt")
-    print(f"  Key:  {android_dir}/client.key")
-
-
 # ─── Menu actions ─────────────────────────────────────────────────────────────
 
 def list_clients(clients):
@@ -429,41 +385,6 @@ def add_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name
 
     _print_conn_for_client(name, connect_host, h2_port, server_name, tun_addr, cert_pem, key_pem,
                           insecure=insecure)
-
-
-def show_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name, insecure=True):
-    clients = keyring["clients"]
-    names   = sorted(clients.keys())
-    if not names:
-        print("Клиентов нет.")
-        return
-
-    print("Выберите клиента:")
-    for i, n in enumerate(names, 1):
-        item = clients[n]
-        print(f"  {i}) {n}  (tun={item.get('tun_addr', '?')})")
-    raw = input("> ").strip()
-    try:
-        idx = int(raw) - 1
-    except ValueError:
-        print("Неверный ввод.")
-        return
-    if idx < 0 or idx >= len(names):
-        print("Неверный выбор.")
-        return
-
-    name = names[idx]
-    item = clients[name]
-
-    try:
-        cert_pem = Path(item["cert_path"]).read_text(encoding="utf-8")
-        key_pem  = Path(item["key_path"]).read_text(encoding="utf-8")
-    except OSError as e:
-        print(f"[ОШИБКА] Не удалось прочитать сертификаты: {e}")
-        return
-
-    _print_conn_for_client(name, connect_host, h2_port, server_name,
-                          item["tun_addr"], cert_pem, key_pem, insecure=insecure)
 
 
 def _pick_client(clients, prompt="Выберите клиента для экспорта:"):
@@ -546,28 +467,6 @@ def _print_conn_for_client(name: str, connect_host: str, server_port: str,
     print()
 
 
-def _generate_conn_string(connect_host: str, server_name: str, server_port: str, tun_addr: str,
-                          cert_pem: str, key_pem: str,
-                          admin_url: Optional[str] = None, admin_token: Optional[str] = None) -> str:
-    """Legacy base64url JSON для admin connection (опция 6).
-
-    Регулярные клиенты должны получать `_build_ghs_url()`.
-    """
-    payload = {
-        "v": 1,
-        "addr": f"{connect_host}:{server_port}",
-        "sni": server_name,
-        "tun": tun_addr,
-        "cert": cert_pem,
-        "key": key_pem,
-    }
-    if admin_url and admin_token:
-        payload["admin"] = {"url": admin_url, "token": admin_token}
-
-    json_bytes = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return base64.urlsafe_b64encode(json_bytes).decode().rstrip("=")
-
-
 def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name, insecure=True):
     """Печать ghs:// строки для выбранного клиента."""
     name, item = _pick_client(keyring["clients"])
@@ -585,58 +484,45 @@ def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name, inse
                           item["tun_addr"], cert_pem, key_pem, insecure=insecure)
 
 
-def export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name,
-                          admin_addr, admin_token):
-    """Генерирует строку подключения с admin правами (HTTP/2)."""
-    name, item = _pick_client(keyring["clients"],
-                               prompt="Выберите клиента для экспорта (admin):")
-    if name is None:
+def grant_admin(keyring, keyring_path):
+    """Помечает клиента как админа (is_admin=true в clients.json).
+
+    После рестарта phantom-server клиент получает доступ к /api/* endpoint'ам
+    (через mTLS, не через токен). Android приложение после connect дёргает
+    /api/whoami и если is_admin=true — открывает admin menu по long-press на
+    профиле в Settings.
+    """
+    clients = keyring["clients"]
+    names = sorted(clients.keys())
+    if not names:
+        print("Клиентов нет.")
         return
 
+    print("Выберите клиента для grant/revoke admin:")
+    for i, n in enumerate(names, 1):
+        flag = " [admin]" if clients[n].get("is_admin") else ""
+        print(f"  {i}) {n}{flag}")
+    raw = input("> ").strip()
     try:
-        cert_pem = Path(item["cert_path"]).read_text(encoding="utf-8")
-        key_pem  = Path(item["key_path"]).read_text(encoding="utf-8")
-    except OSError as e:
-        print(f"[ОШИБКА] Не удалось прочитать файлы сертификата: {e}")
+        idx = int(raw) - 1
+    except ValueError:
+        print("Неверный ввод.")
+        return
+    if idx < 0 or idx >= len(names):
+        print("Неверный выбор.")
         return
 
-    # Resolve admin_addr / admin_token interactively if not provided
-    if not admin_addr:
-        admin_addr = input("Admin URL (e.g. http://10.7.0.1:8080): ").strip()
-        if not admin_addr:
-            print("admin_addr не задан, отменено.")
-            return
-    if not admin_token:
-        admin_token = input("Admin token: ").strip()
-        if not admin_token:
-            print("admin_token не задан, отменено.")
-            return
-
-    # Normalise: ensure http:// prefix
-    if not admin_addr.startswith("http://") and not admin_addr.startswith("https://"):
-        admin_addr = "http://" + admin_addr
-
-    conn_str_h2 = _generate_conn_string(
-        connect_host=connect_host,
-        server_name=server_name,
-        server_port=h2_port,
-        tun_addr=item["tun_addr"],
-        cert_pem=cert_pem,
-        key_pem=key_pem,
-        admin_url=admin_addr,
-        admin_token=admin_token,
-    )
-
-    print(f"\n=== Admin-строка для {name!r} — HTTP/2 (порт {h2_port}) ===")
-    print("─" * 60)
-    print(conn_str_h2)
-    print("─" * 60)
-
-    print(f"\nИспользование:")
-    print(f"  Android: вставьте в приложение → поле «Строка подключения» → Импортировать")
-    print(f"  Linux:   sudo phantom-client-linux --conn-string '{conn_str_h2}'")
-    print(f"  macOS:   sudo phantom-client-macos --conn-string '{conn_str_h2}'")
-    print(f"\n[admin] url={admin_addr}  token={admin_token[:8]}…")
+    name = names[idx]
+    current = bool(clients[name].get("is_admin"))
+    new_val = not current
+    clients[name]["is_admin"] = new_val
+    save_keyring(keyring_path, keyring)
+    print(f"{name}: is_admin = {new_val}")
+    print()
+    print("ВАЖНО: перезапусти phantom-server чтобы новый флаг подхватился:")
+    print("  docker compose restart phantom-server")
+    print()
+    print("После перезапуска и Android-reconnect: long-press на профиль в Settings → Admin menu.")
 
 
 def remove_client(keyring, keyring_path):
@@ -709,16 +595,6 @@ def main():
         default=None,
         help="SNI сервера (e.g. nl2.bikini-bottom.com)",
     )
-    parser.add_argument(
-        "--admin-addr",
-        default=None,
-        help="Admin panel listen addr (e.g. 10.7.0.1:8080 or http://10.7.0.1:8080)",
-    )
-    parser.add_argument(
-        "--admin-token",
-        default=None,
-        help="Admin panel bearer token",
-    )
     args = parser.parse_args()
 
     try:
@@ -732,24 +608,6 @@ def main():
         print(f"[ОШИБКА] {e}")
         raise SystemExit(1)
 
-    try:
-        keyring = load_keyring(args.keyring)
-    except RuntimeError as e:
-        print(f"[ОШИБКА] {e}")
-        raise SystemExit(1)
-
-    # Load admin values: CLI args take priority, then server.toml, then interactive
-    admin_addr  = args.admin_addr
-    admin_token = args.admin_token
-    if not admin_addr or not admin_token:
-        toml_admin_addr, toml_admin_token = load_admin_values(args.server_config)
-        if not admin_addr:
-            admin_addr  = toml_admin_addr
-        if not admin_token:
-            admin_token = toml_admin_token
-
-    admin_configured = bool(admin_addr and admin_token)
-
     while True:
         # Re-load keyring каждую итерацию — после add/remove счётчик клиентов актуальный.
         try:
@@ -758,18 +616,17 @@ def main():
             print(f"[ОШИБКА] {e}")
             raise SystemExit(1)
 
+        admin_count = sum(1 for c in keyring["clients"].values() if c.get("is_admin"))
+
         print(f"\n=== PhantomVPN Client Manager ===")
         print(f"Сервер:    {connect_host}:{h2_port}   SNI: {server_name}")
-        print(f"Keyring:   {args.keyring}  ({len(keyring['clients'])} клиентов)")
-        if admin_configured:
-            print(f"Admin:     {admin_addr}")
+        print(f"Keyring:   {args.keyring}  ({len(keyring['clients'])} клиентов, {admin_count} админ)")
         print()
         print("  1) Добавить клиента")
         print("  2) Удалить клиента")
         print("  3) Список клиентов")
-        print("  4) Показать конфиг клиента (ghs:// + QR)")
-        print("  5) Экспорт строки подключения (ghs:// + QR)")
-        print("  6) Экспорт admin-строки (с правами администратора)")
+        print("  4) Показать строку подключения клиента (ghs://)")
+        print("  5) Toggle admin для клиента (is_admin в clients.json)")
         print("  0) Выход  (либо q, Ctrl-C)")
         try:
             choice = input("> ").strip().lower()
@@ -787,14 +644,10 @@ def main():
         elif choice == "3":
             list_clients(keyring["clients"])
         elif choice == "4":
-            show_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name,
-                        insecure=insecure)
-        elif choice == "5":
             export_conn_str(keyring, connect_host, quic_port, h2_port, server_name,
                             insecure=insecure)
-        elif choice == "6":
-            export_admin_conn_str(keyring, connect_host, quic_port, h2_port, server_name,
-                                  admin_addr, admin_token)
+        elif choice == "5":
+            grant_admin(keyring, args.keyring)
         elif choice == "":
             continue
         else:
