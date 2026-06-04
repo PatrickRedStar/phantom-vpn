@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-06-04
 ---
 
 # Сборка и деплой
@@ -85,6 +85,80 @@ journalctl -u phantom-server.service -n 50 -f
 ```
 
 Деплой RU relay — отдельная процедура (sshim на `193.187.95.128`, процесс аналогичен, сервис `phantom-relay.service`). Детали — [platforms/server.md](platforms/server.md).
+
+---
+
+## Docker deploy (server + relay)
+
+Альтернативный путь развёртывания — pull-and-go через docker compose. Подходит
+для свежих хостов когда не хочется возиться с cargo/systemd/iptables вручную, и
+для быстрого восстановления (`tar` бэкап `/config` → mount на новом хосте →
+старые ghs:// клиентов работают). Bare-metal схема выше остаётся валидной для
+legacy и для случаев когда docker недоступен.
+
+Полное описание — ADR [`0010`](decisions/0010-docker-deploy.md). Сами файлы — `docker/server/` и `docker/relay/`.
+
+**Что в репе:**
+
+```
+docker/
+  server/                  # phantom-server (NL exit)
+    Dockerfile             # rust:1.83-bookworm → debian:bookworm-slim
+    entrypoint.sh          # self-bootstrap: CA + server.toml from env
+    compose.example.yml    # network_mode: host, privileged, /dev/net/tun
+    .env.example           # SERVER_NAME, WAN_IFACE, ADMIN_TOKEN
+    README.md
+  relay/                   # phantom-relay (RU SNI passthrough)
+    Dockerfile             # non-root UID 10001
+    entrypoint.sh          # render relay.toml from env
+    compose.example.yml    # bridge, ports "443:5443/tcp"
+    .env.example           # UPSTREAM_ADDR, EXPECTED_SNI
+    README.md
+```
+
+**Быстрый старт (свежий хост):**
+
+```bash
+git clone https://github.com/<owner>/phantom-vpn.git
+cd phantom-vpn/docker/server   # или docker/relay
+cp compose.example.yml compose.yml
+cp .env.example .env
+$EDITOR .env                   # SERVER_NAME (server) / UPSTREAM_ADDR+EXPECTED_SNI (relay)
+docker compose up -d
+docker compose logs -f phantom-server   # подсмотреть ADMIN_TOKEN на первом старте
+```
+
+**Создать первого клиента:**
+
+```bash
+docker exec -it phantom-server keys     # интерактивное меню keys.py
+```
+
+**Восстановление со старого хоста:**
+
+```bash
+# На старом сервере (если bind-mount был ./config):
+tar czf phantom-state-$(date +%F).tar.gz -C /path/to/docker/server config/
+scp phantom-state-*.tar.gz new-host:~
+
+# На новом сервере:
+git clone ... && cd phantom-vpn/docker/server
+cp compose.example.yml compose.yml && cp .env.example .env
+mkdir -p ./config
+tar xzf ~/phantom-state-*.tar.gz -C ./config --strip-components=1
+docker compose up -d           # entrypoint видит существующий server.toml, пропускает bootstrap
+```
+
+Новый IP, тот же SNI/CA/fingerprint'ы — старые `ghs://` ссылки клиентов работают.
+
+**Образы:**
+
+CI собирает на `git push --tag v*` через `.github/workflows/docker.yml`. Push в `ghcr.io/<repo-owner>/ghoststream-server` и `ghcr.io/<repo-owner>/ghoststream-relay`, multi-arch (linux/amd64,linux/arm64), теги `vX.Y.Z`, `X.Y`, `latest`. На новом хосте — `docker compose pull && up -d`.
+
+**Когда НЕ нужен docker:**
+
+- Бокс уже работает на bare-metal — не трогать.
+- OpenWrt / embedded — там docker нет, отдельная схема (`apps/openwrt/`).
 
 ---
 
