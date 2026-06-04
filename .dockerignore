@@ -5,16 +5,18 @@ target/
 .codegraph/
 .claude/
 .gstack/
+.agents/
+docs/
+memory/
 appstore/
 icons/
-memory/
-apps/
-docs/
-tools/
-**/*.md
-**/.DS_Store
 
-# NB: crates/client-* и crates/gui-ipc оставляем в context — workspace Cargo.toml
-# требует чтобы все members существовали на диске для resolve.
-# Они не компилируются (build идёт через `-p phantom-server`/`-p phantom-relay`),
-# но manifests должны быть видны cargo'у.
+# Mobile / desktop GUI clients — НЕ workspace members и тяжёлые (~2GB суммарно).
+# apps/linux/* и apps/openwrt/* ОСТАВЛЯЕМ — они в Cargo.toml workspace members.
+apps/android/
+apps/macos/
+apps/ios/
+apps/windows/
+
+tools/
+**/.DS_Store
