@@ -48,7 +48,8 @@ COPY --from=builder /src/target/release/phantom-keygen /usr/local/bin/phantom-ke
 # keys.py + alias для docker exec
 COPY server/scripts/keys.py /opt/phantom-vpn/keys.py
 RUN chmod +x /opt/phantom-vpn/keys.py \
-    && ln -s /opt/phantom-vpn/keys.py /usr/local/bin/keys
+    && ln -s /opt/phantom-vpn/keys.py /usr/local/bin/keys \
+    && ln -s /config /opt/phantom-vpn/config
 
 # Стандартный пример конфига внутри образа — entrypoint скопирует если /config пуст
 COPY server/config/server.example.toml /opt/phantom-vpn/server.example.toml
