@@ -31,6 +31,22 @@ if [ ! -f "$SERVER_TOML" ]; then
     LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:443}"
     ADMIN_LISTEN="${ADMIN_LISTEN:-10.7.0.1:8080}"
 
+    # Публичный адрес сервера для генерации ghs:// ссылок клиентам. listen_addr=0.0.0.0
+    # это только bind — keys.py хочет реальный IP/host для connect_host. Если PUBLIC_IP
+    # не задан явно — пробуем определить через ifconfig.me. Если оба не сработали —
+    # public_addr закомментирован, keys.py будет спрашивать интерактивно.
+    PORT_FOR_PUBLIC="${LISTEN_ADDR##*:}"
+    if [ -z "${PUBLIC_IP:-}" ]; then
+        PUBLIC_IP="$(curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+    fi
+    if [ -n "$PUBLIC_IP" ]; then
+        PUBLIC_ADDR_LINE="public_addr = \"${PUBLIC_IP}:${PORT_FOR_PUBLIC}\""
+        echo "[bootstrap] public_addr = ${PUBLIC_IP}:${PORT_FOR_PUBLIC}"
+    else
+        PUBLIC_ADDR_LINE="# public_addr — не определён, keys.py будет спрашивать. Установи руками: public_addr = \"<ip>:${PORT_FOR_PUBLIC}\""
+        echo "[bootstrap] WARN: PUBLIC_IP не задан и ifconfig.me недоступен — keys.py будет спрашивать интерактивно"
+    fi
+
     if [ -z "${ADMIN_TOKEN:-}" ]; then
         ADMIN_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
         echo "[bootstrap] Generated ADMIN_TOKEN: $ADMIN_TOKEN"
@@ -59,6 +75,7 @@ tun_name    = "${TUN_NAME}"
 tun_addr    = "${TUN_ADDR}"
 tun_mtu     = 1350
 wan_iface   = "${WAN_IFACE}"
+${PUBLIC_ADDR_LINE}
 
 [h2]
 listen_addr = "${LISTEN_ADDR}"

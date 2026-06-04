@@ -125,14 +125,24 @@ def load_server_values(server_toml_path, server_ip_override=None, server_name_ov
     h2_listen_addr = h2.get("listen_addr", "0.0.0.0:9443")
     _h2_host, h2_port = _split_host_port(h2_listen_addr, "9443")
 
+    # public_addr — авторитативный публичный адрес (entrypoint выставляет из env).
+    # Используется и для server_ip, и для connect_host если listen_addr = 0.0.0.0.
+    public_addr_raw = network.get("public_addr")
+    public_host = None
+    if isinstance(public_addr_raw, str) and public_addr_raw.strip():
+        public_host, _ = _split_host_port(public_addr_raw, quic_port)
+
     # Resolve server IP
     if server_ip_override:
         server_ip = server_ip_override
     elif raw_ip in ("0.0.0.0", "[::]", "::"):
-        print(f"[!] listen_addr = {raw_ip!r} — нужен реальный публичный IP")
-        server_ip = input("Введите публичный IP сервера: ").strip()
-        if not server_ip:
-            raise RuntimeError("IP сервера не задан")
+        if public_host:
+            server_ip = public_host
+        else:
+            print(f"[!] listen_addr = {raw_ip!r} — нужен реальный публичный IP")
+            server_ip = input("Введите публичный IP сервера: ").strip()
+            if not server_ip:
+                raise RuntimeError("IP сервера не задан")
     else:
         server_ip = raw_ip
 
@@ -140,16 +150,21 @@ def load_server_values(server_toml_path, server_ip_override=None, server_name_ov
     if server_name_override:
         server_name = server_name_override
     else:
-        cert_path = quic.get("cert_path", "")
-        # Try to extract domain from LE cert path like
-        # /etc/letsencrypt/live/nl2.bikini-bottom.com/fullchain.pem
-        m = re.search(r"/live/([^/]+)/", cert_path)
-        if m:
-            server_name = m.group(1)
+        # 1) Self-signed bootstrap путь: cert_subjects = ["<host>"] в [quic].
+        subjects = quic.get("cert_subjects")
+        if isinstance(subjects, list) and subjects and isinstance(subjects[0], str):
+            server_name = subjects[0].strip()
         else:
-            server_name = input("Введите SNI сервера (e.g. nl2.bikini-bottom.com): ").strip()
-            if not server_name:
-                server_name = server_ip
+            # 2) Let's Encrypt путь: cert_path = ".../live/<host>/fullchain.pem"
+            cert_path = quic.get("cert_path", "")
+            m = re.search(r"/live/([^/]+)/", cert_path)
+            if m:
+                server_name = m.group(1)
+            else:
+                # 3) Интерактив как последняя надежда.
+                server_name = input("Введите SNI сервера (e.g. nl2.bikini-bottom.com): ").strip()
+                if not server_name:
+                    server_name = server_ip
 
     # Host used in generated client config / connection string:
     # prefer explicit public_addr host, fallback to resolved public IP.

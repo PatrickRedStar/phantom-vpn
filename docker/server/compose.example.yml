@@ -43,6 +43,7 @@ services:
       TUN_NAME:    ${TUN_NAME:-tun1}
       TUN_ADDR:    ${TUN_ADDR:-10.7.0.1/24}
       LISTEN_ADDR: ${LISTEN_ADDR:-0.0.0.0:443}
+      PUBLIC_IP:   ${PUBLIC_IP:-}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
 
     logging:

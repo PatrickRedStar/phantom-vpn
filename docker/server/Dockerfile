@@ -32,14 +32,17 @@ FROM debian:bookworm-slim AS runtime
 
 # iptables/ip — phantom-server вызывает их сам (sysctl ip_forward + MASQUERADE + FORWARD).
 # openssl — keys.py shell'ит openssl CLI для подписания клиентских сертификатов через CA.
-# python3 — для keys.py (управление пользователями через `docker exec`).
+# python3 — для keys.py. ВАЖНО: python3 (full), НЕ python3-minimal — последний не включает
+# stdlib `json`, `tomllib`, `subprocess` и keys.py падает на import.
+# curl — entrypoint определяет публичный IP через ifconfig.me на первом старте.
 # tini — корректный PID 1 + reaping.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         iptables \
         iproute2 \
         openssl \
         procps \
-        python3-minimal \
+        python3 \
+        curl \
         tini \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
