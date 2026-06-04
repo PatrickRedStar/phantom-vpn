@@ -1,0 +1,52 @@
+# phantom-server compose
+#
+# Usage:
+#   cp compose.example.yml compose.yml
+#   cp .env.example .env
+#   $EDITOR .env                # set SERVER_NAME
+#   docker compose up -d
+#
+# Restore from backup:
+#   mkdir -p ./config
+#   tar xzf phantom-state.tar.gz -C ./config --strip-components=1
+#   docker compose up -d        # entrypoint detects existing server.toml, skips bootstrap
+
+services:
+  phantom-server:
+    # ghcr.io image by default; switch to build: ../.. when iterating locally.
+    image: ghcr.io/${GHCR_OWNER:-ghoststream}/ghoststream-server:${TAG:-latest}
+    # build:
+    #   context: ../..
+    #   dockerfile: docker/server/Dockerfile
+    container_name: phantom-server
+    restart: unless-stopped
+
+    # NB: host network is required — phantom-server runs `iptables -t nat ... MASQUERADE`
+    # against wan_iface, which must be a real host interface. Bridge networking would
+    # write rules into a docker-private namespace that no outside traffic ever touches.
+    network_mode: host
+
+    # privileged + /dev/net/tun: tun_uring uses io_uring; iptables/sysctl need NET_ADMIN.
+    # Можно сузить до cap_add: [NET_ADMIN, NET_RAW, SYS_ADMIN], но privileged проще
+    # и эквивалентно для одного-процесса контейнера на dedicated VPS.
+    privileged: true
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    # State полностью в bind-mount. Бэкап: tar czf state.tgz ./config
+    volumes:
+      - ./config:/config
+
+    environment:
+      SERVER_NAME: ${SERVER_NAME}
+      WAN_IFACE:   ${WAN_IFACE:-eth0}
+      TUN_NAME:    ${TUN_NAME:-tun1}
+      TUN_ADDR:    ${TUN_ADDR:-10.7.0.1/24}
+      LISTEN_ADDR: ${LISTEN_ADDR:-0.0.0.0:443}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
