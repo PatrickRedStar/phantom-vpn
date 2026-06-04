@@ -11,9 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
     && rm -rf /var/lib/apt/lists/*
 
+# Cargo workspace resolve требует manifests всех members на диске, поэтому
+# копируем не только server/relay но и apps/linux + apps/openwrt.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY server/ server/
+COPY apps/linux/ apps/linux/
+COPY apps/openwrt/ apps/openwrt/
 
 RUN cargo build --release -p phantom-relay --bin phantom-relay
 

@@ -12,11 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cmake \
     && rm -rf /var/lib/apt/lists/*
 
-# Скопировать только то что нужно для server-сборки.
-# crates/client-* и apps/ исключены через .dockerignore, но дублируем для надёжности.
+# Скопировать всё что требует workspace resolve. Cargo читает Cargo.toml каждого
+# workspace member даже если мы билдим только -p phantom-server, поэтому apps/linux
+# и apps/openwrt тоже нужны на диске (mobile/GUI клиенты исключены через .dockerignore).
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY server/ server/
+COPY apps/linux/ apps/linux/
+COPY apps/openwrt/ apps/openwrt/
 
 # Сборка только server crate, без всего workspace.
 RUN cargo build --release \
