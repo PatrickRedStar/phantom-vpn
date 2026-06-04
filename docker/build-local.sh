@@ -53,5 +53,13 @@ test -f "$TEST_DIR/config/server.toml"|| { echo "FAIL: server.toml missing";exit
 test -f "$TEST_DIR/config/clients.json" || { echo "FAIL: clients.json missing"; exit 1; }
 grep -q '\[h2\]' "$TEST_DIR/config/server.toml" || { echo "FAIL: [h2] section missing"; exit 1; }
 
-echo "OK — both images build, server bootstrap generates valid state."
+echo
+echo "=== Smoke-test: keys.py imports ==="
+# Catches python3-minimal-vs-python3 trap: stdlib json / tomllib not in minimal package.
+docker run --rm ghoststream-server:local keys --help 2>&1 | head -10 || {
+    echo "FAIL: keys.py crashed on import — probably missing stdlib (python3-minimal vs python3)"
+    exit 1
+}
+
+echo "OK — both images build, server bootstrap generates valid state, keys.py loads."
 echo "Safe to push and trigger CI."

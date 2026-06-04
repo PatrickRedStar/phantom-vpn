@@ -98,10 +98,19 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
              Regenerate connection link via the bot."))?;
 
     // userinfo@authority?query
-    let (userinfo, after_at) = rest.split_once('@')
+    let (userinfo_raw, after_at) = rest.split_once('@')
         .ok_or_else(|| anyhow::anyhow!("Malformed ghs:// URL: missing '@'"))?;
     let (authority, query) = after_at.split_once('?')
         .ok_or_else(|| anyhow::anyhow!("Malformed ghs:// URL: missing query string"))?;
+
+    // v0.27.0: strip whitespace/control from userinfo. base64url alphabet is
+    // [A-Za-z0-9-_=] only. URL_SAFE_NO_PAD.decode is strict (errors on stray
+    // chars), but if the URL was line-wrapped by a terminal/IM during paste,
+    // we want to recover rather than fail. Mirror Kotlin parse fix.
+    let userinfo: String = userinfo_raw.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '=')
+        .collect();
+    let userinfo = userinfo.as_str();
 
     if userinfo.is_empty() {
         anyhow::bail!("Malformed ghs:// URL: empty userinfo");

@@ -34,6 +34,7 @@ FROM debian:bookworm-slim AS runtime
 # openssl — keys.py shell'ит openssl CLI для подписания клиентских сертификатов через CA.
 # python3 — для keys.py. ВАЖНО: python3 (full), НЕ python3-minimal — последний не включает
 # stdlib `json`, `tomllib`, `subprocess` и keys.py падает на import.
+# qrencode — keys.py рисует ASCII QR-код для ghs:// при добавлении/показе клиента.
 # curl — entrypoint определяет публичный IP через ifconfig.me на первом старте.
 # tini — корректный PID 1 + reaping.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -42,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         openssl \
         procps \
         python3 \
+        qrencode \
         curl \
         tini \
         ca-certificates \

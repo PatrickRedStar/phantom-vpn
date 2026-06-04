@@ -27,7 +27,16 @@ object ConnStringParser {
 
         val atIdx = rest.indexOf('@')
         require(atIdx > 0) { "Malformed ghs:// URL: missing '@'" }
-        val userinfo = rest.substring(0, atIdx)
+        // v0.27.0: Android `Base64.URL_SAFE` lenient — silently ignores embedded
+        // whitespace and realigns subsequent bytes, corrupting the inner PEM
+        // body without raising any error at the userinfo level. Surfaces later
+        // as `InvalidTrailingPadding` from rustls-pemfile when it tries to
+        // decode the cert-block base64. Strip everything that isn't valid
+        // base64url BEFORE the decode so a stray newline/space from a copy-paste
+        // mishap can't corrupt the cert.
+        val userinfo = rest.substring(0, atIdx).filter { c ->
+            c == '-' || c == '_' || c == '=' || c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9'
+        }
         val afterAt = rest.substring(atIdx + 1)
 
         val qIdx = afterAt.indexOf('?')
