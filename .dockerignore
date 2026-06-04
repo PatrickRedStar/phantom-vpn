@@ -1,13 +1,20 @@
 target/
 .git/
 .github/
+.gitnexus/
+.codegraph/
+.claude/
+.gstack/
+appstore/
+icons/
+memory/
 apps/
 docs/
-crates/client-android/
-crates/client-apple/
-crates/client-linux/
-crates/client-core-runtime/
-crates/gui-ipc/
 tools/
 **/*.md
 **/.DS_Store
+
+# NB: crates/client-* и crates/gui-ipc оставляем в context — workspace Cargo.toml
+# требует чтобы все members существовали на диске для resolve.
+# Они не компилируются (build идёт через `-p phantom-server`/`-p phantom-relay`),
+# но manifests должны быть видны cargo'у.
