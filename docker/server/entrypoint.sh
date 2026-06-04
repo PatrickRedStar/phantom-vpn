@@ -60,6 +60,9 @@ tun_addr    = "${TUN_ADDR}"
 tun_mtu     = 1350
 wan_iface   = "${WAN_IFACE}"
 
+[h2]
+listen_addr = "${LISTEN_ADDR}"
+
 [timeouts]
 idle_timeout_secs = 300
 hard_timeout_secs = 86400
