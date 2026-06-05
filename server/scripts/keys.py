@@ -279,9 +279,17 @@ def generate_client_cert(name, ca_cert_path, ca_key_path, out_dir):
     cert_path = out_dir / "client.crt"
     csr_path  = out_dir / "client.csr"
 
-    # 1. Генерация EC ключа (P-256)
+    # 1. Генерация EC ключа (P-256) в PKCS#8 формате.
+    # ВАЖНО: Android Java KeyFactory НЕ понимает SEC1 (`BEGIN EC PRIVATE KEY`),
+    # только PKCS#8 (`BEGIN PRIVATE KEY`). Без `pkcs8 -topk8` AdminHttpClient
+    # бросает IllegalStateException: unsupported private key algorithm.
+    sec1_path = out_dir / "client.sec1.key"
     _run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout",
+          "-out", str(sec1_path)])
+    _run(["openssl", "pkcs8", "-topk8", "-nocrypt",
+          "-in",  str(sec1_path),
           "-out", str(key_path)])
+    sec1_path.unlink(missing_ok=True)
 
     # 2. CSR
     subj = f"/CN={name}/O=PhantomVPN"

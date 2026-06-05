@@ -80,12 +80,15 @@ object AdminHttpClient {
             init(kmf.keyManagers, arrayOf<TrustManager>(pinningTm), null)
         }
 
+        // v0.27.0 (debug): timeouts bumped 5s → 30s. На mobile RU networks
+        // через VPN tunnel первый handshake до 10.7.0.1:8080 может занимать
+        // 10+ сек (особенно при TSPU shaping). 5s слишком жёстко.
         val client = OkHttpClient.Builder()
             .sslSocketFactory(sslCtx.socketFactory, pinningTm)
             .hostnameVerifier(HostnameVerifier { _, _ -> true })
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .writeTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .build()
 
         return HandshakeOutcome(client = client, serverCertFpRef = seenRef)

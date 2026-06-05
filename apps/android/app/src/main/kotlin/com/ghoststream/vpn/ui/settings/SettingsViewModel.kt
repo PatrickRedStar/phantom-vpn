@@ -402,20 +402,28 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val baseUrl = "https://$gateway:8080"
 
         viewModelScope.launch(Dispatchers.IO) {
+            android.util.Log.i("AdminProbe", "fetchProfile: name=${profile.name} tunIp=$myTunIp baseUrl=$baseUrl")
             try {
                 val certFile = java.io.File(profile.certPath)
                 val keyFile = java.io.File(profile.keyPath)
-                if (!certFile.exists() || !keyFile.exists()) return@launch
+                if (!certFile.exists() || !keyFile.exists()) {
+                    android.util.Log.w("AdminProbe", "cert/key files missing: cert=${certFile.exists()} key=${keyFile.exists()}")
+                    return@launch
+                }
+                android.util.Log.i("AdminProbe", "building OkHttpClient (cert=${profile.certPath})")
                 val outcome = AdminHttpClient.build(
                     certPemPath = profile.certPath,
                     keyPemPath = profile.keyPath,
                     pinnedFp = profile.cachedAdminServerCertFp,
                 )
+                android.util.Log.i("AdminProbe", "dialing $baseUrl/api/me (timeout=30s)")
                 val meReq = Request.Builder().url("$baseUrl/api/me").get().build()
                 val isAdmin = outcome.client.newCall(meReq).execute().use { resp ->
+                    android.util.Log.i("AdminProbe", "/api/me code=${resp.code}")
                     if (!resp.isSuccessful) return@launch
                     JSONObject(resp.body?.string().orEmpty()).optBoolean("is_admin", false)
                 }
+                android.util.Log.i("AdminProbe", "is_admin=$isAdmin for ${profile.name}")
                 val clReq = Request.Builder().url("$baseUrl/api/clients").get().build()
                 val body = outcome.client.newCall(clReq).execute().use {
                     if (!it.isSuccessful) return@launch
@@ -452,7 +460,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         break
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("AdminProbe", "fetch failed for ${profile.name}: ${e.javaClass.simpleName}: ${e.message}")
+            }
         }
     }
 
@@ -575,7 +585,24 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     init {
         refreshDownloadedRules()
         migrateLegacyIfNeeded()
-        fetchAllSubscriptions()
+        // v0.27.0 (debug): fetchAllSubscriptions раньше вызывался один раз тут
+        // — но `profiles.value` могло быть пустым (ProfilesStore.load async),
+        // и для свежедобавленных профилей fetch никогда не происходил.
+        // Подпишемся на profiles.collect — каждый раз когда profile добавляется
+        // или меняется, дёргаем fetch для тех у кого cachedIsAdmin == null.
+        viewModelScope.launch {
+            val alreadyProbed = mutableSetOf<String>()  // by profile.id
+            profilesStore.profiles.collect { list ->
+                android.util.Log.i("AdminProbe", "profiles update: ${list.size} profiles")
+                list.filter {
+                    it.certPath.isNotBlank() && it.keyPath.isNotBlank()
+                            && it.id !in alreadyProbed
+                }.forEach {
+                    alreadyProbed.add(it.id)
+                    fetchProfileSubscription(it)
+                }
+            }
+        }
     }
 
     private fun migrateLegacyIfNeeded() {

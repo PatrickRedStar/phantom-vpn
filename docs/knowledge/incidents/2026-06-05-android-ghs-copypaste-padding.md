@@ -151,3 +151,45 @@ Commit: `76436c1 fix(client+keys): strip non-base64url chars from ghs:// userinf
   не как inline-сообщение в чат (Telegram гарантированно режет длинные строки).
 - Рассмотреть переход на short-id ghs:// схему — план в `docs/superpowers/plans/`.
 - В release notes Android v0.27.0+ упомянуть defensive filter в parser.
+
+## Postscriptum (2026-06-05, тот же вечер): второй баг — SEC1 vs PKCS#8
+
+После того как фикс copy-paste padding'а заставил tunnel подняться, обнаружился
+**второй**, независимый баг — **admin badge не появлялся** в Android UI даже при
+успешно подключённом VPN. Сервер возвращал `{"is_admin":true,"name":"phone"}`
+для прямого curl, но Android никогда не вызывал `/api/me`.
+
+**Root cause:** Android Java `KeyFactory` поддерживает только PKCS#8 формат
+private key (`-----BEGIN PRIVATE KEY-----`). `keys.py` шеллил `openssl ecparam`,
+который выдаёт **SEC1** (`-----BEGIN EC PRIVATE KEY-----`). `AdminHttpClient.build`
+кидал `IllegalStateException: unsupported private key algorithm` в момент
+`parsePemPrivateKey(keyPem)` → попадал в silent `catch (_: Exception) {}` в
+`fetchProfileSubscription` → `cachedIsAdmin` оставался `null` → long-press
+admin menu не показывался.
+
+Почему spongebob (vdsina) раньше работал, а phone (docker poland) нет —
+spongebob выпускался через **admin HTTP API** (`crates/server/src/admin.rs::
+generate_client_cert`), который использует `rcgen` → **PKCS#8** native.
+phone был выпущен через **keys.py → openssl** → SEC1. rustls на server'е
+парсит оба формата без проблем, поэтому tunnel handshake проходил — но
+Android Java криптография строже.
+
+**Fix (`server/scripts/keys.py:generate_client_cert`):** после `openssl ecparam`
+конвертировать SEC1 → PKCS#8 через `openssl pkcs8 -topk8 -nocrypt`. Все новые
+client.key теперь PKCS#8; существующие можно конвертировать тем же `openssl
+pkcs8 -topk8` — fingerprint cert'а не меняется, только key encoding.
+
+**Параллельный fix в Android (debug APK v0.26.20):**
+- `AdminHttpClient` — timeout 5s → 30s (mobile network через VPN tunnel может
+  быть медленным для первого handshake).
+- `SettingsViewModel` — `fetchAllSubscriptions()` в `init {}` был race-condition
+  (ProfilesStore.profiles ещё async загружается). Переписан на
+  `profilesStore.profiles.collect{}` — fetch при любом обновлении списка.
+- Логирование через `Log.i("AdminProbe", ...)` в catch блоках — больше никаких
+  silent exceptions.
+
+**Урок:** Android Java security stack строже чем rustls. Server-side cert
+generation pipeline должен валидироваться на **обоих** клиентах (mobile +
+desktop) **отдельно**, иначе один формат может тихо работать в одном и падать
+в другом. Это второй раз когда openssl CLI vs rcgen/rustls дала субтильное
+расхождение (см. также incident про PEM line endings).
