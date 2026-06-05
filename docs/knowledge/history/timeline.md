@@ -4,6 +4,17 @@ updated: 2026-06-05
 
 # Timeline проекта
 
+### v0.26.22 — 2026-06-05
+
+Google Play hygiene patch. `MainActivity.onCreate` использует
+`enableEdgeToEdge()` вместо устаревшего
+`WindowCompat.setDecorFitsSystemWindows(false)`. `Theme.kt` SideEffect
+больше не вызывает `window.statusBarColor` / `navigationBarColor` —
+deprecated в SDK 35; appearance (свет/тьма иконок) по-прежнему динамически
+переключается через `WindowInsetsControllerCompat`. Background под
+прозрачными system bars обеспечивает Compose `Box(... background(gsColors.bg))`.
+Закрывает 2 warning'а из Google Play Console (versionCode 81/0.26.7).
+
 163 коммита · 66 тегов · 8 эпох развития (2026-03-12 → 2026-04-27).
 
 Цель документа — **понимать откуда что пришло**. Если код смущает, ищи коммит в этой таблице: контекст в сообщении коммита + ADR (`decisions/`), если было крупное решение.

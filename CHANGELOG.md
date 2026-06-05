@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.26.22] - 2026-06-05
+
+### Fixed
+- **Edge-to-edge (Android 15+)** — `MainActivity.onCreate` теперь использует `enableEdgeToEdge()` вместо deprecated `WindowCompat.setDecorFitsSystemWindows(false)`. Закрывает Google Play warning «Отображение от края до края может работать не у всех пользователей».
+- **Deprecated bar-color APIs** — `Theme.kt` больше не вызывает `window.statusBarColor =` / `window.navigationBarColor =` (deprecated в SDK 35). Прозрачность достигается через `enableEdgeToEdge()`. Закрывает Google Play warning «В вашем приложении используются неподдерживаемые API».
+
 ## [0.26.21] - 2026-06-05
 
 ### Fixed

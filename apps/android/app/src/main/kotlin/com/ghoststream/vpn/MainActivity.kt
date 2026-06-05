@@ -5,7 +5,7 @@ import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.os.LocaleListCompat
-import androidx.core.view.WindowCompat
+import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.navigation.AppNavigation
@@ -34,8 +34,8 @@ class MainActivity : AppCompatActivity() {
         // Locales() returns synchronously from system prefs, so no DataStore
         // read is needed at all. Requires touching SettingsViewModel +
         // PreferencesStore (out of scope for Batch I).
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        WindowCompat.setDecorFitsSystemWindows(window, false)
 
         setContent {
             GhostStreamTheme {

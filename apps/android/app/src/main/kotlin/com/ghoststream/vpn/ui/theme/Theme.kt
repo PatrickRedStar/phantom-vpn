@@ -86,23 +86,15 @@ fun GhostStreamTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
+            // v0.26.22: enableEdgeToEdge() в MainActivity делает system bars
+            // прозрачными по умолчанию (Android 15 default). Здесь только
+            // динамически переключаем appearance (светлые/тёмные иконки)
+            // при смене темы runtime'но. window.statusBarColor /
+            // navigationBarColor больше не трогаем — deprecated в SDK 35.
             val window = (view.context as Activity).window
             val ctrl = WindowCompat.getInsetsController(window, view)
             ctrl.isAppearanceLightStatusBars = !isDark
             ctrl.isAppearanceLightNavigationBars = !isDark
-            // v0.26.3: edge-to-edge — system bars become transparent so
-            // our `C.bg` colour shows through under both the status bar
-            // and the gesture pill area. Without this, on light theme
-            // Android draws a white nav-bar strip under the dark app
-            // content (and a less visible strip on dark theme too).
-            // The deprecation note is acknowledged: navigationBarColor
-            // is the only working knob across API 26..36 — the new
-            // `enableEdgeToEdge(SystemBarStyle)` API still resolves to
-            // setting these properties underneath.
-            @Suppress("DEPRECATION")
-            window.navigationBarColor = android.graphics.Color.TRANSPARENT
-            @Suppress("DEPRECATION")
-            window.statusBarColor = android.graphics.Color.TRANSPARENT
         }
     }
 
