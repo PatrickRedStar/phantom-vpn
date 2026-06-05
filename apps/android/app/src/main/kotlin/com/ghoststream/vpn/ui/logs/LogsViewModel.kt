@@ -258,7 +258,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                 LogPersister.flushPending()
                 val parts = LogPersister.allLogFiles(context)
 
-                val out = File(context.cacheDir.apply { mkdirs() }, "ghoststream-session.log")
+                val out = File(File(context.cacheDir, "logs").apply { mkdirs() }, "ghoststream-session.log")
                 out.bufferedWriter().use { w ->
                     if (parts.isEmpty()) {
                         // Fallback to RAM-only snapshot.
