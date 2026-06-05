@@ -343,6 +343,9 @@ pub enum TunnelHealth {
     Degraded,
     /// Recovering — runtime decided to reconnect but UI still on Connected lifecycle.
     Reconnecting,
+    /// streams_up == 0 ≥ dead_threshold — tunnel is effectively dead,
+    /// teardown + reconnect is in progress. v0.26.21.
+    Dead,
 }
 
 /// Coarse bandwidth class, derived from peak-vs-current rate. `Throttled`

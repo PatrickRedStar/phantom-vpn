@@ -61,13 +61,14 @@ sealed class VpnState {
  * v0.24.0 — derived from connection state + idle_rx_secs + bandwidth_class.
  */
 enum class TunnelHealth {
-    HEALTHY, STALE, DEGRADED, RECONNECTING;
+    HEALTHY, STALE, DEGRADED, RECONNECTING, DEAD;
 
     companion object {
         fun fromJson(s: String?): TunnelHealth = when (s) {
             "stale" -> STALE
             "degraded" -> DEGRADED
             "reconnecting" -> RECONNECTING
+            "dead" -> DEAD
             else -> HEALTHY
         }
     }
@@ -309,6 +310,11 @@ internal fun deriveUiState(lifecycle: VpnState, frame: StatusFrameData): VpnStat
                     attempt = frame.reconnectAttempt ?: 0,
                     nextDelaySecs = frame.reconnectNextDelaySecs,
                     lastError = frame.lastError,
+                )
+                TunnelHealth.DEAD -> VpnState.Reconnecting(
+                    attempt = frame.reconnectAttempt ?: 0,
+                    nextDelaySecs = frame.reconnectNextDelaySecs,
+                    lastError = frame.lastError ?: "all streams dead",
                 )
                 TunnelHealth.HEALTHY -> lifecycle
             }
