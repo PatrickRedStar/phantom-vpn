@@ -199,6 +199,20 @@ Sparkle integration → Brand polish → Release pipeline).
 | _2026-06-04_ | **Docker init для server + relay.** vdsina (NL exit) лежала несколько дней — провайдер упал. Ручная схема (cargo + systemd + iptables + nginx) сделала восстановление недопустимо долгим. Решение: два docker-образа в `ghcr.io/<owner>/ghoststream-{server,relay}`, весь state в bind-mount `/config`, self-bootstrap entrypoint при первом старте (генерит CA через `phantom-keygen`, рендерит `server.toml` из env). Восстановление = `tar+scp` бэкап `./config` → mount на новом хосте → старые `ghs://` клиентов работают (новый IP, тот же SNI/CA/fingerprint'ы). Server использует `network_mode: host + privileged` (iptables NAT не работает в bridge namespace). Relay — non-root UID 10001 + bridge + `ports: "443:5443/tcp"` (UID не биндит <1024). CI multi-arch (amd64+arm64) на тэги `v*` через QEMU buildx. Полный ADR — [`0010`](../decisions/0010-docker-deploy.md). Bare-metal схема остаётся для legacy. |
 | _2026-06-05_ | **Развёртывание vps_poland + 6 часов дебага ghs:// import.** Поднят первый docker-based server в Польше (poland.bikini-bottom.com), на host nginx с 3x-ui front + Let's Encrypt cert. Phantom-server перенастроен использовать LE cert (bind-mount `/etc/letsencrypt:/etc/letsencrypt:ro`) → старые Android клиенты v0.26.x работают без `insecure=1` flag (LE в webpki_roots). Прошёлся по всем пунктам `keys.py`: удалена опция 6 (legacy base64-JSON admin-string, Android v0.25+ не парсит), удалён `_generate_conn_string`, `export_admin_conn_str`, `render_client_toml`, `print_android_instructions`, `load_admin_values` и связанные CLI args; merge'нуты дублирующие опции 4+5; добавлена опция 5 "Toggle admin" (флипает `is_admin` в clients.json). **Большой инцидент**: Android `InvalidTrailingPadding` на mTLS handshake при копи-пасте длинного ghs:// (>1 KB) — `Base64.URL_SAFE` молча игнорирует whitespace и сдвигает inner cert body. Fix: zero-mangling доставка через `adb push` + защитный фильтр `[A-Za-z0-9-_=]` в `ConnStringParser.parse` (Kotlin) и `parse_conn_string` (Rust) для будущих APK. Полный постмортем — [`incidents/2026-06-05-android-ghs-copypaste-padding`](../incidents/2026-06-05-android-ghs-copypaste-padding.md). | |
 
+### v0.26.21 — 2026-06-05
+
+Phantom tunnel fix + диагностика. Death watcher в `drive_tunnel` детектит когда
+все streams умерли (`alive==0 ≥ 3s` → teardown→reconnect через `dead_watcher_tx`
+oneshot, новая `tokio::select!` arm). Health computation перенесён в
+`derive_health` (учитывает `streams_up`/`n_streams`) — единый source of truth,
+без race с telem_task. FileProvider crash в logs share починен (paths.xml
+mismatch: `cacheDir/` vs `cacheDir/logs/`). Debug report больше не глотает
+Exception silently — `runCatching` + `withContext(Dispatchers.IO)` + Toast +
+диагностический маркер `persist=N B, tail=K строк`. TCP keepalive теперь
+логирует Err из `set_tcp_keepalive` (раньше `let _ =` глотал тихо). Root cause
+и invariants — в spec
+[2026-06-05-android-v0.26.21-three-bugs-design.md](../../superpowers/specs/2026-06-05-android-v0.26.21-three-bugs-design.md).
+
 ---
 
 ## Как использовать timeline
