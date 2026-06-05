@@ -35,7 +35,6 @@
 //! # }
 //! ```
 
-pub mod cover;
 pub mod log_bridge;
 pub mod logsink;
 pub mod supervise;
@@ -83,6 +82,12 @@ pub const MAX_ATTEMPTS: u32 = 8;
 ///
 /// Used by `tls_rx_loop` in `client_common` when invoked from runtime.
 pub const RX_IDLE_TIMEOUT_SECS: u32 = 45;
+
+/// v0.26.21: если все streams отвалились на этот срок — teardown + reconnect.
+/// 3s — выживание против короткого окна между kill старого и spawn нового
+/// stream'а после реконнекта (см. supervise.rs:529 streams_alive[idx]=true
+/// после успешного handshake).
+pub const ALL_STREAMS_DEAD_TIMEOUT_SECS: u32 = 3;
 
 /// Coarse classification of a tunnel drop, used to pick the right reconnect
 /// delay. v0.24.0: replaces the one-size-fits-all `BACKOFF_SECS` lookup
@@ -530,15 +535,11 @@ pub async fn run(
 
     let supervisor_telem = shared_telem.clone();
     let settings = cfg.settings.clone();
-    let cover_protect = protect_socket.clone();
 
     let join = tokio::spawn(async move {
         let shutdown_started_at = std::time::Instant::now();
-        // v0.27.0 (W9): cover-traffic warmup before the first real handshake.
-        // Best-effort, ~3 × 120 ms wall-clock at minimum, ~9 s worst case if
-        // the carrier is also blocking the cover hosts. Skipped silently on
-        // failure — never blocks the tunnel. See cover.rs for rationale.
-        cover::do_cover_traffic(cover_protect).await;
+        // v0.26.19: cover-traffic warmup (W9) removed — эмпирически не помогал
+        // против carrier DPI и добавлял ~3-9 s к latency подключения.
         supervise::supervise(
             cfg,
             settings,

@@ -665,6 +665,10 @@ async fn drive_tunnel(
     // clears in ms; anything longer is structurally broken.
     let (forwarder_dead_tx, mut forwarder_dead_rx) =
         tokio::sync::oneshot::channel::<()>();
+    // v0.26.21: death watcher → drive_tunnel teardown channel.
+    // Отдельный от forwarder_dead_tx (тот владеется rx_forwarder'ом).
+    let (dead_watcher_tx, mut dead_watcher_rx) =
+        tokio::sync::oneshot::channel::<()>();
     let tun_write_tx = tun_pkt_tx.clone();
     let tele_rx = telemetry.clone();
     let rx_forwarder = tokio::spawn(async move {
@@ -794,6 +798,81 @@ async fn drive_tunnel(
     // Telemetry task.
     let telem_task = spawn_telem_task(telemetry.clone(), status_tx.clone());
 
+    // v0.26.21: death watcher — следит за streams_alive. Если все streams
+    // упали на ≥ALL_STREAMS_DEAD_TIMEOUT_SECS → шлёт dead_watcher_tx,
+    // supervisor делает teardown + reconnect.
+    //
+    // I1 fix (v0.26.22): watcher больше НЕ публикует StatusFrame с health/streams_up.
+    // Это делает telem_task в derive_health() (single source of truth) — фолдит
+    // streams_up/n_streams каждые 250 мс. Иначе watcher и telem_task гонялись бы
+    // за `f.health`, и UI флипал между Degraded и Healthy.
+    //
+    // Watcher остаётся только триггером teardown + лог-источником.
+    let dead_watcher = {
+        let tele = telemetry.clone();
+        let status_tx_w = status_tx.clone();
+        let n_streams = n_streams;
+        let dead_tx = dead_watcher_tx; // moved into task
+        tokio::spawn(async move {
+            let mut dead_streak_secs: u32 = 0;
+            let half = (n_streams + 1) / 2;
+            // Used only to dedupe the warn-log when degraded ratio changes.
+            // No StatusFrame published here — derive_health does that.
+            let mut last_degraded_marker: Option<usize> = None;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let alive = (0..n_streams)
+                    .filter(|i| tele.streams_alive[*i].load(Ordering::Relaxed))
+                    .count();
+
+                if alive == 0 {
+                    dead_streak_secs += 1;
+                    if dead_streak_secs >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS {
+                        tracing::warn!(
+                            category = "tunnel",
+                            event = "all_streams_dead",
+                            streak_secs = dead_streak_secs as u64,
+                            n_streams = n_streams as u64,
+                            "death watcher: 0/{} streams alive — triggering reconnect",
+                            n_streams,
+                        );
+                        // Set last_error so the JSON log records the trigger.
+                        // We do NOT touch f.health — telem_task's derive_health
+                        // will return TunnelHealth::Dead next tick when it sees
+                        // streams_up == 0 (single source of truth).
+                        let mut f = status_tx_w.borrow().clone();
+                        f.last_error = Some(format!("all streams dead ({}s)", dead_streak_secs));
+                        let _ = status_tx_w.send(f);
+                        let _ = dead_tx.send(()); // signal supervisor select!
+                        return;
+                    }
+                } else {
+                    dead_streak_secs = 0;
+                }
+
+                if alive < half {
+                    if last_degraded_marker != Some(alive) {
+                        last_degraded_marker = Some(alive);
+                        tracing::warn!(
+                            category = "tunnel",
+                            event = "degraded",
+                            streams_up = alive as u64,
+                            n_streams = n_streams as u64,
+                            "death watcher: degraded {}/{}",
+                            alive,
+                            n_streams,
+                        );
+                        // No StatusFrame publish — derive_health renders Degraded
+                        // every 250 ms based on telemetry.streams_alive.
+                    }
+                } else {
+                    // Reset marker so the next dip back below `half` re-logs.
+                    last_degraded_marker = None;
+                }
+            }
+        })
+    };
+
     // Shutdown flag poll.
     let shutdown_poll = {
         let tele = telemetry.clone();
@@ -817,6 +896,9 @@ async fn drive_tunnel(
     // Ok(()) and the user-facing "everything is fine" path runs even though
     // the TUN side froze and we triggered an internal reconnect.
     let mut forwarder_dead = false;
+    // v0.26.21: death watcher detected all streams dead — surface as Err so
+    // the supervisor reconnects (analogous to `forwarder_dead`).
+    let mut all_streams_dead = false;
     // v0.27.0 (W10): track whether the periodic DPI-recycle timer fired so
     // we can return a sentinel Err that the supervisor recognises as
     // "intentional, reconnect immediately, don't bump the attempt counter".
@@ -893,6 +975,18 @@ async fn drive_tunnel(
             );
             forwarder_dead = true;
         }
+        _ = &mut dead_watcher_rx => {
+            // v0.26.21: death watcher детектил streams_up==0.
+            // last_error выставлен watcher'ом; health придёт от derive_health
+            // через telem_task (single source of truth). Возвращаем Err чтобы
+            // supervisor вышел из drive_tunnel и запустил reconnect.
+            tracing::warn!(
+                category = "tunnel",
+                event = "death_watcher.teardown",
+                "drive_tunnel exiting — all streams dead"
+            );
+            all_streams_dead = true;
+        }
         kind = &mut recycle_trigger => {
             // v0.27.0 (W10/W11): periodic recycle fired. `kind` is "time"
             // or "bytes" depending on which arm of the trigger won. The
@@ -961,6 +1055,7 @@ async fn drive_tunnel(
         h.abort();
     }
     telem_task.abort();
+    dead_watcher.abort();
     dispatcher.abort();
     rx_forwarder.abort();
 
@@ -980,6 +1075,12 @@ async fn drive_tunnel(
         // backoff table).
         return Err(anyhow::anyhow!("rx_forwarder dead — TUN write blocked"));
     }
+    if all_streams_dead {
+        // v0.26.21: death watcher signalled — all streams dead ≥ 3 s.
+        // Surface as error so the supervisor classifies this as a drop and
+        // triggers reconnect.
+        return Err(anyhow::anyhow!("all streams dead"));
+    }
     if recycle_fired {
         // v0.27.0 (W10): sentinel — the supervisor recognises this exact
         // prefix and treats it as "intentional recycle, reconnect now,
@@ -989,4 +1090,56 @@ async fn drive_tunnel(
         return Err(anyhow::anyhow!("recycle requested — DPI session refresh"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod death_watcher_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn all_streams_dead_triggers_teardown_within_threshold() {
+        let alive: Vec<Arc<AtomicBool>> =
+            (0..4).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let mut dead_streak_secs = 0u32;
+
+        for _ in 0..5 {
+            let count = alive.iter().filter(|a| a.load(Ordering::Relaxed)).count();
+            if count == 0 {
+                dead_streak_secs += 1;
+                if dead_streak_secs >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS {
+                    break;
+                }
+            } else {
+                dead_streak_secs = 0;
+            }
+        }
+        assert!(dead_streak_secs >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS);
+    }
+
+    #[tokio::test]
+    async fn partial_alive_resets_streak() {
+        let alive: Vec<Arc<AtomicBool>> =
+            (0..4).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let mut dead_streak_secs = 0u32;
+
+        for _ in 0..2 {
+            let count = alive.iter().filter(|a| a.load(Ordering::Relaxed)).count();
+            if count == 0 {
+                dead_streak_secs += 1;
+            } else {
+                dead_streak_secs = 0;
+            }
+        }
+        assert_eq!(dead_streak_secs, 2);
+
+        alive[0].store(true, Ordering::Relaxed);
+        let count = alive.iter().filter(|a| a.load(Ordering::Relaxed)).count();
+        if count == 0 {
+            dead_streak_secs += 1;
+        } else {
+            dead_streak_secs = 0;
+        }
+        assert_eq!(dead_streak_secs, 0);
+    }
 }

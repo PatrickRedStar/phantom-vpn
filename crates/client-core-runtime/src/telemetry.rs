@@ -227,22 +227,47 @@ impl Telemetry {
     }
 }
 
-/// Compute `health` based on connection state and idle RX seconds.
+/// Compute `health` based on connection state, idle RX seconds, bandwidth class
+/// and live stream count.
 ///
-/// Pure function — exposed for unit tests. Behaviour:
-/// - non-`Connected` state stays as caller intended (`Reconnecting`
-///   matches the connection-state, others stay `Healthy`).
-/// - `Connected` + `idle_rx_secs > STALE_IDLE_SECS` → `Stale`.
-/// - `Connected` + `bandwidth_class == Throttled` → `Degraded`.
+/// Pure function — exposed for unit tests. Single source of truth: the death
+/// watcher in supervise.rs no longer publishes `health` itself; it only triggers
+/// teardown via `dead_tx`. The telem_task calls this every 250 ms and the result
+/// is authoritative — `streams_up`/`n_streams` are folded in here so partial
+/// stream death surfaces as `Degraded` (and full death as `Dead`) without race
+/// against the watcher.
+///
+/// Behaviour for `Connected` state (in priority order):
+/// - `streams_up == 0` → `Dead` (watcher is about to tear us down).
+/// - `streams_up < ceil(n_streams/2)` → `Degraded` (partial death).
+/// - `idle_rx_secs > STALE_IDLE_SECS` → `Stale`.
+/// - `bandwidth_class == Throttled` → `Degraded`.
 /// - Otherwise → `Healthy`.
+///
+/// Non-Connected: `Reconnecting` propagates; everything else → `Healthy`
+/// (lifecycle state already conveys the meaning).
 pub(crate) fn derive_health(
     state: ConnState,
     idle_rx_secs: u32,
     bandwidth_class: BandwidthClass,
+    streams_up: u8,
+    n_streams: u8,
 ) -> TunnelHealth {
     match state {
         ConnState::Reconnecting => TunnelHealth::Reconnecting,
         ConnState::Connected => {
+            // Stream-population checks come first — they're the loudest signal.
+            // n_streams == 0 is a degenerate config; treat as no-op so we don't
+            // accidentally report Dead before the tunnel is fully wired.
+            if n_streams > 0 {
+                if streams_up == 0 {
+                    return TunnelHealth::Dead;
+                }
+                let half = (n_streams + 1) / 2;
+                if streams_up < half {
+                    return TunnelHealth::Degraded;
+                }
+            }
             if idle_rx_secs > STALE_IDLE_SECS {
                 TunnelHealth::Stale
             } else if bandwidth_class == BandwidthClass::Throttled {
@@ -468,7 +493,16 @@ pub fn spawn_telem_task(
                 bandwidth_class = new_bw;
             }
             cur.bandwidth_class = bandwidth_class;
-            cur.health = derive_health(cur.state, idle_rx_secs, bandwidth_class);
+            // Single source of truth for health: fold streams_up/n_streams here
+            // so the watcher in supervise.rs doesn't need to publish frames
+            // (which would race with this loop and flicker UI). See I1 fix.
+            cur.health = derive_health(
+                cur.state,
+                idle_rx_secs,
+                bandwidth_class,
+                up,
+                telemetry.n_streams as u8,
+            );
 
             // v0.25.0: re-check shutdown right before publish. Without this, a
             // frame with state=Connected can ship after supervise has already
@@ -597,29 +631,29 @@ mod tests {
         }
     }
 
-    /// Health derivation: Connected + idle <= threshold → Healthy.
+    /// Health derivation: Connected + idle <= threshold + full streams → Healthy.
     #[test]
     fn test_health_connected_fresh_traffic_is_healthy() {
         assert_eq!(
-            derive_health(ConnState::Connected, 5, BandwidthClass::Normal),
+            derive_health(ConnState::Connected, 5, BandwidthClass::Normal, 8, 8),
             TunnelHealth::Healthy,
         );
     }
 
-    /// Health derivation: Connected + idle > threshold → Stale.
+    /// Health derivation: Connected + idle > threshold + full streams → Stale.
     #[test]
     fn test_health_connected_long_idle_is_stale() {
         assert_eq!(
-            derive_health(ConnState::Connected, 25, BandwidthClass::Normal),
+            derive_health(ConnState::Connected, 25, BandwidthClass::Normal, 8, 8),
             TunnelHealth::Stale,
         );
     }
 
-    /// Health derivation: Connected + Throttled (with fresh traffic) → Degraded.
+    /// Health derivation: Connected + Throttled (with fresh traffic + full streams) → Degraded.
     #[test]
     fn test_health_connected_throttled_is_degraded() {
         assert_eq!(
-            derive_health(ConnState::Connected, 3, BandwidthClass::Throttled),
+            derive_health(ConnState::Connected, 3, BandwidthClass::Throttled, 8, 8),
             TunnelHealth::Degraded,
         );
     }
@@ -628,7 +662,7 @@ mod tests {
     #[test]
     fn test_health_stale_beats_throttled() {
         assert_eq!(
-            derive_health(ConnState::Connected, 25, BandwidthClass::Throttled),
+            derive_health(ConnState::Connected, 25, BandwidthClass::Throttled, 8, 8),
             TunnelHealth::Stale,
         );
     }
@@ -637,8 +671,63 @@ mod tests {
     #[test]
     fn test_health_reconnecting_propagates() {
         assert_eq!(
-            derive_health(ConnState::Reconnecting, 1, BandwidthClass::Normal),
+            derive_health(ConnState::Reconnecting, 1, BandwidthClass::Normal, 8, 8),
             TunnelHealth::Reconnecting,
+        );
+    }
+
+    /// I1 fix: streams_up == 0 with Connected state → Dead (preempts stale/throttled).
+    #[test]
+    fn test_health_zero_streams_is_dead() {
+        assert_eq!(
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 0, 8),
+            TunnelHealth::Dead,
+        );
+        // Dead preempts even Stale+Throttled.
+        assert_eq!(
+            derive_health(ConnState::Connected, 999, BandwidthClass::Throttled, 0, 8),
+            TunnelHealth::Dead,
+        );
+    }
+
+    /// I1 fix: partial stream death (streams_up < ceil(n_streams/2)) → Degraded.
+    /// This is the bug the previous derive_health missed — at 3/8 alive UI saw Healthy.
+    #[test]
+    fn test_health_partial_streams_is_degraded() {
+        // 3/8 alive → 3 < ceil(8/2)=4 → Degraded.
+        assert_eq!(
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 3, 8),
+            TunnelHealth::Degraded,
+        );
+        // 1/4 alive → 1 < ceil(4/2)=2 → Degraded.
+        assert_eq!(
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 1, 4),
+            TunnelHealth::Degraded,
+        );
+    }
+
+    /// I1 fix: at exactly the half-threshold streams should NOT be Degraded.
+    /// 4/8 → ceil(8/2)=4, alive 4 >= 4 → not Degraded by stream count.
+    #[test]
+    fn test_health_half_streams_not_degraded_by_stream_count() {
+        assert_eq!(
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 4, 8),
+            TunnelHealth::Healthy,
+        );
+        // Odd n: 2/3 → ceil(3/2)=2, alive 2 >= 2 → Healthy.
+        assert_eq!(
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 2, 3),
+            TunnelHealth::Healthy,
+        );
+    }
+
+    /// I1 fix: n_streams==0 (uninitialised) — skip stream checks so we don't
+    /// report Dead before the tunnel is fully wired.
+    #[test]
+    fn test_health_zero_n_streams_skips_stream_checks() {
+        assert_eq!(
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 0, 0),
+            TunnelHealth::Healthy,
         );
     }
 
