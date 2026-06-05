@@ -101,13 +101,32 @@ async fn do_connect(
     // за 60-180s. Heartbeat ходит через TLS-layer, но если NAT уже выпилен
     // до того как heartbeat пройдёт — пакет получает RST. Keepalive
     // проактивно держит NAT entry живой. Bug #8.
+    // v0.26.21: ранее `let _ =` глотал ошибку. На Android setsockopt мог
+    // тихо фейлиться — фантом-туннель сохранялся «несмотря на keepalive».
+    // Теперь Err видна в logcat.
     {
         use socket2::{SockRef, TcpKeepalive};
         let keepalive = TcpKeepalive::new()
             .with_time(std::time::Duration::from_secs(30))
             .with_interval(std::time::Duration::from_secs(15))
             .with_retries(3);
-        let _ = SockRef::from(&tcp).set_tcp_keepalive(&keepalive);
+        if let Err(e) = SockRef::from(&tcp).set_tcp_keepalive(&keepalive) {
+            tracing::warn!(
+                category = "handshake",
+                event = "tcp_keepalive_failed",
+                error = %e,
+                "set_tcp_keepalive failed — NAT timeout may strike"
+            );
+        } else {
+            tracing::debug!(
+                category = "handshake",
+                event = "tcp_keepalive_set",
+                time_secs = 30u64,
+                interval_secs = 15u64,
+                retries = 3u64,
+                "tcp keepalive configured"
+            );
+        }
     }
 
     let sni_str = server_name.clone();
