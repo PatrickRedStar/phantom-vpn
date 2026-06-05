@@ -511,74 +511,84 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun shareDebugReport(context: Context) {
         viewModelScope.launch {
-            val sb = StringBuilder()
-            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-            sb.appendLine("=== GhostStream VPN Debug Report ===")
-            sb.appendLine("Дата: ${sdf.format(java.util.Date())}")
-            sb.appendLine()
-            sb.appendLine("--- Приложение ---")
-            sb.appendLine("Версия: ${com.ghoststream.vpn.BuildConfig.VERSION_NAME} (${com.ghoststream.vpn.BuildConfig.VERSION_CODE})")
-            sb.appendLine("Git tag: ${com.ghoststream.vpn.BuildConfig.GIT_TAG}")
-            sb.appendLine()
-            sb.appendLine("--- Устройство ---")
-            sb.appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
-            sb.appendLine("Устройство: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-            sb.appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
-            sb.appendLine()
-            sb.appendLine("--- Активный профиль ---")
-            val activeProfile = profilesStore.getActiveProfile()
-            if (activeProfile != null) {
-                sb.appendLine("Имя: ${activeProfile.name}")
-                sb.appendLine("Сервер: ${activeProfile.serverAddr}")
-                sb.appendLine("SNI: ${activeProfile.serverName}")
-                sb.appendLine("Insecure: ${activeProfile.insecure}")
-                sb.appendLine("TUN: ${activeProfile.tunAddr}")
-                sb.appendLine("Admin: ${if (activeProfile.cachedIsAdmin == true) "да" else "нет"}")
-            } else {
-                sb.appendLine("Нет активного профиля")
-            }
-            sb.appendLine()
-            sb.appendLine("--- Конфигурация ---")
-            val cfg = config.value
-            sb.appendLine("DNS: ${cfg.dnsServers.joinToString()}")
-            sb.appendLine("Раздельная маршрутизация: ${cfg.splitRouting}")
-            if (cfg.splitRouting) sb.appendLine("Прямые страны: ${cfg.directCountries.joinToString()}")
-            sb.appendLine("Per-app режим: ${cfg.perAppMode}")
-            if (cfg.perAppMode != "none") sb.appendLine("Приложений выбрано: ${cfg.perAppList.size}")
-            sb.appendLine()
-            sb.appendLine("--- Состояние VPN ---")
-            sb.appendLine("Состояние: ${VpnStateManager.state.value}")
-            sb.appendLine()
-            sb.appendLine("--- Логи (последние 2000 строк) ---")
-            // v0.27.0 (W4-2): read from the on-disk persist file owned by
-            // LogPersister. Previously called `nativeGetLogs(-1L)` which is
-            // a stub returning null since the push-based bridge replaced it
-            // (client-android/src/lib.rs:510), so the report was always
-            // "Логи пусты" regardless of actual tunnel activity.
-            try {
-                com.ghoststream.vpn.service.LogPersister.flushPending()
-                val lines = com.ghoststream.vpn.service.LogPersister.tailLines(context, 2000)
-                if (lines.isEmpty()) {
-                    sb.appendLine("Логи пусты — запустите туннель чтобы накопить.")
-                } else {
-                    lines.forEach { sb.appendLine(it) }
-                }
-            } catch (e: Exception) {
-                sb.appendLine("Ошибка чтения логов: ${e.message}")
-            }
+            runCatching {
+                val uri = withContext(Dispatchers.IO) {
+                    val sb = StringBuilder()
+                    val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                    sb.appendLine("=== GhostStream VPN Debug Report ===")
+                    sb.appendLine("Дата: ${sdf.format(java.util.Date())}")
+                    sb.appendLine()
+                    sb.appendLine("--- Приложение ---")
+                    sb.appendLine("Версия: ${com.ghoststream.vpn.BuildConfig.VERSION_NAME} (${com.ghoststream.vpn.BuildConfig.VERSION_CODE})")
+                    sb.appendLine("Git tag: ${com.ghoststream.vpn.BuildConfig.GIT_TAG}")
+                    sb.appendLine()
+                    sb.appendLine("--- Устройство ---")
+                    sb.appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
+                    sb.appendLine("Устройство: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+                    sb.appendLine("ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}")
+                    sb.appendLine()
+                    sb.appendLine("--- Активный профиль ---")
+                    val activeProfile = profilesStore.getActiveProfile()
+                    if (activeProfile != null) {
+                        sb.appendLine("Имя: ${activeProfile.name}")
+                        sb.appendLine("Сервер: ${activeProfile.serverAddr}")
+                        sb.appendLine("SNI: ${activeProfile.serverName}")
+                        sb.appendLine("Insecure: ${activeProfile.insecure}")
+                        sb.appendLine("TUN: ${activeProfile.tunAddr}")
+                        sb.appendLine("Admin: ${if (activeProfile.cachedIsAdmin == true) "да" else "нет"}")
+                    } else {
+                        sb.appendLine("Нет активного профиля")
+                    }
+                    sb.appendLine()
+                    sb.appendLine("--- Конфигурация ---")
+                    val cfg = config.value
+                    sb.appendLine("DNS: ${cfg.dnsServers.joinToString()}")
+                    sb.appendLine("Раздельная маршрутизация: ${cfg.splitRouting}")
+                    if (cfg.splitRouting) sb.appendLine("Прямые страны: ${cfg.directCountries.joinToString()}")
+                    sb.appendLine("Per-app режим: ${cfg.perAppMode}")
+                    if (cfg.perAppMode != "none") sb.appendLine("Приложений выбрано: ${cfg.perAppList.size}")
+                    sb.appendLine()
+                    sb.appendLine("--- Состояние VPN ---")
+                    sb.appendLine("Состояние: ${VpnStateManager.state.value}")
+                    sb.appendLine()
 
-            val dir = File(context.cacheDir, "debug")
-            dir.mkdirs()
-            val file = File(dir, "ghoststream-debug.txt")
-            file.writeText(sb.toString())
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "GhostStream VPN Debug Report")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    // v0.26.21: диагностический маркер. persist=N — реальный размер
+                    // файла LogPersister'а на диске; tail=K — сколько строк отдал
+                    // tailLines(2000). Если N>0 и K=0 → баг в tailLines. Если N=0 →
+                    // LogPersister не пишет, копаем producer.
+                    val logFile = java.io.File(context.filesDir, "logs/ghoststream.log")
+                    val persistBytes = if (logFile.exists()) logFile.length() else -1L
+
+                    com.ghoststream.vpn.service.LogPersister.flushPending()
+                    val lines = com.ghoststream.vpn.service.LogPersister.tailLines(context, 2000)
+                    sb.appendLine("--- Логи (persist=${persistBytes}B, tail=${lines.size} строк) ---")
+                    if (lines.isEmpty()) {
+                        sb.appendLine("Логи пусты — запустите туннель чтобы накопить.")
+                    } else {
+                        lines.forEach { sb.appendLine(it) }
+                    }
+
+                    val dir = File(context.cacheDir, "debug")
+                    dir.mkdirs()
+                    val file = File(dir, "ghoststream-debug.txt")
+                    file.writeText(sb.toString())
+                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                }
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "GhostStream VPN Debug Report")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "Поделиться отладочной информацией"))
+            }.onFailure { e ->
+                android.util.Log.e("SettingsViewModel", "shareDebugReport failed", e)
+                android.widget.Toast.makeText(
+                    context,
+                    "Не удалось собрать отчёт: ${e.message}",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
             }
-            context.startActivity(Intent.createChooser(intent, "Поделиться отладочной информацией"))
         }
     }
 
