@@ -4,6 +4,26 @@ updated: 2026-06-05
 
 # Timeline проекта
 
+### v0.27.0 — 2026-06-27
+
+Честность + стабильность + безопасность по итогам многоагентного расследования
+жалоб (сбросы, медленный коннект, «подключено»-ложь, карман→нет инета, Insecure,
+универ только :443). **Security:** удалён флаг `insecure`/`skip_verify` —
+серверный серт теперь всегда проверяется webpki (сервер отдаёт LE-серт; mTLS
+аутентифицирует клиента, не сервер). Пиннинг НЕ вводился — ломался бы на ротации
+LE. ADR 0011. **Стабильность** (`client-core-runtime`): death-watcher делает
+teardown+reconnect при смерти ЛЮБОГО стрима (`alive < n_streams`, не только
+`alive==0`) — фикс зомби «подключено, трафика нет», т.к. один мёртвый стрим ронял
+весь TX через dispatcher; завершение dispatcher armed в главный `select!`.
+Реконнект всех N, инвариант all-N сохранён (без partial-quorum, без понижения N).
+**UI:** нотификация и инфографика читают реальный `health`/`streams_up`/
+`stream_activity` (а не статичный текст и хардкод 8/8); heads-up алерт об обрыве;
+проактивный battery-exemption против Doze. Verified на устройстве: коннект к
+poland:8443 с always-verify здоров (`streams_up:8/8`, `health:healthy`).
+Отложено: NL exit `vdsina` (полу-мёртв, нужна консоль провайдера) + путь через
+:443 для сетей «только :443» (relay под poland). План:
+[2026-06-27-android-stability-honest-insecure.md](../../superpowers/plans/2026-06-27-android-stability-honest-insecure.md).
+
 ### v0.26.22 — 2026-06-05
 
 Google Play hygiene patch. `MainActivity.onCreate` использует

@@ -91,11 +91,15 @@ pub const MAX_ATTEMPTS: u32 = 8;
 /// Used by `tls_rx_loop` in `client_common` when invoked from runtime.
 pub const RX_IDLE_TIMEOUT_SECS: u32 = 75;
 
-/// v0.26.21: если все streams отвалились на этот срок — teardown + reconnect.
-/// 3s — выживание против короткого окна между kill старого и spawn нового
-/// stream'а после реконнекта (`drive_tunnel` ставит streams_alive[idx]=true
-/// только после успешного handshake всех N стримов).
-pub const ALL_STREAMS_DEAD_TIMEOUT_SECS: u32 = 3;
+/// v0.27.0: если ЛЮБОЙ стрим умер (alive < n_streams) на этот срок — teardown +
+/// reconnect, а не «деградированное» лимбо. Контракт «все N обязательны»:
+/// dispatcher маршрутизирует `flow_stream_idx % n -> tx_senders[idx]`, и送 в
+/// канал мёртвого стрима роняет ВЕСЬ TX (dispatcher `break`). Раньше watcher
+/// только логировал degraded и туннель тихо вис «подключено, трафика нет».
+/// Лечим устойчивым реконнектом всех N, НЕ partial-quorum (он отвергнут как
+/// небезопасный). 3s — grace на штатную пересборку, без флапа (streams_alive
+/// падает в false только при окончательном завершении петли стрима).
+pub const DEGRADED_TEARDOWN_SECS: u32 = 3;
 
 /// Coarse classification of a tunnel drop, used to pick the right reconnect
 /// delay. v0.24.0: replaces the one-size-fits-all `BACKOFF_SECS` lookup

@@ -97,6 +97,12 @@ data class StatusFrameData(
     val bytesTx: Long = 0,
     val streamsUp: Int = 0,
     val nStreams: Int = 8,
+    /**
+     * Per-stream activity 0..1, length == nStreams (entries past nStreams are
+     * dropped). Empty when the runtime hasn't shipped a `stream_activity`
+     * array yet. Drives the live mux-bar infographic on the dashboard.
+     */
+    val streamActivity: List<Float> = emptyList(),
     val sessionSecs: Long = 0,
     val rateRxBps: Double = 0.0,
     val rateTxBps: Double = 0.0,
@@ -114,12 +120,21 @@ data class StatusFrameData(
     companion object {
         fun fromJson(json: String): StatusFrameData? = runCatching {
             val o = JSONObject(json)
+            val nStreams = o.optInt("n_streams", 8)
+            // stream_activity is a fixed-length [f32; 16] on the Rust side;
+            // truncate to the active stream count for the UI. Missing/short
+            // arrays degrade gracefully to an empty list.
+            val activity = o.optJSONArray("stream_activity")?.let { arr ->
+                val take = minOf(nStreams, arr.length())
+                (0 until take).map { arr.optDouble(it, 0.0).toFloat() }
+            } ?: emptyList()
             StatusFrameData(
                 state = o.optString("state", "disconnected"),
                 bytesRx = o.optLong("bytes_rx"),
                 bytesTx = o.optLong("bytes_tx"),
                 streamsUp = o.optInt("streams_up"),
-                nStreams = o.optInt("n_streams", 8),
+                nStreams = nStreams,
+                streamActivity = activity,
                 sessionSecs = o.optLong("session_secs"),
                 rateRxBps = o.optDouble("rate_rx_bps", 0.0),
                 rateTxBps = o.optDouble("rate_tx_bps", 0.0),

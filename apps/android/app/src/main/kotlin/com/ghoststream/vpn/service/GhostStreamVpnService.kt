@@ -51,7 +51,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     private data class StartExtras(
         val serverAddr: String,
         val serverName: String,
-        val insecure: Boolean,
         val certPath: String,
         val keyPath: String,
         val tunAddr: String,
@@ -69,7 +68,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     ) {
         fun toJson(): String = JSONObject().apply {
             put("server_addr", serverAddr); put("server_name", serverName)
-            put("insecure", insecure); put("cert_path", certPath); put("key_path", keyPath)
+            put("cert_path", certPath); put("key_path", keyPath)
             put("tun_addr", tunAddr); put("dns_servers", dnsServers.joinToString(","))
             put("split_routing", splitRouting); put("direct_cidrs", directCidrs)
             put("per_app_mode", perAppMode); put("per_app_list", perAppList.joinToString(","))
@@ -84,7 +83,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 StartExtras(
                     serverAddr = o.optString("server_addr"),
                     serverName = o.optString("server_name"),
-                    insecure = o.optBoolean("insecure"),
                     certPath = o.optString("cert_path"),
                     keyPath = o.optString("key_path"),
                     tunAddr = o.optString("tun_addr", "10.7.0.2/24"),
@@ -110,7 +108,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             return StartExtras(
                 serverAddr = serverAddr,
                 serverName = serverName,
-                insecure = intent.getBooleanExtra(EXTRA_INSECURE, false),
                 certPath = intent.getStringExtra(EXTRA_CERT_PATH) ?: "",
                 keyPath = intent.getStringExtra(EXTRA_KEY_PATH) ?: "",
                 tunAddr = intent.getStringExtra(EXTRA_TUN_ADDR) ?: "10.7.0.2/24",
@@ -143,7 +140,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     private data class TunnelParams(
         val serverAddr: String,
         val serverName: String,
-        val insecure: Boolean,
         val certPath: String,
         val keyPath: String,
         /** Original ghs:// connection string for Phase 4 nativeStart. */
@@ -244,7 +240,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         const val EXTRA_SERVER_ADDR   = "server_addr"
         const val EXTRA_SERVER_NAME   = "server_name"
-        const val EXTRA_INSECURE      = "insecure"
         const val EXTRA_CERT_PATH     = "cert_path"
         const val EXTRA_KEY_PATH      = "key_path"
         const val EXTRA_TUN_ADDR      = "tun_addr"
@@ -260,6 +255,11 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
+        // v0.27.0 (A3): separate DEFAULT-importance channel + id for the
+        // one-shot "connection lost" heads-up alert, distinct from the silent
+        // ongoing status notification.
+        private const val ALERT_CHANNEL_ID = "ghoststream_vpn_alert"
+        private const val ALERT_NOTIFICATION_ID = 1002
         private const val TAG = "GhostStreamVpn"
         // Safety cap: too many addRoute() entries can overflow Binder transaction
         // in VpnService.Builder.establish() and crash with TransactionTooLargeException.
@@ -331,6 +331,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         super.onCreate()
         prefs = PreferencesStore(applicationContext)
         registerNetworkCallback()
+        startNotificationCollector()
         // v0.27.0 (W4-1): LogPersister is started from MyApplication.onCreate
         // on Application-lifetime scope. Earlier it was started here on
         // serviceScope — but Service.onDestroy() cancels that scope on every
@@ -396,7 +397,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         val serverAddr     = resolved.serverAddr
         val serverName     = resolved.serverName
-        val insecure       = resolved.insecure
         val certPath       = resolved.certPath
         val keyPath        = resolved.keyPath
         val tunAddr        = resolved.tunAddr
@@ -421,7 +421,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         startupThread?.interrupt()
         startupThread = Thread {
             startTunnel(
-                serverAddr, serverName, insecure, certPath, keyPath,
+                serverAddr, serverName, certPath, keyPath,
                 tunAddr, dnsServers, splitRouting, directCidrs, perAppMode, perAppList,
                 connString, relayAddr, myGeneration, dpiRecycleBytes,
             )
@@ -435,7 +435,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
     private fun startTunnel(
         serverAddr: String, serverName: String,
-        insecure: Boolean, certPath: String, keyPath: String,
+        certPath: String, keyPath: String,
         tunAddr: String, dnsServers: List<String>,
         splitRouting: Boolean, directCidrsPath: String,
         perAppMode: String, perAppList: List<String>,
@@ -581,7 +581,6 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         savedParams = TunnelParams(
             serverAddr = serverAddr,
             serverName = serverName,
-            insecure = insecure,
             certPath = certPath,
             keyPath = keyPath,
             connString = connString,
@@ -670,11 +669,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                             if (VpnStateManager.state.value !is VpnState.Connected) {
                                 VpnStateManager.update(VpnState.Connected(serverName = serverName))
                             }
-                            val nm = getSystemService(NotificationManager::class.java)
-                            nm?.notify(
-                                NOTIFICATION_ID,
-                                buildNotification("Подключено: $serverAddr"),
-                            )
+                            // Notification is rebuilt by startNotificationCollector
+                            // (observes derivedVpnState) — no manual notify here.
                         }
                     }
                     if (!connected && wasConnected) {
@@ -683,8 +679,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                         VpnStateManager.emitLifecycleLog("WARN", "Соединение потеряно, переподключение...")
                         mainHandler.post {
                             VpnStateManager.update(VpnState.Connecting)
-                            getSystemService(NotificationManager::class.java)
-                                ?.notify(NOTIFICATION_ID, buildNotification("Переподключение..."))
+                            // Notification rebuilt by startNotificationCollector.
                         }
                         // Exponential backoff: 3s, 6s, 12s, 24s, 48s, 60s, 60s, 60s.
                         // Attempt counter НЕ увеличивается пока сеть недоступна —
@@ -1183,10 +1178,86 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java) ?: return
             val channel = NotificationChannel(
                 CHANNEL_ID, "GhostStream VPN", NotificationManager.IMPORTANCE_LOW,
             ).apply { description = "Статус VPN-туннеля" }
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            nm.createNotificationChannel(channel)
+            // v0.27.0 (A3): heads-up alert channel for connection-loss events.
+            val alert = NotificationChannel(
+                ALERT_CHANNEL_ID, "GhostStream — обрывы связи",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply { description = "Уведомления об обрыве VPN-туннеля" }
+            nm.createNotificationChannel(alert)
+        }
+    }
+
+    /** v0.27.0 (A3): one-shot heads-up alert when the tunnel drops under load.
+     *  Fired only on the *transition* into a lost state, never per-tick. */
+    private fun notifyConnectionLost() {
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+        val openIntent = PendingIntent.getActivity(
+            this, 0,
+            packageManager.getLaunchIntentForPackage(packageName)
+                ?: Intent(this, GhostStreamVpnService::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            Notification.Builder(this, ALERT_CHANNEL_ID)
+        else @Suppress("DEPRECATION") Notification.Builder(this)
+        val n = builder
+            .setContentTitle("VPN потерял связь")
+            .setContentText("Туннель оборвался под нагрузкой сети. Идёт автопереподключение.")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setAutoCancel(true)
+            .setContentIntent(openIntent)
+            .build()
+        runCatching { nm.notify(ALERT_NOTIFICATION_ID, n) }
+            .onFailure { Log.w(TAG, "notifyConnectionLost failed", it) }
+    }
+
+    /**
+     * v0.27.0 (A1/A3): single collector that keeps the ongoing notification
+     * honest. On every `derivedVpnState` change it rebuilds the foreground
+     * notification (Stale/Throttled/Reconnecting/Dead are reflected, not a
+     * static "Connected"). On the transition *from* a connected state *into*
+     * Reconnecting it fires the one-shot heads-up "connection lost" alert.
+     *
+     * This only REFLECTS health — it never triggers reconnect (that's the Rust
+     * side: death-watcher + RX_IDLE). The Kotlin watchdog is untouched.
+     */
+    private fun startNotificationCollector() {
+        serviceScope.launch {
+            var wasUp = false // last state was Connected/Stale/Throttled
+            VpnStateManager.derivedVpnState.collect { state ->
+                // Don't resurrect a notification once the tunnel is gone — the
+                // teardown path calls stopForeground(REMOVE) itself.
+                val nm = getSystemService(NotificationManager::class.java)
+                when (state) {
+                    is VpnState.Disconnected,
+                    is VpnState.Disconnecting -> {
+                        wasUp = false
+                    }
+                    is VpnState.Reconnecting -> {
+                        // Only alert on the transition out of a previously-up
+                        // tunnel — not on connect-time retries.
+                        if (wasUp) {
+                            notifyConnectionLost()
+                            wasUp = false
+                        }
+                        nm?.notify(NOTIFICATION_ID, buildNotification(state = state))
+                    }
+                    is VpnState.Connected,
+                    is VpnState.Stale,
+                    is VpnState.Throttled -> {
+                        wasUp = true
+                        nm?.notify(NOTIFICATION_ID, buildNotification(state = state))
+                    }
+                    else -> {
+                        nm?.notify(NOTIFICATION_ID, buildNotification(state = state))
+                    }
+                }
+            }
         }
     }
 
@@ -1206,7 +1277,18 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    /**
+     * Build the ongoing foreground notification. When [text] is supplied it's
+     * used verbatim (legacy call sites: "Подключение...", "Отключение...").
+     * Otherwise the title/text/accent are derived honestly from the supplied
+     * [VpnState] (which is `derivedVpnState` — already reconciled with the
+     * runtime health), so the notification reflects Stale/Throttled/
+     * Reconnecting/Dead instead of a static "Connected" lie. v0.27.0 (A1).
+     */
+    private fun buildNotification(
+        text: String? = null,
+        state: VpnState? = null,
+    ): Notification {
         val stopIntent = PendingIntent.getService(
             this, 0,
             Intent(this, GhostStreamVpnService::class.java).setAction(ACTION_STOP),
@@ -1216,12 +1298,75 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             Notification.Builder(this, CHANNEL_ID)
         else @Suppress("DEPRECATION") Notification.Builder(this)
 
-        return builder
-            .setContentTitle("GhostStream")
-            .setContentText(text)
+        val (title, body, accent) = if (text != null) {
+            Triple("GhostStream", text, 0)
+        } else {
+            notificationContentFor(state ?: VpnState.Disconnected)
+        }
+
+        builder
+            .setContentTitle(title)
+            .setContentText(body)
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
+            // Frequent rebuilds (bytes tick over) must NOT buzz/alert — only
+            // the first post of a given content makes a sound.
+            .setOnlyAlertOnce(true)
             .addAction(Notification.Action.Builder(null, "Отключить", stopIntent).build())
-            .build()
+        if (accent != 0) builder.setColor(accent)
+        return builder.build()
+    }
+
+    /** Derive (title, text, accentColor) for the ongoing notification from the
+     *  honest derived state. accentColor 0 = leave default. */
+    private fun notificationContentFor(state: VpnState): Triple<String, String, Int> {
+        val frame = VpnStateManager.statusFrame.value
+        val green = 0xFF8FE388.toInt()   // signal lime
+        val amber = 0xFFE0B24A.toInt()
+        val red = 0xFFE05A4A.toInt()
+        return when (state) {
+            is VpnState.Connected -> {
+                val rx = formatSpeed(frame.rateRxBps)
+                val tx = formatSpeed(frame.rateTxBps)
+                Triple(
+                    "Защищено",
+                    "↓$rx ↑$tx · ${frame.streamsUp}/${frame.nStreams} стримов",
+                    green,
+                )
+            }
+            is VpnState.Stale -> Triple(
+                "Канал замолчал (${state.idleRxSecs} с)",
+                "Нет входящих данных, проверяю связь",
+                amber,
+            )
+            is VpnState.Throttled -> Triple(
+                "Скорость ограничена (~${state.currentKbps} кбит/с)",
+                "Сеть жива, но душит трафик",
+                amber,
+            )
+            is VpnState.Reconnecting -> {
+                // DEAD health collapses into Reconnecting in derivedVpnState;
+                // distinguish it for honest wording. A "dead" tunnel (all
+                // streams down, no reconnect attempt counter yet) reads
+                // differently from a counted backoff retry.
+                if (frame.health == TunnelHealth.DEAD && state.attempt <= 0) {
+                    Triple(
+                        "Связь потеряна, восстанавливаю",
+                        "Трафик не идёт, туннель пересоздаётся",
+                        red,
+                    )
+                } else {
+                    val attempt = state.attempt.coerceAtLeast(1)
+                    val delay = state.nextDelaySecs
+                    val sub = if (delay != null) "Следующая попытка через $delay с"
+                              else "Восстанавливаю соединение"
+                    Triple("Переподключение… (попытка $attempt/8)", sub, red)
+                }
+            }
+            is VpnState.Connecting -> Triple("GhostStream", "Подключение...", 0)
+            is VpnState.Disconnecting -> Triple("GhostStream", "Отключение...", 0)
+            is VpnState.Error -> Triple("GhostStream", "Ошибка: ${state.message}", red)
+            is VpnState.Disconnected -> Triple("GhostStream", "Отключено", 0)
+        }
     }
 }

@@ -110,9 +110,6 @@ pub struct ClientNetworkConfig {
     pub server_addr: String,
     /// Имя хоста сервера для TLS SNI (e.g. "myserver.com")
     pub server_name: Option<String>,
-    /// Принимать self-signed сертификаты (default: false)
-    #[serde(default)]
-    pub insecure: bool,
     /// Имя TUN интерфейса (default: "tun0")
     pub tun_name:    Option<String>,
     /// IP адрес клиента в туннеле (default: "10.7.0.2/24")
@@ -128,7 +125,6 @@ impl Default for ClientNetworkConfig {
         Self {
             server_addr: default_server_addr(),
             server_name: None,
-            insecure:    false,
             tun_name:    None,
             tun_addr:    None,
             tun_mtu:     None,

@@ -3,7 +3,6 @@ package com.ghoststream.vpn.data
 data class VpnConfig(
     val serverAddr: String = "",
     val serverName: String = "",
-    val insecure: Boolean = false,
     val certPath: String = "",
     val keyPath: String = "",
     val tunAddr: String = "10.7.0.2/24",

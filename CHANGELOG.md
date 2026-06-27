@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.27.0] - 2026-06-27
+
+### Security
+- **Удалён флаг `Insecure TLS` (`skip_verify`)** — он полностью отключал проверку серверного сертификата (MITM-вектор), а UI это маскировал под «skip hostname check». Серверный серт теперь проверяется **всегда** через webpki (сервер отдаёт настоящий Let's Encrypt серт). mTLS-identity клиента сохранён. Старые `ghs://…&insecure=1` ссылки парсятся, флаг игнорируется. Пиннинг сознательно НЕ вводился — leaf/SPKI-пин ломался бы на ротации LE-серта. См. [ADR 0011](docs/knowledge/decisions/0011-remove-insecure-always-verify.md). Затрагивает все клиенты (core), openwrt тоже перестал хардкодить `skip_verify=true`.
+
+### Fixed
+- **Зомби-туннель «подключено, но трафика нет» при смерти одного стрима** — death-watcher теперь делает teardown+reconnect при `alive < n_streams` (любой мёртвый стрим), а не только при `alive==0`. Один мёртвый стрим ронял весь TX через dispatcher (`flow_stream_idx % n` → закрытый канал → `break`), но статус оставался «Connected». Реконнект всех N (инвариант all-N сохранён, без partial-quorum).
+- **Медленная реакция на обрыв TX-пути** — завершение dispatcher (TUN→stream) теперь armed в главный `select!` → мгновенный teardown вместо ожидания RX-idle (75с).
+- **UI/нотификация врали «Подключено» при мёртвом туннеле** — постоянная нотификация теперь читает реальный `health` (через `derivedVpnState`): `Healthy/Stale/Throttled/Reconnecting/Dead` с цветом, скоростью и `streams_up/n_streams`. Источник текста — честный `derivedVpnState`, не строка `state`.
+- **Инфографика дашборда хардкодила «8/8»** — `MuxBars` теперь рисует реальные `streamsUp/nStreams` и `stream_activity`; мёртвые стримы красным.
+
+### Added
+- **Уведомление об обрыве** — отдельный heads-up канал, единичный alert на переходе «был up → reconnecting» (не спамит, не срабатывает на ручной Disconnect). Запрашивается `POST_NOTIFICATIONS` (Android 13+).
+- **Проактивный battery-optimization exemption + POST_NOTIFICATIONS** при первом подключении (раньше прятался пассивным баннером в настройках) — дешёвый и результативный шаг против Doze («телефон в кармане»).
+- `DEGRADED_TEARDOWN_SECS` (3 c) — порог teardown при деградации стримов (заменил `ALL_STREAMS_DEAD_TIMEOUT_SECS`).
+
 ## [0.26.22] - 2026-06-05
 
 ### Fixed

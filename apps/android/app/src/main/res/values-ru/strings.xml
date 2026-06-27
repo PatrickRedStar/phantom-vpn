@@ -69,7 +69,6 @@
     <string name="row_theme">Тема</string>
     <string name="row_app_icon">Иконка</string>
     <string name="row_share_debug">Отладочный отчёт</string>
-    <string name="row_insecure">Не проверять сертификат</string>
 
     <string name="sub_dns_custom">Свои</string>
     <string name="sub_split_bypass">В обход: %1$d CIDR</string>

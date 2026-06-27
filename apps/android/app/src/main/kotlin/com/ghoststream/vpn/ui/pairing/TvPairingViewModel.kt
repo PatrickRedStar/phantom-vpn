@@ -100,7 +100,6 @@ class TvPairingViewModel(application: Application) : AndroidViewModel(applicatio
                                          .ifEmpty { "Подключение" },
                         serverAddr = parsed.addr,
                         serverName = parsed.sni,
-                        insecure   = false,
                         certPath   = certFile.absolutePath,
                         keyPath    = keyFile.absolutePath,
                         tunAddr    = parsed.tun,

@@ -109,11 +109,8 @@ object ConnStringParser {
         )
         val sni = URLEncoder.encode(profile.serverName, "UTF-8")
         val tun = URLEncoder.encode(profile.tunAddr, "UTF-8")
-        val base = "ghs://$userinfo@${profile.serverAddr}?sni=$sni&tun=$tun&v=1"
-        // v0.27.0 (W12): forward profile.insecure into conn_string. Without
-        // this the Rust client always sees insecure=false (parse_conn_string
-        // doesn't keep the toggle in state otherwise), and SNI overrides like
-        // www.yandex.cloud fail hostname verification at the rustls layer.
-        if (profile.insecure) "$base&insecure=1" else base
+        // Server TLS cert is always verified by the Rust core (webpki); there
+        // is no insecure / skip-verify flag in the conn_string anymore.
+        "ghs://$userinfo@${profile.serverAddr}?sni=$sni&tun=$tun&v=1"
     }.getOrNull()
 }

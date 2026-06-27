@@ -19,6 +19,10 @@
          is locked. Apps' TCP sessions through the VPN time out within
          minutes. Normal permission — auto-granted at install. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- v0.27.0 (A3): Android 13+ requires runtime POST_NOTIFICATIONS for the
+         foreground-service status notification and the connection-loss
+         heads-up alert to be visible. Requested at first Connect. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />

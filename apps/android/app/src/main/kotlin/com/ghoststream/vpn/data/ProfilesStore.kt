@@ -68,7 +68,7 @@ class ProfilesStore private constructor(private val context: Context) {
 
     /** Migrate from legacy flat config. Call once if profiles.json doesn't exist. */
     fun migrateFromLegacy(
-        serverAddr: String, serverName: String, insecure: Boolean,
+        serverAddr: String, serverName: String,
         certPath: String, keyPath: String, tunAddr: String,
     ) {
         if (file.exists()) return // already migrated
@@ -78,7 +78,6 @@ class ProfilesStore private constructor(private val context: Context) {
                 name = "Подключение",
                 serverAddr = serverAddr,
                 serverName = serverName,
-                insecure = insecure,
                 certPath = certPath,
                 keyPath = keyPath,
                 tunAddr = tunAddr,
@@ -98,7 +97,9 @@ class ProfilesStore private constructor(private val context: Context) {
                     name       = p.optString("name", "Подключение"),
                     serverAddr = p.optString("serverAddr", ""),
                     serverName = p.optString("serverName", ""),
-                    insecure   = p.optBoolean("insecure", false),
+                    // Legacy "insecure" key (if present in an old profiles.json)
+                    // is intentionally ignored — server TLS is now always
+                    // verified via webpki on the Rust side.
                     certPath   = p.optString("certPath", ""),
                     keyPath    = p.optString("keyPath", ""),
                     certPem    = p.optString("certPem").takeIf { it.isNotBlank() },
@@ -178,7 +179,6 @@ class ProfilesStore private constructor(private val context: Context) {
                     put("name", p.name)
                     put("serverAddr", p.serverAddr)
                     put("serverName", p.serverName)
-                    put("insecure", p.insecure)
                     put("certPath", p.certPath)
                     put("keyPath", p.keyPath)
                     if (p.certPem != null) put("certPem", p.certPem)

@@ -5,7 +5,6 @@ data class VpnProfile(
     val name: String = "Подключение",
     val serverAddr: String = "",
     val serverName: String = "",
-    val insecure: Boolean = false,
     val certPath: String = "",
     val keyPath: String = "",
     /** Inline PEM — survives app updates, reinstalls, cert file deletion. */

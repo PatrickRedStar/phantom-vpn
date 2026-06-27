@@ -56,7 +56,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         VpnConfig(
             serverAddr      = p?.serverAddr ?: "",
             serverName      = p?.serverName ?: "",
-            insecure        = p?.insecure ?: false,
             certPath        = p?.certPath ?: "",
             keyPath         = p?.keyPath ?: "",
             tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
@@ -257,7 +256,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         name       = name,
                         serverAddr = parsed.addr,
                         serverName = parsed.sni,
-                        insecure   = false,
                         certPath   = certFile.absolutePath,
                         keyPath    = keyFile.absolutePath,
                         certPem    = parsed.cert,
@@ -291,7 +289,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         relayEnabled: Boolean,
         relayAddr: String?,
         serverName: String? = null,
-        insecure: Boolean? = null,
     ) {
         val profile = profilesStore.profiles.value.find { it.id == id } ?: return
         profilesStore.updateProfile(
@@ -299,14 +296,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 name = name.trim().ifEmpty { profile.name },
                 relayEnabled = relayEnabled,
                 relayAddr = relayAddr,
-                // v0.27.0 (W12): allow editing SNI override + insecure flag from
-                // the profile-edit dialog. Used for empirical DPI bypass testing —
+                // v0.27.0 (W12): allow editing the SNI override from the
+                // profile-edit dialog. Used for empirical DPI bypass testing —
                 // m.tinkoff was confirmed blocking traffic by the specific SNI
                 // string (not IP), so the user needs to swap in a whitelisted
-                // popular RU domain like www.yandex.cloud. mTLS still
-                // authenticates protocol-level identity even with insecure=true.
+                // popular RU domain like www.yandex.cloud. The server TLS cert
+                // is always verified (webpki) regardless of the SNI override.
                 serverName = serverName?.trim()?.ifEmpty { null } ?: profile.serverName,
-                insecure = insecure ?: profile.insecure,
             ),
         )
     }
@@ -317,11 +313,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val sni = serverName.trim()
         if (addr.isEmpty() || sni.isEmpty()) return
         profilesStore.updateProfile(profile.copy(serverAddr = addr, serverName = sni))
-    }
-
-    fun setInsecure(insecure: Boolean) {
-        val profile = profilesStore.getActiveProfile() ?: return
-        profilesStore.updateProfile(profile.copy(insecure = insecure))
     }
 
     fun setTheme(theme: String) {
@@ -533,7 +524,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         sb.appendLine("Имя: ${activeProfile.name}")
                         sb.appendLine("Сервер: ${activeProfile.serverAddr}")
                         sb.appendLine("SNI: ${activeProfile.serverName}")
-                        sb.appendLine("Insecure: ${activeProfile.insecure}")
                         sb.appendLine("TUN: ${activeProfile.tunAddr}")
                         sb.appendLine("Admin: ${if (activeProfile.cachedIsAdmin == true) "да" else "нет"}")
                     } else {
@@ -622,7 +612,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             profilesStore.migrateFromLegacy(
                 serverAddr = old.serverAddr,
                 serverName = old.serverName,
-                insecure   = old.insecure,
                 certPath   = old.certPath,
                 keyPath    = old.keyPath,
                 tunAddr    = old.tunAddr,

@@ -1,7 +1,13 @@
 package com.ghoststream.vpn.ui.dashboard
 
 import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.net.VpnService
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -86,6 +92,13 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         ActivityResultContracts.StartActivityForResult(),
     ) { if (it.resultCode == Activity.RESULT_OK) viewModel.startVpn() }
 
+    // v0.27.0 (A3): runtime POST_NOTIFICATIONS request (Android 13+). The
+    // result doesn't gate the connection — we just want heads-up alerts to be
+    // visible. Requested once during first-connect onboarding.
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* granted or not — connection proceeds regardless */ }
+
     // Scope window (tap to cycle: 1m → 5m → 30m → 1h)
     var scopeWindowSecs by remember { mutableIntStateOf(60) }
     val scopeLabel = when (scopeWindowSecs) {
@@ -144,18 +157,40 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         }
     }
 
-    // Animated mux bars — only shimmer when *real* RX traffic is flowing.
-    // Previously shimmered on a timer whenever Connected; now ticked off
-    // when rateRxBps drops to zero so the user sees a static row when the
-    // tunnel is silent (the visual representation of "stale"). v0.24.0.
-    val barHeights = remember { mutableStateListOf(0.72f, 0.58f, 0.86f, 0.44f, 0.64f, 0.38f, 0.72f, 0.52f) }
+    // Mux bars — driven by real per-stream activity from the runtime.
+    // `statusFrame.streamActivity` is 0..1 per live stream (length == nStreams
+    // when shipped). We keep a local animated copy so the bars shimmer while
+    // RX traffic is actually flowing, but the source of truth — bar count and
+    // baseline heights — is the runtime frame, never a hardcoded list. When
+    // the runtime hasn't shipped activity yet we fall back to nStreams flat
+    // bars. v0.27.0: honest infographic (was hardcoded 8 bars + 8/8 label).
+    val nStreams = statusFrame.nStreams.coerceIn(1, 16)
+    val barHeights = remember { mutableStateListOf<Float>() }
+    // Re-sync bar count + baseline to the runtime activity array whenever it
+    // changes shape (reconnect with a different core count, first frame, etc.).
+    LE(statusFrame.streamActivity, nStreams) {
+        val act = statusFrame.streamActivity
+        val target = if (act.isNotEmpty()) act.size else nStreams
+        when {
+            barHeights.size > target -> while (barHeights.size > target) barHeights.removeAt(barHeights.size - 1)
+            barHeights.size < target -> while (barHeights.size < target) barHeights.add(0.4f)
+        }
+        if (act.isNotEmpty()) {
+            for (i in barHeights.indices) {
+                barHeights[i] = act.getOrElse(i) { 0f }.coerceIn(0f, 1f)
+            }
+        }
+    }
     LE(vpnState) {
         while (vpnState.isLive()) {
             delay(700)
             // statusFrame.rateRxBps is the EMA bits/sec from runtime. >0
-            // means actual data arrived in the last few ticks.
-            if (statusFrame.rateRxBps > 0.0) {
-                for (i in barHeights.indices) {
+            // means actual data arrived in the last few ticks — shimmer the
+            // live bars around their runtime baseline so motion reads as
+            // "traffic". When silent (Stale) the bars freeze.
+            if (statusFrame.rateRxBps > 0.0 && barHeights.isNotEmpty()) {
+                val liveCount = statusFrame.streamsUp.coerceIn(0, barHeights.size)
+                for (i in 0 until liveCount) {
                     barHeights[i] =
                         (barHeights[i] + (Math.random().toFloat() - 0.5f) * 0.4f)
                             .coerceIn(0.2f, 0.95f)
@@ -366,14 +401,33 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
                     color = C.textDim,
                 )
+                val live = vpnState.isLive()
+                val up = statusFrame.streamsUp
+                val total = statusFrame.nStreams
                 Text(
-                    text = String.format(stringResource(R.string.lbl_streams_up), 8, 8),
+                    text = if (live)
+                        String.format(stringResource(R.string.lbl_streams_up), up, total)
+                    else "—",
                     style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
-                    color = C.signal,
+                    // Red label when some streams are down (Degraded), lime
+                    // when all N are up; dimmed while standby.
+                    color = when {
+                        !live -> C.textDim
+                        total > 0 && up < total -> C.danger
+                        else -> C.signal
+                    },
                 )
             }
             Box(Modifier.height(1.dp).fillMaxWidth().background(C.hair))
-            MuxBars(heights = barHeights.toList())
+            MuxBars(
+                heights = barHeights.toList(),
+                // Only flag dead streams (red) while the tunnel is live; in
+                // standby the streams concept doesn't apply, so all bars stay
+                // neutral.
+                liveCount = if (vpnState.isLive())
+                    statusFrame.streamsUp.coerceIn(0, barHeights.size)
+                else barHeights.size,
+            )
         }
     }
 
@@ -461,6 +515,11 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                         is VpnState.Reconnecting,
                         is VpnState.Connecting -> viewModel.stopVpn()
                         else -> {
+                            // v0.27.0 (B4/A3): proactively request the
+                            // battery-optimisation exemption (critical against
+                            // Doze) and POST_NOTIFICATIONS on first Connect —
+                            // once, gated by a prefs flag.
+                            runFirstConnectOnboarding(context, notifPermLauncher::launch)
                             val perm = VpnService.prepare(context)
                             if (perm != null) vpnPermLauncher.launch(perm)
                             else viewModel.startVpn()
@@ -661,5 +720,58 @@ private fun formatMbps(bytesPerSec: Float): String {
         mbps >= 10f  -> "%.1f".format(mbps)
         else         -> "%.2f".format(mbps)
     }
+}
+
+/**
+ * v0.27.0 (B4/A3): one-shot first-connect onboarding. Runs at most once
+ * (gated by PreferencesStore.onboardPromptsShown):
+ *  - POST_NOTIFICATIONS (Android 13+) so the status + connection-loss alerts
+ *    are actually visible.
+ *  - REQUEST_IGNORE_BATTERY_OPTIMIZATIONS so Doze doesn't kill the tunnel
+ *    when the phone is pocketed. Permission is already declared in the
+ *    manifest; the system shows a yes/no dialog directly.
+ * Neither prompt blocks the connection — it proceeds regardless of the answer.
+ */
+private fun runFirstConnectOnboarding(
+    context: Context,
+    requestNotifPermission: (String) -> Unit,
+) {
+    val prefs = com.ghoststream.vpn.data.PreferencesStore(context.applicationContext)
+    if (prefs.onboardPromptsShownBlocking()) return
+
+    // 1) Notification permission (Android 13+).
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val granted = context.checkSelfPermission(
+            android.Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            runCatching { requestNotifPermission(android.Manifest.permission.POST_NOTIFICATIONS) }
+        }
+    }
+
+    // 2) Battery-optimisation exemption — critical against Doze.
+    val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val exempt = pm?.isIgnoringBatteryOptimizations(context.packageName) ?: true
+    if (!exempt) {
+        runCatching {
+            @Suppress("BatteryLife")
+            val intent = Intent(
+                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                Uri.parse("package:${context.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        }.onFailure {
+            // Fallback to the full list if the per-package action is missing.
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        }
+    }
+
+    // Mark shown so we don't nag on every Connect.
+    kotlinx.coroutines.runBlocking { runCatching { prefs.setOnboardPromptsShown(true) } }
 }
 

@@ -18,6 +18,10 @@ updated: 2026-05-09
 | [0006](0006-layered-macos-vpn-routing.md) | accepted | Layered macOS routing для корпоративного VPN + GhostStream | 2026-04-30 |
 | [0007](0007-macos-statusframe-passthrough.md) | accepted | macOS PacketTunnel должен пробрасывать StatusFrame от runtime | 2026-05-09 |
 | [0008](0008-verbose-debug-observability.md) | accepted | Verbose debug observability: structured logging для каждого микро-события | 2026-05-09 |
+| [0009](0009-android-honest-state-and-resilience.md) | accepted | Android honest state + TSPU-resilient reconnect | 2026-05-09 |
+| [0009](0009-cert-pem-providerConfiguration.md) | accepted | macOS cert/key через providerConfiguration (не Keychain) | 2026-05-17 |
+| [0010](0010-docker-deploy.md) | accepted | Docker pull-and-go деплой server + relay | 2026-06-04 |
+| [0011](0011-remove-insecure-always-verify.md) | accepted | Убрать `insecure` TLS: всегда webpki-проверка серверного серта | 2026-06-27 |
 
 ## Когда писать новый ADR
 

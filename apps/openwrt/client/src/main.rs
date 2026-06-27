@@ -283,15 +283,15 @@ mod linux {
             client_common::helpers::load_server_ca(&cfg)?;
 
         // Server TLS cert is signed by Let's Encrypt (via nginx SNI passthrough),
-        // not by the PhantomVPN CA in the conn string. The conn string CA is for
-        // client mTLS only. Skip server cert verification — mTLS already authenticates
-        // the connection (server verifies our client cert, we verify via mTLS handshake).
-        let skip_verify = true;
+        // not by the PhantomVPN CA in the conn string (that CA is for client mTLS
+        // only). The webpki public root store verifies the LE server cert against
+        // `server_name`; no extra server_ca needed. v0.27.0: server verification
+        // is always on — the old skip_verify was a MITM hole (ADR 0011).
         let server_ca: Option<Vec<rustls::pki_types::CertificateDer<'static>>> = None;
 
         // Build TLS client config
         let client_config =
-            phantom_core::h2_transport::make_h2_client_tls(skip_verify, server_ca, client_identity)
+            phantom_core::h2_transport::make_h2_client_tls(server_ca, client_identity)
                 .context("Failed to build TLS client config")?;
 
         let n_streams   = n_data_streams();

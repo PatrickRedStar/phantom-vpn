@@ -18,7 +18,6 @@ class PreferencesStore(private val context: Context) {
     companion object {
         private val SERVER_ADDR = stringPreferencesKey("server_addr")
         private val SERVER_NAME = stringPreferencesKey("server_name")
-        private val INSECURE    = booleanPreferencesKey("insecure")
         private val CERT_PATH   = stringPreferencesKey("cert_path")
         private val KEY_PATH    = stringPreferencesKey("key_path")
         private val TUN_ADDR    = stringPreferencesKey("tun_addr")
@@ -31,6 +30,10 @@ class PreferencesStore(private val context: Context) {
         private val AUTO_START_ON_BOOT = booleanPreferencesKey("auto_start_on_boot")
         private val WAS_RUNNING        = booleanPreferencesKey("was_running")
         private val LAST_TUNNEL_PARAMS = stringPreferencesKey("last_tunnel_params")
+        // v0.27.0 (B4/A3): true once we've shown the first-connect onboarding
+        // prompts (battery-optimisation exemption + POST_NOTIFICATIONS). Shown
+        // at most once so we're not nagging on every Connect.
+        private val ONBOARD_PROMPTS_SHOWN = booleanPreferencesKey("onboard_prompts_shown")
         private val LANGUAGE_OVERRIDE  = stringPreferencesKey("language_override")
         private val APP_ICON           = stringPreferencesKey("app_icon")
         // v0.27.0 (W11): null/0 = disabled, >0 = recycle threshold in bytes
@@ -47,6 +50,17 @@ class PreferencesStore(private val context: Context) {
         context.dataStore.edit {
             if (code.isNullOrBlank()) it.remove(LANGUAGE_OVERRIDE) else it[LANGUAGE_OVERRIDE] = code
         }
+    }
+
+    // v0.27.0 (B4/A3): first-connect onboarding prompts shown flag.
+    fun onboardPromptsShownBlocking(): Boolean = runCatching {
+        kotlinx.coroutines.runBlocking {
+            context.dataStore.data.map { it[ONBOARD_PROMPTS_SHOWN] ?: false }.first()
+        }
+    }.getOrDefault(false)
+
+    suspend fun setOnboardPromptsShown(shown: Boolean) {
+        context.dataStore.edit { it[ONBOARD_PROMPTS_SHOWN] = shown }
     }
 
     val autoStartOnBoot: Flow<Boolean> = context.dataStore.data.map { it[AUTO_START_ON_BOOT] ?: false }
@@ -80,7 +94,6 @@ class PreferencesStore(private val context: Context) {
         VpnConfig(
             serverAddr = prefs[SERVER_ADDR] ?: "",
             serverName = prefs[SERVER_NAME] ?: "",
-            insecure   = prefs[INSECURE] ?: false,
             certPath   = prefs[CERT_PATH] ?: "",
             keyPath    = prefs[KEY_PATH] ?: "",
             tunAddr    = prefs[TUN_ADDR] ?: "10.7.0.2/24",
@@ -100,7 +113,6 @@ class PreferencesStore(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[SERVER_ADDR] = config.serverAddr
             prefs[SERVER_NAME] = config.serverName
-            prefs[INSECURE]    = config.insecure
             prefs[CERT_PATH]   = config.certPath
             prefs[KEY_PATH]    = config.keyPath
             prefs[TUN_ADDR]    = config.tunAddr

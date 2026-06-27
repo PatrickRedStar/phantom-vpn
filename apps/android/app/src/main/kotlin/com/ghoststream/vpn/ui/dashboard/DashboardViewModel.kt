@@ -55,7 +55,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         VpnConfig(
             serverAddr      = p?.serverAddr ?: "",
             serverName      = p?.serverName ?: "",
-            insecure        = p?.insecure ?: false,
             certPath        = p?.certPath ?: "",
             keyPath         = p?.keyPath ?: "",
             tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
@@ -277,7 +276,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 putExtra(GhostStreamVpnService.EXTRA_SERVER_ADDR, cfg.serverAddr)
                 putExtra(GhostStreamVpnService.EXTRA_SERVER_NAME,
                     cfg.serverName.ifBlank { cfg.serverAddr.substringBefore(":") })
-                putExtra(GhostStreamVpnService.EXTRA_INSECURE, cfg.insecure)
                 putExtra(GhostStreamVpnService.EXTRA_CERT_PATH, cfg.certPath)
                 putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
                 putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)

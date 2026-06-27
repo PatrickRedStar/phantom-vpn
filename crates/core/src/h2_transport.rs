@@ -42,33 +42,33 @@ pub fn make_h2_server_tls(
 }
 
 /// Build a `rustls::ClientConfig` for HTTP/2 (ALPN=["h2"]).
+///
+/// The server certificate is ALWAYS verified: the webpki public root store
+/// (real CAs like Let's Encrypt — production servers present LE certs) plus any
+/// `server_ca` provided for self-signed deployments. The hostname is checked
+/// against the SNI passed to the TLS connector. Client identity (mTLS) is
+/// attached when present.
+///
+/// v0.27.0: the `skip_server_verify` escape hatch was removed. It disabled all
+/// server verification — a MITM vector — and was unnecessary because production
+/// servers present real LE certs. mTLS authenticates the *client* to the
+/// server, not the server to the client, so it never substituted for server
+/// verification. See ADR 0011.
 pub fn make_h2_client_tls(
-    skip_server_verify: bool,
     server_ca: Option<Vec<CertificateDer<'static>>>,
     client_identity: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
 ) -> anyhow::Result<Arc<rustls::ClientConfig>> {
-    let tls_config: rustls::ClientConfig = match (skip_server_verify, client_identity) {
-        (true, Some((certs, key))) => rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(crate::tls::SkipVerification))
+    let roots = crate::tls::build_root_store(server_ca)?;
+    let mut tls_config: rustls::ClientConfig = match client_identity {
+        Some((certs, key)) => rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
             .with_client_auth_cert(certs, key)?,
-        (true, None) => rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(crate::tls::SkipVerification))
-            .with_no_client_auth(),
-        (false, Some((certs, key))) => rustls::ClientConfig::builder()
-            .with_root_certificates(crate::tls::build_root_store(server_ca)?)
-            .with_client_auth_cert(certs, key)?,
-        (false, None) => rustls::ClientConfig::builder()
-            .with_root_certificates(crate::tls::build_root_store(server_ca)?)
+        None => rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
             .with_no_client_auth(),
     };
 
-    // Note: we don't set ALPN here — the caller wraps in tokio-rustls
-    // where ALPN=["h2"] is set via the connector
-    // Actually, set it here for consistency:
-    let mut cfg = tls_config;
-    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    tls_config.alpn_protocols = vec![b"h2".to_vec()];
 
-    Ok(Arc::new(cfg))
+    Ok(Arc::new(tls_config))
 }

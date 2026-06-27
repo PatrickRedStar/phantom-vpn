@@ -164,7 +164,6 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
     let mut sni: Option<String> = None;
     let mut tun: Option<String> = None;
     let mut version: Option<String> = None;
-    let mut insecure: bool = false;
     for pair in query.split('&') {
         if pair.is_empty() { continue; }
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
@@ -173,12 +172,10 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
             "sni"       => sni = Some(v),
             "tun"       => tun = Some(v),
             "v"         => version = Some(v),
-            // v0.27.0 (W12): explicit opt-in for skipping server hostname
-            // verification. Required when client overrides SNI to a domain
-            // whose cert it doesn't own (DPI evasion preset). mTLS client
-            // auth still binds protocol-level identity to the server.
-            "insecure"  => insecure = matches!(v.as_str(), "1" | "true"),
-            _           => {} // forward-compat: ignore unknown params (e.g. legacy "transport")
+            // forward-compat: ignore unknown params (e.g. legacy "transport",
+            // and the removed "insecure" flag — server cert is now always
+            // verified, see ADR 0011).
+            _           => {}
         }
     }
 
@@ -208,7 +205,6 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
         network: ClientNetworkConfig {
             server_addr: authority.to_string(),
             server_name: Some(sni),
-            insecure,
             tun_name: None,
             tun_addr: Some(tun),
             tun_mtu: Some(1350),
@@ -253,6 +249,17 @@ mod tests {
         let enc = URL_SAFE_NO_PAD.encode(sample_pem().as_bytes());
         let s = format!("ghs://{}@1.2.3.4:443?sni=x&v=1", enc);
         assert!(parse_conn_string(&s).is_err());
+    }
+
+    #[test]
+    fn legacy_insecure_param_is_ignored() {
+        // v0.27.0: the `insecure` flag was removed (server cert is always
+        // verified, ADR 0011). Old links carrying `&insecure=1` must still
+        // parse — the unknown param is silently ignored, not an error.
+        let enc = URL_SAFE_NO_PAD.encode(sample_pem().as_bytes());
+        let s = format!("ghs://{}@1.2.3.4:443?sni=tls.example.com&tun=10.7.0.5%2F24&v=1&insecure=1", enc);
+        let cfg = parse_conn_string(&s).expect("legacy insecure link must still parse");
+        assert_eq!(cfg.network.server_name.as_deref(), Some("tls.example.com"));
     }
 }
 
