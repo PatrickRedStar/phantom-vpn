@@ -75,18 +75,26 @@ pub const MAX_ATTEMPTS: u32 = 8;
 
 /// RX idle timeout in seconds. When a tunnel stream goes this long without
 /// any inbound bytes (data frame OR heartbeat), the read loop returns an
-/// error and the supervisor triggers a reconnect. Heartbeat cadence is
-/// ~20-30 s so 45 s gives a comfortable ~1.5×; smaller risks false trips
-/// on legitimately quiet sessions, larger lets a half-open TCP socket
-/// zombie for minutes under TSPU silent-drop conditions.
+/// error and the supervisor triggers a reconnect.
+///
+/// MUST stay strictly greater than `HEARTBEAT_INTERVAL_MAX_SECS` (45 s — the
+/// server's maximum heartbeat gap, see `phantom_core::wire`) plus RTT and
+/// scheduling slack. At 45 s it *equalled* the heartbeat max, leaving zero
+/// margin: a heartbeat landing near the top of its [15, 45] s window could
+/// arrive a hair late and trip a false "rx idle timeout" kill of a perfectly
+/// live but quiet stream — observed in the 2026-06-13 TSPU incident as streams
+/// dying one-by-one on an otherwise healthy idle tunnel. 75 s = 45 s heartbeat
+/// max + ~30 s of slack for RTT and scheduling jitter; a genuinely dead stream
+/// is still reaped long before a half-open TCP socket can zombie for minutes
+/// under TSPU silent-drop.
 ///
 /// Used by `tls_rx_loop` in `client_common` when invoked from runtime.
-pub const RX_IDLE_TIMEOUT_SECS: u32 = 45;
+pub const RX_IDLE_TIMEOUT_SECS: u32 = 75;
 
 /// v0.26.21: если все streams отвалились на этот срок — teardown + reconnect.
 /// 3s — выживание против короткого окна между kill старого и spawn нового
-/// stream'а после реконнекта (см. supervise.rs:529 streams_alive[idx]=true
-/// после успешного handshake).
+/// stream'а после реконнекта (`drive_tunnel` ставит streams_alive[idx]=true
+/// только после успешного handshake всех N стримов).
 pub const ALL_STREAMS_DEAD_TIMEOUT_SECS: u32 = 3;
 
 /// Coarse classification of a tunnel drop, used to pick the right reconnect

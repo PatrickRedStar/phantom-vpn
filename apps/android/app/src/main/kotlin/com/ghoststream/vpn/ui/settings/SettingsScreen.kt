@@ -1408,28 +1408,8 @@ private fun TunnelRows(
         },
         showDivider = true,
     )
-    // v0.27.0 (W11): experimental DPI evasion. Off by default. When on, the
-    // tunnel tears down + re-handshakes once cumulative `bytes_rx + bytes_tx`
-    // crosses the threshold, so no individual TCP connection accumulates the
-    // ~16 KB / ~25 packets that trigger the carrier's silent-freeze rule
-    // (net4people #490). Idle tunnels are not pointlessly recycled.
-    val dpiBytes = (config.dpiRecycleBytes ?: 0L)
-    val dpiOn = dpiBytes > 0
-    SettingRow(
-        label = "Эксперимент: обход DPI шейпинга",
-        sub = if (dpiOn) "Перезапуск после ${dpiBytes / 1024} KB" else "Выкл",
-        right = {
-            GhostToggle(
-                checked = dpiOn,
-                onToggle = {
-                    // Toggle between off and the recommended default (100 KB
-                    // ≈ aggregate of 8 streams × 14 KB carrier threshold).
-                    viewModel.setDpiRecycleBytes(if (dpiOn) null else 100_000L)
-                },
-            )
-        },
-        showDivider = false,
-    )
+    // v0.26.19: "Эксперимент: обход DPI шейпинга" (W11 byte-recycle) removed —
+    // эмпирически только усугублял ситуацию (full reconnect storm под shape).
 }
 
 // ── Appearance rows — extracted block reused by Phone body + SystemDetailPane

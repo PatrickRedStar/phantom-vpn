@@ -15,9 +15,13 @@ use tokio::sync::watch;
 /// EMA smoothing factor. Higher = faster to new signal, more jitter.
 const ALPHA: f64 = 0.35;
 
-/// Idle threshold above which `Connected` is downgraded to `Stale` for UI
-/// honesty. Matches `RX_IDLE_TIMEOUT_SECS` minus a tick of slack so the
-/// UI flips to Stale shortly before the runtime triggers a forced reconnect.
+/// Idle threshold (seconds) above which a `Connected` tunnel is downgraded to
+/// `Stale` for UI honesty — display-only, never triggers teardown (the runtime
+/// reaps a stream at `RX_IDLE_TIMEOUT_SECS`, currently 75 s). NOTE: at 18 s this
+/// sits below `HEARTBEAT_INTERVAL_MAX_SECS` (45 s), so a quiet-but-live tunnel
+/// can briefly show Stale between heartbeats. Raising it above 45 s is a
+/// separate UX change (the `derive_health` tests pin 25 s → Stale) and is left
+/// out of the 2026-06-13 connect-resilience fix on purpose.
 const STALE_IDLE_SECS: u32 = 18;
 
 // ── TSPU-128 signature detector (v0.26.5) ────────────────────────────────

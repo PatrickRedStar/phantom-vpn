@@ -400,6 +400,22 @@ async fn should_reconnect(
     }
 }
 
+/// Pseudo-random ~50..149 ms backoff between per-stream handshake retries.
+/// De-correlates concurrent re-dials (so a burst of simultaneous retries does
+/// not present one synchronised fingerprint) without pulling in the `rand`
+/// crate — `client-core-runtime` deliberately depends on tokio only. `idx` is
+/// mixed in (Knuth multiplicative hash) so streams retrying in the same clock
+/// tick — or on a coarse-resolution clock where `subsec_nanos` barely moves —
+/// still diverge instead of collapsing onto one value.
+fn stream_retry_jitter_ms(idx: usize) -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let mixed = nanos ^ (idx as u32).wrapping_mul(2_654_435_761);
+    50 + u64::from(mixed % 100)
+}
+
 /// Connect TLS streams, spawn I/O tasks, and run until shutdown or error.
 ///
 /// Does NOT manage Linux-specific guards (DnsGuard, Ipv6Guard, RouteGuard) —
@@ -457,75 +473,204 @@ async fn drive_tunnel(
     // hard ceiling even when cancel never arrives.
     telemetry.tls_state.store(TLS_HANDSHAKING, Ordering::Relaxed);
     let handshake_fut = async {
+        // CONC-A1/A2 (2026-06-13 TSPU fix): open streams CONCURRENTLY with
+        // PER-STREAM RETRY instead of one sequential all-or-nothing loop.
+        //
+        // Under TSPU the handshake of *some* parallel streams is silently
+        // blackholed and times out at HANDSHAKE_TIMEOUT (15 s). The old loop
+        // opened streams one-by-one and propagated the first such failure with
+        // `?`, discarding the streams that had already succeeded and forcing a
+        // full reconnect — one dropped stream cost the whole attempt plus a
+        // 15 s sequential stall. Now a failed stream is retried on a fresh
+        // socket (the probabilistic drop almost always clears in 1-2 tries)
+        // while the other streams handshake in parallel.
+        //
+        // INVARIANT PRESERVED — all N still required (no partial-quorum). The
+        // data plane (`flow_stream_idx % n_streams` → `tx_senders[idx]`, and the
+        // server's `effective_n`) assumes a full, contiguous `0..n_streams` set;
+        // coming up partial would blackhole every flow hashing to a missing
+        // index. If any stream is still down after its retries we return Err →
+        // normal reconnect (no worse than before, just faster and far rarer).
+        //
+        // `open_one` opens ONE stream at a fixed `idx`, retrying on a fresh
+        // socket with jitter. ADR 0008 §2: low-level handshake events
+        // (`tcp.connect`, `tls.client_hello`, `tls.alpn_negotiated`) are emitted
+        // by `client-common::tls_handshake::do_connect`; here we emit only the
+        // per-stream events that need a `stream_id` correlator.
+        let open_one = |idx: usize| {
+            // Owned clones so the returned future is Send + 'static for JoinSet.
+            // `server_addr` (SocketAddr) and `n_streams` (usize) are Copy — the
+            // `async move` block captures them by copy directly, no rebind needed.
+            let server_name = server_name.clone();
+            let client_tls = client_tls.clone();
+            let protect_socket = protect_socket.clone();
+            async move {
+                // 1 initial attempt + 2 retries.
+                const STREAM_OPEN_RETRIES: u32 = 2;
+                let mut last_err: Option<anyhow::Error> = None;
+                for attempt in 0..=STREAM_OPEN_RETRIES {
+                    if attempt > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            stream_retry_jitter_ms(idx),
+                        ))
+                        .await;
+                        tracing::debug!(
+                            category = "handshake",
+                            stream_id = idx as u64,
+                            attempt = attempt as u64,
+                            "stream.retry"
+                        );
+                    }
+                    let attempt_res = async {
+                        let (r, mut w) = if let Some(ref protect) = protect_socket {
+                            // Android: create socket, protect it from VPN routing,
+                            // then connect. protect(fd) MUST run for every socket
+                            // including retries, else traffic loops back via tun.
+                            let socket = if server_addr.is_ipv4() {
+                                tokio::net::TcpSocket::new_v4()
+                            } else {
+                                tokio::net::TcpSocket::new_v6()
+                            }
+                            .with_context(|| format!("stream {} socket create", idx))?;
+
+                            let fd = socket.as_raw_fd();
+                            if !protect(fd) {
+                                anyhow::bail!("stream {} VpnService.protect() failed", idx);
+                            }
+
+                            // Bound the raw TCP connect like the TLS phase does
+                            // (tls_handshake::HANDSHAKE_TIMEOUT). Under the TSPU
+                            // SYN-blackhole this fix targets, an unbounded connect()
+                            // would block on kernel SYN_RETRIES (~75-130 s) and
+                            // starve the per-stream retry below; the 15 s cap lets a
+                            // dead SYN error out fast so the retry actually engages.
+                            let tcp = tokio::time::timeout(
+                                client_common::tls_handshake::HANDSHAKE_TIMEOUT,
+                                socket.connect(server_addr),
+                            )
+                            .await
+                            .with_context(|| format!("stream {} tcp connect timeout", idx))?
+                            .with_context(|| format!("stream {} tcp connect", idx))?;
+
+                            tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
+                                .await
+                                .with_context(|| format!("stream {} tls connect", idx))?
+                        } else {
+                            // Linux/iOS/macOS: no socket protection needed.
+                            tls_connect(server_addr, server_name.clone(), client_tls.clone())
+                                .await
+                                .with_context(|| format!("stream {} tls connect", idx))?
+                        };
+                        tracing::debug!(
+                            category = "handshake",
+                            result = "ok",
+                            subject = %server_name,
+                            stream_id = idx as u64,
+                            "mtls.cert_verify"
+                        );
+                        // Wire contract: the 2nd handshake byte is ALWAYS the full
+                        // n_streams (never a live count). The server pins
+                        // effective_n from it and evicts the session on mismatch.
+                        write_handshake(&mut w, idx as u8, n_streams as u8)
+                            .await
+                            .with_context(|| format!("stream {} handshake", idx))?;
+                        tracing::debug!(
+                            category = "handshake",
+                            max_concurrent = n_streams as u64,
+                            initial_window = 0u64,
+                            stream_id = idx as u64,
+                            "h2.settings_sent"
+                        );
+                        anyhow::Ok((r, w))
+                    }
+                    .await;
+
+                    match attempt_res {
+                        Ok((r, w)) => {
+                            let stream_priority = if idx == 0 { "high" } else { "normal" };
+                            // stream.open — per ADR 0008 §2.
+                            tracing::debug!(
+                                category = "stream",
+                                stream_id = idx as u64,
+                                priority = %stream_priority,
+                                "open"
+                            );
+                            return anyhow::Ok((idx, r, w));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                category = "handshake",
+                                stream_id = idx as u64,
+                                attempt = attempt as u64,
+                                error = %format!("{:#}", e),
+                                "stream.open_failed"
+                            );
+                            last_err = Some(e);
+                        }
+                    }
+                }
+                Err(last_err
+                    .unwrap_or_else(|| anyhow::anyhow!("stream {} open failed", idx)))
+            }
+        };
+
+        // Ramp: stream 0 FIRST and fully awaited before any of 1..N is dialed.
+        // The server creates the session coordinator + runs the DPI mimicry-warmup
+        // only on `stream_idx == 0 && is_new`. Awaiting stream 0's handshake write
+        // before spawning the rest gives it a head start to register the session
+        // first — but this is BEST-EFFORT, not a hard guarantee: our await only
+        // confirms the bytes were written client-side, and the server picks the
+        // coordinator by a dashmap race, so under TLS-resumption / adverse
+        // scheduling a 1..N stream could still win it (warmup then skipped → a
+        // fingerprint shift, not a disconnect). The robust fix is server-side
+        // (only stream_idx==0 may create the session) — tracked separately. Here
+        // we preserve the original ordering as closely as a concurrent open allows.
+        let mut opened = Vec::with_capacity(n_streams);
+        opened.push(
+            open_one(0)
+                .await
+                .context("stream 0 (coordinator) handshake failed")?,
+        );
+
+        // Remaining streams concurrently — total handshake time is now bounded by
+        // the slowest single stream (+ its retries), not the sum across all N.
+        if n_streams > 1 {
+            let mut set = tokio::task::JoinSet::new();
+            for idx in 1..n_streams {
+                set.spawn(open_one(idx));
+            }
+            // On an unrecoverable stream the `?` bails; dropping `set` on unwind
+            // (and on outer cancel, dropping handshake_fut drops `set`) aborts
+            // the still-pending open tasks.
+            while let Some(joined) = set.join_next().await {
+                let triple = joined.context("stream open task panicked")??;
+                opened.push(triple);
+            }
+        }
+
+        // Re-order by real stream_idx so Vec position == stream_idx: the spawn
+        // loop below (`zip(...).enumerate()`) binds idx to position, and the
+        // server keys streams by the handshake idx byte. JoinSet completes out
+        // of order, so this sort is mandatory.
+        opened.sort_by_key(|(idx, _, _)| *idx);
+
+        // Load-bearing invariant for the data plane: the dispatcher routes
+        // `flow_stream_idx(pkt, n_streams) -> tx_senders[idx]` and the spawn loop
+        // binds idx by Vec position, so position MUST equal stream_idx. It holds
+        // because we collect exactly 0..n_streams and sort; assert it so a future
+        // partial-quorum change (gapped/short set) can't silently mis-route.
+        debug_assert!(
+            opened.len() == n_streams
+                && opened.iter().enumerate().all(|(pos, (idx, _, _))| pos == *idx),
+            "handshake must yield a contiguous, sorted 0..n_streams stream set"
+        );
+
         let mut tls_writers = Vec::with_capacity(n_streams);
         let mut tls_readers = Vec::with_capacity(n_streams);
-        for idx in 0..n_streams {
-            // ADR 0008 §2: low-level handshake events (`tcp.connect`,
-            // `tcp.connected`, `tls.client_hello`, `tls.alpn_negotiated`)
-            // are emitted by `client-common::tls_handshake::do_connect` for
-            // every client (Linux / Android / iOS / macOS). Supervise emits
-            // only the per-stream events that need a `stream_id` correlator
-            // (mtls.cert_verify, h2.*, stream.*).
-            let stream_priority = if idx == 0 { "high" } else { "normal" };
-            let (r, mut w) = if let Some(ref protect) = protect_socket {
-                // Android: create socket, protect it from VPN routing, then connect.
-                let socket = if server_addr.is_ipv4() {
-                    tokio::net::TcpSocket::new_v4()
-                } else {
-                    tokio::net::TcpSocket::new_v6()
-                }.with_context(|| format!("stream {} socket create", idx))?;
-
-                let fd = socket.as_raw_fd();
-                if !protect(fd) {
-                    anyhow::bail!("stream {} VpnService.protect() failed", idx);
-                }
-
-                let tcp = socket.connect(server_addr)
-                    .await
-                    .with_context(|| format!("stream {} tcp connect", idx))?;
-
-                let res = tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
-                    .await
-                    .with_context(|| format!("stream {} tls connect", idx))?;
-                tracing::debug!(
-                    category = "handshake",
-                    result = "ok",
-                    subject = %server_name,
-                    stream_id = idx as u64,
-                    "mtls.cert_verify"
-                );
-                res
-            } else {
-                // Linux/iOS/macOS: no socket protection needed.
-                let res = tls_connect(server_addr, server_name.clone(), client_tls.clone())
-                    .await
-                    .with_context(|| format!("stream {} tls connect", idx))?;
-                tracing::debug!(
-                    category = "handshake",
-                    result = "ok",
-                    subject = %server_name,
-                    stream_id = idx as u64,
-                    "mtls.cert_verify"
-                );
-                res
-            };
-            write_handshake(&mut w, idx as u8, n_streams as u8)
-                .await
-                .with_context(|| format!("stream {} handshake", idx))?;
-            tracing::debug!(
-                category = "handshake",
-                max_concurrent = n_streams as u64,
-                initial_window = 0u64,
-                stream_id = idx as u64,
-                "h2.settings_sent"
-            );
-            // stream.open — per ADR 0008 §2.
-            tracing::debug!(
-                category = "stream",
-                stream_id = idx as u64,
-                priority = %stream_priority,
-                "open"
-            );
+        for (idx, r, w) in opened {
+            // streams_alive set ONLY here, on final success of all N — never
+            // mid-handshake — so the death-watcher / derive_health never observe
+            // a transient or about-to-fail stream as alive.
             telemetry.streams_alive[idx].store(true, Ordering::Relaxed);
             tls_readers.push(r);
             tls_writers.push(w);
