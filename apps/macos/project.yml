@@ -53,8 +53,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client
         INFOPLIST_FILE: GhostStream/Info.plist
         CODE_SIGN_ENTITLEMENTS: GhostStream/GhostStream.entitlements
-        MARKETING_VERSION: "0.25.0"
-        CURRENT_PROJECT_VERSION: "22"
+        MARKETING_VERSION: "0.25.1"
+        CURRENT_PROJECT_VERSION: "23"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
         ENABLE_HARDENED_RUNTIME: YES
@@ -64,6 +64,11 @@ targets:
         Debug:
           CODE_SIGN_STYLE: Manual
           PROVISIONING_PROFILE_SPECIFIER: ghoststream
+          # Профили ghoststream/ghoststream-2 — Developer ID (до 2044) и
+          # включают только Developer ID Application cert; базовый
+          # "Apple Development" с ними не совместим, а автоподпись
+          # заблокирована неподписанным Apple PLA.
+          CODE_SIGN_IDENTITY: "Developer ID Application"
         Release:
           PROVISIONING_PROFILE_SPECIFIER: "$(GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER)"
     dependencies:
@@ -109,8 +114,8 @@ targets:
         PRODUCT_MODULE_NAME: PacketTunnelExtension
         INFOPLIST_FILE: PacketTunnelExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnelExtension/PacketTunnelExtension.entitlements
-        MARKETING_VERSION: "0.25.0"
-        CURRENT_PROJECT_VERSION: "22"
+        MARKETING_VERSION: "0.25.1"
+        CURRENT_PROJECT_VERSION: "23"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
         ENABLE_HARDENED_RUNTIME: YES
@@ -119,6 +124,8 @@ targets:
         Debug:
           CODE_SIGN_STYLE: Manual
           PROVISIONING_PROFILE_SPECIFIER: ghoststream-2
+          # См. комментарий у GhostStream target — Developer ID профили.
+          CODE_SIGN_IDENTITY: "Developer ID Application"
         Release:
           PROVISIONING_PROFILE_SPECIFIER: "$(GHOSTSTREAM_TUNNEL_PROVISIONING_PROFILE_SPECIFIER)"
     dependencies:
