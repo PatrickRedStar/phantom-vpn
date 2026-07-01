@@ -293,21 +293,40 @@ private final class VpnNotificationController: NSObject, UNUserNotificationCente
 
         guard let notification else { return }
 
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
-
-            let content = UNMutableNotificationContent()
-            content.title = notification.title
-            content.body = notification.body
-            content.sound = .default
-
-            let request = UNNotificationRequest(
-                identifier: "ghoststream.state.\(UUID().uuidString)",
-                content: content,
-                trigger: nil
-            )
-            UNUserNotificationCenter.current().add(request)
+        // NOTIF-1 fix: не дёргаем requestAuthorization на каждый переход
+        // состояния — читаем текущий статус без промпта и запрашиваем
+        // авторизацию только если она ещё не определена.
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                Self.post(notification, via: center)
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    guard granted else { return }
+                    Self.post(notification, via: center)
+                }
+            default:
+                return
+            }
         }
+    }
+
+    private static func post(
+        _ notification: VpnStateNotification,
+        via center: UNUserNotificationCenter
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = notification.title
+        content.body = notification.body
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "ghoststream.state.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
     }
 
     nonisolated func userNotificationCenter(

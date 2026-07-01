@@ -48,15 +48,24 @@ public final class DockPolicyController {
         }
     }
 
+    /// DOCK-1 fix: множество живых foreground-окон (console/logs/welcome/
+    /// settings, по claim-id из `ForegroundWindowClaim`). Раньше аргумент
+    /// игнорировался и в accessory-режиме (Show in Dock выключен) открытое
+    /// окно оставалось без Dock-иконки и стабильного фокуса.
+    private var foregroundClaims: Set<String> = []
+
     public func apply() {
-        NSApp.setActivationPolicy(showInDock ? .regular : .accessory)
+        let wantsRegular = showInDock || !foregroundClaims.isEmpty
+        NSApp.setActivationPolicy(wantsRegular ? .regular : .accessory)
     }
 
-    public func foregroundWindowDidAppear(_: String) {
+    public func foregroundWindowDidAppear(_ claim: String) {
+        foregroundClaims.insert(claim)
         apply()
     }
 
-    public func foregroundWindowDidDisappear(_: String) {
+    public func foregroundWindowDidDisappear(_ claim: String) {
+        foregroundClaims.remove(claim)
         apply()
     }
 

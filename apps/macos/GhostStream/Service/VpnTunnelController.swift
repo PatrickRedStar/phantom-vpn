@@ -223,7 +223,18 @@ public final class VpnTunnelController: ObservableObject {
         }
     }
 
+    /// CONNECT-1 fix: `statusFrame.state` в UI отстаёт от NE на латентность
+    /// IPC — два быстрых клика по CONNECT оба видели `.disconnected` и
+    /// запускали параллельные install+start (двойной saveToPreferences
+    /// гоняется сам с собой). Пока идёт один цикл — второй отклоняем.
+    private var installAndStartInFlight = false
+
     public func installAndStart(profile: VpnProfile, preferences: PreferencesStore) async throws {
+        guard !installAndStartInFlight else {
+            throw VpnTunnelError.startFailed("connect already in progress")
+        }
+        installAndStartInFlight = true
+        defer { installAndStartInFlight = false }
         do {
             try await installOnly(profile: profile, preferences: preferences)
             guard let manager else { throw VpnTunnelError.noManager }

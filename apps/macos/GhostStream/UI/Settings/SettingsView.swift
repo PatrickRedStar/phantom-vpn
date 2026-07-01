@@ -37,6 +37,13 @@ public struct SettingsView: View {
 
     public init() {}
 
+    /// Реальные версия/билд из Info.plist (см. BUILD-1).
+    private static var buildStamp: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "v\(version) (\(build))"
+    }
+
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -83,7 +90,9 @@ public struct SettingsView: View {
                     .font(.custom("DepartureMono-Regular", size: 10.5))
                     .tracking(0.16 * 10.5)
                     .foregroundStyle(C.textFaint)
-                Text("2026.04.27.0142")
+                // BUILD-1 fix: раньше тут был хардкод "2026.04.27.0142",
+                // застывший с апреля независимо от реальной версии.
+                Text(Self.buildStamp)
                     .font(.custom("DepartureMono-Regular", size: 10.5))
                     .tracking(0.04 * 10.5)
                     .foregroundStyle(C.bone)

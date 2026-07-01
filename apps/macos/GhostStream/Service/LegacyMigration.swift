@@ -276,11 +276,30 @@ public enum LegacyMigration {
             return
         }
 
+        // MIG-1 fix: `dictionaryRepresentation()` возвращает не только ключи
+        // suite, но и весь NSGlobalDomain/registration (AppleLanguages,
+        // Apple* и прочее) — на чистой установке весь этот мусор копировался
+        // в App Group-контейнер. Переносим только известные ключи приложения.
+        let migratableKeys: Set<String> = [
+            // ProfilesStore
+            "profiles.json",
+            // PreferencesStore.Keys
+            "dns_servers", "split_routing", "routing_mode",
+            "manual_direct_cidrs", "direct_countries", "custom_direct_domains",
+            "preserve_scoped_dns", "per_app_mode", "per_app_list",
+            "auto_start_on_boot", "was_running", "last_tunnel_params",
+            "language_override", "theme", "dns_leak_protection",
+            "ipv6_killswitch", "auto_reconnect", "start_in_menu_bar",
+            "notify_state_changes", "reduce_motion", "auto_update",
+            "streams", "verbose_log",
+            // DockPolicyController
+            "showInDock",
+        ]
+
         let oldDict = oldDefaults.dictionaryRepresentation()
         var copied = 0
         for (key, value) in oldDict {
-            // Skip our own bookkeeping if it somehow leaked.
-            if key == migrationFlagKey || key == phaseACompleteKey { continue }
+            guard migratableKeys.contains(key) else { continue }
             // Conservative: never overwrite a value that already exists in
             // the new container. Avoids clobbering settings the user has
             // already edited in the new build.

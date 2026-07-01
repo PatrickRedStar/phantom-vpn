@@ -123,6 +123,9 @@ public final class TunnelLogStore {
             logs.append(contentsOf: frames)
             trimLogs()
             revision += 1
+            // Host-side зеркало runtime.log: extension пишет в root-контейнер,
+            // невидимый пользователю — см. HostLogMirror.
+            HostLogMirror.shared.append(frames)
         } catch {
             ipcBridge = nil
             lastErrorMessage = "Log polling failed: \(error.localizedDescription)"
