@@ -1,5 +1,15 @@
 # Changelog
 
+## [macOS 0.25.1] - 2026-07-02
+
+### Fixed
+- **Вкладка логов «зависала» после долгой работы.** Провайдер эмитил DBG-события `ipc request/response` на каждый polling-запрос (в т.ч. на сам `subscribe_logs` раз в 1.5 с) — лог-поток самоподпитывался и добивал буфер UI до потолка даже в простое. На потолке `trim` держал `logs.count` постоянным, `onChange(of: count)` переставал срабатывать, и tail замерзал. Теперь: DBG для `get_status`/`subscribe_logs` только под verbose_log; UI наблюдает монотонный `revision`, а не `count`; фильтрация буфера ушла с main actor в фон; cap 50k→10k; `LogFrame.id` включает хэш `fields` (дубли ломали ForEach).
+- **Split routing на пресете Cisco (layeredAuto): подключался и сразу сбрасывался.** Cisco добавляет сотни динамических /32 — комплемент раздувался до тысяч `includedRoutes`, а `routeHash` дребезжал на каждый новый хост → `setTunnelNetworkSettings` каждые 5 с → reassert-петля. Теперь маршруты upstream-VPN агрегируются лестницей /24→/20→/16 (cap 192, стабильные супернеты); policy применяется только в `.connected` с гистерезисом в 2 опроса; отдельный FFI-лимит 256 КиБ для расчёта маршрутов (прежние 16 КиБ молча отключали split routing на большом наборе); пустой комплемент теперь громкая ошибка, а не тихий туннель без трафика.
+- **«Интернет пропадал» под нагрузкой на логи.** Inbound-пакеты доставлялись через актор `PhantomBridge`, где конкурировали с колбэками логов/статусов; `writeSnapshot` (файловый I/O) выполнялся на акторе на каждый StatusFrame. Теперь пакеты идут напрямую с Rust-потока, `submitInbound` — `nonisolated`, запись snapshot — на serial-очереди с коалесценцией `StatusBroadcastGate` (1/с, паритет с iOS).
+- **IPC мог зависнуть навсегда** — `TunnelIpcBridge.send` без таймаута + ветки `updateRoutePolicy`, не вызывавшие completionHandler, вешали host-side continuation до перезапуска. Добавлен таймаут 10 с и ответ во всех ветках.
+- **`runtime.log` был недоступен** — system extension (root, sandbox) писал в контейнер root'а, кнопка «Reveal» всегда отвечала «not yet created». Добавлено host-side NDJSON-зеркало в пользовательский контейнер.
+- Прочее: teardown-бюджет 5.5→4.5 с (укладывается в SIGKILL-дедлайн NE); guard от двойного `installAndStart`; миграция UserDefaults по whitelist ключей (не тянет весь NSGlobalDomain); build-штамп из `Info.plist` вместо хардкода; запрос авторизации нотификаций только при `.notDetermined`; claim-tracking в DockPolicyController; версия бандла из build settings.
+
 ## [0.27.0] - 2026-06-27
 
 ### Security
