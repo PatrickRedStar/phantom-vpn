@@ -69,7 +69,17 @@ yellow "==> Active profile id: $ACTIVE_ID"
 
 # ─── Trigger Connect ────────────────────────────────────────────────────────
 
-INITIAL_STATUS="$(scutil --nc status "$PROFILE_NAME" 2>/dev/null | head -1 || echo Unknown)"
+# NB: не `head -1` — при pipefail scutil ловит SIGPIPE от раннего закрытия
+# пайпа, пайплайн падает и `|| echo Unknown` ДОПИСЫВАЛ вторую строку к
+# статусу ("Connected\nUnknown") — case не матчился и тест интермиттентно
+# репортил FAIL при реально подключённом туннеле. awk читает поток до конца.
+nc_status() {
+    local out
+    out="$(scutil --nc status "$1" 2>/dev/null | awk 'NR==1{print}')" || true
+    echo "${out:-Unknown}"
+}
+
+INITIAL_STATUS="$(nc_status "$PROFILE_NAME")"
 if [[ "$INITIAL_STATUS" == "Connected" ]]; then
     yellow "==> Tunnel already connected — stopping first for a clean test."
     scutil --nc stop "$PROFILE_NAME" >/dev/null || true
@@ -84,7 +94,7 @@ scutil --nc start "$PROFILE_NAME"
 DEADLINE=$(( $(date +%s) + TIMEOUT_SECS ))
 LAST_STATUS=""
 while (( $(date +%s) < DEADLINE )); do
-    STATUS="$(scutil --nc status "$PROFILE_NAME" 2>/dev/null | head -1 || echo Unknown)"
+    STATUS="$(nc_status "$PROFILE_NAME")"
     if [[ "$STATUS" != "$LAST_STATUS" ]]; then
         echo "  status: $STATUS  ($(date +%T))"
         LAST_STATUS="$STATUS"
