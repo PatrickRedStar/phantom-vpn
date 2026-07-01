@@ -76,7 +76,7 @@ final class LogsViewModel {
 
     // MARK: - Private
 
-    private var lastTsMs: UInt64 = 0
+    private var lastTsUs: UInt64 = 0
     private var pollTask: Task<Void, Never>?
     private var ipc: TunnelIpcBridge?
     private let maxEntries = 50_000
@@ -225,7 +225,7 @@ final class LogsViewModel {
 
         guard let bridge = ipc else { return }
         do {
-            let response = try await bridge.send(.subscribeLogs(sinceMs: lastTsMs))
+            let response = try await bridge.send(.subscribeLogs(sinceUs: lastTsUs))
             if case .error(let message) = response {
                 recordIpcError(message)
                 return
@@ -238,7 +238,7 @@ final class LogsViewModel {
 
             lastIpcError = nil
             if !frames.isEmpty {
-                lastTsMs = frames.map(\.tsUnixMs).max() ?? lastTsMs
+                lastTsUs = frames.map(\.timestampUs).max() ?? lastTsUs
                 allLogs.append(contentsOf: frames)
                 if allLogs.count > maxEntries {
                     allLogs.removeFirst(allLogs.count - maxEntries)

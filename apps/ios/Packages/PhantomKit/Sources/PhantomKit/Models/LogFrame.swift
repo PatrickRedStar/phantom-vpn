@@ -15,7 +15,7 @@ import Foundation
 /// All v2 fields decode through `decodeIfPresent`, so a payload from an
 /// older Rust runtime (no `ts_unix_us`, no `category`, no `fields`) still
 /// round-trips through `JSONDecoder` without errors.
-public struct LogFrame: Codable, Equatable, Identifiable {
+public struct LogFrame: Codable, Equatable, Identifiable, Sendable {
 
     /// Legacy millisecond timestamp. Always present on the wire.
     public var tsUnixMs: UInt64
@@ -38,8 +38,18 @@ public struct LogFrame: Codable, Equatable, Identifiable {
     /// Optional structured key/value attributes. v2 only.
     public var fields: [String: String]?
 
+    /// Идентичность для SwiftUI ForEach. `fields` участвует хэшем: два
+    /// события в одну микросекунду с одинаковым msg, но разными полями
+    /// раньше получали одинаковый id — дубли id ломают diff ForEach.
     public var id: String {
-        "\(tsUnixUs == 0 ? tsUnixMs &* 1_000 : tsUnixUs)|\(level)|\(category ?? "")|\(msg)"
+        var hasher = Hasher()
+        if let fields, !fields.isEmpty {
+            for key in fields.keys.sorted() {
+                hasher.combine(key)
+                hasher.combine(fields[key] ?? "")
+            }
+        }
+        return "\(tsUnixUs == 0 ? tsUnixMs &* 1_000 : tsUnixUs)|\(level)|\(category ?? "")|\(msg)|\(hasher.finalize())"
     }
 
     /// Effective microsecond timestamp. Falls back to `tsUnixMs * 1000`

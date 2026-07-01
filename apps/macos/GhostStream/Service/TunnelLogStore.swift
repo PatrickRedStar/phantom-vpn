@@ -19,9 +19,18 @@ public final class TunnelLogStore {
     public private(set) var logs: [LogFrame] = []
     public private(set) var polling: Bool = false
     public private(set) var lastErrorMessage: String?
+    /// Монотонный счётчик изменений буфера. UI должен наблюдать ЕГО, а не
+    /// `logs.count`: после насыщения `maxEntries` trim возвращает count к
+    /// одному и тому же значению, `onChange(of: count)` перестаёт
+    /// срабатывать и tail «замерзает» (root cause бага «виснет вкладка
+    /// логов», июль 2026).
+    public private(set) var revision: Int = 0
 
-    private let maxEntries = 50_000
-    private var lastLogTsMs: UInt64 = 0
+    /// 10k = размер ring-буфера провайдера (`maxRecentLogFrames`). Прежний
+    /// cap 50k держал на main thread массив, который каждый poll
+    /// фильтровался и диффился целиком.
+    private let maxEntries = 10_000
+    private var lastLogTsUs: UInt64 = 0
     private var ipcBridge: TunnelIpcBridge?
     private var pollTask: Task<Void, Never>?
     private weak var stateManager: VpnStateManager?
@@ -51,9 +60,10 @@ public final class TunnelLogStore {
     }
 
     public func clear() {
-        lastLogTsMs = logs.map(\.tsUnixMs).max() ?? lastLogTsMs
+        lastLogTsUs = logs.map(\.timestampUs).max() ?? lastLogTsUs
         logs.removeAll()
         lastErrorMessage = nil
+        revision += 1
     }
 
     public static func normalizedLevel(_ level: String) -> String {
@@ -95,7 +105,7 @@ public final class TunnelLogStore {
         }
 
         do {
-            let response = try await bridge.send(.subscribeLogs(sinceMs: lastLogTsMs))
+            let response = try await bridge.send(.subscribeLogs(sinceUs: lastLogTsUs))
             if case .error(let message) = response {
                 lastErrorMessage = message
                 return
@@ -109,9 +119,10 @@ public final class TunnelLogStore {
             lastErrorMessage = nil
             guard !frames.isEmpty else { return }
 
-            lastLogTsMs = frames.map(\.tsUnixMs).max() ?? lastLogTsMs
+            lastLogTsUs = frames.map(\.timestampUs).max() ?? lastLogTsUs
             logs.append(contentsOf: frames)
             trimLogs()
+            revision += 1
         } catch {
             ipcBridge = nil
             lastErrorMessage = "Log polling failed: \(error.localizedDescription)"

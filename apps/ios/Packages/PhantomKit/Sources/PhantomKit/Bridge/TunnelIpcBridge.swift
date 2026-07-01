@@ -14,7 +14,12 @@ public final class TunnelIpcBridge {
     /// Messages the host app can send to the PacketTunnelProvider extension.
     public enum Message: Codable {
         case getStatus
-        case subscribeLogs(sinceMs: UInt64)
+        /// `sinceUs` — микросекундный курсор (`LogFrame.timestampUs`).
+        /// Раньше поле было миллисекундным (`sinceMs`): при нескольких
+        /// фреймах в одну мс строгий `>` терял хвост той же миллисекунды.
+        /// Host и extension шипятся вместе, смена ключа безопасна —
+        /// рассинхрон версий даёт декод-ошибку и штатный error-ответ.
+        case subscribeLogs(sinceUs: UInt64)
         case getCurrentProfile
         case updateRoutePolicy(RoutePolicySnapshot)
         case disconnect

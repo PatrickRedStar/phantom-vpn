@@ -72,8 +72,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let response = TunnelIpcBridge.Response.status(lastStatusFrame)
             completionHandler?(try? JSONEncoder().encode(response))
 
-        case .subscribeLogs(let sinceMs):
-            let filtered = recentLogFrames.filter { $0.tsUnixMs > sinceMs }
+        case .subscribeLogs(let sinceUs):
+            // µs-курсор (см. TunnelIpcBridge.Message): мс-гранулярность
+            // теряла фреймы, попавшие в ту же миллисекунду, что и максимум
+            // предыдущего батча.
+            let filtered = recentLogFrames.filter { $0.timestampUs > sinceUs }
             let response = TunnelIpcBridge.Response.logs(filtered)
             completionHandler?(try? JSONEncoder().encode(response))
 

@@ -37,6 +37,7 @@ public struct TailView: View {
     @State private var actionStatusTtlTask: Task<Void, Never>?
     @State private var searchDebounceTask: Task<Void, Never>?
     @State private var regexDebounceTask: Task<Void, Never>?
+    @State private var filterComputeTask: Task<Void, Never>?
     // UI-C1: cached filter result. The previous `var filteredLogs`
     // computed property re-ran `TailViewFilter.filter` 3+ times per
     // body invocation (counts + ForEach + status strip). On a 50k row
@@ -92,7 +93,10 @@ public struct TailView: View {
         // inputs flips. The body never recomputes — readers just
         // observe `cachedFilteredLogs`.
         .onAppear { recomputeFilteredLogs() }
-        .onChange(of: logStore.logs.count) { _, _ in recomputeFilteredLogs() }
+        // LOG-1 fix: наблюдаем `revision`, а не `logs.count`. После
+        // насыщения буфера trim держит count на одном значении и
+        // onChange(of: count) перестаёт срабатывать — tail «замерзал».
+        .onChange(of: logStore.revision) { _, _ in recomputeFilteredLogs() }
         .onChange(of: activeFilter) { _, _ in recomputeFilteredLogs() }
         .onChange(of: selectedCategories) { _, _ in recomputeFilteredLogs() }
         // UI-R2-N10: debounce regexSearch toggle too — recomputing on
@@ -148,22 +152,36 @@ public struct TailView: View {
             searchDebounceTask?.cancel()
             regexDebounceTask?.cancel()
             actionStatusTtlTask?.cancel()
+            filterComputeTask?.cancel()
         }
         .task { logStore.start(stateManager: stateMgr) }
     }
 
-    /// Run the filter and stash the result. Cheap on the happy path
-    /// because the underlying buffer is bounded — but called only
-    /// when inputs actually change, so cost doesn't multiply across
-    /// body re-evaluations.
+    /// Run the filter and stash the result. LOG-2 fix: фильтр по буферу
+    /// (до 10k строк, строковые операции на каждую) раньше выполнялся
+    /// синхронно на main actor каждый poll — накапливающийся джанк.
+    /// Теперь считаем на background-приоритете и публикуем результат на
+    /// main; устаревшие пересчёты отменяются.
     private func recomputeFilteredLogs() {
-        cachedFilteredLogs = TailViewFilter.filter(
-            frames: logStore.logs,
-            level: activeFilter,
-            categories: selectedCategories,
-            search: searchText,
-            useRegex: regexSearch
-        )
+        filterComputeTask?.cancel()
+        let frames = logStore.logs
+        let level = activeFilter
+        let categories = selectedCategories
+        let search = searchText
+        let useRegex = regexSearch
+        filterComputeTask = Task.detached(priority: .userInitiated) {
+            let result = TailViewFilter.filter(
+                frames: frames,
+                level: level,
+                categories: categories,
+                search: search,
+                useRegex: useRegex
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                cachedFilteredLogs = result
+            }
+        }
     }
 
     // MARK: - 1. detail-head

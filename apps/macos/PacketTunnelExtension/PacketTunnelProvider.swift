@@ -725,38 +725,51 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         let opName = ipcOpName(message)
-        emitProviderEvent(
-            level: "DBG",
-            category: "ipc",
-            event: "request",
-            fields: ["op": opName]
-        )
+        // LOG-FEEDBACK fix: `get_status` / `subscribe_logs` идут раз в
+        // секунды всю сессию. DBG-события «request/response» на них
+        // возвращались следующим же poll'ом — лог-поток самоподпитывался
+        // и добивал буфер хоста до cap даже в полном простое. Эмитим их
+        // только под verbose_log; редкие операции логируем как раньше.
+        let noisyOp = (opName == "get_status" || opName == "subscribe_logs")
+        let logIpcDebug = !noisyOp || withStateLock { verboseLog }
+        if logIpcDebug {
+            emitProviderEvent(
+                level: "DBG",
+                category: "ipc",
+                event: "request",
+                fields: ["op": opName]
+            )
+        }
 
         switch message {
         case .getStatus:
             let response = TunnelIpcBridge.Response.status(currentStatusFrame())
             completionHandler?(try? JSONEncoder().encode(response))
-            emitProviderEvent(
-                level: "DBG",
-                category: "ipc",
-                event: "response",
-                fields: ["op": opName, "status": "ok"]
-            )
+            if logIpcDebug {
+                emitProviderEvent(
+                    level: "DBG",
+                    category: "ipc",
+                    event: "response",
+                    fields: ["op": opName, "status": "ok"]
+                )
+            }
 
-        case .subscribeLogs(let sinceMs):
-            let filtered = currentLogFrames(sinceMs: sinceMs)
+        case .subscribeLogs(let sinceUs):
+            let filtered = currentLogFrames(sinceUs: sinceUs)
             let response = TunnelIpcBridge.Response.logs(filtered)
             completionHandler?(try? JSONEncoder().encode(response))
-            emitProviderEvent(
-                level: "DBG",
-                category: "ipc",
-                event: "response",
-                fields: [
-                    "op": opName,
-                    "status": "ok",
-                    "n_logs": String(filtered.count),
-                ]
-            )
+            if logIpcDebug {
+                emitProviderEvent(
+                    level: "DBG",
+                    category: "ipc",
+                    event: "response",
+                    fields: [
+                        "op": opName,
+                        "status": "ok",
+                        "n_logs": String(filtered.count),
+                    ]
+                )
+            }
 
         case .getCurrentProfile:
             // TODO(IPC-M4 / IPC-H5): Implementer C — extend
@@ -1714,12 +1727,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         withStateLock { lastStatusFrame }
     }
 
-    private func currentLogFrames(sinceMs: UInt64) -> [LogFrame] {
-        let filtered = withStateLock { recentLogFrames.filter { $0.tsUnixMs > sinceMs } }
+    private func currentLogFrames(sinceUs: UInt64) -> [LogFrame] {
+        // Микросекундный курсор (`timestampUs`): мс-гранулярность + строгий
+        // `>` теряли фреймы, попавшие в ту же миллисекунду, что и максимум
+        // предыдущего батча.
+        let filtered = withStateLock { recentLogFrames.filter { $0.timestampUs > sinceUs } }
         // Audit IPC-H1 — the first poll after the host subscribes uses
-        // `sinceMs == 0` which would otherwise return up to
+        // `sinceUs == 0` which would otherwise return up to
         // `maxRecentLogFrames` (10 000) frames in one XPC reply. Cap to
-        // the most recent 500; the client advances `sinceMs` on each
+        // the most recent 500; the client advances `sinceUs` on each
         // poll, so backlog beyond that catches up across subsequent
         // round-trips without slowing the first response.
         let maxFrames = 500
