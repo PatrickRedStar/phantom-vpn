@@ -94,9 +94,18 @@ public struct UpstreamVpnRouteDetector {
             ? "Cisco Secure Client"
             : (!interfaces.isEmpty ? "Upstream VPN" : nil)
 
+        // Агрегируем сырой дамп маршрутов upstream-VPN до супернетов
+        // (/24 → /20 → /16 лестницей, cap 192): Cisco dynamic split-include
+        // даёт сотни постоянно меняющихся /32 — без агрегации комплемент
+        // раздувается в тысячи includedRoutes, а routeHash дребезжит на
+        // каждый новый хост (июльский instant-disconnect на Cisco-пресете).
+        let detected = input.mode == .layeredAuto
+            ? RoutePolicySnapshot.aggregatedUpstreamCidrs(routes.cidrs)
+            : []
+
         return RoutePolicySnapshot(
             mode: input.mode,
-            detectedUpstreamCidrs: input.mode == .layeredAuto ? routes.cidrs : [],
+            detectedUpstreamCidrs: detected,
             manualDirectCidrs: input.manualDirectCidrs,
             serverDirectCidrs: serverCidrs,
             upstreamDnsServers: dns.servers,

@@ -53,26 +53,58 @@ public final class TunnelIpcBridge {
 
     /// Sends a message to the active `PacketTunnelProvider` and awaits its response.
     ///
+    /// Ограничено `timeout` (по умолчанию 10 с): `sendProviderMessage`
+    /// вызывает completion только когда провайдер ответит — если тот
+    /// потерял ответ (или завис), continuation раньше висла вечно и
+    /// вызывающий поллер (UpstreamVpnMonitor / TunnelLogStore) замирал
+    /// до перезапуска приложения.
+    ///
     /// - Throws: `IpcError.noSession` if no session is attached,
     ///   `IpcError.badResponse` if the extension returns undecodable data,
+    ///   `IpcError.timeout` if the provider does not answer in time,
     ///   or any error thrown by `sendProviderMessage`.
-    public func send(_ message: Message) async throws -> Response {
+    public func send(_ message: Message, timeout: TimeInterval = 10) async throws -> Response {
         guard let session else { throw IpcError.noSession }
         let data = try JSONEncoder().encode(message)
         return try await withCheckedThrowingContinuation { cont in
+            let completion = SingleResume(cont)
             do {
                 try session.sendProviderMessage(data) { responseData in
                     if let d = responseData,
                        let response = try? JSONDecoder().decode(Response.self, from: d) {
-                        cont.resume(returning: response)
+                        completion.resume(.success(response))
                     } else {
-                        cont.resume(throwing: IpcError.badResponse)
+                        completion.resume(.failure(IpcError.badResponse))
                     }
                 }
             } catch {
-                cont.resume(throwing: error)
+                completion.resume(.failure(error))
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                completion.resume(.failure(IpcError.timeout))
             }
         }
+    }
+}
+
+/// Гарантирует ровно один resume у continuation при гонке
+/// «ответ провайдера vs таймаут». Тот же паттерн, что
+/// `ServerResolveCompletion` в UpstreamVpnRouteDetector.
+private final class SingleResume: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+    private let continuation: CheckedContinuation<TunnelIpcBridge.Response, Error>
+
+    init(_ continuation: CheckedContinuation<TunnelIpcBridge.Response, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ result: Result<TunnelIpcBridge.Response, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didResume else { return }
+        didResume = true
+        continuation.resume(with: result)
     }
 }
 
@@ -82,4 +114,6 @@ public enum IpcError: Error {
     case noSession
     /// The extension returned data that could not be decoded as `Response`.
     case badResponse
+    /// The provider did not answer within the allotted timeout.
+    case timeout
 }

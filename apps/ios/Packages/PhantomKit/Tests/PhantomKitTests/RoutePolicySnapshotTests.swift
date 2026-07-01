@@ -100,3 +100,59 @@ final class RoutePolicySnapshotTests: XCTestCase {
         XCTAssertEqual(snapshot.manualDirectIpv6Cidrs, [])
     }
 }
+
+// MARK: - aggregatedUpstreamCidrs (Cisco dynamic split-include, июль 2026)
+
+final class AggregatedUpstreamCidrsTests: XCTestCase {
+    func testHostRoutesRoundToSlash24AndDedupe() {
+        let result = RoutePolicySnapshot.aggregatedUpstreamCidrs([
+            "3.65.102.105/32",
+            "3.65.102.200/32",
+            "3.65.103.7/32",
+        ])
+        XCTAssertEqual(result, ["3.65.102.0/24", "3.65.103.0/24"])
+    }
+
+    func testWidePrefixesSurviveAndSwallowChildren() {
+        let result = RoutePolicySnapshot.aggregatedUpstreamCidrs([
+            "10.0.0.0/8",
+            "10.5.0.0/16",
+            "10.6.7.8/32",
+            "172.20.0.0/16",
+        ])
+        XCTAssertEqual(result, ["10.0.0.0/8", "172.20.0.0/16"])
+    }
+
+    func testLadderDropsToWiderPrefixWhenOverCap() {
+        // 300 хостов в разных /24 (по одному на /24) → на /24 их 300 > 192,
+        // на /20 — 300 разных /20? Нет: адреса подобраны так, что /20
+        // схлопывает их в 75 сетей.
+        var cidrs: [String] = []
+        for i in 0..<300 {
+            let secondOctet = i / 16
+            let thirdOctet = (i % 16)
+            cidrs.append("50.\(secondOctet).\(thirdOctet).1/32")
+        }
+        let result = RoutePolicySnapshot.aggregatedUpstreamCidrs(cidrs)
+        XCTAssertLessThanOrEqual(result.count, RoutePolicySnapshot.maxDetectedIPv4RouteCount)
+        XCTAssertTrue(result.allSatisfy { $0.hasSuffix("/20") || $0.hasSuffix("/16") })
+    }
+
+    func testStableOrderGivesStableHash() {
+        let a = RoutePolicySnapshot.aggregatedUpstreamCidrs(["9.9.9.9/32", "1.1.1.1/32"])
+        let b = RoutePolicySnapshot.aggregatedUpstreamCidrs(["1.1.1.5/32", "9.9.9.200/32"])
+        XCTAssertEqual(a, b)
+        XCTAssertEqual(a, ["1.1.1.0/24", "9.9.9.0/24"])
+    }
+
+    func testNewHostInExistingSupernetDoesNotChangeSet() {
+        let before = RoutePolicySnapshot.aggregatedUpstreamCidrs(["3.164.240.10/32"])
+        let after = RoutePolicySnapshot.aggregatedUpstreamCidrs(["3.164.240.10/32", "3.164.240.99/32"])
+        XCTAssertEqual(before, after)
+    }
+
+    func testEmptyAndGarbageInput() {
+        XCTAssertEqual(RoutePolicySnapshot.aggregatedUpstreamCidrs([]), [])
+        XCTAssertEqual(RoutePolicySnapshot.aggregatedUpstreamCidrs(["not-a-cidr", "300.1.1.1/32"]), [])
+    }
+}

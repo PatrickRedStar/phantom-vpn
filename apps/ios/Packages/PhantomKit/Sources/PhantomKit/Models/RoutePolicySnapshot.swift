@@ -248,6 +248,110 @@ public struct RoutePolicySnapshot: Codable, Equatable, Sendable {
         return normalized
     }
 
+    /// Максимум IPv4 CIDR от upstream-детектора ПОСЛЕ агрегации.
+    /// Зеркалит `maxDirectIPv6RouteCount`: без лимита Cisco dynamic
+    /// split-include (сотни /32, меняются на лету) давал комплемент в
+    /// тысячи `includedRoutes` на каждый `setTunnelNetworkSettings`
+    /// и непрерывный дребезг `routeHash` (июльский instant-disconnect
+    /// на пресете Cisco).
+    public static let maxDetectedIPv4RouteCount = 192
+
+    /// Агрегирует список IPv4 CIDR до стабильного и небольшого набора
+    /// супернетов: сначала все префиксы длиннее /24 округляются до /24;
+    /// если CIDR-ов всё ещё больше `maxCount`, лестница опускается до
+    /// /20, затем /16. Вложенные подсети схлопываются в контейнер.
+    ///
+    /// Семантика для layeredAuto: «direct»-зона вокруг корпоративных
+    /// адресов расширяется до супернета — соседний с корпоративным
+    /// трафик уходит через upstream VPN, НЕ мимо него (ADR 0006:
+    /// упорядоченная иерархия Cisco → GhostStream сохраняется). Взамен
+    /// новые динамические /32 от Cisco почти всегда попадают в уже
+    /// существующий супернет — routeHash перестаёт дребезжать.
+    ///
+    /// Если даже на /16 набор больше `maxCount` (аномалия), список
+    /// обрезается до первых `maxCount` по числовому порядку — лучше
+    /// частичная direct-зона, чем отказ NE от тысяч маршрутов.
+    public static func aggregatedUpstreamCidrs(
+        _ cidrs: [String],
+        maxCount: Int = maxDetectedIPv4RouteCount
+    ) -> [String] {
+        struct Net {
+            let base: UInt32
+            let prefix: Int
+        }
+
+        func parse(_ cidr: String) -> Net? {
+            let parts = cidr.split(separator: "/", maxSplits: 1)
+            guard parts.count == 2,
+                  let prefix = Int(parts[1]), (0...32).contains(prefix)
+            else { return nil }
+            let octets = parts[0].split(separator: ".", omittingEmptySubsequences: false)
+            guard octets.count == 4 else { return nil }
+            var value: UInt32 = 0
+            for octet in octets {
+                guard let byte = UInt32(octet), byte <= 255 else { return nil }
+                value = (value << 8) | byte
+            }
+            let mask: UInt32 = prefix == 0 ? 0 : ~UInt32(0) << (32 - prefix)
+            return Net(base: value & mask, prefix: prefix)
+        }
+
+        func render(_ net: Net) -> String {
+            let o1 = (net.base >> 24) & 0xFF
+            let o2 = (net.base >> 16) & 0xFF
+            let o3 = (net.base >> 8) & 0xFF
+            let o4 = net.base & 0xFF
+            return "\(o1).\(o2).\(o3).\(o4)/\(net.prefix)"
+        }
+
+        let parsed = cidrs.compactMap(parse)
+        guard !parsed.isEmpty else { return [] }
+
+        for target in [24, 20, 16] {
+            var rounded: [UInt32: Int] = [:]
+            for net in parsed {
+                let prefix = min(net.prefix, target)
+                let mask: UInt32 = prefix == 0 ? 0 : ~UInt32(0) << (32 - prefix)
+                let base = net.base & mask
+                // Держим самый широкий префикс на базу.
+                if let existing = rounded[base] {
+                    rounded[base] = min(existing, prefix)
+                } else {
+                    rounded[base] = prefix
+                }
+            }
+            var nets: [Net] = rounded.map { entry in
+                Net(base: entry.key, prefix: entry.value)
+            }
+            nets.sort { lhs, rhs in
+                if lhs.base == rhs.base {
+                    return lhs.prefix < rhs.prefix
+                }
+                return lhs.base < rhs.base
+            }
+            // Схлопываем вложенные: контейнер идёт раньше по сортировке.
+            var collapsed: [Net] = []
+            for net in nets {
+                if let last = collapsed.last {
+                    let mask: UInt32 = last.prefix == 0 ? 0 : ~UInt32(0) << (32 - last.prefix)
+                    if (net.base & mask) == last.base && net.prefix >= last.prefix {
+                        continue
+                    }
+                }
+                collapsed.append(net)
+            }
+            nets = collapsed
+
+            if nets.count <= maxCount || target == 16 {
+                if nets.count > maxCount {
+                    nets = Array(nets.prefix(maxCount))
+                }
+                return nets.map(render)
+            }
+        }
+        return []
+    }
+
     public static func stableHash(_ parts: [String]) -> String {
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in parts.joined(separator: "\u{1f}").utf8 {

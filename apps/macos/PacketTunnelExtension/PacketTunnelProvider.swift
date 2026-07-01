@@ -787,6 +787,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
 
         case .updateRoutePolicy(let snapshot):
+            // Не принимаем route-policy, пока startTunnel не завершился:
+            // apply гнался бы со стартовым setTunnelNetworkSettings (тот
+            // вне цепочки routeSettingsTask) и рвал handshake. Хост
+            // (UpstreamVpnMonitor) повторит через 5 с.
+            let startInProgress = withStartCompletionLock { startCompletionHandler != nil && !startCompletionFired }
+            if startInProgress {
+                let response = TunnelIpcBridge.Response.error("tunnel start in progress — retry later")
+                completionHandler?(try? JSONEncoder().encode(response))
+                return
+            }
             // Audit IPC-C2 — serialise concurrent route-policy applies
             // through `routePolicyApplier`. `routeSettingsTask` is the
             // task that owns the current apply; cancelling it requests
@@ -796,12 +806,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // Audit PROV-R2-R01 — install the replacement task atomically
             // so a concurrent stopTunnel cannot null-out `routeSettingsTask`
             // between our cancel and our store.
+            //
+            // IPC-LEAK fix: каждый путь выхода ОБЯЗАН позвать
+            // completionHandler — ветки `guard let self` / `Task.isCancelled`
+            // раньше молча выходили, host-side continuation висла вечно и
+            // UpstreamVpnMonitor замирал до перезапуска приложения
+            // (у TunnelIpcBridge.send теперь есть таймаут, но утечка
+            // ответа — всё равно баг провайдера).
             let previous = withStateLock { routeSettingsTask }
             previous?.cancel()
             let task = Task<Void, Never> { [weak self] in
                 _ = await previous?.value
-                guard let self else { return }
-                if Task.isCancelled { return }
+                guard let self else {
+                    let response = TunnelIpcBridge.Response.error("provider is shutting down")
+                    completionHandler?(try? JSONEncoder().encode(response))
+                    return
+                }
+                if Task.isCancelled {
+                    let response = TunnelIpcBridge.Response.error("route policy apply superseded")
+                    completionHandler?(try? JSONEncoder().encode(response))
+                    return
+                }
                 do {
                     try await self.routePolicyApplier.apply { [weak self] in
                         guard let self else { return }
@@ -1185,7 +1210,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         networkSettings.mtu = NSNumber(value: 1350)
 
         let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
-        configureIPv4Routes(ipv4, for: profile, settings: settings)
+        try configureIPv4Routes(ipv4, for: profile, settings: settings)
         networkSettings.ipv4Settings = ipv4
 
         // PROV-C2 — apply iOS-equivalent IPv6 settings on macOS. Apple
@@ -1277,7 +1302,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         _ ipv4: NEIPv4Settings,
         for profile: VpnProfile,
         settings: TunnelSettings
-    ) {
+    ) throws {
         let serverDirectCidrs = settings.routePolicy?.serverDirectCidrs ?? []
         let shouldUseSplitRoutes = settings.routingMode != .global
             || !serverDirectCidrs.isEmpty
@@ -1303,11 +1328,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
 
         if routes.isEmpty {
-            log.error("split routing route computation returned no routes; leaving IPv4 includedRoutes empty")
-            ipv4.includedRoutes = []
-        } else {
-            ipv4.includedRoutes = routes
+            // ROUTE-EMPTY fix: пустой комплемент при непустых direct-CIDR
+            // означает сбой вычисления (например, FFI отверг вход) или
+            // direct-набор, покрывший весь адресный простор. Раньше тут
+            // молча применялся пустой includedRoutes — туннель поднимался,
+            // но не нёс трафика («split routing не работает»). Теперь
+            // отказываем громко: на старте connect падает с внятной
+            // ошибкой, на live-apply IPC вернёт error и оставит прежние
+            // маршруты.
+            log.error("split routing route computation returned no routes (direct=\(directCidrs.count, privacy: .public)) — refusing to apply empty includedRoutes")
+            throw ProviderError.routeComputationFailed(
+                "route computation returned no VPN routes for \(directCidrs.count) direct CIDRs"
+            )
         }
+        ipv4.includedRoutes = routes
         ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
     }
 
@@ -1900,6 +1934,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         case profileNotFound(String)
         case decodeFailed(String)
         case badTunAddr(String)
+        case routeComputationFailed(String)
 
         var errorDescription: String? {
             switch self {
@@ -1908,6 +1943,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             case .profileNotFound(let id): return "Profile not found: \(id)"
             case .decodeFailed(let m):     return "providerConfiguration decode failed: \(m)"
             case .badTunAddr(let s):       return "Invalid tunAddr CIDR: \(s)"
+            case .routeComputationFailed(let m): return "Split-routing failed: \(m)"
             }
         }
     }

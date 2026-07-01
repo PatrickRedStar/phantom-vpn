@@ -70,6 +70,15 @@ const MAX_INBOUND_LEN: usize = 65_535;
 /// base64-PEM cert + key with whitespace.
 const MAX_FFI_CSTR_LEN: usize = 16_384;
 
+/// Отдельный потолок для входа `phantom_compute_vpn_routes`: список
+/// direct-CIDR в layeredAuto (upstream VPN + manual + server) может быть
+/// длиннее 16 KiB — на корп-маке Cisco dynamic split-include давал ~600
+/// строк ≈ 10 KiB ещё ДО агрегации, и общий лимит молча (NULL → `[]` на
+/// Swift-стороне) отключал split routing. 256 KiB ≈ 14k CIDR-строк —
+/// заведомо больше любого реального набора, но всё ещё дешёвая защита
+/// от враждебного вызова.
+const MAX_ROUTES_CSTR_LEN: usize = 262_144;
+
 // ─── Log filter gating (ADR 0008 §3) ─────────────────────────────────────────
 
 /// Default `tracing` filter spec when no env override and `verbose_log == false`.
@@ -709,8 +718,8 @@ pub unsafe extern "C" fn phantom_parse_conn_string(input: *const c_char) -> *mut
 #[no_mangle]
 pub unsafe extern "C" fn phantom_compute_vpn_routes(direct_cidrs: *const c_char) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| {
-        // FFI-H2: bounded read.
-        let text = match unsafe { cstr_to_str_bounded(direct_cidrs, MAX_FFI_CSTR_LEN) } {
+        // FFI-H2: bounded read (route-специфичный потолок — см. MAX_ROUTES_CSTR_LEN).
+        let text = match unsafe { cstr_to_str_bounded(direct_cidrs, MAX_ROUTES_CSTR_LEN) } {
             Some(s) => s,
             None => return std::ptr::null_mut(),
         };

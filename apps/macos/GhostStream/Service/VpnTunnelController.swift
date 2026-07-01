@@ -210,6 +210,11 @@ public final class VpnTunnelController: ObservableObject {
             log.info("saving GhostStream VPN manager profileId=\(profile.id, privacy: .public)")
             try await managerToSave.saveToPreferences()
             manager = try await reloadSavedManager(profileId: profile.id)
+            // Снапшот routePolicy запечён в providerConfiguration и будет
+            // применён самим startTunnel — сообщаем монитору, чтобы первый
+            // poll после connect не слал провайдеру повторный apply тех же
+            // настроек (лишний reassert-флап).
+            UpstreamVpnMonitor.shared.seedAppliedHash(routePolicy.routeHash)
         } catch {
             log.error("saveToPreferences failed: \(error.localizedDescription, privacy: .public)")
             let wrapped = error as? VpnTunnelError ?? VpnTunnelError.saveFailed(error.localizedDescription)
