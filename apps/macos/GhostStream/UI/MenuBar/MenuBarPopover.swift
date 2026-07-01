@@ -64,7 +64,13 @@ public struct MenuBarPopover: View {
             HairlineDivider()
             footer
         }
-        .frame(width: 380, height: 520, alignment: .top)
+        // UI-POPOVER-CLIP fix (июль 2026): 520 — МИНИМУМ, а не фикс.
+        // В connected контент выше (miniScope + muxRow + строка «Логи»
+        // в футере) и при жёстких 520 футер обрезался — «Логи»
+        // наполовину, Quit вовсе скрыт. Disconnected-вид не меняется
+        // (Spacer дотягивает футер до низа мокапных 520).
+        .frame(width: 380, alignment: .top)
+        .frame(minHeight: 520, alignment: .top)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
         // UI-R2-R03/R04 / UI-R4-R06: forward state transitions into the
