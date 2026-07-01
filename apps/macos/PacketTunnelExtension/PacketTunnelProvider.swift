@@ -99,6 +99,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// state-only frame on connecting / error / disconnect.
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
+    /// Коалесценция steady-StatusFrame'ов до 1/с перед записью snapshot
+    /// (паритет с iOS-провайдером, у которого gate стоит с рождения).
+    /// Guarded by `runtimeStateLock`.
+    private var statusBroadcastGate = StatusBroadcastGate(minInterval: 1.0)
     /// Audit PROV-R2-R01 — also guards `outboundTask`, `routeSettingsTask`,
     /// `handshakeTimeoutTask`, `pathMonitor`, `previousPathStatus`,
     /// `previousPathInterfaces`, `pathDebounceTask`, `reconnectingWatchdogTask`,
@@ -256,14 +260,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 guard let self else { return }
                 try? await self.setTunnelNetworkSettings(nil)
             }
-            let stopped = await withTimeout(seconds: 3.0) { @Sendable in
+            // Audit BUDGET fix: 0.5 + 1.0 + 3.0 (bridge.stop) + 1.0 (flush)
+            // = 5.5 с — ВЫШЕ ~5 с SIGKILL-дедлайна NE. Система убивала
+            // экстеншен посреди teardown → осиротевший рантайм →
+            // следующий connect падал в ERR_ALREADY_RUNNING. Новый бюджет:
+            // 0.5 + 1.0 + 2.5 + 0.5 = 4.5 с.
+            let stopped = await withTimeout(seconds: 2.5) { @Sendable in
                 await PhantomBridge.shared.stop()
                 return true
             }
             if stopped != true {
-                self.log.warning("bridge.stop exceeded 3s budget — proceeding with teardown anyway")
+                self.log.warning("bridge.stop exceeded 2.5s budget — proceeding with teardown anyway")
             }
-            LogFileWriter.shared.flush()
+            LogFileWriter.shared.flush(timeout: .now() + 0.5)
             writeDisconnectedSnapshot()
             completionHandler()
         }
@@ -976,6 +985,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             activeProfile = profile
             activeSettings = settings
             verboseLog = verbose
+            statusBroadcastGate.reset()
         }
 
         emitProviderEvent(
@@ -1571,7 +1581,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         for await packets in packetsStream {
             if Task.isCancelled { break }
             for pkt in packets {
-                await PhantomBridge.shared.submitInbound(pkt)
+                PhantomBridge.shared.submitInbound(pkt)
             }
         }
     }
@@ -1750,11 +1760,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         appendProviderLog(frame)
     }
 
+    /// Serial-очередь для записи snapshot.json/UserDefaults. Раньше
+    /// `writeSnapshot` (файловый I/O + `defaults.synchronize()`) выполнялся
+    /// прямо в контексте вызвавшего колбэка — на каждом StatusFrame — и
+    /// блокировал actor-исполнитель PhantomBridge, по которому шли и
+    /// inbound-пакеты (второй компонент «интернет пропадает»).
+    private let snapshotQueue = DispatchQueue(
+        label: "com.ghoststream.client.tunnel.snapshot",
+        qos: .utility
+    )
+
     private func publishStatusFrame(_ frame: StatusFrame) {
-        withStateLock {
+        let (shouldWrite, isBoundary) = withStateLock { () -> (Bool, Bool) in
+            let previous = lastStatusFrame
             lastStatusFrame = frame
+            let boundary = previous.state != frame.state
+                || previous.lastError != frame.lastError
+                || previous.reconnectAttempt != frame.reconnectAttempt
+                || previous.reconnectNextDelaySecs != frame.reconnectNextDelaySecs
+            let pass = statusBroadcastGate.shouldBroadcast(
+                frame,
+                now: ProcessInfo.processInfo.systemUptime
+            )
+            return (pass, boundary)
         }
-        writeSnapshot(frame)
+        guard shouldWrite else { return }
+        if isBoundary {
+            // Границы состояний (connected/disconnected/error/reconnect)
+            // пишем синхронно: на teardown-пути `writeDisconnectedSnapshot`
+            // должен лечь на диск ДО completionHandler, иначе система
+            // может убить экстеншен со stale-снапшотом «connected».
+            snapshotQueue.sync { [weak self] in
+                self?.writeSnapshot(frame)
+            }
+        } else {
+            snapshotQueue.async { [weak self] in
+                self?.writeSnapshot(frame)
+            }
+        }
     }
 
     private func currentStatusFrame() -> StatusFrame {

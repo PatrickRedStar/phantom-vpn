@@ -81,7 +81,19 @@ public enum BridgeError: Error {
 
 private final class BridgeContext: @unchecked Sendable {
     let bridge: PhantomBridge
-    init(bridge: PhantomBridge) { self.bridge = bridge }
+    /// Горячий путь: inbound-пакеты доставляются Swift-стороне НАПРЯМУЮ
+    /// с Rust-потока форвардера, без прыжка на актор. Прежний вариант
+    /// (`Task { await bridge.handleInbound(...) }`) ставил каждый пакет в
+    /// очередь актора, где он конкурировал со status/log-колбэками и
+    /// synchronous I/O — под лог-нагрузкой data-path голодал («интернет
+    /// пропадает» при открытой вкладке логов). Колбэк обязан быть
+    /// thread-safe: оба провайдера зовут только `packetFlow.writePackets`
+    /// (потокобезопасен по контракту NE).
+    let onInbound: (Data) -> Void
+    init(bridge: PhantomBridge, onInbound: @escaping (Data) -> Void) {
+        self.bridge = bridge
+        self.onInbound = onInbound
+    }
 }
 
 // MARK: - PhantomBridge actor
@@ -104,7 +116,6 @@ public actor PhantomBridge {
 
     private var statusHandler:  StatusCallback?
     private var logHandler:     LogCallback?
-    private var inboundHandler: InboundCallback?
 
     /// Retained across the tunnel lifetime to prevent the context from
     /// being deallocated while Rust still holds a raw pointer to it.
@@ -149,7 +160,6 @@ public actor PhantomBridge {
 
         statusHandler  = onStatus
         logHandler     = onLog
-        inboundHandler = onInbound
 
         guard let connStr = profile.connString ?? ConnStringBuilder.build(from: profile),
               !connStr.isEmpty
@@ -172,7 +182,7 @@ public actor PhantomBridge {
             throw BridgeError.encoding
         }
 
-        let box = BridgeContext(bridge: self)
+        let box = BridgeContext(bridge: self, onInbound: onInbound)
         // FFI-C1: keep a Swift-side strong ref so the box stays alive even
         // if Rust somehow returned without invoking release_ctx. The
         // `passRetained` below bumps the Unmanaged retain count to +1; the
@@ -204,7 +214,8 @@ public actor PhantomBridge {
                         guard let ctx, let buf, len > 0 else { return }
                         let data = Data(bytes: buf, count: len)
                         let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
-                        Task { await box.bridge.handleInbound(data: data) }
+                        // Прямая доставка с Rust-потока — см. BridgeContext.onInbound.
+                        box.onInbound(data)
                     },
                     ctx
                 )
@@ -225,7 +236,10 @@ public actor PhantomBridge {
 
     /// Submits a raw outbound IP packet into the Rust tunnel.
     /// Drops silently if the packet is empty or the Rust side is not ready.
-    public func submitInbound(_ data: Data) {
+    /// nonisolated: чистый FFI-вызов без общего состояния актора.
+    /// Каждый outbound-пакет раньше вставал в очередь актора и ждал,
+    /// пока разгребутся status/log-задачи.
+    public nonisolated func submitInbound(_ data: Data) {
         guard !data.isEmpty else { return }
         data.withUnsafeBytes { ptr in
             guard let base = ptr.baseAddress else { return }
@@ -248,7 +262,6 @@ public actor PhantomBridge {
         _ = c_phantom_runtime_stop()
         statusHandler  = nil
         logHandler     = nil
-        inboundHandler = nil
         // The release trampoline (installed once at module load) has
         // already balanced our `passRetained` retain by the time
         // `c_phantom_runtime_stop` returned. Clear our Swift-side strong
@@ -292,10 +305,6 @@ public actor PhantomBridge {
     private func handleLog(data: Data) {
         guard let frame = try? JSONDecoder().decode(LogFrame.self, from: data) else { return }
         logHandler?(frame)
-    }
-
-    private func handleInbound(data: Data) {
-        inboundHandler?(data)
     }
 }
 

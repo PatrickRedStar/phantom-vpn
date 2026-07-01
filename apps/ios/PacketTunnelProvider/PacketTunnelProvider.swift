@@ -633,7 +633,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             if Task.isCancelled { break }
             for pkt in packets {
-                await PhantomBridge.shared.submitInbound(pkt)
+                PhantomBridge.shared.submitInbound(pkt)
             }
         }
     }
