@@ -510,7 +510,9 @@ public struct ServerRosterView: View {
             profiles.setActive(id: row.id)
             setRosterStatus("Active profile: \(row.name)", kind: .success)
         }
-        Button("Edit") {
+        // UI-AUDIT-07/2026: было «Edit», но шит умеет только add/delete —
+        // редактирования существующего профиля там нет. Честный лейбл.
+        Button("Manage…") {
             profiles.setActive(id: row.id)
             showAddSheet = true
         }

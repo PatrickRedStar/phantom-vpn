@@ -24,6 +24,7 @@ import UniformTypeIdentifiers
 public struct TailView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(AppRouter.self) private var router
     @Environment(PreferencesStore.self) private var prefs
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(TunnelLogStore.self) private var logStore
@@ -319,7 +320,9 @@ public struct TailView: View {
                 // We also gate the action behind a confirmation
                 // dialog so even direct trash-button clicks need a
                 // second tap to commit (the buffer can't be undone).
-                .keyboardShortcut(.delete, modifiers: [.command, .shift])
+                .if(!router.commandPaletteOpen) { view in
+                    view.keyboardShortcut(.delete, modifiers: [.command, .shift])
+                }
                 .confirmationDialog(
                     String(localized: "logs.clear.confirm.title"),
                     isPresented: $showClearConfirm,
@@ -342,11 +345,16 @@ public struct TailView: View {
                         .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .help("Copy visible logs (⇧⌘C)")
-                // UI-C3: ⇧⌘C — explicit "Copy visible logs" shortcut.
-                // Plain ⌘C is deliberately left to the system so the
-                // user can still copy selected text in any TextField.
-                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .help("Copy visible logs (⌥⌘C)")
+                // UI-C3 → UI-AUDIT-07/2026: было ⇧⌘C, но эта комба занята
+                // глобальным пунктом меню «Командная палитра» — key
+                // equivalent меню перехватывается AppKit раньше responder
+                // chain, и копирование с клавиатуры молча не работало.
+                // ⌥⌘C свободна. Plain ⌘C is deliberately left to the
+                // system so the user can still copy selected text.
+                .if(!router.commandPaletteOpen) { view in
+                    view.keyboardShortcut("c", modifiers: [.command, .option])
+                }
                 Button {
                     exportVisibleLogs()
                 } label: {
@@ -358,7 +366,9 @@ public struct TailView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Export visible logs (⇧⌘E)")
-                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .if(!router.commandPaletteOpen) { view in
+                    view.keyboardShortcut("e", modifiers: [.command, .shift])
+                }
                 Button {
                     revealRuntimeLogFile()
                 } label: {
@@ -386,7 +396,7 @@ public struct TailView: View {
                 .help("Toggle follow tail")
                 KeyboardShortcutHint("⌘F")
                 KeyboardShortcutHint("⇧⌘⌫")
-                KeyboardShortcutHint("⇧⌘C")
+                KeyboardShortcutHint("⌥⌘C")
                 KeyboardShortcutHint("⇧⌘E")
 
                 // UI-C3 hidden chord: ⌘F focuses the filter field.
@@ -403,7 +413,9 @@ public struct TailView: View {
                 .frame(width: 0, height: 0)
                 .opacity(0)
                 .accessibilityHidden(true)
-                .keyboardShortcut("f", modifiers: .command)
+                .if(!router.commandPaletteOpen) { view in
+                    view.keyboardShortcut("f", modifiers: .command)
+                }
             }
         }
     }

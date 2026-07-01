@@ -301,38 +301,66 @@ public struct MenuBarPopover: View {
     private var profileBlock: some View {
         VStack(spacing: 0) {
             HairlineDivider()
-            HStack(spacing: 14) {
-                Text("PROF")
-                    .font(.custom("DepartureMono-Regular", size: 9.5))
-                    .tracking(0.18 * 9.5)
-                    .foregroundStyle(C.textFaint)
-
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(profiles.activeProfile?.name ?? "—")
-                        .font(.custom("SpaceGrotesk-Bold", size: 14))
-                        .tracking(-0.01 * 14)
-                        .foregroundStyle(C.bone)
-                    if let endpoint = profileEndpoint {
-                        Text(endpoint)
-                            .font(.custom("JetBrainsMono-Regular", size: 11))
-                            .foregroundStyle(C.textFaint)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+            // UI-AUDIT-07/2026: шеврон chevron.up.chevron.down обещал
+            // picker, но блок был статичным — сменить профиль из
+            // меню-бара было нельзя. Теперь Menu, как в сайдбарном
+            // SidebarProfileBlock.
+            Menu {
+                if profiles.profiles.isEmpty {
+                    Button("No profiles") {}
+                        .disabled(true)
+                } else {
+                    ForEach(profiles.profiles) { profile in
+                        Button {
+                            profiles.setActive(id: profile.id)
+                        } label: {
+                            HStack {
+                                Text(profile.name)
+                                if profiles.activeId == profile.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
                     }
                 }
+            } label: {
+                HStack(spacing: 14) {
+                    Text("PROF")
+                        .font(.custom("DepartureMono-Regular", size: 9.5))
+                        .tracking(0.18 * 9.5)
+                        .foregroundStyle(C.textFaint)
 
-                Spacer()
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(profiles.activeProfile?.name ?? "—")
+                            .font(.custom("SpaceGrotesk-Bold", size: 14))
+                            .tracking(-0.01 * 14)
+                            .foregroundStyle(C.bone)
+                        if let endpoint = profileEndpoint {
+                            Text(endpoint)
+                                .font(.custom("JetBrainsMono-Regular", size: 11))
+                                .foregroundStyle(C.textFaint)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
 
-                Text(rttLabel)
-                    .font(.custom("DepartureMono-Regular", size: 10.5))
-                    .tracking(0.06 * 10.5)
-                    .foregroundStyle(stateMgr.statusFrame.rttMs != nil ? C.signal : C.textFaint)
+                    Spacer()
 
-                Image(systemName: "chevron.up.chevron.down")
-                    .foregroundStyle(C.textDim)
-                    .font(.system(size: 10))
+                    Text(rttLabel)
+                        .font(.custom("DepartureMono-Regular", size: 10.5))
+                        .tracking(0.06 * 10.5)
+                        .foregroundStyle(stateMgr.statusFrame.rttMs != nil ? C.signal : C.textFaint)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .foregroundStyle(C.textDim)
+                        .font(.system(size: 10))
+                }
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 14)
+            .menuStyle(.borderlessButton)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Choose active profile")
             HairlineDivider()
         }
         .padding(.bottom, 14)
@@ -454,15 +482,17 @@ public struct MenuBarPopover: View {
             //
             // UI-H2: "Logs" is read from the catalog instead of the
             // hardcoded "Логи" so EN locale renders correctly.
-            if stateMgr.statusFrame.state == .connected {
-                footerRow(
-                    systemImage: "clock",
-                    title: String(localized: "menu.logs"),
-                    kbd: "⌘⇧L",
-                    color: C.bone
-                ) {
-                    openForegroundWindow("logs")
-                }
+            // UI-AUDIT-07/2026: строка «Логи» видна всегда — окно логов
+            // работает и в STANDBY (история прошлой сессии, ошибки
+            // коннекта), прятать аффорданс по состоянию незачем; сам
+            // шорткат ⌘⇧L из меню и так жил в любом состоянии.
+            footerRow(
+                systemImage: "clock",
+                title: String(localized: "menu.logs"),
+                kbd: "⌘⇧L",
+                color: C.bone
+            ) {
+                openForegroundWindow("logs")
             }
             footerRow(
                 systemImage: "power",

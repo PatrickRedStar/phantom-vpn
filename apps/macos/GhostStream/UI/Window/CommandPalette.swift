@@ -380,8 +380,15 @@ public struct CommandPalette: View {
             icon: "arrow.down.circle",
             kbd: nil,
             action: {
-                tunnel.lastError = "Check for updates is unavailable: Sparkle is not integrated"
-                return .close
+                // UI-AUDIT-07/2026: НЕ через tunnel.lastError — то поле
+                // рендерится красной inline-ошибкой под кнопкой CONNECT
+                // (дашборд и попап), будто упал коннект. Сообщаем в
+                // statusMessage самой палитры.
+                statusMessage = .init(
+                    text: "Check for updates is unavailable: Sparkle is not integrated",
+                    kind: .info
+                )
+                return .stayOpen
             }
         ))
         actionItems.append(.init(

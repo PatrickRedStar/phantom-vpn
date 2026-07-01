@@ -138,6 +138,7 @@ struct GhostStreamApp: App {
                     .environment(prefs)
                     .environment(state)
                     .environment(logs)
+                    .environment(router)
                     .gsTheme(override: themeOverride(from: prefs.theme))
                     .frame(minWidth: 760, minHeight: 520)
                     .onAppear { router.detachedLogsOpen = true }

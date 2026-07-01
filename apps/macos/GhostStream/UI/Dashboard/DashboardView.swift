@@ -30,6 +30,7 @@ public struct DashboardView: View {
     @Environment(PreferencesStore.self) private var prefs
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @Environment(DockPolicyController.self) private var dock
+    @Environment(AppRouter.self) private var router
     @EnvironmentObject private var tunnel: VpnTunnelController
 
     @State private var scopeWindow: ScopeWindow = .m5
@@ -275,7 +276,11 @@ public struct DashboardView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut("k", modifiers: .command)
+                // UI-AUDIT-07/2026: гейт по открытой палитре — раньше ⌘K
+                // мог стартануть/оборвать коннект ПОД оверлеем палитры.
+                .if(!router.commandPaletteOpen) { view in
+                    view.keyboardShortcut("k", modifiers: .command)
+                }
                 // UI-R2-N20: button never goes disabled — CANCEL is a
                 // valid action during busy states. The Round 1 race on
                 // parallel `installAndStart` is still prevented by the

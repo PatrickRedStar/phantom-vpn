@@ -111,23 +111,5 @@ public struct SidebarList: View {
     }
 }
 
-// MARK: - View+If helper
-
-private extension View {
-    /// Conditional modifier — preserves view identity by not switching
-    /// type, applies `transform` when `condition` is `true`. Used here
-    /// so a `.keyboardShortcut` modifier can be omitted entirely when
-    /// the chord shouldn't fire — `.keyboardShortcut(nil)` does not
-    /// exist as a SwiftUI API.
-    @ViewBuilder
-    func `if`<Content: View>(
-        _ condition: Bool,
-        transform: (Self) -> Content
-    ) -> some View {
-        if condition {
-            transform(self)
-        } else {
-            self
-        }
-    }
-}
+// View+`if` helper переехал в UI/Components/ConditionalModifier.swift —
+// гейт «палитра открыта» нужен не только сайдбару (UI-AUDIT-07/2026).
