@@ -423,18 +423,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     verboseLog: verbose,
                     onStatus: { [weak self] frame in
                         guard let self else { return }
+                        // LOG-SPAM fix — см. onStatus в startTunnelAsync.
+                        let previousState = self.withStateLock { self.lastStatusFrame.state }
                         self.publishStatusFrame(frame)
                         if frame.state == .connected {
-                            self.emitProviderEvent(
-                                level: "INF",
-                                category: "tunnel",
-                                event: "connected",
-                                fields: [
-                                    "session_secs": String(frame.sessionSecs),
-                                    "n_streams": String(frame.nStreams),
-                                    "streams_up": String(frame.streamsUp),
-                                ]
-                            )
+                            if previousState != .connected {
+                                self.emitProviderEvent(
+                                    level: "INF",
+                                    category: "tunnel",
+                                    event: "connected",
+                                    fields: [
+                                        "session_secs": String(frame.sessionSecs),
+                                        "n_streams": String(frame.nStreams),
+                                        "streams_up": String(frame.streamsUp),
+                                    ]
+                                )
+                            }
                             self.cancelHandshakeTimeout()
                             self.cancelReconnectingWatchdog()
                         } else if frame.state == .reconnecting {
@@ -1050,18 +1054,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     guard let self else { return }
                     // Per ADR 0007 the runtime frame is authoritative — relay
                     // verbatim. No mutation, no enrichment.
+                    //
+                    // LOG-SPAM fix (июль 2026): event=connected эмитим только
+                    // на ПЕРЕХОДЕ в .connected — рантайм публикует connected-
+                    // фрейм каждую секунду, и лог/ring/zеркало забивались
+                    // одинаковыми INF-событиями (+3600 фреймов/час).
+                    let previousState = self.withStateLock { self.lastStatusFrame.state }
                     self.publishStatusFrame(frame)
                     if frame.state == .connected {
-                        self.emitProviderEvent(
-                            level: "INF",
-                            category: "tunnel",
-                            event: "connected",
-                            fields: [
-                                "session_secs": String(frame.sessionSecs),
-                                "n_streams": String(frame.nStreams),
-                                "streams_up": String(frame.streamsUp),
-                            ]
-                        )
+                        if previousState != .connected {
+                            self.emitProviderEvent(
+                                level: "INF",
+                                category: "tunnel",
+                                event: "connected",
+                                fields: [
+                                    "session_secs": String(frame.sessionSecs),
+                                    "n_streams": String(frame.nStreams),
+                                    "streams_up": String(frame.streamsUp),
+                                ]
+                            )
+                        }
                         // PROV-C1 — only signal `nil` (success) to NE after
                         // the runtime confirms the handshake is up.
                         self.cancelHandshakeTimeout()
