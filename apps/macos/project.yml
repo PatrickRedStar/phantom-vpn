@@ -41,8 +41,8 @@ targets:
       properties:
         CFBundleDisplayName: GhostStream
         CFBundlePackageType: APPL
-        CFBundleShortVersionString: "0.25.0"
-        CFBundleVersion: "22"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "15.0"
         LSUIElement: false
         NSPrincipalClass: NSApplication
@@ -99,8 +99,8 @@ targets:
       path: PacketTunnelExtension/Info.plist
       properties:
         CFBundlePackageType: SYSX
-        CFBundleShortVersionString: "0.25.0"
-        CFBundleVersion: "22"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "15.0"
         NetworkExtension:
           NEMachServiceName: group.com.ghoststream.client
