@@ -91,15 +91,14 @@ pub const MAX_ATTEMPTS: u32 = 8;
 /// Used by `tls_rx_loop` in `client_common` when invoked from runtime.
 pub const RX_IDLE_TIMEOUT_SECS: u32 = 75;
 
-/// v0.27.0: если ЛЮБОЙ стрим умер (alive < n_streams) на этот срок — teardown +
-/// reconnect, а не «деградированное» лимбо. Контракт «все N обязательны»:
-/// dispatcher маршрутизирует `flow_stream_idx % n -> tx_senders[idx]`, и送 в
-/// канал мёртвого стрима роняет ВЕСЬ TX (dispatcher `break`). Раньше watcher
-/// только логировал degraded и туннель тихо вис «подключено, трафика нет».
-/// Лечим устойчивым реконнектом всех N, НЕ partial-quorum (он отвергнут как
-/// небезопасный). 3s — grace на штатную пересборку, без флапа (streams_alive
-/// падает в false только при окончательном завершении петли стрима).
-pub const DEGRADED_TEARDOWN_SECS: u32 = 3;
+/// Если ВСЕ стримы мертвы (alive == 0) на этот срок — teardown + reconnect.
+/// v0.27.1: death-watcher реагирует ТОЛЬКО на alive==0 (B2 degraded-teardown
+/// откатан — он генерировал synchronized N-stream reconnect-burst'ы, которые
+/// carrier-DPI палит как VPN; см. pcap A/B vs v0.22.4). Единичный мёртвый стрим
+/// НЕ рвёт сессию — его флоу просто дропается (dispatcher try_send
+/// drop-and-continue), как в v0.22.4. 3s — grace против короткого окна между
+/// kill старого и spawn нового стрима при реконнекте.
+pub const ALL_STREAMS_DEAD_TIMEOUT_SECS: u32 = 3;
 
 /// Coarse classification of a tunnel drop, used to pick the right reconnect
 /// delay. v0.24.0: replaces the one-size-fits-all `BACKOFF_SECS` lookup

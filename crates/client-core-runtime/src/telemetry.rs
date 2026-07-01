@@ -520,18 +520,11 @@ pub fn spawn_telem_task(
             }
             let _ = status_tx.send(cur);
 
-            // telemetry.publish — per ADR 0008 §2. TRACE level so it's
-            // off by default; flip on with verboseLog or
-            // GHOSTSTREAM_LOG=client_core_runtime=trace.
-            tracing::trace!(
-                category = "telemetry",
-                n_streams = telemetry.n_streams as u64,
-                streams_up = up as u64,
-                rate_rx_bps = ema_rx,
-                rate_tx_bps = ema_tx,
-                idle_rx_secs = idle_rx_secs as u64,
-                "publish"
-            );
+            // v0.27.1: removed the per-tick `telemetry.publish` TRACE event.
+            // It fired every 250 ms and was 100 % redundant with the StatusFrame
+            // just sent above (same n_streams/streams_up/rate/idle fields), so it
+            // only spammed the log bridge (logcat + in-app Logs) 4×/sec with zero
+            // extra signal. All of this data is already in the StatusFrame.
         }
     })
 }

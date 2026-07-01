@@ -97,37 +97,14 @@ async fn do_connect(
     // Do NOT set SO_RCVBUF/SO_SNDBUF — disables TCP auto-tuning.
     let _ = tcp.set_nodelay(true);
 
-    // v0.25.0: SO_KEEPALIVE — мобильные NAT'ы выкидывают idle TCP entry
-    // за 60-180s. Heartbeat ходит через TLS-layer, но если NAT уже выпилен
-    // до того как heartbeat пройдёт — пакет получает RST. Keepalive
-    // проактивно держит NAT entry живой. Bug #8.
-    // v0.26.21: ранее `let _ =` глотал ошибку. На Android setsockopt мог
-    // тихо фейлиться — фантом-туннель сохранялся «несмотря на keepalive».
-    // Теперь Err видна в logcat.
-    {
-        use socket2::{SockRef, TcpKeepalive};
-        let keepalive = TcpKeepalive::new()
-            .with_time(std::time::Duration::from_secs(30))
-            .with_interval(std::time::Duration::from_secs(15))
-            .with_retries(3);
-        if let Err(e) = SockRef::from(&tcp).set_tcp_keepalive(&keepalive) {
-            tracing::warn!(
-                category = "handshake",
-                event = "tcp_keepalive_failed",
-                error = %e,
-                "set_tcp_keepalive failed — NAT timeout may strike"
-            );
-        } else {
-            tracing::debug!(
-                category = "handshake",
-                event = "tcp_keepalive_set",
-                time_secs = 30u64,
-                interval_secs = 15u64,
-                retries = 3u64,
-                "tcp keepalive configured"
-            );
-        }
-    }
+    // v0.27.1 (DPI fix): SO_KEEPALIVE REMOVED (restores v0.22.4). It was added in
+    // v0.25.0 against mobile-NAT eviction, but it emits deterministic empty TCP
+    // keepalive segments every 30 s in lock-step across all 8 sockets — a periodic
+    // on-wire signal that carrier-DPI uses to fingerprint a long-lived tunnel
+    // (v0.22.4 had none). NAT is kept alive instead by the application-layer
+    // heartbeat (random 15-45 s per stream, see `wire::build_heartbeat_frame`),
+    // which is < typical NAT idle timeouts and is already de-correlated per stream
+    // — exactly the mechanism v0.22.4 relied on.
 
     let sni_str = server_name.clone();
     tracing::debug!(

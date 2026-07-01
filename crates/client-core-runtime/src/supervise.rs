@@ -26,7 +26,7 @@ use crate::telemetry::{
     KIND_RX_FORWARDER_DEAD, KIND_USER_DISCONNECT, TLS_CLOSED, TLS_CLOSING, TLS_ESTABLISHED,
     TLS_HANDSHAKING,
 };
-use crate::{ProtectSocket, BACKOFF_SECS, MAX_ATTEMPTS};
+use crate::{ProtectSocket, MAX_ATTEMPTS};
 
 /// Callback invoked by `supervise()` each attempt to create fresh TUN I/O
 /// channels. Returns `(packet_reader, packet_writer)` — the same pair that
@@ -495,14 +495,19 @@ async fn drive_tunnel(
         // by `client-common::tls_handshake::do_connect`; here we emit only the
         // per-stream events that need a `stream_id` correlator.
         let open_one = |idx: usize| {
-            // Owned clones so the returned future is Send + 'static for JoinSet.
-            // `server_addr` (SocketAddr) and `n_streams` (usize) are Copy — the
-            // `async move` block captures them by copy directly, no rebind needed.
+            // Owned clones so the per-stream open future is Send + 'static and
+            // self-contained (re-created per attempt). `server_addr` (SocketAddr)
+            // and `n_streams` (usize) are Copy — the `async move` block captures
+            // them by copy directly, no rebind needed.
             let server_name = server_name.clone();
             let client_tls = client_tls.clone();
             let protect_socket = protect_socket.clone();
             async move {
-                // 1 initial attempt + 2 retries.
+                // 1 initial attempt + 2 retries. (Retry fires only on a failed
+                // dial — it's quieter on the wire than v0.22.4's full all-N
+                // reconnect-on-any-stream-failure, and invisible on the happy
+                // path. The streams themselves are opened SEQUENTIALLY by the
+                // caller, so there is no synchronized SYN-burst — see below.)
                 const STREAM_OPEN_RETRIES: u32 = 2;
                 let mut last_err: Option<anyhow::Error> = None;
                 for attempt in 0..=STREAM_OPEN_RETRIES {
@@ -611,55 +616,38 @@ async fn drive_tunnel(
             }
         };
 
-        // Ramp: stream 0 FIRST and fully awaited before any of 1..N is dialed.
-        // The server creates the session coordinator + runs the DPI mimicry-warmup
-        // only on `stream_idx == 0 && is_new`. Awaiting stream 0's handshake write
-        // before spawning the rest gives it a head start to register the session
-        // first — but this is BEST-EFFORT, not a hard guarantee: our await only
-        // confirms the bytes were written client-side, and the server picks the
-        // coordinator by a dashmap race, so under TLS-resumption / adverse
-        // scheduling a 1..N stream could still win it (warmup then skipped → a
-        // fingerprint shift, not a disconnect). The robust fix is server-side
-        // (only stream_idx==0 may create the session) — tracked separately. Here
-        // we preserve the original ordering as closely as a concurrent open allows.
+        // v0.27.1 (DPI regression fix — restores v0.22.4): open streams STRICTLY
+        // SEQUENTIALLY. Each stream's TCP+TLS+handshake fully completes before the
+        // next is dialed, so the N ClientHellos are spread over their natural
+        // RTT+handshake spacing — exactly like a browser progressively opening
+        // connections. This replaces the concurrent JoinSet fan-out, which fired
+        // 7 SYNs to one IP:port within ~25 ms — a synchronized SYN-burst that
+        // carrier-DPI fingerprints as a VPN (the proven regression vs v0.22.4,
+        // confirmed by pcap A/B: v0.22.4 spread 8 opens over ~6 s and was not
+        // throttled). Stream 0 first also preserves the server coordinator /
+        // mimicry-warmup ordering (warmup runs on stream_idx==0 && is_new).
+        // Trade-off: full-Connected is a few RTTs slower than a burst, but this is
+        // the proven DPI-evading behaviour. Per-stream retry inside `open_one`
+        // still fires only on a failed dial (quieter than v0.22.4's
+        // reconnect-all-N), invisible on the happy path.
         let mut opened = Vec::with_capacity(n_streams);
-        opened.push(
-            open_one(0)
-                .await
-                .context("stream 0 (coordinator) handshake failed")?,
-        );
-
-        // Remaining streams concurrently — total handshake time is now bounded by
-        // the slowest single stream (+ its retries), not the sum across all N.
-        if n_streams > 1 {
-            let mut set = tokio::task::JoinSet::new();
-            for idx in 1..n_streams {
-                set.spawn(open_one(idx));
-            }
-            // On an unrecoverable stream the `?` bails; dropping `set` on unwind
-            // (and on outer cancel, dropping handshake_fut drops `set`) aborts
-            // the still-pending open tasks.
-            while let Some(joined) = set.join_next().await {
-                let triple = joined.context("stream open task panicked")??;
-                opened.push(triple);
-            }
+        for idx in 0..n_streams {
+            opened.push(
+                open_one(idx)
+                    .await
+                    .with_context(|| format!("stream {} handshake failed", idx))?,
+            );
         }
-
-        // Re-order by real stream_idx so Vec position == stream_idx: the spawn
-        // loop below (`zip(...).enumerate()`) binds idx to position, and the
-        // server keys streams by the handshake idx byte. JoinSet completes out
-        // of order, so this sort is mandatory.
-        opened.sort_by_key(|(idx, _, _)| *idx);
-
         // Load-bearing invariant for the data plane: the dispatcher routes
-        // `flow_stream_idx(pkt, n_streams) -> tx_senders[idx]` and the spawn loop
-        // binds idx by Vec position, so position MUST equal stream_idx. It holds
-        // because we collect exactly 0..n_streams and sort; assert it so a future
-        // partial-quorum change (gapped/short set) can't silently mis-route.
+        // `flow_stream_idx(pkt, n_streams) -> tx_senders[idx]` and the I/O spawn
+        // loop binds idx by Vec position, so position MUST equal stream_idx. The
+        // sequential open pushes in ascending idx order, so this already holds by
+        // construction (no sort needed) — assert it so a future change (gapped or
+        // short set) can't silently mis-route.
         debug_assert!(
             opened.len() == n_streams
                 && opened.iter().enumerate().all(|(pos, (idx, _, _))| pos == *idx),
-            "handshake must yield a contiguous, sorted 0..n_streams stream set"
+            "sequential open must yield a contiguous, sorted 0..n_streams stream set"
         );
 
         let mut tls_writers = Vec::with_capacity(n_streams);
@@ -749,11 +737,18 @@ async fn drive_tunnel(
 
     let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
 
-    // Dispatcher: TUN → per-stream channel with per-stream TX byte counting.
-    // Backpressure: `send().await` propagates pressure upstream to the TUN
-    // reader instead of silently dropping packets when a per-stream channel
-    // overflows. A silent drop turns into TCP retransmit-storm + CWND collapse
-    // inside the tunnel and looks like a "stuck flow" from outside.
+    // Dispatcher: TUN → per-stream channel.
+    //
+    // v0.27.1 (DPI regression fix — restores v0.22.4 semantics): NON-BLOCKING
+    // `try_send` with drop-and-continue. A later "backpressure" rewrite to a
+    // blocking `send().await` let ONE dead/full stream wedge ALL TX, which forced
+    // the death-watcher to tear down + reconnect all N streams. Those repeated
+    // synchronized N-stream reconnect bursts are a carrier-DPI VPN fingerprint
+    // (proven by pcap A/B: v0.22.4 stayed quiet, HEAD got throttled). With
+    // `try_send`, a dead/slow stream's flow simply drops its packets (TCP inside
+    // the tunnel retransmits) while the other streams keep flowing — quiet on the
+    // wire, exactly as v0.22.4 did. The dispatcher now only ends when the TUN
+    // reader closes (`tun_pkt_rx` drained = shutdown/teardown).
     let tx_senders_clone = tx_senders.clone();
     let tele = telemetry.clone();
     let mut dispatcher = tokio::spawn(async move {
@@ -773,23 +768,22 @@ async fn drive_tunnel(
                     "first_packet_tx"
                 );
             }
-            if tx_senders_clone[idx].send(pkt).await.is_err() {
-                // Stream RX dropped — supervisor is tearing down. Exit.
-                break;
-            }
-            tele.bytes_tx.fetch_add(len, Ordering::Relaxed);
-            tele.stream_tx_bytes[idx].fetch_add(len, Ordering::Relaxed);
-            // packet.tx.batch — sampled (default 1/100). Single packet
-            // counts as a "batch of 1" because the dispatcher is a per-pkt
-            // hot loop; downstream `tls_tx_loop` does the actual coalescing.
-            if packet_tx_log_sample_should_emit() {
-                tracing::trace!(
-                    category = "packet",
-                    n_pkts = 1u64,
-                    bytes = len,
-                    stream_id = idx as u64,
-                    "tx.batch"
-                );
+            // Full or closed channel (slow/dead stream) → drop this flow's
+            // packet and keep dispatching the rest. NEVER wedge all TX on one
+            // bad stream (that was the root cause of the death-watcher churn).
+            if tx_senders_clone[idx].try_send(pkt).is_ok() {
+                tele.bytes_tx.fetch_add(len, Ordering::Relaxed);
+                tele.stream_tx_bytes[idx].fetch_add(len, Ordering::Relaxed);
+                // packet.tx.batch — sampled (default 1/100).
+                if packet_tx_log_sample_should_emit() {
+                    tracing::trace!(
+                        category = "packet",
+                        n_pkts = 1u64,
+                        bytes = len,
+                        stream_id = idx as u64,
+                        "tx.batch"
+                    );
+                }
             }
         }
     });
@@ -940,100 +934,54 @@ async fn drive_tunnel(
     // Telemetry task.
     let telem_task = spawn_telem_task(telemetry.clone(), status_tx.clone());
 
-    // v0.26.21 / v0.27.0 (B2): death watcher — следит за streams_alive. Если
-    // ЛЮБОЙ стрим упал (alive < n_streams) на ≥DEGRADED_TEARDOWN_SECS → шлёт
-    // dead_watcher_tx, supervisor делает teardown + reconnect всех N. Раньше
-    // реагировал только на alive==0; деградация K<N тихо висла «подключено, но
-    // трафика нет» (один мёртвый стрим роняет весь TX через dispatcher).
+    // Death watcher (v0.26.21; B2 degraded-teardown REVERTED in v0.27.1 DPI fix):
+    // reconnect ONLY when ALL streams are dead (alive == 0) for
+    // ALL_STREAMS_DEAD_TIMEOUT_SECS. A single dead/degraded stream is NOT torn
+    // down — its flow simply drops (dispatcher uses try_send drop-and-continue),
+    // exactly like v0.22.4. Tearing the whole session down + reconnecting all N
+    // on ANY single stream death (the B2 behaviour) produced repeated
+    // synchronized N-stream reconnect bursts, which carrier-DPI fingerprints as a
+    // VPN (proven by pcap A/B vs v0.22.4). honest-state is preserved:
+    // derive_health still renders Degraded/Dead from streams_alive; we just don't
+    // churn the wire on transient single-stream drops. NOTE: nothing ACTS on
+    // Degraded anymore — a partially-dead tunnel keeps running (flows hashed to
+    // dead streams drop, TCP-in-tunnel retransmits) until alive hits 0, when this
+    // watcher reconnects all N. That is the accepted v0.22.4 behaviour.
     //
-    // I1 fix (v0.26.22): watcher больше НЕ публикует StatusFrame с health/streams_up.
-    // Это делает telem_task в derive_health() (single source of truth) — фолдит
-    // streams_up/n_streams каждые 250 мс. Иначе watcher и telem_task гонялись бы
-    // за `f.health`, и UI флипал между Degraded и Healthy.
-    //
-    // Watcher остаётся только триггером teardown + лог-источником.
+    // I1 fix (v0.26.22): watcher does NOT publish StatusFrame health — telem_task's
+    // derive_health() is the single source of truth.
     let dead_watcher = {
         let tele = telemetry.clone();
         let status_tx_w = status_tx.clone();
         let n_streams = n_streams;
         let dead_tx = dead_watcher_tx; // moved into task
         tokio::spawn(async move {
-            let mut degraded_streak_secs: u32 = 0;
-            // Dedupe the degraded warn-log when the alive count changes.
-            // No StatusFrame published here — derive_health does that.
-            let mut last_degraded_marker: Option<usize> = None;
+            let mut dead_streak_secs: u32 = 0;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let alive = (0..n_streams)
                     .filter(|i| tele.streams_alive[*i].load(Ordering::Relaxed))
                     .count();
 
-                if alive >= n_streams {
-                    degraded_streak_secs = 0;
-                    last_degraded_marker = None;
-                    continue;
-                }
-
-                // v0.27.0 (B2): ANY dead stream wedges the whole TX path — the
-                // dispatcher routes flow_stream_idx % n into the dead stream's
-                // closed channel, the send errors, and the dispatcher `break`s,
-                // stopping ALL TX while RX heartbeats keep the tunnel looking
-                // "connected". The "all N required" contract means we recover by
-                // tearing the session down and reconnecting all N — never by
-                // limping on K<N (partial-quorum is unsafe, see flow_stream_idx
-                // routing + server effective_n). Grace = DEGRADED_TEARDOWN_SECS.
-                degraded_streak_secs += 1;
-                if last_degraded_marker != Some(alive) {
-                    last_degraded_marker = Some(alive);
-                    tracing::warn!(
-                        category = "tunnel",
-                        event = "degraded",
-                        streams_up = alive as u64,
-                        n_streams = n_streams as u64,
-                        streak_secs = degraded_streak_secs as u64,
-                        "death watcher: degraded {}/{} — reconnecting if it persists",
-                        alive,
-                        n_streams,
-                    );
-                }
-
-                if degraded_streak_secs >= crate::DEGRADED_TEARDOWN_SECS {
-                    // alive==0 keeps the historical "all_streams_dead" event for
-                    // log/metric continuity; partial death is "degraded_teardown".
-                    if alive == 0 {
+                if alive == 0 {
+                    dead_streak_secs += 1;
+                    if dead_streak_secs >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS {
                         tracing::warn!(
                             category = "tunnel",
                             event = "all_streams_dead",
-                            streak_secs = degraded_streak_secs as u64,
+                            streak_secs = dead_streak_secs as u64,
                             n_streams = n_streams as u64,
                             "death watcher: 0/{} streams alive — triggering reconnect",
                             n_streams,
                         );
-                    } else {
-                        tracing::warn!(
-                            category = "tunnel",
-                            event = "degraded_teardown",
-                            streams_up = alive as u64,
-                            streak_secs = degraded_streak_secs as u64,
-                            n_streams = n_streams as u64,
-                            "death watcher: {}/{} alive for {}s — tearing down to reconnect all N",
-                            alive,
-                            n_streams,
-                            degraded_streak_secs,
-                        );
+                        let mut f = status_tx_w.borrow().clone();
+                        f.last_error = Some(format!("all streams dead ({}s)", dead_streak_secs));
+                        let _ = status_tx_w.send(f);
+                        let _ = dead_tx.send(()); // signal supervisor select!
+                        return;
                     }
-                    // Set last_error so the JSON log records the trigger. We do
-                    // NOT touch f.health — telem_task's derive_health renders
-                    // Dead/Degraded from streams_alive (single source of truth).
-                    let mut f = status_tx_w.borrow().clone();
-                    f.last_error = Some(if alive == 0 {
-                        format!("all streams dead ({}s)", degraded_streak_secs)
-                    } else {
-                        format!("degraded {}/{} streams ({}s)", alive, n_streams, degraded_streak_secs)
-                    });
-                    let _ = status_tx_w.send(f);
-                    let _ = dead_tx.send(()); // signal supervisor select!
-                    return;
+                } else {
+                    dead_streak_secs = 0;
                 }
             }
         })
@@ -1066,10 +1014,11 @@ async fn drive_tunnel(
     // the supervisor reconnects (analogous to `forwarder_dead`).
     let mut all_streams_dead = false;
     // v0.27.0 (B3): dispatcher (TUN→stream) ended mid-session — the TX path is
-    // gone (a per-stream channel closed, or the TUN reader died). Surface as Err
-    // so the supervisor reconnects instead of sitting "connected" with a wedged
-    // uplink. On a clean stop the shutdown/cancel arm wins first and the outer
-    // loop breaks on `explicit_shutdown` regardless of this flag.
+    // gone. Since v0.27.1 the dispatcher's `try_send` never breaks on a stream,
+    // so this only fires when the TUN reader closes `tun_pkt_tx` (genuine uplink
+    // loss). Surface as Err so the supervisor reconnects instead of sitting
+    // "connected" with a wedged uplink. On a clean stop the shutdown/cancel arm
+    // wins first and the outer loop breaks on `explicit_shutdown` regardless.
     let mut dispatcher_died = false;
     // v0.27.0 (W10): track whether the periodic DPI-recycle timer fired so
     // we can return a sentinel Err that the supervisor recognises as
@@ -1160,9 +1109,9 @@ async fn drive_tunnel(
             all_streams_dead = true;
         }
         res = &mut dispatcher => {
-            // v0.27.0 (B3): dispatcher task ended — either the TUN reader closed
-            // or a per-stream TX channel was dropped (its tls_tx_loop died).
-            // Either way the uplink is gone. Reconnect instead of zombie-ing.
+            // v0.27.0 (B3): dispatcher task ended — the TUN reader closed
+            // `tun_pkt_tx` (try_send never breaks the dispatcher on a stream).
+            // The uplink is gone. Reconnect instead of zombie-ing.
             let _ = res;
             tracing::error!(
                 category = "tunnel",
@@ -1289,47 +1238,50 @@ mod death_watcher_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    /// Mirror of the production death-watcher rule (v0.27.0 B2): the streak
-    /// advances whenever `alive < n_streams` (ANY dead stream), and a teardown
-    /// fires once it reaches `DEGRADED_TEARDOWN_SECS`. Returns the streak after
+    /// Mirror of the production death-watcher rule (v0.27.1 — B2 degraded-teardown
+    /// REVERTED): the streak advances ONLY while `alive == 0`; a teardown fires
+    /// once it reaches `ALL_STREAMS_DEAD_TIMEOUT_SECS`. A partial (alive>0) death
+    /// resets the streak and never tears down. Returns (streak, torn_down) after
     /// `ticks` iterations over a fixed `alive` snapshot.
-    fn run_watcher(alive: &[Arc<AtomicBool>], n_streams: usize, ticks: u32) -> (u32, bool) {
-        let mut degraded_streak_secs = 0u32;
+    fn run_watcher(alive: &[Arc<AtomicBool>], ticks: u32) -> (u32, bool) {
+        let mut dead_streak_secs = 0u32;
         let mut torn_down = false;
         for _ in 0..ticks {
             let count = alive.iter().filter(|a| a.load(Ordering::Relaxed)).count();
-            if count >= n_streams {
-                degraded_streak_secs = 0;
-            } else {
-                degraded_streak_secs += 1;
-                if degraded_streak_secs >= crate::DEGRADED_TEARDOWN_SECS {
+            if count == 0 {
+                dead_streak_secs += 1;
+                if dead_streak_secs >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS {
                     torn_down = true;
                     break;
                 }
+            } else {
+                dead_streak_secs = 0;
             }
         }
-        (degraded_streak_secs, torn_down)
+        (dead_streak_secs, torn_down)
     }
 
     #[tokio::test]
     async fn all_streams_dead_triggers_teardown_within_threshold() {
         let alive: Vec<Arc<AtomicBool>> =
             (0..4).map(|_| Arc::new(AtomicBool::new(false))).collect();
-        let (streak, torn_down) = run_watcher(&alive, 4, 5);
+        let (streak, torn_down) = run_watcher(&alive, 5);
         assert!(torn_down, "0/4 alive must trigger teardown");
-        assert!(streak >= crate::DEGRADED_TEARDOWN_SECS);
+        assert!(streak >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS);
     }
 
-    /// v0.27.0 B2: PARTIAL death (one stream down) must ALSO tear down — this is
-    /// the regression the old watcher missed (it only reacted to alive==0, so a
-    /// single dead stream silently wedged all TX while UI showed "connected").
+    /// v0.27.1 (DPI fix): PARTIAL death (one stream down, others alive) must NOT
+    /// tear down — the dead stream's flow just drops (dispatcher try_send), like
+    /// v0.22.4. Tearing down all N on a single drop caused the DPI-detected
+    /// reconnect-burst churn.
     #[tokio::test]
-    async fn partial_death_triggers_teardown() {
+    async fn partial_death_does_not_tear_down() {
         let alive: Vec<Arc<AtomicBool>> =
             (0..4).map(|_| Arc::new(AtomicBool::new(true))).collect();
-        alive[2].store(false, Ordering::Relaxed); // 3/4 alive — degraded
-        let (_streak, torn_down) = run_watcher(&alive, 4, 5);
-        assert!(torn_down, "3/4 alive (one stream dead) must trigger teardown");
+        alive[2].store(false, Ordering::Relaxed); // 3/4 alive — degraded, must survive
+        let (streak, torn_down) = run_watcher(&alive, 10);
+        assert!(!torn_down, "3/4 alive (one stream dead) must NOT tear down");
+        assert_eq!(streak, 0, "partial death keeps the all-dead streak at zero");
     }
 
     /// Full health (all N alive) never tears down and keeps the streak at zero.
@@ -1337,7 +1289,7 @@ mod death_watcher_tests {
     async fn full_health_never_tears_down() {
         let alive: Vec<Arc<AtomicBool>> =
             (0..4).map(|_| Arc::new(AtomicBool::new(true))).collect();
-        let (streak, torn_down) = run_watcher(&alive, 4, 10);
+        let (streak, torn_down) = run_watcher(&alive, 10);
         assert!(!torn_down, "4/4 alive must never tear down");
         assert_eq!(streak, 0);
     }
