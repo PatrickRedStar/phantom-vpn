@@ -8,7 +8,9 @@
 - **«Интернет пропадал» под нагрузкой на логи.** Inbound-пакеты доставлялись через актор `PhantomBridge`, где конкурировали с колбэками логов/статусов; `writeSnapshot` (файловый I/O) выполнялся на акторе на каждый StatusFrame. Теперь пакеты идут напрямую с Rust-потока, `submitInbound` — `nonisolated`, запись snapshot — на serial-очереди с коалесценцией `StatusBroadcastGate` (1/с, паритет с iOS).
 - **IPC мог зависнуть навсегда** — `TunnelIpcBridge.send` без таймаута + ветки `updateRoutePolicy`, не вызывавшие completionHandler, вешали host-side continuation до перезапуска. Добавлен таймаут 10 с и ответ во всех ветках.
 - **`runtime.log` был недоступен** — system extension (root, sandbox) писал в контейнер root'а, кнопка «Reveal» всегда отвечала «not yet created». Добавлено host-side NDJSON-зеркало в пользовательский контейнер.
-- Прочее: teardown-бюджет 5.5→4.5 с (укладывается в SIGKILL-дедлайн NE); guard от двойного `installAndStart`; миграция UserDefaults по whitelist ключей (не тянет весь NSGlobalDomain); build-штамп из `Info.plist` вместо хардкода; запрос авторизации нотификаций только при `.notDetermined`; claim-tracking в DockPolicyController; версия бандла из build settings.
+- **Зацикленная анимация открытия menubar-попапа** («шторка» бесконечно выезжала/заезжала в connected) — `PulseDot` запускал пульс через `withAnimation(.repeatForever)`, транзакция накрывала раскладку окна MenuBarExtra. Переведён на scoped `.animation(_, value:)`; добавлен тест-инвариант против рецидива (`MenuBarAnimationInvariantTests`).
+- **`event=connected` эмитился каждую секунду** (на каждый статус-фрейм рантайма, +3600 фреймов/час в лог) — теперь только на переходе состояния.
+- Прочее: teardown-бюджет 5.5→4.5 с (укладывается в SIGKILL-дедлайн NE); guard от двойного `installAndStart`; миграция UserDefaults по whitelist ключей (не тянет весь NSGlobalDomain); build-штамп из `Info.plist` вместо хардкода; запрос авторизации нотификаций только при `.notDetermined`; claim-tracking в DockPolicyController; версия бандла из build settings; smoke-test.sh больше не даёт ложный FAIL (pipefail+SIGPIPE).
 
 ## [0.27.0] - 2026-06-27
 
