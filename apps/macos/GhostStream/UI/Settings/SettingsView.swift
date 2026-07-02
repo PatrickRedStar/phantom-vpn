@@ -419,6 +419,13 @@ public struct SettingsView: View {
 
     private var routeDiagnosticText: String {
         let snapshot = upstream.snapshot
+        // ADR 0012 guard: full-tunnel / сверхширокие маршруты upstream —
+        // longest-prefix уведёт публичный трафик в GhostStream, а
+        // корп-ресурсы без узких маршрутов лишатся корп-туннеля.
+        if snapshot.upstreamHasBroadRoutes {
+            return "⚠ Work VPN захватывает весь трафик (full-tunnel) — "
+                + "корпоративные ресурсы без явных маршрутов пойдут через GhostStream"
+        }
         let provider = snapshot.upstreamProviderName ?? "no upstream VPN detected"
         let interfaces = snapshot.upstreamInterfaceNames.isEmpty
             ? "no utun"

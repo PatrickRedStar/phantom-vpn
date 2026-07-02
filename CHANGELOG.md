@@ -1,5 +1,10 @@
 # Changelog
 
+## [macOS 0.25.1 build 29] - 2026-07-02
+
+### Fixed
+- **layeredAuto (Cisco-пресет): «что-то грузится, что-то нет» при двух VPN.** Вычитание маршрутов Cisco из includedRoutes (агрегированное в супернеты) вырезало из GhostStream огромные публичные диапазоны (Cloudflare/Google CDN) — этот трафик уходил голым через физический интерфейс мимо обоих VPN, и в РФ его резал ТСПУ (speedtest, YouTube-превью). Новая модель ([ADR 0012](docs/knowledge/decisions/0012-layered-routing-longest-prefix.md)): ничего не вычитаем, иерархию «корп → Cisco» обеспечивает longest-prefix системной таблицы; detectedUpstreamCidrs исключены из routeHash (дребезг динамического сплита больше не флапает туннель); серверный exclude ставится всегда; при full-tunnel upstream — предупреждение в Settings.
+
 ## [macOS 0.25.1] - 2026-07-02
 
 ### Fixed

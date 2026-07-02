@@ -94,14 +94,10 @@ public struct UpstreamVpnRouteDetector {
             ? "Cisco Secure Client"
             : (!interfaces.isEmpty ? "Upstream VPN" : nil)
 
-        // Агрегируем сырой дамп маршрутов upstream-VPN до супернетов
-        // (/24 → /20 → /16 лестницей, cap 192): Cisco dynamic split-include
-        // даёт сотни постоянно меняющихся /32 — без агрегации комплемент
-        // раздувается в тысячи includedRoutes, а routeHash дребезжит на
-        // каждый новый хост (июльский instant-disconnect на Cisco-пресете).
-        let detected = input.mode == .layeredAuto
-            ? RoutePolicySnapshot.aggregatedUpstreamCidrs(routes.cidrs)
-            : []
+        // ADR 0012: сырые маршруты upstream-VPN — только для UI-счётчика
+        // и диагностики; в вычислении includedRoutes и в routeHash они
+        // не участвуют (иерархию обеспечивает longest-prefix).
+        let detected = input.mode == .layeredAuto ? routes.cidrs : []
 
         return RoutePolicySnapshot(
             mode: input.mode,
@@ -112,7 +108,8 @@ public struct UpstreamVpnRouteDetector {
             upstreamDnsDomains: dns.domains,
             upstreamInterfaceNames: interfaces.map(\.name),
             upstreamProviderName: providerName,
-            preserveScopedDns: input.preserveScopedDns
+            preserveScopedDns: input.preserveScopedDns,
+            upstreamHasBroadRoutes: input.mode == .layeredAuto && routes.hasBroadRoutes
         )
     }
 
@@ -156,22 +153,25 @@ public struct UpstreamVpnRouteDetector {
             .sorted { $0.name < $1.name }
     }
 
-    private static func routes(on interfaces: [InterfaceInfo]) -> (cidrs: [String], interfaces: [String]) {
+    private static func routes(
+        on interfaces: [InterfaceInfo]
+    ) -> (cidrs: [String], hasBroadRoutes: Bool, interfaces: [String]) {
         let byIndex = Dictionary(uniqueKeysWithValues: interfaces.map { ($0.index, $0) })
-        guard !byIndex.isEmpty else { return ([], []) }
+        guard !byIndex.isEmpty else { return ([], false, []) }
 
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_DUMP2, 0]
         var needed = 0
         guard sysctl(&mib, u_int(mib.count), nil, &needed, nil, 0) == 0, needed > 0 else {
-            return ([], [])
+            return ([], false, [])
         }
 
         var buffer = [UInt8](repeating: 0, count: needed)
         guard sysctl(&mib, u_int(mib.count), &buffer, &needed, nil, 0) == 0 else {
-            return ([], [])
+            return ([], false, [])
         }
 
         var cidrs: [String] = []
+        var hasBroadRoutes = false
         var seen = Set<String>()
         var offset = 0
 
@@ -199,13 +199,23 @@ public struct UpstreamVpnRouteDetector {
                 continue
             }
 
+            // ADR 0012 guard: default (prefix 0) или сверхширокий маршрут
+            // (≤ /7, напр. split-include «0.0.0.0/0» ставит 0/1+128/1) —
+            // upstream-VPN претендует на весь трафик. В LPM-модели наши
+            // комплемент-блоки специфичнее и «украдут» публичный трафик,
+            // а корп-ресурсы без узких маршрутов лишатся корп-туннеля.
+            // UI предупреждает по этому флагу.
+            if prefix <= 7 {
+                hasBroadRoutes = true
+            }
+
             guard prefix > 0 else { continue }
             let cidr = "\(destination)/\(prefix)"
             guard RoutePolicySnapshot.isValidIPv4Cidr(cidr), seen.insert(cidr).inserted else { continue }
             cidrs.append(cidr)
         }
 
-        return (cidrs.sorted(by: cidrSort), interfaces.map(\.name))
+        return (cidrs.sorted(by: cidrSort), hasBroadRoutes, interfaces.map(\.name))
     }
 
     private static func routeSockaddrs(

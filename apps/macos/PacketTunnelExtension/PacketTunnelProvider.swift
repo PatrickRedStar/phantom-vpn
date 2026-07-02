@@ -1380,7 +1380,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             cidrs.append(contentsOf: settings.manualDirectCidrs)
         }
         if settings.routingMode == .layeredAuto {
-            cidrs.append(contentsOf: settings.routePolicy?.detectedUpstreamCidrs ?? [])
+            // ADR 0012: detectedUpstreamCidrs НЕ вычитаются. Вычитание
+            // (точное или агрегированное) создавало «дыры» — трафик к
+            // соседям корп-хостов уходил на физический интерфейс мимо
+            // обоих VPN (в РФ его резал ТСПУ). Корп-маршруты Cisco
+            // (/26…/32) специфичнее наших комплемент-блоков (/1…/8) и
+            // выигрывают по longest-prefix без нашего участия.
             cidrs.append(contentsOf: settings.routePolicy?.manualDirectCidrs ?? [])
         }
 
@@ -1388,7 +1393,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if settings.routingMode == .layeredAuto {
             appendProviderLog(
                 level: "INF",
-                message: "layered routing directCidrs=\(normalized.count) upstream=\(settings.routePolicy?.detectedUpstreamCidrs.count ?? 0) manual=\(settings.manualDirectCidrs.count)"
+                message: "layered routing directCidrs=\(normalized.count) manual=\(settings.manualDirectCidrs.count) (LPM mode, ADR 0012)"
             )
         }
         return normalized
@@ -1440,15 +1445,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {
-        let upstreamCidrs = settings.routingMode == .layeredAuto
-            ? (settings.routePolicy?.detectedUpstreamCidrs ?? [])
-            : []
-        return (settings.routePolicy?.serverDirectCidrs ?? []).compactMap { cidr in
-            guard !cidrIsContainedInAny(cidr, containers: upstreamCidrs),
-                  let route = route(forCIDR: cidr)
-            else { return nil }
-            return route
-        }
+        // ADR 0012 guard: серверный /32 исключается ВСЕГДА. Прежний
+        // containment-check по detectedUpstreamCidrs («сервер внутри
+        // корп-сети → не исключать») был парным к вычитанию маршрутов;
+        // без вычитания он работал бы на протухшей копии detected и мог
+        // отправить транспорт GhostStream в туннель Cisco (туннель-в-
+        // туннеле) или в петлю через собственный tun.
+        (settings.routePolicy?.serverDirectCidrs ?? []).compactMap(route(forCIDR:))
     }
 
     private func route(forCIDR cidr: String) -> NEIPv4Route? {
@@ -1458,39 +1461,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let subnetMask = mask(forIPv4Prefix: prefix)
         else { return nil }
         return NEIPv4Route(destinationAddress: String(parts[0]), subnetMask: subnetMask)
-    }
-
-    private func cidrIsContainedInAny(_ cidr: String, containers: [String]) -> Bool {
-        guard let child = ipv4Range(forCIDR: cidr) else { return false }
-        return containers.contains { container in
-            guard let parent = ipv4Range(forCIDR: container) else { return false }
-            return parent.lower <= child.lower && child.upper <= parent.upper
-        }
-    }
-
-    private func ipv4Range(forCIDR cidr: String) -> (lower: UInt32, upper: UInt32)? {
-        let parts = cidr.split(separator: "/", maxSplits: 1)
-        guard parts.count == 2,
-              let prefix = UInt32(parts[1]),
-              prefix <= 32,
-              let ip = ipv4Integer(String(parts[0]))
-        else { return nil }
-
-        let hostMask: UInt32 = prefix == 32 ? 0 : (UInt32.max >> prefix)
-        let networkMask = ~hostMask
-        let lower = ip & networkMask
-        return (lower, lower | hostMask)
-    }
-
-    private func ipv4Integer(_ address: String) -> UInt32? {
-        let octets = address.split(separator: ".", omittingEmptySubsequences: false)
-        guard octets.count == 4 else { return nil }
-        var output: UInt32 = 0
-        for octet in octets {
-            guard let value = UInt32(octet), value <= 255 else { return nil }
-            output = (output << 8) | value
-        }
-        return output
     }
 
     private func updateRoutePolicy(_ snapshot: RoutePolicySnapshot) async throws {

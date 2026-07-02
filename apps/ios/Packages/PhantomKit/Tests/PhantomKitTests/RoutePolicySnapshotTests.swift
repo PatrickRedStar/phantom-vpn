@@ -17,10 +17,11 @@ final class RoutePolicySnapshotTests: XCTestCase {
             generatedAtUnixMs: 42
         )
 
+        // ADR 0012: detectedUpstreamCidrs не входят — корп-маршруты
+        // выигрывают по longest-prefix без вычитания.
         XCTAssertEqual(snapshot.directCidrsForRouteComputation, [
-            "10.0.0.0/8",
-            "203.0.113.10/32",
             "8.8.8.0/24",
+            "10.0.0.0/8",
             "198.51.100.20/32",
         ])
         XCTAssertEqual(snapshot.directIpv6CidrsForRouteComputation, ["2a02:6b8::/45"])
@@ -101,58 +102,59 @@ final class RoutePolicySnapshotTests: XCTestCase {
     }
 }
 
-// MARK: - aggregatedUpstreamCidrs (Cisco dynamic split-include, июль 2026)
+// MARK: - routeHash contract (ADR 0012, июль 2026)
 
-final class AggregatedUpstreamCidrsTests: XCTestCase {
-    func testHostRoutesRoundToSlash24AndDedupe() {
-        let result = RoutePolicySnapshot.aggregatedUpstreamCidrs([
-            "3.65.102.105/32",
-            "3.65.102.200/32",
-            "3.65.103.7/32",
-        ])
-        XCTAssertEqual(result, ["3.65.102.0/24", "3.65.103.0/24"])
+final class RouteHashContractTests: XCTestCase {
+    private func snapshot(
+        detected: [String] = [],
+        manual: [String] = ["8.8.8.0/24"],
+        mode: RoutingMode = .layeredAuto
+    ) -> RoutePolicySnapshot {
+        RoutePolicySnapshot(
+            mode: mode,
+            detectedUpstreamCidrs: detected,
+            manualDirectCidrs: manual,
+            serverDirectCidrs: ["198.51.100.20/32"],
+            upstreamDnsServers: ["10.0.0.114"],
+            upstreamInterfaceNames: ["utun5"],
+            generatedAtUnixMs: 42
+        )
     }
 
-    func testWidePrefixesSurviveAndSwallowChildren() {
-        let result = RoutePolicySnapshot.aggregatedUpstreamCidrs([
-            "10.0.0.0/8",
-            "10.5.0.0/16",
-            "10.6.7.8/32",
-            "172.20.0.0/16",
-        ])
-        XCTAssertEqual(result, ["10.0.0.0/8", "172.20.0.0/16"])
+    func testHashStableWhenDetectedUpstreamChurns() {
+        // Динамический split-include Cisco добавляет /32 на лету — hash
+        // НЕ должен меняться, иначе провайдер флапает setTunnelNetworkSettings.
+        let a = snapshot(detected: ["3.65.102.0/24"])
+        let b = snapshot(detected: ["3.65.102.0/24", "13.107.246.70/32", "104.16.0.0/12"])
+        XCTAssertEqual(a.routeHash, b.routeHash)
     }
 
-    func testLadderDropsToWiderPrefixWhenOverCap() {
-        // 300 хостов в разных /24 (по одному на /24) → на /24 их 300 > 192,
-        // на /20 — 300 разных /20? Нет: адреса подобраны так, что /20
-        // схлопывает их в 75 сетей.
-        var cidrs: [String] = []
-        for i in 0..<300 {
-            let secondOctet = i / 16
-            let thirdOctet = (i % 16)
-            cidrs.append("50.\(secondOctet).\(thirdOctet).1/32")
-        }
-        let result = RoutePolicySnapshot.aggregatedUpstreamCidrs(cidrs)
-        XCTAssertLessThanOrEqual(result.count, RoutePolicySnapshot.maxDetectedIPv4RouteCount)
-        XCTAssertTrue(result.allSatisfy { $0.hasSuffix("/20") || $0.hasSuffix("/16") })
+    func testHashChangesOnManualCidrs() {
+        XCTAssertNotEqual(
+            snapshot(manual: ["8.8.8.0/24"]).routeHash,
+            snapshot(manual: ["8.8.8.0/24", "1.1.1.0/24"]).routeHash
+        )
     }
 
-    func testStableOrderGivesStableHash() {
-        let a = RoutePolicySnapshot.aggregatedUpstreamCidrs(["9.9.9.9/32", "1.1.1.1/32"])
-        let b = RoutePolicySnapshot.aggregatedUpstreamCidrs(["1.1.1.5/32", "9.9.9.200/32"])
-        XCTAssertEqual(a, b)
-        XCTAssertEqual(a, ["1.1.1.0/24", "9.9.9.0/24"])
+    func testHashChangesOnMode() {
+        XCTAssertNotEqual(
+            snapshot(mode: .layeredAuto).routeHash,
+            snapshot(mode: .publicSplit).routeHash
+        )
     }
 
-    func testNewHostInExistingSupernetDoesNotChangeSet() {
-        let before = RoutePolicySnapshot.aggregatedUpstreamCidrs(["3.164.240.10/32"])
-        let after = RoutePolicySnapshot.aggregatedUpstreamCidrs(["3.164.240.10/32", "3.164.240.99/32"])
-        XCTAssertEqual(before, after)
-    }
+    func testBroadRoutesFlagRoundTripsAndDefaultsFalse() throws {
+        var s = snapshot()
+        s.upstreamHasBroadRoutes = true
+        let data = try JSONEncoder().encode(s)
+        let decoded = try JSONDecoder().decode(RoutePolicySnapshot.self, from: data)
+        XCTAssertTrue(decoded.upstreamHasBroadRoutes)
 
-    func testEmptyAndGarbageInput() {
-        XCTAssertEqual(RoutePolicySnapshot.aggregatedUpstreamCidrs([]), [])
-        XCTAssertEqual(RoutePolicySnapshot.aggregatedUpstreamCidrs(["not-a-cidr", "300.1.1.1/32"]), [])
+        // Старый wire-формат без ключа — декодится в false.
+        let legacy = try JSONDecoder().decode(
+            RoutePolicySnapshot.self,
+            from: Data(#"{"mode":"layeredAuto"}"#.utf8)
+        )
+        XCTAssertFalse(legacy.upstreamHasBroadRoutes)
     }
 }

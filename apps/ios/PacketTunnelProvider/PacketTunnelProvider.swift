@@ -504,7 +504,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             cidrs.append(contentsOf: settings.manualDirectCidrs)
         }
         if settings.routingMode == .layeredAuto {
-            cidrs.append(contentsOf: settings.routePolicy?.detectedUpstreamCidrs ?? [])
+            // ADR 0012: detectedUpstreamCidrs не вычитаются — корп-маршруты
+            // upstream-VPN выигрывают по longest-prefix сами (паритет с macOS;
+            // layeredAuto на iOS фактически не используется).
             cidrs.append(contentsOf: settings.routePolicy?.manualDirectCidrs ?? [])
         }
         return RoutePolicySnapshot.normalizedCidrs(from: cidrs.joined(separator: "\n")).valid
@@ -533,12 +535,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         settings: TunnelSettings,
         preservingHost host: String? = nil
     ) -> [NEIPv4Route] {
-        let upstreamCidrs = settings.routingMode == .layeredAuto
-            ? (settings.routePolicy?.detectedUpstreamCidrs ?? [])
-            : []
+        // ADR 0012: серверный exclude ставится всегда (containment-check по
+        // detected убран — см. macOS provider).
         return (settings.routePolicy?.serverDirectCidrs ?? []).compactMap { cidr in
-            guard !cidrIsContainedInAny(cidr, containers: upstreamCidrs),
-                  !cidrContainsIPv4Host(cidr, host),
+            guard !cidrContainsIPv4Host(cidr, host),
                   let route = route(forCIDR: cidr)
             else { return nil }
             return route
@@ -579,14 +579,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let mask = UInt32.max << (32 - UInt32(prefix))
         let octets = [(mask >> 24) & 0xFF, (mask >> 16) & 0xFF, (mask >> 8) & 0xFF, mask & 0xFF]
         return octets.map { String($0) }.joined(separator: ".")
-    }
-
-    private func cidrIsContainedInAny(_ cidr: String, containers: [String]) -> Bool {
-        guard let child = ipv4Range(forCIDR: cidr) else { return false }
-        return containers.contains { container in
-            guard let parent = ipv4Range(forCIDR: container) else { return false }
-            return parent.lower <= child.lower && child.upper <= parent.upper
-        }
     }
 
     private func cidrContainsIPv4Host(_ cidr: String, _ host: String?) -> Bool {

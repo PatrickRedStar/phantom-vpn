@@ -1,7 +1,13 @@
 ---
-updated: 2026-04-30
-status: accepted
+updated: 2026-07-02
+status: partially superseded by 0012
 ---
+
+> **2026-07-02:** механизм вычитания маршрутов upstream из `includedRoutes`
+> отменён — создавал «дыры» на физический интерфейс (ТСПУ) либо взрыв
+> маршрутов + дребезг hash. Новый механизм — longest-prefix, см.
+> [0012](0012-layered-routing-longest-prefix.md). Остальное (детектор,
+> scoped DNS, отказ от excludedRoutes для корп-сетей) в силе.
 
 # 0006 — Layered macOS routing для корпоративного VPN + GhostStream
 
