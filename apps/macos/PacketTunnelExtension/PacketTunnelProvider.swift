@@ -145,6 +145,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// racing every snapshot/log frame.
     private var disconnectIpcInProgress = false
 
+    /// DIAG (build 31): расшифровка ошибки старта в читаемый public-текст.
+    /// `BridgeError.startFailed(rc)` бриджится в NSError как «error 0» и
+    /// прятал rc — маппим rc на имя FFI-кода из client-apple/src/lib.rs.
+    static func describeStartError(_ error: Error) -> String {
+        if let be = error as? BridgeError {
+            switch be {
+            case .startFailed(let rc):
+                let name: String
+                switch rc {
+                case -1:  name = "ERR_BAD_CONFIG"
+                case -2:  name = "ERR_ALREADY_RUNNING"
+                case -4:  name = "ERR_RUNTIME_INIT"
+                case -10: name = "ERR_QUEUE_FULL"
+                case -11: name = "ERR_NO_TUNNEL"
+                case -99: name = "ERR_PANIC"
+                default:  name = "unknown"
+                }
+                return "BridgeError.startFailed rc=\(rc) (\(name))"
+            case .encoding:   return "BridgeError.encoding (conn-string/JSON build failed)"
+            case .nullReturn: return "BridgeError.nullReturn"
+            }
+        }
+        return "\(error) — \(error.localizedDescription)"
+    }
+
     // MARK: - Lifecycle
 
     override func startTunnel(
@@ -163,8 +188,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             do {
                 try await self.startTunnelAsync()
             } catch {
-                self.log.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
-                self.writeErrorSnapshot(error.localizedDescription)
+                // DIAG (build 31): раскрываем точную причину. `error 0`
+                // (BridgeError.startFailed) прятал rc от Rust FFI —
+                // логируем его читаемо в public-канал.
+                let detail = Self.describeStartError(error)
+                self.log.error("startTunnel failed: \(detail, privacy: .public)")
+                self.emitProviderEvent(
+                    level: "ERR", category: "ffi", event: "start_failed",
+                    fields: ["detail": detail]
+                )
+                self.writeErrorSnapshot(detail)
                 self.callStartCompletionOnce(error)
             }
         }

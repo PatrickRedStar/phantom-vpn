@@ -167,16 +167,40 @@ public actor PhantomBridge {
             throw BridgeError.encoding
         }
 
+        // FFI-SIZE fix (июль 2026): рантайм читает из TunnelSettings только
+        // dns_leak_protection / ipv6_killswitch / auto_reconnect / streams /
+        // dpi_recycle_*. Вся маршрутизация (includedRoutes, routePolicy,
+        // manual CIDR) применяется на Swift-стороне через
+        // NEPacketTunnelNetworkSettings — Rust её игнорирует. Но раньше
+        // полный `settings` с `routePolicy.detectedUpstreamCidrs` (сотни
+        // сырых маршрутов Cisco в layeredAuto, ~10 КБ) ехал в cfg_json, а
+        // `phantom_runtime_start` читает его через cstr_to_str_bounded с
+        // потолком MAX_FFI_CSTR_LEN (16 КБ) → при большом split-include
+        // Cisco cfg превышал лимит → ERR_BAD_CONFIG → туннель не стартовал
+        // (route-count-зависимый отказ). Отправляем рантайму облегчённую
+        // проекцию без routing-балласта.
+        let runtimeSettings = TunnelSettings(
+            dnsLeakProtection: settings.dnsLeakProtection,
+            ipv6Killswitch: settings.ipv6Killswitch,
+            autoReconnect: settings.autoReconnect,
+            routingMode: settings.routingMode,
+            manualDirectCidrs: [],
+            manualDirectIpv6Cidrs: [],
+            preserveScopedDns: settings.preserveScopedDns,
+            routePolicy: nil,
+            streams: settings.streams
+        )
+
         let connProfile = ConnectProfile(
             name: profile.name,
             connString: connStr,
-            settings: settings
+            settings: runtimeSettings
         )
 
         guard
             let cfgData  = try? JSONEncoder().encode(connProfile),
             let cfgStr   = String(data: cfgData, encoding: .utf8),
-            let setData  = try? JSONEncoder().encode(settings),
+            let setData  = try? JSONEncoder().encode(runtimeSettings),
             let setStr   = String(data: setData, encoding: .utf8)
         else {
             throw BridgeError.encoding
