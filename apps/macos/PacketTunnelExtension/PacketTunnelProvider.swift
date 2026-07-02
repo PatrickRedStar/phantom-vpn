@@ -1362,9 +1362,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let shouldUseSplitRoutes = settings.routingMode != .global
             || !serverDirectCidrs.isEmpty
             || (settings.routePolicy == nil && profile.splitRouting == true)
+        // Админ-gateway (`.1` tun-подсети) должен быть достижим ЧЕРЕЗ туннель
+        // во всех режимах, иначе admin-API (`/api/me`, панель) недоступен:
+        // интерфейс point-to-point с peer=self, on-link подсети НЕТ, а в
+        // split/layered `includedRoutes` несёт только публичные блоки — и
+        // 10.7.0.1 уходит в физический интерфейс мимо туннеля. Паритет с iOS.
+        let adminGatewayHost = AdminGateway.host(forTunAddr: profile.tunAddr)
         guard shouldUseSplitRoutes else {
             ipv4.includedRoutes = [NEIPv4Route.default()]
-            ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
+            ipv4.excludedRoutes = physicalServerExcludedRoutes(
+                settings: settings,
+                preservingHost: adminGatewayHost
+            )
             return
         }
 
@@ -1375,12 +1384,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         let directCidrs = directCidrsForRouteComputation(profile: profile, settings: settings)
-        let routes = PhantomBridge.computeVpnRoutes(directCidrs: directCidrs.joined(separator: "\n"))
+        var routes = PhantomBridge.computeVpnRoutes(directCidrs: directCidrs.joined(separator: "\n"))
             .compactMap { route in
                 mask(forIPv4Prefix: route.prefix).map {
                     NEIPv4Route(destinationAddress: route.addr, subnetMask: $0)
                 }
             }
+        // Достучаться до admin-gateway можно только через туннель — добавляем
+        // его /32 к публичным маршрутам (если его там ещё нет).
+        if let adminRoute = route(forIPv4Host: adminGatewayHost),
+           !routes.contains(where: { $0.destinationAddress == adminRoute.destinationAddress }) {
+            routes.append(adminRoute)
+        }
 
         if routes.isEmpty {
             // ROUTE-EMPTY fix: пустой комплемент при непустых direct-CIDR
@@ -1397,7 +1412,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         }
         ipv4.includedRoutes = routes
-        ipv4.excludedRoutes = physicalServerExcludedRoutes(settings: settings)
+        ipv4.excludedRoutes = physicalServerExcludedRoutes(
+            settings: settings,
+            preservingHost: adminGatewayHost
+        )
     }
 
     private func shouldForceDnsMatchDomains(settings: TunnelSettings) -> Bool {
@@ -1477,14 +1495,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             + String(connString[queryStart...])
     }
 
-    private func physicalServerExcludedRoutes(settings: TunnelSettings) -> [NEIPv4Route] {
+    private func physicalServerExcludedRoutes(
+        settings: TunnelSettings,
+        preservingHost host: String? = nil
+    ) -> [NEIPv4Route] {
         // ADR 0012 guard: серверный /32 исключается ВСЕГДА. Прежний
         // containment-check по detectedUpstreamCidrs («сервер внутри
         // корп-сети → не исключать») был парным к вычитанию маршрутов;
         // без вычитания он работал бы на протухшей копии detected и мог
         // отправить транспорт GhostStream в туннель Cisco (туннель-в-
         // туннеле) или в петлю через собственный tun.
-        (settings.routePolicy?.serverDirectCidrs ?? []).compactMap(route(forCIDR:))
+        //
+        // preservingHost: если серверный direct-CIDR накрывает admin-gateway,
+        // НЕ исключаем его — иначе admin-API снова уедет мимо туннеля.
+        (settings.routePolicy?.serverDirectCidrs ?? []).compactMap { cidr in
+            guard !cidrContainsIPv4Host(cidr, host) else { return nil }
+            return route(forCIDR: cidr)
+        }
     }
 
     private func route(forCIDR cidr: String) -> NEIPv4Route? {
@@ -1494,6 +1521,46 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               let subnetMask = mask(forIPv4Prefix: prefix)
         else { return nil }
         return NEIPv4Route(destinationAddress: String(parts[0]), subnetMask: subnetMask)
+    }
+
+    /// `/32`-маршрут на один хост (для admin-gateway). Паритет с iOS.
+    private func route(forIPv4Host host: String) -> NEIPv4Route? {
+        guard ipv4Integer(host) != nil,
+              let hostMask = mask(forIPv4Prefix: 32)
+        else { return nil }
+        return NEIPv4Route(destinationAddress: host, subnetMask: hostMask)
+    }
+
+    private func cidrContainsIPv4Host(_ cidr: String, _ host: String?) -> Bool {
+        guard let host,
+              let range = ipv4Range(forCIDR: cidr),
+              let address = ipv4Integer(host)
+        else { return false }
+        return range.lower <= address && address <= range.upper
+    }
+
+    private func ipv4Range(forCIDR cidr: String) -> (lower: UInt32, upper: UInt32)? {
+        let parts = cidr.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2,
+              let prefix = UInt32(parts[1]),
+              prefix <= 32,
+              let ip = ipv4Integer(String(parts[0]))
+        else { return nil }
+        let hostMask: UInt32 = prefix == 32 ? 0 : (UInt32.max >> prefix)
+        let networkMask = ~hostMask
+        let lower = ip & networkMask
+        return (lower, lower | hostMask)
+    }
+
+    private func ipv4Integer(_ address: String) -> UInt32? {
+        let octets = address.split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else { return nil }
+        var output: UInt32 = 0
+        for octet in octets {
+            guard let value = UInt32(octet), value <= 255 else { return nil }
+            output = (output << 8) | value
+        }
+        return output
     }
 
     private func updateRoutePolicy(_ snapshot: RoutePolicySnapshot) async throws {

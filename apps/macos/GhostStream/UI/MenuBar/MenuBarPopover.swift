@@ -376,29 +376,35 @@ public struct MenuBarPopover: View {
                     }
                 }
             } label: {
-                HStack(spacing: 14) {
+                // Фон+рамка обязательны: без них .menuStyle(.borderlessButton)
+                // на macOS схлопывает лейбл по intrinsic и рендерит огрызок
+                // «PROF ⌄» без имени профиля. Паритет с рабочим
+                // SidebarProfileBlock, у которого контент — bordered pill.
+                HStack(spacing: 10) {
                     Text("PROF")
                         .font(.custom("DepartureMono-Regular", size: 9.5))
                         .tracking(0.18 * 9.5)
                         .foregroundStyle(C.textFaint)
 
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(profiles.activeProfile?.name ?? "—")
-                            .font(.custom("SpaceGrotesk-Bold", size: 14))
-                            .tracking(-0.01 * 14)
-                            .foregroundStyle(C.bone)
-                        if profiles.activeProfile?.relayActive == true {
-                            Text("RELAY")
-                                .font(.custom("DepartureMono-Regular", size: 9))
-                                .tracking(0.12 * 9)
-                                .foregroundStyle(C.warn)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .overlay(Rectangle().stroke(C.warn.opacity(0.35), lineWidth: 1))
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(profiles.activeProfile?.name ?? "—")
+                                .font(.custom("SpaceGrotesk-Bold", size: 13))
+                                .tracking(-0.01 * 13)
+                                .foregroundStyle(C.bone)
+                            if profiles.activeProfile?.relayActive == true {
+                                Text("RELAY")
+                                    .font(.custom("DepartureMono-Regular", size: 9))
+                                    .tracking(0.12 * 9)
+                                    .foregroundStyle(C.warn)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .overlay(Rectangle().stroke(C.warn.opacity(0.35), lineWidth: 1))
+                            }
                         }
                         if let endpoint = profileEndpoint {
                             Text(endpoint)
-                                .font(.custom("JetBrainsMono-Regular", size: 11))
+                                .font(.custom("JetBrainsMono-Regular", size: 10.5))
                                 .foregroundStyle(C.textFaint)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -414,13 +420,13 @@ public struct MenuBarPopover: View {
 
                     Image(systemName: "chevron.up.chevron.down")
                         .foregroundStyle(C.textDim)
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                 }
-                // Без maxWidth label Menu на macOS сжимается по intrinsic
-                // и рендерит огрызок «PROF ⌄» без имени профиля —
-                // паритет с рабочим SidebarProfileBlock.
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(C.bgElev2)
+                .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 14)
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)

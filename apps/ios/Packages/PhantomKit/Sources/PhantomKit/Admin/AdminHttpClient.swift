@@ -286,6 +286,11 @@ public final class AdminHttpClient {
         cfg.timeoutIntervalForRequest = 10
         cfg.timeoutIntervalForResource = 30
         cfg.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        // Админ-API живёт на приватном tun-IP (10.7.0.1) и достижим ТОЛЬКО
+        // через туннель. Любой системный/пользовательский HTTP(S)-прокси
+        // увёл бы запрос мимо туннеля (у power-user'ов часто выставлен) —
+        // принудительно ходим напрямую.
+        cfg.connectionProxyDictionary = [:]
         self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
     }
 
@@ -731,10 +736,20 @@ private extension AdminHttpClient {
     ) throws -> SecIdentity {
         let label = "ghoststream.admin.\(UUID().uuidString)"
 
+        // CRITICAL (macOS): force the Data Protection keychain. Без этого флага
+        // на macOS items уходят в файловую login-связку, где:
+        //   1. использование приватного ключа для TLS-подписи вызывает ACL-
+        //      запрос «GhostStream хочет создать подпись…» на каждый connect;
+        //   2. запрос identity по kSecAttrLabel ненадёжен и может вернуть ЧУЖОЙ
+        //      identity из login-связки (напр. «Apple Development») — тогда
+        //      mTLS идёт не тем ключом и сервер его отвергает.
+        // DP keychain (дефолт на iOS) — app-scoped: ни запроса, ни коллизий,
+        // точный label-матч. Паритет iOS/macOS.
         let certAttrs: [String: Any] = [
             kSecClass as String: kSecClassCertificate,
             kSecValueRef as String: certificate,
             kSecAttrLabel as String: label,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         let certStatus = SecItemAdd(certAttrs as CFDictionary, nil)
         if certStatus != errSecSuccess && certStatus != errSecDuplicateItem {
@@ -745,6 +760,7 @@ private extension AdminHttpClient {
             kSecClass as String: kSecClassKey,
             kSecValueRef as String: privateKey,
             kSecAttrLabel as String: label,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         let keyStatus = SecItemAdd(keyAttrs as CFDictionary, nil)
         if keyStatus != errSecSuccess && keyStatus != errSecDuplicateItem {
@@ -763,6 +779,7 @@ private extension AdminHttpClient {
             kSecAttrLabel as String: label,
             kSecReturnRef as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         var result: CFTypeRef?
         let st = SecItemCopyMatching(query as CFDictionary, &result)

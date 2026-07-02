@@ -1,5 +1,16 @@
 # Changelog
 
+## [macOS 0.26.2 build 36] - 2026-07-02
+
+### Fixed
+- **Админ-панель не появлялась (вторая причина — mTLS через login-связку).** `AdminHttpClient` на macOS собирал TLS-identity во временной **login-связке**: система (а) на каждый connect показывала запрос «GhostStream хочет создать подпись…» и (б) по ненадёжному label-матчу цепляла ЧУЖОЙ identity («Apple Development»), поэтому mTLS шёл не тем ключом и `/api/me` не проходил. Теперь identity строится в app-scoped **Data Protection keychain** (`kSecUseDataProtectionKeychain`, как на iOS) — без запроса пароля и с правильным ключом. Дополнительно админ-сессии запрещён системный HTTP(S)-прокси (`connectionProxyDictionary = [:]`) — приватный tun-IP админ-API нельзя гнать через прокси. С этим фиксом (поверх build 35) `cachedIsAdmin` проставляется автоматически после подключения и вкладка ADMIN появляется. См. [постмортем](docs/knowledge/incidents/2026-07-02-macos-admin-gateway-not-routed.md).
+
+## [macOS 0.26.1 build 35] - 2026-07-02
+
+### Fixed
+- **Admin-gateway не маршрутизировался через туннель.** В split/layered-режиме провайдер не добавлял admin-gateway (`.1` tun-подсети, напр. `10.7.0.1`) в `includedRoutes`: там только публичные блоки, а tun-интерфейс point-to-point с peer=self не даёт on-link подсети — запрос `/api/me` уходил в физический интерфейс мимо туннеля и таймаутил. Теперь admin-gateway `/32` всегда добавляется в `includedRoutes` (и не исключается серверным direct-CIDR) — паритет с iOS. (Достаточное условие для админки, но не полное — см. build 36.)
+- **Огрызок «PROF ⌄» в меню-баре.** Строка выбора профиля рендерилась без имени/endpoint — `.menuStyle(.borderlessButton)` схлопывал лейбл без фона по intrinsic. Обёрнута в bordered pill (как рабочий сайдбарный `SidebarProfileBlock`).
+
 ## [macOS 0.26.0 build 34] - 2026-07-02
 
 ### Added
