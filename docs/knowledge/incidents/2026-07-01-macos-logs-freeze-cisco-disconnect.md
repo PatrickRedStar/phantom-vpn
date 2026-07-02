@@ -58,3 +58,14 @@ Batch A (логи), B (routing: `RoutePolicySnapshot.aggregatedUpstreamCidrs` /2
 - PhantomKit: 57 тестов зелёные (в т.ч. 6 на агрегацию, 1 инвариант анимаций).
 - `cargo check`/`cargo test routing` зелёные.
 - smoke-test.sh: **PASS, Connected за 3 с** (build 24/25, профиль poland), 10/10 стримов.
+
+## Post-scriptum (2026-07-02, build 29)
+
+Первый живой прогон layeredAuto с настоящим Cisco показал, что агрегация
+маршрутов из Batch B — сама по себе баг: супернеты /16 вокруг корп-/32
+вырезали из GhostStream публичные CDN-диапазоны, и этот трафик уходил
+голым через en0 (мимо обоих VPN) под ТСПУ. Вычитание заменено на
+longest-prefix-модель — см. [ADR 0012](../decisions/0012-layered-routing-longest-prefix.md);
+`aggregatedUpstreamCidrs` удалена, `detectedUpstreamCidrs` исключены из
+`routeHash`. Верифицировано на живых двух VPN (speedtest/ytimg 200 через
+GhostStream, корп-хост через Cisco, 93 маршрута вместо 732).
