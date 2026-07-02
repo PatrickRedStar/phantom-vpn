@@ -316,7 +316,7 @@ private struct PasteStepView: View {
         HStack(spacing: 14) {
             Button { importGhs() } label: {
                 HStack(spacing: 8) {
-                    Text("ИМПОРТИРОВАТЬ")
+                    Text(String(localized: "welcome.import"))
                         .font(.custom("DepartureMono-Regular", size: 11))
                         .tracking(0.20 * 11)
                     Text("⌘⏎")
@@ -466,6 +466,7 @@ private struct AwaitingApprovalStepView: View {
 
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @Bindable var coordinator: OnboardingCoordinator
 
@@ -497,7 +498,7 @@ private struct AwaitingApprovalStepView: View {
 
             // Live status panel
             HStack(spacing: 14) {
-                PulseDot(color: C.warn, size: 10, pulse: !prefs.reduceMotion)
+                PulseDot(color: C.warn, size: 10, pulse: !(prefs.reduceMotion || systemReduceMotion))
                 VStack(alignment: .leading, spacing: 4) {
                     Text("ОЖИДАНИЕ ДЕЙСТВИЯ ПОЛЬЗОВАТЕЛЯ")
                         .font(.custom("DepartureMono-Regular", size: 10))
@@ -580,6 +581,7 @@ private struct ConfigureVpnStepView: View {
 
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Bindable var coordinator: OnboardingCoordinator
 
     var body: some View {
@@ -606,7 +608,7 @@ private struct ConfigureVpnStepView: View {
 
             if coordinator.awaitingVpnApproval {
                 HStack(spacing: 14) {
-                    PulseDot(color: C.warn, size: 10, pulse: !prefs.reduceMotion)
+                    PulseDot(color: C.warn, size: 10, pulse: !(prefs.reduceMotion || systemReduceMotion))
                     Text("Жду подтверждения VPN-конфигурации…")
                         .font(.custom("JetBrainsMono-Regular", size: 12.5))
                         .foregroundStyle(C.bone)
@@ -660,6 +662,9 @@ private struct ConfigureVpnStepView: View {
 private struct ReadyStepView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(ProfilesStore.self) private var profiles
+    @Environment(PreferencesStore.self) private var prefs
+    @EnvironmentObject private var tunnel: VpnTunnelController
     @Bindable var coordinator: OnboardingCoordinator
     let onClose: () -> Void
 
@@ -689,6 +694,22 @@ private struct ReadyStepView: View {
             .padding(.bottom, 26)
 
             HStack(spacing: 14) {
+                // A6: primary — стартуем активный профиль и закрываем окно.
+                Button {
+                    connectNow()
+                } label: {
+                    Text(String(localized: "welcome.connect_now").uppercased())
+                        .font(.custom("DepartureMono-Regular", size: 11))
+                        .tracking(0.20 * 11)
+                        .foregroundStyle(profiles.activeProfile == nil ? C.textFaint : C.bg)
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, 14)
+                        .background(profiles.activeProfile == nil ? C.hairBold : C.signal)
+                }
+                .buttonStyle(.plain)
+                .disabled(profiles.activeProfile == nil)
+
+                // Secondary (outline) — просто закрыть без подключения.
                 Button {
                     coordinator.finish()
                     onClose()
@@ -696,10 +717,10 @@ private struct ReadyStepView: View {
                     Text("ЗАВЕРШИТЬ")
                         .font(.custom("DepartureMono-Regular", size: 11))
                         .tracking(0.20 * 11)
-                        .foregroundStyle(C.bg)
+                        .foregroundStyle(C.bone)
                         .padding(.horizontal, 28)
                         .padding(.vertical, 14)
-                        .background(C.signal)
+                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
 
@@ -711,6 +732,19 @@ private struct ReadyStepView: View {
                     .foregroundStyle(C.textFaint)
             }
         }
+    }
+
+    /// A6: installAndStart активного профиля и закрытие Welcome-окна.
+    /// Запуск идёт в отдельной Task (VpnTunnelController удерживается
+    /// приложением), поэтому окно можно закрыть сразу — прогресс виден
+    /// в menu-bar / dashboard.
+    private func connectNow() {
+        guard let profile = profiles.activeProfile else { return }
+        Task {
+            try? await tunnel.installAndStart(profile: profile, preferences: prefs)
+        }
+        coordinator.finish()
+        onClose()
     }
 
     @ViewBuilder

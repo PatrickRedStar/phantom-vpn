@@ -177,7 +177,7 @@ public final class VpnTunnelController: ObservableObject {
             settingsData = try JSONEncoder().encode(settings)
         } catch {
             let wrapped = VpnTunnelError.encoding
-            lastError = wrapped.localizedDescription
+            lastError = ConnectErrorHumanizer.humanize(wrapped.localizedDescription)
             throw wrapped
         }
 
@@ -190,7 +190,7 @@ public final class VpnTunnelController: ObservableObject {
                 ?? NETunnelProviderManager()
         } catch {
             let wrapped = VpnTunnelError.reloadFailed(error.localizedDescription)
-            lastError = wrapped.localizedDescription
+            lastError = ConnectErrorHumanizer.humanize(wrapped.localizedDescription)
             throw wrapped
         }
 
@@ -201,6 +201,17 @@ public final class VpnTunnelController: ObservableObject {
             "profile": profileData,
             "settings": settingsData,
         ]
+
+        // Kill-switch: includeAllNetworks заставляет систему гнать ВЕСЬ
+        // трафик через туннель и блокировать его, когда туннель не
+        // поднят — трафик не утекает в открытую при обрыве. Осмыслен
+        // только в global: в split/layered туннель несёт часть маршрутов,
+        // а includeAllNetworks переопределяет excludedRoutes и сломал бы
+        // их (в т.ч. layeredAuto-иерархию с Cisco). excludeLocalNetworks
+        // оставляет доступ к LAN (принтеры, роутер).
+        let killSwitchActive = preferences.killSwitch && effectiveRoutingMode == .global
+        proto.includeAllNetworks = killSwitchActive
+        proto.excludeLocalNetworks = true
 
         managerToSave.protocolConfiguration = proto
         managerToSave.localizedDescription = profile.name
@@ -218,7 +229,7 @@ public final class VpnTunnelController: ObservableObject {
         } catch {
             log.error("saveToPreferences failed: \(error.localizedDescription, privacy: .public)")
             let wrapped = error as? VpnTunnelError ?? VpnTunnelError.saveFailed(error.localizedDescription)
-            lastError = wrapped.localizedDescription
+            lastError = ConnectErrorHumanizer.humanize(wrapped.localizedDescription)
             throw wrapped
         }
     }
@@ -249,7 +260,7 @@ public final class VpnTunnelController: ObservableObject {
         } catch {
             log.error("startVPNTunnel failed: \(error.localizedDescription, privacy: .public)")
             let wrapped = error as? VpnTunnelError ?? VpnTunnelError.startFailed(error.localizedDescription)
-            lastError = wrapped.localizedDescription
+            lastError = ConnectErrorHumanizer.humanize(wrapped.localizedDescription)
             throw wrapped
         }
     }

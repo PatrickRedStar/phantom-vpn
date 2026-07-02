@@ -31,9 +31,15 @@ public struct SettingsView: View {
     @Environment(DockPolicyController.self) private var dock
     @Environment(UpstreamVpnMonitor.self) private var upstream
 
+    // A3: эффективный Reduce Motion = ручной тумблер OR системный флаг.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { prefs.reduceMotion || systemReduceMotion }
+
     @State private var exportStatusMessage: String?
     @State private var exportingDiagnostics = false
     @State private var settingsAppeared = false
+    // A2: показываем «требуется перезапуск» после смены языка.
+    @State private var languageChanged = false
 
     public init() {}
 
@@ -48,9 +54,9 @@ public struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 detailHead
-                    .settingsReveal(settingsAppeared, delay: 0.00, reduceMotion: prefs.reduceMotion)
+                    .settingsReveal(settingsAppeared, delay: 0.00, reduceMotion: reduceMotion)
                 grid
-                    .settingsReveal(settingsAppeared, delay: 0.06, reduceMotion: prefs.reduceMotion)
+                    .settingsReveal(settingsAppeared, delay: 0.06, reduceMotion: reduceMotion)
             }
             .padding(.horizontal, 28)
             .padding(.top, 22)
@@ -59,7 +65,7 @@ public struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
         .onAppear {
-            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            SettingsMotion.perform(reduceMotion: reduceMotion) {
                 settingsAppeared = true
             }
         }
@@ -111,41 +117,48 @@ public struct SettingsView: View {
         HStack(alignment: .top, spacing: 18) {
             tunnelCard
                 .frame(maxWidth: .infinity)
-                .settingsReveal(settingsAppeared, delay: 0.10, reduceMotion: prefs.reduceMotion)
+                .settingsReveal(settingsAppeared, delay: 0.10, reduceMotion: reduceMotion)
             macColumn
                 .frame(maxWidth: .infinity)
-                .settingsReveal(settingsAppeared, delay: 0.16, reduceMotion: prefs.reduceMotion)
+                .settingsReveal(settingsAppeared, delay: 0.16, reduceMotion: reduceMotion)
         }
     }
 
     @ViewBuilder
     private var tunnelCard: some View {
         @Bindable var p = prefs
-        SettingsCard(header: "TUNNEL", trailing: {
+        SettingsCard(header: String(localized: "settings.tunnel").uppercased(), trailing: {
             HStack(spacing: 6) {
-                PulseDot(color: C.signal, size: 6, pulse: !prefs.reduceMotion)
+                PulseDot(color: C.signal, size: 6, pulse: !reduceMotion)
                 Text("SAVED")
                     .font(.custom("DepartureMono-Regular", size: 10.5))
                     .tracking(0.12 * 10.5)
                     .foregroundStyle(C.textFaint)
             }
         }) {
-            settingRow(title: "DNS leak protection",
+            settingRow(title: String(localized: "settings.dns_leak"),
                        description: "Принудительно использовать DNS из tunnel profile") {
                 SettingsToggle(on: $p.dnsLeakProtection)
             }
             HairlineDivider()
-            settingRow(title: "IPv6 leak protection",
+            settingRow(title: String(localized: "settings.ipv6_leak"),
                        description: "Отключить IPv6 на интерфейсе пока активен туннель") {
                 SettingsToggle(on: $p.ipv6Killswitch)
             }
             HairlineDivider()
-            settingRow(title: "Auto reconnect",
+            settingRow(title: String(localized: "settings.kill_switch"),
+                       description: killSwitchDescription) {
+                SettingsToggle(on: $p.killSwitch)
+                    .disabled(p.routingMode != .global)
+                    .opacity(p.routingMode != .global ? 0.4 : 1)
+            }
+            HairlineDivider()
+            settingRow(title: String(localized: "settings.auto_reconnect"),
                        description: "Восстанавливать туннель при разрывах сети") {
                 SettingsToggle(on: $p.autoReconnect)
             }
             HairlineDivider()
-            settingRow(title: "Routing",
+            settingRow(title: String(localized: "settings.routing"),
                        description: "Какой трафик заворачивается в туннель") {
                 RoutingPill()
             }
@@ -173,27 +186,27 @@ public struct SettingsView: View {
                     HairlineDivider()
                     manualDirectCidrsEditor
                 }
-                .transition(SettingsMotion.sectionTransition(reduceMotion: p.reduceMotion))
+                .transition(SettingsMotion.sectionTransition(reduceMotion: reduceMotion))
             }
             HairlineDivider()
-            settingRow(title: "DNS",
+            settingRow(title: String(localized: "settings.dns"),
                        description: "Custom DNS overrides") {
                 DNSPill()
             }
             HairlineDivider()
-            settingRow(title: "Streams",
+            settingRow(title: String(localized: "settings.streams"),
                        description: streamDescription) {
                 StreamControl(streamOverride: $p.streamOverride)
             }
         }
-        .animation(SettingsMotion.layout(reduceMotion: p.reduceMotion), value: p.routingMode)
+        .animation(SettingsMotion.layout(reduceMotion: reduceMotion), value: p.routingMode)
     }
 
     @ViewBuilder
     private var macColumn: some View {
         @Bindable var p = prefs
         VStack(spacing: 0) {
-            SettingsCard(header: "MAC INTEGRATION",
+            SettingsCard(header: String(localized: "settings.mac_integration").uppercased(),
                          trailing: { Text("— DARWIN")
                             .font(.custom("DepartureMono-Regular", size: 10.5))
                             .tracking(0.12 * 10.5)
@@ -208,7 +221,7 @@ public struct SettingsView: View {
                     ))
                 }
                 HairlineDivider()
-                settingRow(title: "Стартовать свернутым в menu bar",
+                settingRow(title: String(localized: "settings.start_in_menu_bar"),
                            description: "Без всплывания консоли · LSUIElement runtime") {
                     SettingsToggle(on: $p.startInMenuBar)
                 }
@@ -218,18 +231,26 @@ public struct SettingsView: View {
                     SettingsToggle(on: $dockBinding.showInDock)
                 }
                 HairlineDivider()
-                settingRow(title: "Notification на смену состояния",
+                settingRow(title: String(localized: "settings.notify_state_changes"),
                            description: "Системный alert при connect/disconnect/reconnect") {
                     SettingsToggle(on: $p.notifyStateChanges)
                 }
 
-                cardSubHeader("APPEARANCE")
+                cardSubHeader(String(localized: "settings.appearance").uppercased())
                 settingRow(title: String(localized: "settings.theme"),
                            description: "Тёмная (warm-black + lime), светлая (paper + moss)") {
                     ThemePill()
                 }
                 HairlineDivider()
-                settingRow(title: "Reduce motion",
+                // A2: языковой пикер рядом с темой.
+                settingRow(title: String(localized: "settings.language"),
+                           description: languageChanged
+                            ? String(localized: "settings.language.restart_hint")
+                            : nil) {
+                    LanguagePill(onChange: { languageChanged = true })
+                }
+                HairlineDivider()
+                settingRow(title: String(localized: "settings.reduce_motion"),
                            description: "Отключить mux shimmer + pulse") {
                     SettingsToggle(on: $p.reduceMotion)
                 }
@@ -242,13 +263,13 @@ public struct SettingsView: View {
                         .allowsHitTesting(false)
                 }
                 HairlineDivider()
-                settingRow(title: "Проверить сейчас",
+                settingRow(title: String(localized: "settings.check_now"),
                            description: "Недоступно: Sparkle updater не подключен") {
                     actionButton(label: "ПРОВЕРИТЬ", color: C.signal, disabled: true)
                 }
 
-                cardSubHeader("DIAGNOSTICS")
-                settingRow(title: "Экспорт bundle",
+                cardSubHeader(String(localized: "settings.diagnostics").uppercased())
+                settingRow(title: String(localized: "settings.export_bundle"),
                            description: exportStatusMessage ?? "Snapshot, настройки и последние логи без PEM/conn string") {
                     actionButton(
                         label: exportingDiagnostics ? "EXPORT..." : "EXPORT",
@@ -262,7 +283,7 @@ public struct SettingsView: View {
 
                 cardSubHeader("ADVANCED")
                 settingRow(
-                    title: "Verbose logging (TRACE)",
+                    title: String(localized: "settings.verbose_logging"),
                     description: "Records every packet batch and micro-event. Adds ~10 MB/min to \(LogPathResolver.displayPath.replacingOccurrences(of: "/runtime.log", with: "/")). Reduce if disk-constrained."
                 ) {
                     SettingsToggle(on: $p.verboseLog)
@@ -409,12 +430,18 @@ public struct SettingsView: View {
                     .font(.custom("JetBrainsMono-Regular", size: 10.5))
                     .foregroundStyle(C.danger)
                     .lineLimit(2)
-                    .transition(SettingsMotion.sectionTransition(reduceMotion: prefs.reduceMotion))
+                    .transition(SettingsMotion.sectionTransition(reduceMotion: reduceMotion))
             }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
-        .animation(SettingsMotion.layout(reduceMotion: prefs.reduceMotion), value: prefs.invalidManualDirectCidrs)
+        .animation(SettingsMotion.layout(reduceMotion: reduceMotion), value: prefs.invalidManualDirectCidrs)
+    }
+
+    private var killSwitchDescription: String {
+        prefs.routingMode == .global
+            ? String(localized: "settings.kill_switch.desc")
+            : String(localized: "settings.kill_switch.only_global")
     }
 
     private var routeDiagnosticText: String {
@@ -591,6 +618,9 @@ private extension View {
 private struct SettingRow<Trailing: View>: View {
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
+    // A3: учитываем системный Reduce Motion наравне с тумблером.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
 
     let title: String
     let description: String?
@@ -620,18 +650,18 @@ private struct SettingRow<Trailing: View>: View {
         .background(C.signal.opacity(hovering ? 0.035 : 0))
         .contentShape(Rectangle())
         .opacity(appeared ? 1 : 0)
-        .offset(y: prefs.reduceMotion || appeared ? 0 : 6)
+        .offset(y: reduce || appeared ? 0 : 6)
         .onHover { isHovering in
-            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            SettingsMotion.perform(reduceMotion: reduce) {
                 hovering = isHovering
             }
         }
         .onAppear {
-            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            SettingsMotion.perform(reduceMotion: reduce) {
                 appeared = true
             }
         }
-        .animation(SettingsMotion.interactive(reduceMotion: prefs.reduceMotion), value: hovering)
+        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
     }
 }
 
@@ -697,6 +727,9 @@ private struct SettingsToggle: View {
 private struct SettingsActionButton: View {
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
+    // A3: системный Reduce Motion OR ручной тумблер.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
 
     let label: String
     let color: Color
@@ -723,11 +756,11 @@ private struct SettingsActionButton: View {
         .disabled(disabled)
         .scaleEffect(hovering && !disabled ? 1.03 : 1.0)
         .onHover { isHovering in
-            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            SettingsMotion.perform(reduceMotion: reduce) {
                 hovering = isHovering
             }
         }
-        .animation(SettingsMotion.interactive(reduceMotion: prefs.reduceMotion), value: hovering)
+        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
     }
 }
 
@@ -736,6 +769,9 @@ private struct SettingsActionButton: View {
 private struct MenuPill: View {
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
+    // A3: системный Reduce Motion OR ручной тумблер.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
     let label: String   // e.g. "all"
     let value: String   // e.g. "global"
 
@@ -764,16 +800,19 @@ private struct MenuPill: View {
         .scaleEffect(hovering ? 1.02 : 1.0)
         .contentShape(Rectangle())
         .onHover { isHovering in
-            SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+            SettingsMotion.perform(reduceMotion: reduce) {
                 hovering = isHovering
             }
         }
-        .animation(SettingsMotion.interactive(reduceMotion: prefs.reduceMotion), value: hovering)
+        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
     }
 }
 
 private struct RoutingPill: View {
     @Environment(PreferencesStore.self) private var prefs
+    // A3: системный Reduce Motion OR ручной тумблер.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
 
     var body: some View {
         @Bindable var p = prefs
@@ -792,7 +831,7 @@ private struct RoutingPill: View {
     }
 
     private func setRouting(_ mode: RoutingMode) {
-        SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+        SettingsMotion.perform(reduceMotion: reduce) {
             prefs.routingMode = mode
         }
     }
@@ -816,6 +855,9 @@ private struct RoutingPill: View {
 
 private struct DNSPill: View {
     @Environment(PreferencesStore.self) private var prefs
+    // A3: системный Reduce Motion OR ручной тумблер.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
 
     var body: some View {
         Menu {
@@ -830,7 +872,7 @@ private struct DNSPill: View {
     }
 
     private func setDNS(_ servers: [String]?) {
-        SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+        SettingsMotion.perform(reduceMotion: reduce) {
             prefs.dnsServers = servers
         }
     }
@@ -845,6 +887,9 @@ private struct DNSPill: View {
 
 private struct StreamControl: View {
     @Environment(PreferencesStore.self) private var prefs
+    // A3: системный Reduce Motion OR ручной тумблер.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
     @Binding var streamOverride: Int?
 
     var body: some View {
@@ -867,11 +912,11 @@ private struct StreamControl: View {
                 }
                 .labelsHidden()
                 .controlSize(.small)
-                .transition(SettingsMotion.sectionTransition(reduceMotion: prefs.reduceMotion))
+                .transition(SettingsMotion.sectionTransition(reduceMotion: reduce))
             }
         }
         .fixedSize()
-        .animation(SettingsMotion.layout(reduceMotion: prefs.reduceMotion), value: streamOverride)
+        .animation(SettingsMotion.layout(reduceMotion: reduce), value: streamOverride)
     }
 
     private var manualValue: Binding<Int> {
@@ -882,7 +927,7 @@ private struct StreamControl: View {
     }
 
     private func setStreams(_ value: Int?) {
-        SettingsMotion.perform(reduceMotion: prefs.reduceMotion) {
+        SettingsMotion.perform(reduceMotion: reduce) {
             streamOverride = value
         }
     }
@@ -893,12 +938,15 @@ private struct StreamControl: View {
 private struct ThemePill: View {
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
+    // A3: системный Reduce Motion OR ручной тумблер.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
 
     var body: some View {
         @Bindable var p = prefs
         let cur = ThemeOverride(rawValue: p.theme) ?? .system
         Button {
-            SettingsMotion.perform(reduceMotion: p.reduceMotion) {
+            SettingsMotion.perform(reduceMotion: reduce) {
                 // Cycle system → dark → light → system
                 switch cur {
                 case .system: p.theme = ThemeOverride.dark.rawValue
@@ -908,7 +956,9 @@ private struct ThemePill: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Text(cur.rawValue)
+                // A1: локализованное имя темы; lowercase сохраняет
+                // мелко-mono эстетику пилюли.
+                Text(Self.themeLabel(cur).lowercased())
                     .font(.custom("DepartureMono-Regular", size: 11))
                     .tracking(0.14 * 11)
                     .foregroundStyle(C.signal)
@@ -922,6 +972,55 @@ private struct ThemePill: View {
             .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
         }
         .buttonStyle(.plain)
+    }
+
+    private static func themeLabel(_ o: ThemeOverride) -> String {
+        switch o {
+        case .system: return String(localized: "settings.theme.system")
+        case .dark:   return String(localized: "settings.theme.dark")
+        case .light:  return String(localized: "settings.theme.light")
+        }
+    }
+}
+
+// MARK: - Language picker pill (A2)
+
+/// Меню выбора языка приложения. Пишет `prefs.languageOverride`
+/// (persist в App Group defaults) и одновременно `AppleLanguages` в
+/// `UserDefaults.standard` — именно последний читает macOS при старте.
+/// nil (Системный) = убрать override и вернуться к системной локали.
+private struct LanguagePill: View {
+    @Environment(PreferencesStore.self) private var prefs
+    let onChange: () -> Void
+
+    var body: some View {
+        Menu {
+            Button(String(localized: "settings.language.system")) { setLanguage(nil) }
+            Button(String(localized: "settings.language.english")) { setLanguage("en") }
+            Button(String(localized: "settings.language.russian")) { setLanguage("ru") }
+        } label: {
+            MenuPill(label: "lang", value: currentLabel)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private func setLanguage(_ code: String?) {
+        prefs.languageOverride = code
+        if let code {
+            UserDefaults.standard.set([code], forKey: "AppleLanguages")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+        }
+        onChange()
+    }
+
+    private var currentLabel: String {
+        switch prefs.languageOverride {
+        case "en": return String(localized: "settings.language.english")
+        case "ru": return String(localized: "settings.language.russian")
+        default:   return String(localized: "settings.language.system")
+        }
     }
 }
 

@@ -33,6 +33,10 @@ public struct DashboardView: View {
     @Environment(AppRouter.self) private var router
     @EnvironmentObject private var tunnel: VpnTunnelController
 
+    // A3: эффективный Reduce Motion = ручной тумблер OR системный флаг.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { prefs.reduceMotion || systemReduceMotion }
+
     @State private var scopeWindow: ScopeWindow = .m5
     // UI-R2-R03/R04 / UI-R4-R06: track whether we transitioned through
     // `.connected` since the last error so we can clear `lastError`
@@ -81,6 +85,13 @@ public struct DashboardView: View {
                     .tracking(0.20 * 11)
                     .foregroundStyle(C.textFaint)
                 stateHero
+                // A5: строка reconnect-прогресса под hero-заголовком.
+                if let progress = reconnectProgressText {
+                    Text(progress)
+                        .font(.custom("DepartureMono-Regular", size: 11))
+                        .tracking(0.06 * 11)
+                        .foregroundStyle(C.warn)
+                }
             }
             Spacer()
             HStack(alignment: .firstTextBaseline, spacing: 14) {
@@ -88,7 +99,7 @@ public struct DashboardView: View {
                     PulseDot(
                         color: pulseColor,
                         size: 8,
-                        pulse: !prefs.reduceMotion && (stateMgr.statusFrame.state == .connected
+                        pulse: !reduceMotion && (stateMgr.statusFrame.state == .connected
                             || stateMgr.statusFrame.state == .connecting
                             || stateMgr.statusFrame.state == .reconnecting)
                     )
@@ -124,13 +135,27 @@ public struct DashboardView: View {
     }
 
     private var heroParts: (String, Color) {
+        // A1: тот же локализованный state.*-словарь, lowercase (serif hero).
+        let verb = MenuBarPopover.stateWord(for: stateMgr.statusFrame.state).lowercased()
+        let accent: Color
         switch stateMgr.statusFrame.state {
-        case .disconnected:               return ("standby",     C.textDim)
-        case .connecting:                 return ("tuning",      C.warn)
-        case .reconnecting:               return ("regrouping",  C.warn)
-        case .connected:                  return ("transmitting", C.signal)
-        case .error:                      return ("lost signal", C.danger)
+        case .disconnected:               accent = C.textDim
+        case .connecting, .reconnecting:  accent = C.warn
+        case .connected:                  accent = C.signal
+        case .error:                      accent = C.danger
         }
+        return (verb, accent)
+    }
+
+    /// A5: «попытка N · повтор через Ns» — только при .reconnecting и
+    /// когда рантайм отдал оба поля.
+    private var reconnectProgressText: String? {
+        guard stateMgr.statusFrame.state == .reconnecting,
+              let attempt = stateMgr.statusFrame.reconnectAttempt,
+              let delay = stateMgr.statusFrame.reconnectNextDelaySecs
+        else { return nil }
+        return String(format: String(localized: "state.reconnect_progress"),
+                      Int64(attempt), Int64(delay))
     }
 
     private var pulseColor: Color {
@@ -193,9 +218,9 @@ public struct DashboardView: View {
             : (live ? C.danger
             : (migrating ? C.textFaint : C.signal))
         let buttonLabel: String = busy
-            ? "CANCEL"
-            : (live ? "DISCONNECT"
-            : (migrating ? "IMPORTING…" : "CONNECT"))
+            ? String(localized: "fab.cancel")
+            : (live ? String(localized: "fab.disconnect")
+            : (migrating ? String(localized: "fab.importing") : String(localized: "fab.connect")))
         HStack(alignment: .bottom, spacing: 24) {
             kvLabel(label: "ENDPOINT") {
                 if let host = profiles.activeProfile?.serverAddr, !host.isEmpty {
@@ -467,7 +492,7 @@ public struct DashboardView: View {
                     PulseDot(
                         color: pulseColor,
                         size: 6,
-                        pulse: !prefs.reduceMotion && stateMgr.statusFrame.state == .connected
+                        pulse: !reduceMotion && stateMgr.statusFrame.state == .connected
                     )
                     Text("\(stateMgr.statusFrame.streamsUp) ↑ \(stateMgr.statusFrame.nStreams)")
                         .font(.custom("DepartureMono-Regular", size: 10.5))
@@ -491,7 +516,7 @@ public struct DashboardView: View {
                     active: stateMgr.statusFrame.state == .connected,
                     barCount: bars,
                     activityLevels: stateMgr.statusFrame.streamActivity,
-                    reduceMotion: prefs.reduceMotion,
+                    reduceMotion: reduceMotion,
                     height: 84
                 )
                 HStack {
@@ -606,7 +631,7 @@ public struct DashboardView: View {
             tunnel.lastError = nil
         } catch {
             dashLog.error("installAndStart failed: \(error.localizedDescription, privacy: .public)")
-            tunnel.lastError = error.localizedDescription
+            tunnel.lastError = ConnectErrorHumanizer.humanize(error.localizedDescription)
         }
     }
 

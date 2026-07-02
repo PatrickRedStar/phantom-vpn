@@ -296,20 +296,8 @@ public struct UpstreamVpnRouteDetector {
             }
         }
 
-        var prefix = 0
-        var foundZero = false
-        for byte in bytes {
-            for bit in (0..<8).reversed() {
-                let isOne = (byte & UInt8(1 << bit)) != 0
-                if isOne {
-                    guard !foundZero else { return nil }
-                    prefix += 1
-                } else {
-                    foundZero = true
-                }
-            }
-        }
-        return prefix
+        // Bit-математика вынесена в IPv4RouteMath (PhantomKit, под тестами).
+        return IPv4RouteMath.prefixLength(fromMaskBytes: bytes)
     }
 
     private static func dnsSnapshot(forInterfaceNames names: Set<String>) -> (servers: [String], domains: [String]) {
@@ -418,17 +406,7 @@ public struct UpstreamVpnRouteDetector {
     }
 
     private static func cidrSort(_ lhs: String, _ rhs: String) -> Bool {
-        func parts(_ cidr: String) -> ([Int], Int) {
-            let split = cidr.split(separator: "/")
-            let octets = split.first?
-                .split(separator: ".")
-                .compactMap { Int($0) } ?? []
-            let prefix = split.count > 1 ? Int(split[1]) ?? 0 : 0
-            return (octets, prefix)
-        }
-        let left = parts(lhs)
-        let right = parts(rhs)
-        return left.0 == right.0 ? left.1 < right.1 : left.0.lexicographicallyPrecedes(right.0)
+        IPv4RouteMath.cidrSortsBefore(lhs, rhs)
     }
 
     private static func unique(_ values: [String]) -> [String] {

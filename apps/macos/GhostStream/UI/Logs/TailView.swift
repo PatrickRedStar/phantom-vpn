@@ -29,6 +29,10 @@ public struct TailView: View {
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(TunnelLogStore.self) private var logStore
 
+    // A3: эффективный Reduce Motion = ручной тумблер OR системный флаг.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { prefs.reduceMotion || systemReduceMotion }
+
     @State private var activeFilter: LevelFilter = .all
     @State private var searchText: String = ""
     @State private var regexSearch: Bool = false
@@ -209,7 +213,7 @@ public struct TailView: View {
                 PulseDot(
                     color: C.signal,
                     size: 8,
-                    pulse: !prefs.reduceMotion && stateMgr.statusFrame.state == .connected
+                    pulse: !reduceMotion && stateMgr.statusFrame.state == .connected
                 )
                 Text("\(cachedFilteredLogs.count) LINES · \(stateMgr.statusFrame.state == .connected ? "STREAMING" : "STANDBY")")
                     .font(.custom("DepartureMono-Regular", size: 10.5))
@@ -966,24 +970,11 @@ enum TailViewFilter {
         }
     }
 
-    /// Pure, isolation-free copy of `TunnelLogStore.normalizedLevel` so
-    /// the filter compiles outside the main actor. Both implementations
-    /// share the same mapping table — keep them in sync.
+    /// Делегирует в каноничный `LogFrameFilter.normalizedLevel`
+    /// (PhantomKit, покрыт тестами) — рукописный дубль таблицы уровней
+    /// здесь и в `TunnelLogStore` расходился бы молча.
     static func normalize(level: String) -> String {
-        switch level.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "inf", "info":
-            return "info"
-        case "wrn", "warn", "warning":
-            return "warn"
-        case "err", "error":
-            return "error"
-        case "dbg", "debug", "trc", "trace":
-            return "debug"
-        case "ok", "success":
-            return "ok"
-        default:
-            return "info"
-        }
+        LogFrameFilter.normalizedLevel(level).rawValue
     }
 
     private static func matches(
@@ -992,24 +983,15 @@ enum TailViewFilter {
         regex: NSRegularExpression?,
         useRegex: Bool
     ) -> Bool {
-        guard !search.isEmpty else { return true }
-
-        var haystack = "\(frame.level) \(frame.msg)"
-        if let category = frame.category {
-            haystack.append(" \(category)")
-        }
-        if let fields = frame.fields, !fields.isEmpty {
-            for (k, v) in fields {
-                haystack.append(" \(k)=\(v)")
-            }
-        }
-
-        guard useRegex else {
-            return haystack.localizedCaseInsensitiveContains(search)
-        }
-        guard let regex else { return false }
-        let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
-        return regex.firstMatch(in: haystack, range: range) != nil
+        LogFrameFilter.matches(
+            level: frame.level,
+            msg: frame.msg,
+            category: frame.category,
+            fields: frame.fields,
+            search: search,
+            regex: regex,
+            useRegex: useRegex
+        )
     }
 }
 

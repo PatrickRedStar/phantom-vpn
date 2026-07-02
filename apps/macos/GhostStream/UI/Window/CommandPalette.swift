@@ -523,8 +523,9 @@ public struct CommandPalette: View {
                 tunnel.lastError = nil
                 router.commandPaletteOpen = false
             } catch {
-                tunnel.lastError = error.localizedDescription
-                statusMessage = .init(text: error.localizedDescription, kind: .error)
+                let humanized = ConnectErrorHumanizer.humanize(error.localizedDescription)
+                tunnel.lastError = humanized
+                statusMessage = .init(text: humanized, kind: .error)
             }
         }
         return .stayOpen
@@ -548,8 +549,9 @@ public struct CommandPalette: View {
                 tunnel.lastError = nil
                 router.commandPaletteOpen = false
             } catch {
-                tunnel.lastError = error.localizedDescription
-                statusMessage = .init(text: error.localizedDescription, kind: .error)
+                let humanized = ConnectErrorHumanizer.humanize(error.localizedDescription)
+                tunnel.lastError = humanized
+                statusMessage = .init(text: humanized, kind: .error)
             }
         }
         return .stayOpen

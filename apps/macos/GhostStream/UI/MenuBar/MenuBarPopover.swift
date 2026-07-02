@@ -46,6 +46,18 @@ public struct MenuBarPopover: View {
     @Environment(DockPolicyController.self) private var dock
     @EnvironmentObject private var tunnel: VpnTunnelController
 
+    // A3: системный Reduce Motion должен гейтить анимации наравне с
+    // ручным тумблером — эффективный флаг = OR обоих источников.
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    private var reduceMotion: Bool { prefs.reduceMotion || systemReduceMotion }
+
+    // A4: строка «Вставить конфиг» в футере появляется только когда в
+    // буфере лежит ghs:// — детектим в onAppear попапа. `pasteStatus`
+    // держит локальную ошибку импорта (danger, 5с TTL).
+    @State private var clipboardConfig: String?
+    @State private var pasteStatus: String?
+    @State private var pasteStatusTask: Task<Void, Never>?
+
     // UI-R2-R03/R04 / UI-R4-R06: track whether we transitioned through
     // `.connected` since the last error in the Service layer
     // (`tunnel.hadSuccessfulConnect`) rather than per-view. The Round 2
@@ -75,6 +87,9 @@ public struct MenuBarPopover: View {
         .frame(width: 380, height: 600, alignment: .top)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
+        // A4: пересчитываем наличие ghs:// в буфере при каждом показе
+        // попапа (MenuBarExtra(.window) переинициализирует контент).
+        .onAppear { refreshClipboardConfig() }
         // UI-R2-R03/R04 / UI-R4-R06: forward state transitions into the
         // shared `tunnel.observeStateForSuccessTracking(_:)` so all
         // surfaces (popover, dashboard) agree on the
@@ -127,7 +142,7 @@ public struct MenuBarPopover: View {
         let pulses = isLive || isWarn
 
         HStack(spacing: 7) {
-            PulseDot(color: color, size: 6, pulse: !prefs.reduceMotion && pulses)
+            PulseDot(color: color, size: 6, pulse: !reduceMotion && pulses)
             Text(label)
                 .font(.custom("DepartureMono-Regular", size: 9.5))
                 .tracking(0.16 * 9.5)
@@ -145,14 +160,25 @@ public struct MenuBarPopover: View {
         )
     }
 
+    // A1: pill переиспользует state.*-ключи, срезая терминальную точку /
+    // многоточие (у pill короткий UPPERCASE-бейдж без пунктуации).
     private var pillLabel: String {
-        switch stateMgr.statusFrame.state {
-        case .disconnected:  return "STANDBY"
-        case .connecting:    return "TUNING"
-        case .reconnecting:  return "REGROUPING"
-        case .connected:     return "TRANSMITTING"
-        case .error:         return "LOST"
+        MenuBarPopover.stateWord(for: stateMgr.statusFrame.state)
+    }
+
+    /// Локализованное слово состояния без терминальной пунктуации.
+    /// Используется и pill'ом (UPPERCASE), и hero-строкой (.lowercased()).
+    static func stateWord(for state: ConnState) -> String {
+        let key: String.LocalizationValue
+        switch state {
+        case .disconnected:  key = "state.standby"
+        case .connecting:    key = "state.tuning"
+        case .reconnecting:  key = "state.regrouping"
+        case .connected:     key = "state.transmitting"
+        case .error:         key = "state.lost_signal"
         }
+        return String(localized: key)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".…"))
     }
 
     // MARK: - Body (3)
@@ -176,7 +202,17 @@ public struct MenuBarPopover: View {
                 .font(.custom("DepartureMono-Regular", size: 22))
                 .tracking(0.04 * 22)
                 .foregroundStyle(stateMgr.statusFrame.state == .connected ? C.bone : C.textFaint)
-                .padding(.bottom, 18)
+                .padding(.bottom, reconnectProgressText == nil ? 18 : 6)
+
+            // A5: под таймером показываем «попытка N · повтор через Ns»
+            // когда рантайм отдал оба поля reconnect-прогресса.
+            if let progress = reconnectProgressText {
+                Text(progress)
+                    .font(.custom("DepartureMono-Regular", size: 10.5))
+                    .tracking(0.06 * 10.5)
+                    .foregroundStyle(C.warn)
+                    .padding(.bottom, 14)
+            }
 
             // GhostFab connect / disconnect
             fabRow
@@ -219,13 +255,27 @@ public struct MenuBarPopover: View {
     }
 
     private var heroParts: (verb: String, accent: Color) {
+        // A1: lowercase-вариант тех же state.*-ключей (serif-italic hero).
+        let verb = MenuBarPopover.stateWord(for: stateMgr.statusFrame.state).lowercased()
+        let accent: Color
         switch stateMgr.statusFrame.state {
-        case .disconnected:               return ("standby",     C.textDim)
-        case .connecting:                 return ("tuning",      C.warn)
-        case .reconnecting:               return ("regrouping",  C.warn)
-        case .connected:                  return ("transmitting", C.signal)
-        case .error:                      return ("lost signal", C.danger)
+        case .disconnected:               accent = C.textDim
+        case .connecting, .reconnecting:  accent = C.warn
+        case .connected:                  accent = C.signal
+        case .error:                      accent = C.danger
         }
+        return (verb, accent)
+    }
+
+    /// A5: строка reconnect-прогресса. nil, если не .reconnecting или
+    /// рантайм ещё не отдал attempt/delay.
+    private var reconnectProgressText: String? {
+        guard stateMgr.statusFrame.state == .reconnecting,
+              let attempt = stateMgr.statusFrame.reconnectAttempt,
+              let delay = stateMgr.statusFrame.reconnectNextDelaySecs
+        else { return nil }
+        return String(format: String(localized: "state.reconnect_progress"),
+                      Int64(attempt), Int64(delay))
     }
 
     private var timerText: String {
@@ -262,9 +312,9 @@ public struct MenuBarPopover: View {
         let busy = state == .connecting || state == .reconnecting
         let migrating = LegacyMigration.state.isMigrating
         let label: String = busy
-            ? "CANCEL"
-            : (live ? "DISCONNECT"
-            : (migrating ? "IMPORTING…" : "CONNECT"))
+            ? String(localized: "fab.cancel")
+            : (live ? String(localized: "fab.disconnect")
+            : (migrating ? String(localized: "fab.importing") : String(localized: "fab.connect")))
         let tint: Color = busy ? C.warn
             : (live ? C.danger
             : (migrating ? C.textFaint : C.signal))
@@ -448,7 +498,7 @@ public struct MenuBarPopover: View {
                 active: stateMgr.statusFrame.state == .connected,
                 barCount: bars,
                 activityLevels: stateMgr.statusFrame.streamActivity,
-                reduceMotion: prefs.reduceMotion,
+                reduceMotion: reduceMotion,
                 height: 28
             )
         }
@@ -463,6 +513,26 @@ public struct MenuBarPopover: View {
     @ViewBuilder
     private var footer: some View {
         VStack(spacing: 0) {
+            // A4: строка появляется НАД «Открыть консоль» только когда в
+            // буфере лежит ghs:// — импортирует профиль и делает активным.
+            if clipboardConfig != nil {
+                footerRow(
+                    systemImage: "doc.on.clipboard",
+                    title: String(localized: "popover.paste_config"),
+                    kbd: "",
+                    color: C.signal
+                ) {
+                    importClipboardConfig()
+                }
+            }
+            if let status = pasteStatus {
+                Text(status)
+                    .font(.custom("JetBrainsMono-Regular", size: 11))
+                    .foregroundStyle(C.danger)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 4)
+            }
             footerRow(
                 systemImage: "rectangle.on.rectangle",
                 title: String(localized: "menu.open_console"),
@@ -531,12 +601,55 @@ public struct MenuBarPopover: View {
                     .font(.custom("JetBrainsMono-Regular", size: 13))
                     .foregroundStyle(color)
                 Spacer()
-                KeyboardShortcutHint(kbd)
+                // Пустой kbd (напр. у paste-config строки) не должен
+                // рисовать пустой хинт-бокс.
+                if !kbd.isEmpty {
+                    KeyboardShortcutHint(kbd)
+                }
             }
             .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - A4: clipboard ghs:// import
+
+    private func refreshClipboardConfig() {
+        if let str = NSPasteboard.general.string(forType: .string),
+           str.hasPrefix("ghs://") {
+            clipboardConfig = str
+        } else {
+            clipboardConfig = nil
+        }
+    }
+
+    private func importClipboardConfig() {
+        guard let str = clipboardConfig else { return }
+        do {
+            let profile = try profiles.importFromConnString(str)
+            profiles.setActive(id: profile.id)
+            // Успех: строка исчезает, активный профиль в PROF меняется —
+            // отдельного баннера в попапе не городим (см. задачу A4).
+            clipboardConfig = nil
+            setPasteStatus(nil)
+        } catch {
+            // Ошибку НЕ пишем в tunnel.lastError (это канал коннекта) —
+            // локальный danger-текст под футером с 5с TTL.
+            setPasteStatus(String(localized: "popover.paste_failed"))
+        }
+    }
+
+    private func setPasteStatus(_ text: String?) {
+        pasteStatusTask?.cancel()
+        pasteStatus = text
+        guard text != nil else { return }
+        let task = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            pasteStatus = nil
+        }
+        pasteStatusTask = task
     }
 
     // MARK: - Actions
@@ -576,7 +689,7 @@ public struct MenuBarPopover: View {
             tunnel.lastError = nil
         } catch {
             popoverLog.error("installAndStart failed: \(error.localizedDescription, privacy: .public)")
-            tunnel.lastError = error.localizedDescription
+            tunnel.lastError = ConnectErrorHumanizer.humanize(error.localizedDescription)
         }
     }
 

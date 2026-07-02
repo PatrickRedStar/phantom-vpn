@@ -67,20 +67,9 @@ public final class TunnelLogStore {
     }
 
     public static func normalizedLevel(_ level: String) -> String {
-        switch level.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "inf", "info":
-            return "info"
-        case "wrn", "warn", "warning":
-            return "warn"
-        case "err", "error":
-            return "error"
-        case "dbg", "debug", "trc", "trace":
-            return "debug"
-        case "ok", "success":
-            return "ok"
-        default:
-            return "info"
-        }
+        // Каноничная таблица уровней живёт в LogFrameFilter (PhantomKit,
+        // под тестами) — раньше здесь был рукописный дубль.
+        LogFrameFilter.normalizedLevel(level).rawValue
     }
 
     private func pollLogsOnce() async {

@@ -47,6 +47,7 @@ public final class PreferencesStore {
         static let autoUpdate        = "auto_update"
         static let streams           = "streams"
         static let verboseLog        = "verbose_log"
+        static let killSwitch        = "kill_switch"
     }
 
     /// Stored property so `@Observable` can track changes and trigger SwiftUI
@@ -69,6 +70,16 @@ public final class PreferencesStore {
 
     public var ipv6Killswitch: Bool = true {
         didSet { defaults.set(ipv6Killswitch, forKey: Key.ipv6Killswitch) }
+    }
+
+    /// Kill-switch: при обрыве туннеля блокировать весь трафик, не давая
+    /// ему уйти в открытую. На macOS реализуется через
+    /// `NETunnelProviderProtocol.includeAllNetworks` и осмыслен только в
+    /// режиме global (в split/layered туннель несёт лишь часть маршрутов,
+    /// includeAllNetworks ломал бы их) — UI гейтит тумблер. По умолчанию
+    /// выключен: включение меняет поведение сети и требует явного выбора.
+    public var killSwitch: Bool = false {
+        didSet { defaults.set(killSwitch, forKey: Key.killSwitch) }
     }
 
     public var autoReconnect: Bool = true {
@@ -159,6 +170,7 @@ public final class PreferencesStore {
         self.languageOverride = defaults.string(forKey: Key.languageOverride)
         self.dnsLeakProtection = defaults.object(forKey: Key.dnsLeakProtection) as? Bool ?? true
         self.ipv6Killswitch = defaults.object(forKey: Key.ipv6Killswitch) as? Bool ?? true
+        self.killSwitch = defaults.object(forKey: Key.killSwitch) as? Bool ?? false
         self.autoReconnect = defaults.object(forKey: Key.autoReconnect) as? Bool ?? true
         self.startInMenuBar = defaults.object(forKey: Key.startInMenuBar) as? Bool ?? false
         self.notifyStateChanges = defaults.object(forKey: Key.notifyStateChanges) as? Bool ?? true
