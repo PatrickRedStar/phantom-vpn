@@ -52,6 +52,7 @@ public struct MainConsoleWindow: View {
         case .tail:    TailView()
         case .setup:   SettingsView()
         case .roster:  ServerRosterView()
+        case .admin:   AdminConsoleView()
         }
     }
 }

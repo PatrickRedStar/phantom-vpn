@@ -252,10 +252,15 @@ public struct ServerRosterView: View {
 
             TableColumn("region") { row in
                 rowActionArea(row) {
-                    regionBadge(row.region)
+                    HStack(spacing: 6) {
+                        regionBadge(row.region)
+                        if row.relay {
+                            relayBadge
+                        }
+                    }
                 }
             }
-            .width(140)
+            .width(150)
 
             TableColumn("rtt", value: \.rttSort) { row in
                 rowActionArea(row) {
@@ -311,6 +316,20 @@ public struct ServerRosterView: View {
             )
     }
 
+    /// Профиль ходит через дополнительный хоп — endpoint в строке уже
+    /// показывает relay-адрес, бейдж это подсвечивает.
+    private var relayBadge: some View {
+        Text("RELAY")
+            .font(.custom("DepartureMono-Regular", size: 9.5))
+            .tracking(0.14 * 9.5)
+            .foregroundStyle(C.warn)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .overlay(
+                Rectangle().stroke(C.warn.opacity(0.35), lineWidth: 1)
+            )
+    }
+
     @ViewBuilder
     private var emptyState: some View {
         VStack(alignment: .center, spacing: 14) {
@@ -334,9 +353,12 @@ public struct ServerRosterView: View {
             RosterRow(
                 id: profile.id,
                 name: profile.name,
-                endpoint: profile.serverAddr,
+                // Показываем и пробим фактическую точку входа: с relay это
+                // relay-адрес, транспорт подключается именно туда.
+                endpoint: profile.effectiveServerAddr,
                 sni: profile.serverName,
                 region: detectRegion(profile),
+                relay: profile.relayActive,
                 rttMs: rttCache[profile.id],
                 active: profiles.activeId == profile.id,
                 status: profiles.activeId == profile.id ? "active" : "—",
@@ -347,7 +369,7 @@ public struct ServerRosterView: View {
     }
 
     private func detectRegion(_ p: VpnProfile) -> String {
-        let host = p.serverAddr.lowercased()
+        let host = p.effectiveServerAddr.lowercased()
         if host.contains("vdsina") { return "nl" }
         if host.contains("relay") || host.contains("193.187") { return "ru" }
         return ""
@@ -386,7 +408,7 @@ public struct ServerRosterView: View {
         await withTaskGroup(of: (String, UInt32?).self) { group in
             for profile in snapshot {
                 group.addTask {
-                    (profile.id, await measureRTT(to: profile.serverAddr))
+                    (profile.id, await measureRTT(to: profile.effectiveServerAddr))
                 }
             }
 
@@ -546,6 +568,7 @@ private struct RosterRow: Identifiable {
     let endpoint: String
     let sni: String
     let region: String
+    let relay: Bool
     let rttMs: UInt32?
     let active: Bool
     let status: String

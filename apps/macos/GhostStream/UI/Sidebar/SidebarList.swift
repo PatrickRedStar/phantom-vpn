@@ -22,8 +22,15 @@ public struct SidebarList: View {
 
     @Environment(\.gsColors) private var C
     @Environment(AppRouter.self) private var router
+    @Environment(ProfilesStore.self) private var profiles
 
     public init() {}
+
+    /// ADMIN tab is identity-gated by the active profile's cached
+    /// `is_admin` flag (refreshed through the tunnel via `/api/me`).
+    private var adminUnlocked: Bool {
+        profiles.activeProfile?.cachedIsAdmin == true
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -62,8 +69,15 @@ public struct SidebarList: View {
     @ViewBuilder
     private var channelList: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(SidebarChannel.allCases) { channel in
+            ForEach(SidebarChannel.visible(adminUnlocked: adminUnlocked)) { channel in
                 channelRow(channel)
+            }
+        }
+        // Если админ-вкладка была открыта, а активным стал не-админский
+        // профиль — не оставляем пользователя на «пропавшей» вкладке.
+        .onChange(of: adminUnlocked) { _, unlocked in
+            if !unlocked && router.selectedChannel == .admin {
+                router.select(.stream)
             }
         }
     }

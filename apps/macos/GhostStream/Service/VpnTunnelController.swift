@@ -105,6 +105,14 @@ public final class VpnTunnelController: ObservableObject {
         let preferences = preferences ?? PreferencesStore.shared
 
         var providerProfile = profile
+        // Relay hop: substitute the dialed endpoint before anything downstream
+        // reads `serverAddr` — the route-policy snapshot (server /32 exclude),
+        // `proto.serverAddress` and the extension's ConnStringBuilder must all
+        // see the address the TCP connection actually goes to. SNI
+        // (`serverName`) is intentionally NOT touched: the relay forwards raw
+        // TLS by SNI (passthrough), end-to-end encryption terminates at the
+        // exit server.
+        providerProfile.serverAddr = profile.effectiveServerAddr
         let effectiveRoutingMode = preferences.effectiveRoutingMode(
             profileSplitRouting: profile.splitRouting
         )
@@ -195,7 +203,7 @@ public final class VpnTunnelController: ObservableObject {
         }
 
         let proto = NETunnelProviderProtocol()
-        proto.serverAddress = profile.serverAddr
+        proto.serverAddress = providerProfile.serverAddr
         proto.providerBundleIdentifier = providerBundleId
         proto.providerConfiguration = [
             "profile": profileData,

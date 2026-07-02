@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Initial Dock policy.
         DockPolicyController.shared.apply()
 
+        // Admin/subscription cache refresh through the tunnel (/api/me) —
+        // gates the ADMIN sidebar tab for admin identities.
+        EntitlementRefresher.shared.start()
+
         log.info("GhostStream launched (macOS)")
     }
 

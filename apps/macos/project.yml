@@ -53,8 +53,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client
         INFOPLIST_FILE: GhostStream/Info.plist
         CODE_SIGN_ENTITLEMENTS: GhostStream/GhostStream.entitlements
-        MARKETING_VERSION: "0.25.1"
-        CURRENT_PROJECT_VERSION: "33"
+        MARKETING_VERSION: "0.26.0"
+        CURRENT_PROJECT_VERSION: "34"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
         ENABLE_HARDENED_RUNTIME: YES
@@ -114,8 +114,8 @@ targets:
         PRODUCT_MODULE_NAME: PacketTunnelExtension
         INFOPLIST_FILE: PacketTunnelExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnelExtension/PacketTunnelExtension.entitlements
-        MARKETING_VERSION: "0.25.1"
-        CURRENT_PROJECT_VERSION: "33"
+        MARKETING_VERSION: "0.26.0"
+        CURRENT_PROJECT_VERSION: "34"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/../ios/Frameworks"
         ENABLE_HARDENED_RUNTIME: YES

@@ -14,10 +14,22 @@ public enum AdminGateway {
         return "\(parts[0]).\(parts[1]).\(parts[2]).1"
     }
 
+    /// Admin API base URL for a profile — the tunnel-gateway host derived
+    /// from `tunAddr`, port 8080, reachable only through the VPN tunnel.
+    public static func adminBaseURL(for profile: VpnProfile) -> URL? {
+        URL(string: "https://\(host(forTunAddr: profile.tunAddr)):8080")
+    }
+
+    /// Compares two tun addresses by their IP part, ignoring the /prefix.
+    public static func sameTunIP(_ lhs: String, _ rhs: String) -> Bool {
+        tunIP(lhs) == tunIP(rhs)
+    }
+
     private static func tunIP(_ tunAddr: String) -> String {
-        tunAddr
+        (tunAddr
             .split(separator: "/", maxSplits: 1)
             .first
-            .map(String.init) ?? tunAddr
+            .map(String.init) ?? tunAddr)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

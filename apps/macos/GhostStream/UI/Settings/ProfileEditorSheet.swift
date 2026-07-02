@@ -25,6 +25,8 @@ public struct ProfileEditorSheet: View {
     @State private var editEndpoint: String = ""
     @State private var editSni: String = ""
     @State private var editTun: String = ""
+    @State private var editRelayEnabled: Bool = false
+    @State private var editRelayAddr: String = ""
     @State private var editError: String?
 
     public init() {}
@@ -131,6 +133,7 @@ public struct ProfileEditorSheet: View {
             editField(L("profile.field.endpoint"), text: $editEndpoint, mono: true)
             editField(L("profile.field.sni"), text: $editSni, mono: true)
             editField(L("profile.field.tun"), text: $editTun, mono: true)
+            relayEditor
             if let editError {
                 Text(editError).font(Typography.bodySmall).foregroundStyle(C.danger)
             }
@@ -146,6 +149,33 @@ public struct ProfileEditorSheet: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    /// Relay — дополнительный хоп между клиентом и exit-сервером
+    /// (SNI-passthrough, шифрование end-to-end). Настройка профиля,
+    /// в ghs://-экспорт не попадает.
+    @ViewBuilder
+    private var relayEditor: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L("profile.relay.toggle"))
+                    .font(Typography.body)
+                    .foregroundStyle(C.bone)
+                Text(L("profile.relay.desc"))
+                    .font(Typography.bodySmall)
+                    .foregroundStyle(C.textFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Toggle("", isOn: $editRelayEnabled)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .tint(C.signal)
+        }
+        .padding(.top, 4)
+        if editRelayEnabled {
+            editField(L("profile.relay.addr"), text: $editRelayAddr, mono: true)
+        }
     }
 
     @ViewBuilder
@@ -166,6 +196,8 @@ public struct ProfileEditorSheet: View {
         editEndpoint = profile.serverAddr
         editSni = profile.serverName
         editTun = profile.tunAddr
+        editRelayEnabled = profile.relayEnabled ?? false
+        editRelayAddr = profile.relayAddr ?? ""
         editError = nil
     }
 
@@ -180,6 +212,9 @@ public struct ProfileEditorSheet: View {
         updated.serverAddr = editEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.serverName = editSni.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.tunAddr = editTun.trimmingCharacters(in: .whitespacesAndNewlines)
+        let relayAddr = editRelayAddr.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.relayEnabled = editRelayEnabled
+        updated.relayAddr = relayAddr.isEmpty ? nil : relayAddr
 
         // connString кодирует endpoint/SNI/tun — пересобираем из
         // обновлённых полей + существующих cert/key (в памяти, из

@@ -11,12 +11,13 @@ import AppKit
 import Foundation
 import Observation
 
-/// Identifies the four (eventually five) main console tabs.
+/// Identifies the five main console tabs.
 public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
     case stream
     case tail
     case setup
     case roster
+    case admin
 
     public var id: String { rawValue }
 
@@ -28,6 +29,7 @@ public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
         case .tail:   return "sidebar.tail"
         case .setup:  return "sidebar.setup"
         case .roster: return "sidebar.roster"
+        case .admin:  return "sidebar.admin"
         }
     }
 
@@ -37,6 +39,7 @@ public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
         case .tail:   return "list.bullet.rectangle"
         case .setup:  return "slider.horizontal.3"
         case .roster: return "server.rack"
+        case .admin:  return "person.2.badge.gearshape"
         }
     }
 
@@ -46,7 +49,16 @@ public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
         case .tail:   return "2"
         case .setup:  return "3"
         case .roster: return "4"
+        case .admin:  return "5"
         }
+    }
+
+    /// Channels to render for the current session. The ADMIN tab is
+    /// identity-gated: it only exists when the active profile's client
+    /// certificate is flagged `is_admin` on the server (cached via
+    /// `/api/me` after a successful connect).
+    public static func visible(adminUnlocked: Bool) -> [SidebarChannel] {
+        allCases.filter { $0 != .admin || adminUnlocked }
     }
 }
 

@@ -387,6 +387,15 @@ public struct MenuBarPopover: View {
                             .font(.custom("SpaceGrotesk-Bold", size: 14))
                             .tracking(-0.01 * 14)
                             .foregroundStyle(C.bone)
+                        if profiles.activeProfile?.relayActive == true {
+                            Text("RELAY")
+                                .font(.custom("DepartureMono-Regular", size: 9))
+                                .tracking(0.12 * 9)
+                                .foregroundStyle(C.warn)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .overlay(Rectangle().stroke(C.warn.opacity(0.35), lineWidth: 1))
+                        }
                         if let endpoint = profileEndpoint {
                             Text(endpoint)
                                 .font(.custom("JetBrainsMono-Regular", size: 11))
@@ -424,7 +433,8 @@ public struct MenuBarPopover: View {
     }
 
     private var profileEndpoint: String? {
-        guard let host = profiles.activeProfile?.serverAddr, !host.isEmpty else { return nil }
+        // Фактическая точка входа: с relay это relay-адрес.
+        guard let host = profiles.activeProfile?.effectiveServerAddr, !host.isEmpty else { return nil }
         return host
     }
 

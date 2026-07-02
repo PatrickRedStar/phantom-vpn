@@ -178,6 +178,11 @@ public struct DashboardView: View {
         return "—:—:—"
     }
 
+    /// Активный профиль реально ходит через дополнительный хоп.
+    private var relayActive: Bool {
+        profiles.activeProfile?.relayActive ?? false
+    }
+
     private var tunAddrText: String {
         guard stateMgr.statusFrame.state == .connected else { return "—" }
         guard let raw = stateMgr.statusFrame.tunAddr?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -222,8 +227,11 @@ public struct DashboardView: View {
             : (live ? L("fab.disconnect")
             : (migrating ? L("fab.importing") : L("fab.connect")))
         HStack(alignment: .bottom, spacing: 24) {
-            kvLabel(label: "ENDPOINT") {
-                if let host = profiles.activeProfile?.serverAddr, !host.isEmpty {
+            kvLabel(label: relayActive ? "ROUTE · RELAY" : "ENDPOINT") {
+                if let host = relayActive
+                    ? profiles.activeProfile?.effectiveServerAddr
+                    : profiles.activeProfile?.serverAddr,
+                   !host.isEmpty {
                     let parts = host.split(separator: ":", maxSplits: 1).map(String.init)
                     HStack(spacing: 0) {
                         Text(parts.first ?? host)

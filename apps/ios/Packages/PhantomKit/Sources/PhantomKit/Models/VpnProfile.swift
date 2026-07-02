@@ -35,6 +35,12 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
     public var cachedAdminServerCertFp: String?
     /// Original ghs:// connection string — required for phantom_runtime_start.
     public var connString: String?
+    /// Relay hop: when `true`, the transport dials `relayAddr` instead of
+    /// `serverAddr` (SNI passthrough — `serverName` stays the same, TLS is
+    /// end-to-end to the exit server). Mirrors Android `VpnProfile.relayEnabled`.
+    public var relayEnabled: Bool?
+    /// host:port of the relay hop. Only meaningful when `relayEnabled == true`.
+    public var relayAddr: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -54,7 +60,9 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         cachedEnabled: Bool? = nil,
         cachedIsAdmin: Bool? = nil,
         cachedAdminServerCertFp: String? = nil,
-        connString: String? = nil
+        connString: String? = nil,
+        relayEnabled: Bool? = nil,
+        relayAddr: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -74,6 +82,8 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         self.cachedIsAdmin = cachedIsAdmin
         self.cachedAdminServerCertFp = cachedAdminServerCertFp
         self.connString = connString
+        self.relayEnabled = relayEnabled
+        self.relayAddr = relayAddr
     }
 
     // CodingKeys must be enumerated so the explicit `init(from:)` below can
@@ -85,6 +95,7 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         case perAppMode, perAppList
         case cachedExpiresAt, cachedEnabled, cachedIsAdmin, cachedAdminServerCertFp
         case connString
+        case relayEnabled, relayAddr
     }
 
     /// Forgiving decoder: every non-Optional field falls back to the
@@ -111,7 +122,25 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         self.cachedIsAdmin = try c.decodeIfPresent(Bool.self, forKey: .cachedIsAdmin)
         self.cachedAdminServerCertFp = try c.decodeIfPresent(String.self, forKey: .cachedAdminServerCertFp)
         self.connString = try c.decodeIfPresent(String.self, forKey: .connString)
+        self.relayEnabled = try c.decodeIfPresent(Bool.self, forKey: .relayEnabled)
+        self.relayAddr = try c.decodeIfPresent(String.self, forKey: .relayAddr)
     }
+
+    /// Address the transport actually dials: the relay endpoint when the
+    /// relay hop is enabled and non-empty, otherwise the exit server itself.
+    /// SNI (`serverName`) is never substituted — the relay forwards raw TLS
+    /// by SNI (passthrough), so the ClientHello must keep the exit's name.
+    public var effectiveServerAddr: String {
+        if relayEnabled == true,
+           let relay = relayAddr?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !relay.isEmpty {
+            return relay
+        }
+        return serverAddr
+    }
+
+    /// `true` when the relay hop will actually be used by `effectiveServerAddr`.
+    public var relayActive: Bool { effectiveServerAddr != serverAddr }
 
     /// Returns a copy with PEM secrets stripped — for persistence to
     /// UserDefaults while PEMs live in the Keychain.

@@ -430,8 +430,10 @@ public struct CommandPalette: View {
         ))
         groups.append(Group(section: "ACTIONS", items: actionItems))
 
-        // 3. Navigation jumps
-        let navItems: [PaletteItem] = SidebarChannel.allCases.map { channel in
+        // 3. Navigation jumps — ADMIN появляется только для admin-профиля,
+        // как и в сайдбаре.
+        let adminUnlocked = profiles.activeProfile?.cachedIsAdmin == true
+        let navItems: [PaletteItem] = SidebarChannel.visible(adminUnlocked: adminUnlocked).map { channel in
             PaletteItem(
                 id: "nav.\(channel.rawValue)",
                 title: "Go to \(L(channel.localizedKey))",

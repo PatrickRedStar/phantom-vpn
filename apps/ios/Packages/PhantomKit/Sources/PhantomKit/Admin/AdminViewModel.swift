@@ -15,7 +15,6 @@
 
 import Foundation
 import Observation
-import PhantomKit
 
 /// MainActor-bound observable view model that owns an `AdminHttpClient` for
 /// one `VpnProfile`. Re-created when the active profile changes (the profile
@@ -66,14 +65,14 @@ public final class AdminViewModel {
     ///   - profile: Profile whose `certPem` / `keyPem` are used for mTLS.
     ///   - profilesStore: Store used to persist the TOFU cert fingerprint
     ///     back to the profile after the first successful handshake.
-    public init(profile: VpnProfile, profilesStore: ProfilesStore = .shared) {
+    public init(profile: VpnProfile, profilesStore: ProfilesStore? = nil) {
         self.profile = profile
-        self.profilesStore = profilesStore
+        self.profilesStore = profilesStore ?? .shared
 
         guard
             let certPem = profile.certPem,
             let keyPem = profile.keyPem,
-            let baseURL = ProfileEntitlementRefresher.adminBaseURL(for: profile)
+            let baseURL = AdminGateway.adminBaseURL(for: profile)
         else {
             self.client = nil
             self.mtlsUnavailable = true
@@ -118,7 +117,7 @@ public final class AdminViewModel {
             // TOFU persistence — only after a successful handshake.
             var updated = profilesStore.profiles.first(where: { $0.id == profile.id }) ?? profile
             updated.cachedIsAdmin = selfInfo.isAdmin
-            if let match = fetchedClients.first(where: { ProfileEntitlementRefresher.sameTunIP($0.tunAddr, profile.tunAddr) })
+            if let match = fetchedClients.first(where: { AdminGateway.sameTunIP($0.tunAddr, profile.tunAddr) })
                 ?? fetchedClients.first(where: { $0.name == selfInfo.name }) {
                 updated.cachedExpiresAt = match.expiresAt
                 updated.cachedEnabled = match.enabled
@@ -213,7 +212,7 @@ public final class AdminViewModel {
     #if DEBUG
     /// Force-set VM state for SwiftUI previews. Do not call from production.
     @MainActor
-    func _previewApply(
+    public func _previewApply(
         status: AdminStatus?,
         clients: [AdminClient],
         error: String?,
