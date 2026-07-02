@@ -154,7 +154,7 @@ public struct DashboardView: View {
               let attempt = stateMgr.statusFrame.reconnectAttempt,
               let delay = stateMgr.statusFrame.reconnectNextDelaySecs
         else { return nil }
-        return String(format: String(localized: "state.reconnect_progress"),
+        return String(format: L("state.reconnect_progress"),
                       Int64(attempt), Int64(delay))
     }
 
@@ -218,9 +218,9 @@ public struct DashboardView: View {
             : (live ? C.danger
             : (migrating ? C.textFaint : C.signal))
         let buttonLabel: String = busy
-            ? String(localized: "fab.cancel")
-            : (live ? String(localized: "fab.disconnect")
-            : (migrating ? String(localized: "fab.importing") : String(localized: "fab.connect")))
+            ? L("fab.cancel")
+            : (live ? L("fab.disconnect")
+            : (migrating ? L("fab.importing") : L("fab.connect")))
         HStack(alignment: .bottom, spacing: 24) {
             kvLabel(label: "ENDPOINT") {
                 if let host = profiles.activeProfile?.serverAddr, !host.isEmpty {

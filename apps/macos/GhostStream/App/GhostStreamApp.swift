@@ -42,21 +42,23 @@ struct GhostStreamApp: App {
     var body: some Scene {
         // Primary surface — menu bar.
         MenuBarExtra {
-            MenuBarPopover()
-                .environment(profiles)
-                .environment(prefs)
-                .environment(state)
-                .environment(router)
-                .environment(sysExt)
-                .environment(dock)
-                .environment(upstream)
-                .environment(traffic)
-                .environment(logs)
-                .environmentObject(tunnel)
-                .gsTheme(override: themeOverride(from: prefs.theme))
-                // См. UI-POPOVER-CLIP в MenuBarPopover — статичная высота
-                // под connected-макет (MenuBarExtra не ресайзит окно).
-                .frame(width: 380, height: 600)
+            LocalizedRoot {
+                MenuBarPopover()
+                    .environment(profiles)
+                    .environment(prefs)
+                    .environment(state)
+                    .environment(router)
+                    .environment(sysExt)
+                    .environment(dock)
+                    .environment(upstream)
+                    .environment(traffic)
+                    .environment(logs)
+                    .environmentObject(tunnel)
+                    .gsTheme(override: themeOverride(from: prefs.theme))
+                    // См. UI-POPOVER-CLIP в MenuBarPopover — статичная высота
+                    // под connected-макет (MenuBarExtra не ресайзит окно).
+                    .frame(width: 380, height: 600)
+            }
         } label: {
             MenuBarStatusItem(state: state.statusFrame.state)
                 .task {
@@ -78,6 +80,7 @@ struct GhostStreamApp: App {
         // Main console window.
         Window("GhostStream", id: "console") {
             ForegroundWindowClaim("console", dock: dock) {
+                LocalizedRoot {
                 MainConsoleWindow()
                     .environment(profiles)
                     .environment(prefs)
@@ -92,6 +95,7 @@ struct GhostStreamApp: App {
                     .environmentObject(tunnel)
                     .gsTheme(override: themeOverride(from: prefs.theme))
                     .frame(minWidth: 960, minHeight: 640)
+                }
             }
         }
         .windowStyle(.hiddenTitleBar)
@@ -99,13 +103,13 @@ struct GhostStreamApp: App {
         .defaultSize(width: 1200, height: 800)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button(String(localized: "menu.about")) {
+                Button(L("menu.about")) {
                     openForegroundWindow("about")
                 }
             }
             // ⌘0 — focus / open the main console window.
             CommandGroup(after: .windowArrangement) {
-                Button(String(localized: "menu.open_console")) {
+                Button(L("menu.open_console")) {
                     openForegroundWindow("console")
                 }
                 .keyboardShortcut("0", modifiers: .command)
@@ -114,7 +118,7 @@ struct GhostStreamApp: App {
                 // ("Введите команду или профиль…") — the *placeholder*
                 // string was reused for the menu item title, so the
                 // menu read like a search prompt instead of an action.
-                Button(String(localized: "menu.command_palette")) {
+                Button(L("menu.command_palette")) {
                     openForegroundWindow("console")
                     router.commandPaletteOpen = true
                 }
@@ -122,7 +126,7 @@ struct GhostStreamApp: App {
 
                 // UI-R2-R10: was hardcoded English — broke the menu
                 // on RU locale (mixed RU/EN strings).
-                Button(String(localized: "menu.logs")) {
+                Button(L("menu.logs")) {
                     router.openDetachedLogs()
                     openForegroundWindow("logs")
                 }
@@ -133,6 +137,7 @@ struct GhostStreamApp: App {
         // Detached logs window, opened from the command palette or ⇧⌘L.
         Window("Logs", id: "logs") {
             ForegroundWindowClaim("logs", dock: dock) {
+                LocalizedRoot {
                 TailView()
                     .environment(prefs)
                     .environment(state)
@@ -142,6 +147,7 @@ struct GhostStreamApp: App {
                     .frame(minWidth: 760, minHeight: 520)
                     .onAppear { router.detachedLogsOpen = true }
                     .onDisappear { router.detachedLogsOpen = false }
+                }
             }
         }
         .windowStyle(.hiddenTitleBar)
@@ -150,6 +156,7 @@ struct GhostStreamApp: App {
         // Onboarding window.
         Window("Welcome", id: "welcome") {
             ForegroundWindowClaim("welcome", dock: dock) {
+                LocalizedRoot {
                 WelcomeWindow()
                     .environment(profiles)
                     .environment(prefs)
@@ -158,6 +165,7 @@ struct GhostStreamApp: App {
                     .environmentObject(tunnel)
                     .gsTheme(override: themeOverride(from: prefs.theme))
                     .frame(width: 720, height: 560)
+                }
             }
         }
         .windowStyle(.hiddenTitleBar)
@@ -167,8 +175,10 @@ struct GhostStreamApp: App {
         // CommandGroup(replacing: .appInfo).
         Window("About", id: "about") {
             ForegroundWindowClaim("about", dock: dock) {
+                LocalizedRoot {
                 AboutView()
                     .gsTheme(override: themeOverride(from: prefs.theme))
+                }
             }
         }
         .windowStyle(.hiddenTitleBar)
@@ -177,6 +187,7 @@ struct GhostStreamApp: App {
         // Standard Settings scene → CMD-,
         Settings {
             ForegroundWindowClaim("settings", dock: dock) {
+                LocalizedRoot {
                 SettingsView()
                     .environment(prefs)
                     .environment(profiles)
@@ -187,6 +198,7 @@ struct GhostStreamApp: App {
                     .environment(upstream)
                     .gsTheme(override: themeOverride(from: prefs.theme))
                     .frame(minWidth: 520, minHeight: 480)
+                }
             }
         }
     }

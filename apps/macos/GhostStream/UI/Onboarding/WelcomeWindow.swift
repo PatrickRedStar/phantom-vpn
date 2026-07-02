@@ -316,7 +316,7 @@ private struct PasteStepView: View {
         HStack(spacing: 14) {
             Button { importGhs() } label: {
                 HStack(spacing: 8) {
-                    Text(String(localized: "welcome.import"))
+                    Text(L("welcome.import"))
                         .font(.custom("DepartureMono-Regular", size: 11))
                         .tracking(0.20 * 11)
                     Text("⌘⏎")
@@ -698,7 +698,7 @@ private struct ReadyStepView: View {
                 Button {
                     connectNow()
                 } label: {
-                    Text(String(localized: "welcome.connect_now").uppercased())
+                    Text(L("welcome.connect_now").uppercased())
                         .font(.custom("DepartureMono-Regular", size: 11))
                         .tracking(0.20 * 11)
                         .foregroundStyle(profiles.activeProfile == nil ? C.textFaint : C.bg)

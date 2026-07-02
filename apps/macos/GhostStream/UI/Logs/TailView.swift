@@ -328,16 +328,16 @@ public struct TailView: View {
                     view.keyboardShortcut(.delete, modifiers: [.command, .shift])
                 }
                 .confirmationDialog(
-                    String(localized: "logs.clear.confirm.title"),
+                    L("logs.clear.confirm.title"),
                     isPresented: $showClearConfirm,
                     titleVisibility: .visible
                 ) {
-                    Button(String(localized: "logs.clear.confirm.confirm"), role: .destructive) {
+                    Button(L("logs.clear.confirm.confirm"), role: .destructive) {
                         clearLogs()
                     }
-                    Button(String(localized: "logs.clear.confirm.cancel"), role: .cancel) {}
+                    Button(L("logs.clear.confirm.cancel"), role: .cancel) {}
                 } message: {
-                    Text(String(localized: "logs.clear.confirm.message"))
+                    Text(L("logs.clear.confirm.message"))
                 }
                 Button {
                     copyVisibleLogs()
@@ -526,7 +526,7 @@ public struct TailView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if cachedFilteredLogs.isEmpty {
-                        Text(String(localized: "logs.empty"))
+                        Text(L("logs.empty"))
                             .font(.custom("JetBrainsMono-Regular", size: 12))
                             .foregroundStyle(C.textFaint)
                             .padding(40)

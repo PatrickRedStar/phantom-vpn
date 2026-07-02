@@ -80,7 +80,7 @@ public struct SidebarList: View {
                     .font(.system(size: 13, weight: .regular))
                     .frame(width: 14, height: 14)
                     .opacity(active ? 1.0 : 0.7)
-                Text(String(localized: channel.localizedKey))
+                Text(L(channel.localizedKey))
                     .font(.custom("DepartureMono-Regular", size: 11))
                     .tracking(0.18 * 11)
                     .foregroundStyle(active ? C.signal : C.textDim)

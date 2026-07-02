@@ -317,7 +317,7 @@ public struct ServerRosterView: View {
             Image(systemName: "server.rack")
                 .font(.system(size: 36))
                 .foregroundStyle(C.textFaint)
-            Text(String(localized: "roster.empty"))
+            Text(L("roster.empty"))
                 .font(.custom("JetBrainsMono-Regular", size: 12))
                 .foregroundStyle(C.textDim)
         }

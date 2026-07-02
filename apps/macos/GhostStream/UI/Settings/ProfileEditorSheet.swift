@@ -43,7 +43,7 @@ public struct ProfileEditorSheet: View {
             HairlineDivider()
 
             if profiles.profiles.isEmpty {
-                Text(String(localized: "roster.empty"))
+                Text(L("roster.empty"))
                     .font(Typography.body)
                     .foregroundStyle(C.textFaint)
                     .padding(.vertical, 16)
@@ -59,12 +59,12 @@ public struct ProfileEditorSheet: View {
                                     Text(profile.serverAddr).font(Typography.host).foregroundStyle(C.textFaint)
                                 }
                                 Spacer()
-                                Button(String(localized: "profile.edit")) {
+                                Button(L("profile.edit")) {
                                     beginEditing(profile)
                                 }
                                 .buttonStyle(.plain)
                                 .foregroundStyle(C.signal)
-                                Button(String(localized: "profile.delete"), role: .destructive) {
+                                Button(L("profile.delete"), role: .destructive) {
                                     profiles.remove(id: profile.id)
                                 }
                                 .buttonStyle(.plain)
@@ -127,19 +127,19 @@ public struct ProfileEditorSheet: View {
     @ViewBuilder
     private func editorRow(for profile: VpnProfile) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            editField(String(localized: "profile.field.name"), text: $editName)
-            editField(String(localized: "profile.field.endpoint"), text: $editEndpoint, mono: true)
-            editField(String(localized: "profile.field.sni"), text: $editSni, mono: true)
-            editField(String(localized: "profile.field.tun"), text: $editTun, mono: true)
+            editField(L("profile.field.name"), text: $editName)
+            editField(L("profile.field.endpoint"), text: $editEndpoint, mono: true)
+            editField(L("profile.field.sni"), text: $editSni, mono: true)
+            editField(L("profile.field.tun"), text: $editTun, mono: true)
             if let editError {
                 Text(editError).font(Typography.bodySmall).foregroundStyle(C.danger)
             }
             HStack {
                 Spacer()
-                Button(String(localized: "logs.clear.confirm.cancel")) { cancelEditing() }
+                Button(L("logs.clear.confirm.cancel")) { cancelEditing() }
                     .buttonStyle(.plain)
                     .foregroundStyle(C.textDim)
-                Button(String(localized: "profile.save")) { saveEditing(profile) }
+                Button(L("profile.save")) { saveEditing(profile) }
                     .buttonStyle(.plain)
                     .foregroundStyle(C.signal)
                     .disabled(editName.isEmpty || editEndpoint.isEmpty)

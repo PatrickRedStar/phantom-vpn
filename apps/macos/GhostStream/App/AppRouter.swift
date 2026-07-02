@@ -20,7 +20,9 @@ public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
 
     public var id: String { rawValue }
 
-    public var localizedKey: String.LocalizationValue {
+    /// String-ключ (не `LocalizationValue`) — резолвится через `L(_:)`
+    /// для живого переключения языка (LocalizationManager).
+    public var localizedKey: String {
         switch self {
         case .stream: return "sidebar.stream"
         case .tail:   return "sidebar.tail"

@@ -38,8 +38,6 @@ public struct SettingsView: View {
     @State private var exportStatusMessage: String?
     @State private var exportingDiagnostics = false
     @State private var settingsAppeared = false
-    // A2: показываем «требуется перезапуск» после смены языка.
-    @State private var languageChanged = false
 
     public init() {}
 
@@ -127,7 +125,7 @@ public struct SettingsView: View {
     @ViewBuilder
     private var tunnelCard: some View {
         @Bindable var p = prefs
-        SettingsCard(header: String(localized: "settings.tunnel").uppercased(), trailing: {
+        SettingsCard(header: L("settings.tunnel").uppercased(), trailing: {
             HStack(spacing: 6) {
                 PulseDot(color: C.signal, size: 6, pulse: !reduceMotion)
                 Text("SAVED")
@@ -136,29 +134,29 @@ public struct SettingsView: View {
                     .foregroundStyle(C.textFaint)
             }
         }) {
-            settingRow(title: String(localized: "settings.dns_leak"),
+            settingRow(title: L("settings.dns_leak"),
                        description: "Принудительно использовать DNS из tunnel profile") {
                 SettingsToggle(on: $p.dnsLeakProtection)
             }
             HairlineDivider()
-            settingRow(title: String(localized: "settings.ipv6_leak"),
+            settingRow(title: L("settings.ipv6_leak"),
                        description: "Отключить IPv6 на интерфейсе пока активен туннель") {
                 SettingsToggle(on: $p.ipv6Killswitch)
             }
             HairlineDivider()
-            settingRow(title: String(localized: "settings.kill_switch"),
+            settingRow(title: L("settings.kill_switch"),
                        description: killSwitchDescription) {
                 SettingsToggle(on: $p.killSwitch)
                     .disabled(p.routingMode != .global)
                     .opacity(p.routingMode != .global ? 0.4 : 1)
             }
             HairlineDivider()
-            settingRow(title: String(localized: "settings.auto_reconnect"),
+            settingRow(title: L("settings.auto_reconnect"),
                        description: "Восстанавливать туннель при разрывах сети") {
                 SettingsToggle(on: $p.autoReconnect)
             }
             HairlineDivider()
-            settingRow(title: String(localized: "settings.routing"),
+            settingRow(title: L("settings.routing"),
                        description: "Какой трафик заворачивается в туннель") {
                 RoutingPill()
             }
@@ -189,12 +187,12 @@ public struct SettingsView: View {
                 .transition(SettingsMotion.sectionTransition(reduceMotion: reduceMotion))
             }
             HairlineDivider()
-            settingRow(title: String(localized: "settings.dns"),
+            settingRow(title: L("settings.dns"),
                        description: "Custom DNS overrides") {
                 DNSPill()
             }
             HairlineDivider()
-            settingRow(title: String(localized: "settings.streams"),
+            settingRow(title: L("settings.streams"),
                        description: streamDescription) {
                 StreamControl(streamOverride: $p.streamOverride)
             }
@@ -206,14 +204,14 @@ public struct SettingsView: View {
     private var macColumn: some View {
         @Bindable var p = prefs
         VStack(spacing: 0) {
-            SettingsCard(header: String(localized: "settings.mac_integration").uppercased(),
+            SettingsCard(header: L("settings.mac_integration").uppercased(),
                          trailing: { Text("— DARWIN")
                             .font(.custom("DepartureMono-Regular", size: 10.5))
                             .tracking(0.12 * 10.5)
                             .foregroundStyle(C.textFaint) }) {
                 @Bindable var loginBinding = login
                 @Bindable var dockBinding = dock
-                settingRow(title: String(localized: "settings.launch_at_login"),
+                settingRow(title: L("settings.launch_at_login"),
                            description: "SMAppService.mainApp · login item") {
                     SettingsToggle(on: Binding(
                         get: { loginBinding.enabled },
@@ -221,36 +219,35 @@ public struct SettingsView: View {
                     ))
                 }
                 HairlineDivider()
-                settingRow(title: String(localized: "settings.start_in_menu_bar"),
+                settingRow(title: L("settings.start_in_menu_bar"),
                            description: "Без всплывания консоли · LSUIElement runtime") {
                     SettingsToggle(on: $p.startInMenuBar)
                 }
                 HairlineDivider()
-                settingRow(title: String(localized: "settings.show_in_dock"),
+                settingRow(title: L("settings.show_in_dock"),
                            description: "Если выключено — app живёт только в menu bar") {
                     SettingsToggle(on: $dockBinding.showInDock)
                 }
                 HairlineDivider()
-                settingRow(title: String(localized: "settings.notify_state_changes"),
+                settingRow(title: L("settings.notify_state_changes"),
                            description: "Системный alert при connect/disconnect/reconnect") {
                     SettingsToggle(on: $p.notifyStateChanges)
                 }
 
-                cardSubHeader(String(localized: "settings.appearance").uppercased())
-                settingRow(title: String(localized: "settings.theme"),
+                cardSubHeader(L("settings.appearance").uppercased())
+                settingRow(title: L("settings.theme"),
                            description: "Тёмная (warm-black + lime), светлая (paper + moss)") {
                     ThemePill()
                 }
                 HairlineDivider()
-                // A2: языковой пикер рядом с темой.
-                settingRow(title: String(localized: "settings.language"),
-                           description: languageChanged
-                            ? String(localized: "settings.language.restart_hint")
-                            : nil) {
-                    LanguagePill(onChange: { languageChanged = true })
+                // A2: языковой пикер рядом с темой. Переключение живое
+                // (LocalizationManager + LocalizedRoot) — рестарт не нужен.
+                settingRow(title: L("settings.language"),
+                           description: nil) {
+                    LanguagePill(onChange: {})
                 }
                 HairlineDivider()
-                settingRow(title: String(localized: "settings.reduce_motion"),
+                settingRow(title: L("settings.reduce_motion"),
                            description: "Отключить mux shimmer + pulse") {
                     SettingsToggle(on: $p.reduceMotion)
                 }
@@ -263,13 +260,13 @@ public struct SettingsView: View {
                         .allowsHitTesting(false)
                 }
                 HairlineDivider()
-                settingRow(title: String(localized: "settings.check_now"),
+                settingRow(title: L("settings.check_now"),
                            description: "Недоступно: Sparkle updater не подключен") {
                     actionButton(label: "ПРОВЕРИТЬ", color: C.signal, disabled: true)
                 }
 
-                cardSubHeader(String(localized: "settings.diagnostics").uppercased())
-                settingRow(title: String(localized: "settings.export_bundle"),
+                cardSubHeader(L("settings.diagnostics").uppercased())
+                settingRow(title: L("settings.export_bundle"),
                            description: exportStatusMessage ?? "Snapshot, настройки и последние логи без PEM/conn string") {
                     actionButton(
                         label: exportingDiagnostics ? "EXPORT..." : "EXPORT",
@@ -283,7 +280,7 @@ public struct SettingsView: View {
 
                 cardSubHeader("ADVANCED")
                 settingRow(
-                    title: String(localized: "settings.verbose_logging"),
+                    title: L("settings.verbose_logging"),
                     description: "Records every packet batch and micro-event. Adds ~10 MB/min to \(LogPathResolver.displayPath.replacingOccurrences(of: "/runtime.log", with: "/")). Reduce if disk-constrained."
                 ) {
                     SettingsToggle(on: $p.verboseLog)
@@ -440,8 +437,8 @@ public struct SettingsView: View {
 
     private var killSwitchDescription: String {
         prefs.routingMode == .global
-            ? String(localized: "settings.kill_switch.desc")
-            : String(localized: "settings.kill_switch.only_global")
+            ? L("settings.kill_switch.desc")
+            : L("settings.kill_switch.only_global")
     }
 
     private var routeDiagnosticText: String {
@@ -976,9 +973,9 @@ private struct ThemePill: View {
 
     private static func themeLabel(_ o: ThemeOverride) -> String {
         switch o {
-        case .system: return String(localized: "settings.theme.system")
-        case .dark:   return String(localized: "settings.theme.dark")
-        case .light:  return String(localized: "settings.theme.light")
+        case .system: return L("settings.theme.system")
+        case .dark:   return L("settings.theme.dark")
+        case .light:  return L("settings.theme.light")
         }
     }
 }
@@ -995,9 +992,9 @@ private struct LanguagePill: View {
 
     var body: some View {
         Menu {
-            Button(String(localized: "settings.language.system")) { setLanguage(nil) }
-            Button(String(localized: "settings.language.english")) { setLanguage("en") }
-            Button(String(localized: "settings.language.russian")) { setLanguage("ru") }
+            Button(L("settings.language.system")) { setLanguage(nil) }
+            Button(L("settings.language.english")) { setLanguage("en") }
+            Button(L("settings.language.russian")) { setLanguage("ru") }
         } label: {
             MenuPill(label: "lang", value: currentLabel)
         }
@@ -1007,6 +1004,12 @@ private struct LanguagePill: View {
 
     private func setLanguage(_ code: String?) {
         prefs.languageOverride = code
+        // Живое переключение без рестарта: LocalizationManager меняет
+        // активный .lproj-бандл и триггерит перерисовку через
+        // LocalizedRoot(.id). AppleLanguages пишем тоже — чтобы
+        // launch-time локаль (и системные диалоги NE/панели) совпадали
+        // при следующем запуске.
+        LocalizationManager.shared.setLanguage(code)
         if let code {
             UserDefaults.standard.set([code], forKey: "AppleLanguages")
         } else {
@@ -1017,9 +1020,9 @@ private struct LanguagePill: View {
 
     private var currentLabel: String {
         switch prefs.languageOverride {
-        case "en": return String(localized: "settings.language.english")
-        case "ru": return String(localized: "settings.language.russian")
-        default:   return String(localized: "settings.language.system")
+        case "en": return L("settings.language.english")
+        case "ru": return L("settings.language.russian")
+        default:   return L("settings.language.system")
         }
     }
 }

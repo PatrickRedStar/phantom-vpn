@@ -169,7 +169,7 @@ public struct MenuBarPopover: View {
     /// Локализованное слово состояния без терминальной пунктуации.
     /// Используется и pill'ом (UPPERCASE), и hero-строкой (.lowercased()).
     static func stateWord(for state: ConnState) -> String {
-        let key: String.LocalizationValue
+        let key: String
         switch state {
         case .disconnected:  key = "state.standby"
         case .connecting:    key = "state.tuning"
@@ -177,7 +177,7 @@ public struct MenuBarPopover: View {
         case .connected:     key = "state.transmitting"
         case .error:         key = "state.lost_signal"
         }
-        return String(localized: key)
+        return L(key)
             .trimmingCharacters(in: CharacterSet(charactersIn: ".…"))
     }
 
@@ -274,7 +274,7 @@ public struct MenuBarPopover: View {
               let attempt = stateMgr.statusFrame.reconnectAttempt,
               let delay = stateMgr.statusFrame.reconnectNextDelaySecs
         else { return nil }
-        return String(format: String(localized: "state.reconnect_progress"),
+        return String(format: L("state.reconnect_progress"),
                       Int64(attempt), Int64(delay))
     }
 
@@ -312,9 +312,9 @@ public struct MenuBarPopover: View {
         let busy = state == .connecting || state == .reconnecting
         let migrating = LegacyMigration.state.isMigrating
         let label: String = busy
-            ? String(localized: "fab.cancel")
-            : (live ? String(localized: "fab.disconnect")
-            : (migrating ? String(localized: "fab.importing") : String(localized: "fab.connect")))
+            ? L("fab.cancel")
+            : (live ? L("fab.disconnect")
+            : (migrating ? L("fab.importing") : L("fab.connect")))
         let tint: Color = busy ? C.warn
             : (live ? C.danger
             : (migrating ? C.textFaint : C.signal))
@@ -518,7 +518,7 @@ public struct MenuBarPopover: View {
             if clipboardConfig != nil {
                 footerRow(
                     systemImage: "doc.on.clipboard",
-                    title: String(localized: "popover.paste_config"),
+                    title: L("popover.paste_config"),
                     kbd: "",
                     color: C.signal
                 ) {
@@ -535,7 +535,7 @@ public struct MenuBarPopover: View {
             }
             footerRow(
                 systemImage: "rectangle.on.rectangle",
-                title: String(localized: "menu.open_console"),
+                title: L("menu.open_console"),
                 kbd: "⌘0",
                 color: C.bone
             ) {
@@ -543,7 +543,7 @@ public struct MenuBarPopover: View {
             }
             footerRow(
                 systemImage: "command",
-                title: String(localized: "menu.command_palette"),
+                title: L("menu.command_palette"),
                 kbd: "⌘⇧C",
                 color: C.bone
             ) {
@@ -565,7 +565,7 @@ public struct MenuBarPopover: View {
             // шорткат ⌘⇧L из меню и так жил в любом состоянии.
             footerRow(
                 systemImage: "clock",
-                title: String(localized: "menu.logs"),
+                title: L("menu.logs"),
                 kbd: "⌘⇧L",
                 color: C.bone
             ) {
@@ -573,7 +573,7 @@ public struct MenuBarPopover: View {
             }
             footerRow(
                 systemImage: "power",
-                title: String(localized: "menu.quit"),
+                title: L("menu.quit"),
                 kbd: "⌘Q",
                 color: C.danger
             ) {
@@ -636,7 +636,7 @@ public struct MenuBarPopover: View {
         } catch {
             // Ошибку НЕ пишем в tunnel.lastError (это канал коннекта) —
             // локальный danger-текст под футером с 5с TTL.
-            setPasteStatus(String(localized: "popover.paste_failed"))
+            setPasteStatus(L("popover.paste_failed"))
         }
     }
 

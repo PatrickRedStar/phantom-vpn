@@ -96,7 +96,7 @@ public struct CommandPalette: View {
                 .foregroundStyle(C.signal)
                 .frame(width: 18, height: 18)
                 .font(.system(size: 16, weight: .regular))
-            TextField(String(localized: "command_palette.placeholder"), text: $query)
+            TextField(L("command_palette.placeholder"), text: $query)
                 .textFieldStyle(.plain)
                 .font(.custom("JetBrainsMono-Regular", size: 18))
                 .foregroundStyle(C.bone)
@@ -164,7 +164,7 @@ public struct CommandPalette: View {
                     return offsets
                 }()
                 if groups.isEmpty {
-                    Text(String(localized: "palette.no_matches"))
+                    Text(L("palette.no_matches"))
                         .font(.custom("JetBrainsMono-Regular", size: 13))
                         .foregroundStyle(C.textFaint)
                         .padding(.vertical, 30)
@@ -434,7 +434,7 @@ public struct CommandPalette: View {
         let navItems: [PaletteItem] = SidebarChannel.allCases.map { channel in
             PaletteItem(
                 id: "nav.\(channel.rawValue)",
-                title: "Go to \(String(localized: channel.localizedKey))",
+                title: "Go to \(L(channel.localizedKey))",
                 subtitle: nil,
                 section: "NAV",
                 icon: channel.sfSymbol,
