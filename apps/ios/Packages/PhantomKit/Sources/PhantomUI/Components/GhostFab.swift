@@ -76,6 +76,12 @@ public struct GhostFab: View {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .stroke(accent, lineWidth: outline ? 1.5 : 0)
             )
+            // UI-AUDIT-07/2026: без contentShape hit-область plain-Button
+            // внутри MenuBarExtra-попапа схлопывалась до текста — большая
+            // кнопка нажималась «строго по центру» (в outline-варианте
+            // fill = .clear вовсе не участвует в hit-test). Форма кликается
+            // по всей площади пилла.
+            .contentShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             .scaleEffect(pressed ? 0.98 : 1.0)
             .animation(.spring(response: 0.25, dampingFraction: 0.7), value: pressed)
         }

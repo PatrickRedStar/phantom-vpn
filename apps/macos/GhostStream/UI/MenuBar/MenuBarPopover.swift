@@ -64,13 +64,15 @@ public struct MenuBarPopover: View {
             HairlineDivider()
             footer
         }
-        // UI-POPOVER-CLIP fix (июль 2026): 520 — МИНИМУМ, а не фикс.
-        // В connected контент выше (miniScope + muxRow + строка «Логи»
-        // в футере) и при жёстких 520 футер обрезался — «Логи»
-        // наполовину, Quit вовсе скрыт. Disconnected-вид не меняется
-        // (Spacer дотягивает футер до низа мокапных 520).
-        .frame(width: 380, alignment: .top)
-        .frame(minHeight: 520, alignment: .top)
+        // UI-POPOVER-CLIP fix (июль 2026, round 2): высота СТАТИЧНАЯ и
+        // рассчитана на самый высокий (connected) макет. Первый подход
+        // с minHeight не сработал: MenuBarExtra(.window) фиксирует
+        // размер окна при первом показе и НЕ ресайзит его по intrinsic
+        // size контента — попап, впервые открытый в standby (520),
+        // навсегда обрезал connected-контент. Одна высота на все
+        // состояния = ресайз не нужен вовсе; в standby Spacer
+        // растягивает пустую зону между контентом и футером.
+        .frame(width: 380, height: 600, alignment: .top)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
         // UI-R2-R03/R04 / UI-R4-R06: forward state transitions into the
@@ -355,11 +357,16 @@ public struct MenuBarPopover: View {
                         .foregroundStyle(C.textDim)
                         .font(.system(size: 10))
                 }
+                // Без maxWidth label Menu на macOS сжимается по intrinsic
+                // и рендерит огрызок «PROF ⌄» без имени профиля —
+                // паритет с рабочим SidebarProfileBlock.
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 14)
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel("Choose active profile")
             HairlineDivider()
         }

@@ -54,10 +54,9 @@ struct GhostStreamApp: App {
                 .environment(logs)
                 .environmentObject(tunnel)
                 .gsTheme(override: themeOverride(from: prefs.theme))
-                // См. UI-POPOVER-CLIP в MenuBarPopover — высота по контенту,
-                // 520 как минимум.
-                .frame(width: 380)
-                .frame(minHeight: 520)
+                // См. UI-POPOVER-CLIP в MenuBarPopover — статичная высота
+                // под connected-макет (MenuBarExtra не ресайзит окно).
+                .frame(width: 380, height: 600)
         } label: {
             MenuBarStatusItem(state: state.statusFrame.state)
                 .task {
