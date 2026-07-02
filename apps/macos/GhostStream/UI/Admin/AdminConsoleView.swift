@@ -187,8 +187,8 @@ public struct AdminConsoleView: View {
             .foregroundStyle(C.textDim)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
-            .contentShape(Rectangle())
+            .gsStroke(C.hairBold, GsRadius.control)
+            .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(vm == nil || vm?.loading == true)
@@ -210,8 +210,8 @@ public struct AdminConsoleView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .background(C.bgElev)
-        .overlay(Rectangle().stroke(C.danger.opacity(0.35), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
+        .gsStroke(C.danger.opacity(0.35), GsRadius.card)
     }
 
     @ViewBuilder
@@ -236,13 +236,13 @@ public struct AdminConsoleView: View {
                     .foregroundStyle(C.signal)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
-                    .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
+                    .gsStroke(C.signal, GsRadius.control)
             }
             .buttonStyle(.plain)
         }
         .padding(14)
-        .background(C.bgElev)
-        .overlay(Rectangle().stroke(C.danger.opacity(0.35), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
+        .gsStroke(C.danger.opacity(0.35), GsRadius.card)
     }
 
     @ViewBuilder
@@ -257,8 +257,8 @@ public struct AdminConsoleView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
-        .background(C.bgElev2)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+        .gsStroke(C.hair, GsRadius.card)
     }
 
     // MARK: - 2. stats strip
@@ -311,8 +311,8 @@ public struct AdminConsoleView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(C.bgElev)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
+        .gsStroke(C.hair, GsRadius.card)
     }
 
     // MARK: - 3. columns
@@ -354,8 +354,8 @@ public struct AdminConsoleView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 60)
-            .background(C.bgElev2)
-            .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+            .gsStroke(C.hair, GsRadius.card)
         } else {
             Table(rows(vm), sortOrder: $sortOrder) {
                 TableColumn(L("admin.col.client"), value: \.name) { row in
@@ -403,8 +403,9 @@ public struct AdminConsoleView: View {
                 .width(30)
             }
             .scrollContentBackground(.hidden)
-            .background(C.bgElev)
-            .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
+            .gsClip(GsRadius.card)
+            .gsStroke(C.hair, GsRadius.card)
         }
     }
 
@@ -522,7 +523,7 @@ public struct AdminConsoleView: View {
                 .foregroundStyle(C.signal)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
+                .gsStroke(C.signal, GsRadius.control)
             }
             .buttonStyle(.plain)
             .keyboardShortcut("n", modifiers: .command)
@@ -664,7 +665,7 @@ struct AdminStatusChip: View {
             .foregroundStyle(color)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .overlay(Rectangle().stroke(color.opacity(0.35), lineWidth: 1))
+            .gsStroke(color.opacity(0.35), GsRadius.chip)
     }
 }
 

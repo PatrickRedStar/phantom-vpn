@@ -419,8 +419,8 @@ public struct SettingsView: View {
                 .scrollContentBackground(.hidden)
                 .frame(minHeight: 74)
                 .padding(8)
-                .background(C.bgElev2)
-                .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev2))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
 
             if !prefs.invalidManualDirectCidrs.isEmpty {
                 Text("Invalid: \(prefs.invalidManualDirectCidrs.joined(separator: ", "))")
@@ -552,7 +552,8 @@ private struct SettingsCard<Header: View, Content: View>: View {
             }
             .background(C.bgElev)
         }
-        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.hairBold, lineWidth: 1))
     }
 }
 
@@ -744,9 +745,9 @@ private struct SettingsActionButton: View {
                 .foregroundStyle(disabled ? C.textFaint : color)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background(C.signal.opacity(hovering && !disabled ? 0.045 : 0))
+                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.signal.opacity(hovering && !disabled ? 0.045 : 0)))
                 .overlay(
-                    Rectangle().stroke(disabled ? C.hair : (borderColor ?? color), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(disabled ? C.hair : (borderColor ?? color), lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
@@ -792,8 +793,8 @@ private struct MenuPill: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(hovering ? C.signal.opacity(0.045) : C.bgElev2)
-        .overlay(Rectangle().stroke(hovering ? C.signalDim : C.hairBold, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).fill(hovering ? C.signal.opacity(0.045) : C.bgElev2))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(hovering ? C.signalDim : C.hairBold, lineWidth: 1))
         .scaleEffect(hovering ? 1.02 : 1.0)
         .contentShape(Rectangle())
         .onHover { isHovering in
@@ -965,8 +966,8 @@ private struct ThemePill: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(C.bgElev2)
-            .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).fill(C.bgElev2))
+            .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.hairBold, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

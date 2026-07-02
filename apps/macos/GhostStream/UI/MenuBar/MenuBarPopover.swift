@@ -151,11 +151,11 @@ public struct MenuBarPopover: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
         .background(
-            RoundedRectangle(cornerRadius: 3)
+            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
                 .fill(isLive ? C.signal.opacity(0.05) : Color.clear)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 3)
+            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
                 .stroke(isLive ? C.signalDim : C.hairBold, lineWidth: 1)
         )
     }
@@ -376,10 +376,12 @@ public struct MenuBarPopover: View {
                     }
                 }
             } label: {
-                // Фон+рамка обязательны: без них .menuStyle(.borderlessButton)
-                // на macOS схлопывает лейбл по intrinsic и рендерит огрызок
-                // «PROF ⌄» без имени профиля. Паритет с рабочим
-                // SidebarProfileBlock, у которого контент — bordered pill.
+                // ВАЖНО: .menuStyle(.borderlessButton) на macOS схлопывает
+                // кастомный лейбл до огрызка «PROF ⌄» (даже с фоном) —
+                // игнорирует предложенную ширину, Spacer уводит контент в 0.
+                // Используем автоматический стиль + .buttonStyle(.plain) +
+                // .menuIndicator(.hidden) (свой шеврон рисуем сами) — так
+                // лейбл рендерится целиком.
                 HStack(spacing: 10) {
                     Text("PROF")
                         .font(.custom("DepartureMono-Regular", size: 9.5))
@@ -399,7 +401,7 @@ public struct MenuBarPopover: View {
                                     .foregroundStyle(C.warn)
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1)
-                                    .overlay(Rectangle().stroke(C.warn.opacity(0.35), lineWidth: 1))
+                                    .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.warn.opacity(0.35), lineWidth: 1))
                             }
                         }
                         if let endpoint = profileEndpoint {
@@ -424,13 +426,13 @@ public struct MenuBarPopover: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(C.bgElev2)
-                .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.hairBold, lineWidth: 1))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                .contentShape(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous))
             }
-            .menuStyle(.borderlessButton)
             .buttonStyle(.plain)
+            .menuIndicator(.hidden)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel("Choose active profile")
             HairlineDivider()
@@ -496,8 +498,9 @@ public struct MenuBarPopover: View {
             .padding(.top, 6)
         }
         .frame(height: 64)
-        .background(C.bgElev2)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.hair, lineWidth: 1))
+        .gsClip(GsRadius.card)
     }
 
     @ViewBuilder

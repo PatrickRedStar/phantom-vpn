@@ -40,8 +40,8 @@ struct AdminClientDetailPanel: View {
             }
             .padding(16)
         }
-        .background(C.bgElev)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .background(RoundedRectangle.gs(GsRadius.card).fill(C.bgElev))
+        .gsStroke(C.hair, GsRadius.card)
         .task(id: client.name) {
             await loadDetail()
         }
@@ -95,8 +95,8 @@ struct AdminClientDetailPanel: View {
         }
         .frame(height: 56)
         .frame(maxWidth: .infinity)
-        .background(C.bg)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .background(RoundedRectangle.gs(GsRadius.chip).fill(C.bg))
+        .gsStroke(C.hair, GsRadius.chip)
     }
 
     @ViewBuilder
@@ -208,9 +208,9 @@ struct AdminClientDetailPanel: View {
                 .foregroundStyle(foreground(for: style))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
-                .background(style == .signal ? C.signal : Color.clear)
-                .overlay(Rectangle().stroke(border(for: style), lineWidth: 1))
-                .contentShape(Rectangle())
+                .background(RoundedRectangle.gs(GsRadius.control).fill(style == .signal ? C.signal : Color.clear))
+                .gsStroke(border(for: style), GsRadius.control)
+                .contentShape(RoundedRectangle.gs(GsRadius.control))
         }
         .buttonStyle(.plain)
     }

@@ -24,6 +24,7 @@
 		423A69B5839190D55AD04276 /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
 		44882E92C4B6B7088F24E6BE /* PhantomKit in Frameworks */ = {isa = PBXBuildFile; productRef = 192F28EAB815474C93A38DAF /* PhantomKit */; };
 		449C6816999C68805F28407E /* TrafficSeriesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */; };
+		4D993D530BE54E371136CC50 /* GsRadius.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD302624D7C607CCD253E224 /* GsRadius.swift */; };
 		527186CDE65ED9E37B948D97 /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */; };
 		53CB2B107A76ABC8F70FC547 /* LoginItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BF7582D129D427A55BF228 /* LoginItemController.swift */; };
 		56AF7BE36844517D1135A73B /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 01957FD9E8FE2F3D7B79E340 /* NetworkExtension.framework */; };
@@ -125,6 +126,7 @@
 		B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = PacketTunnelExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 		B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopover.swift; sourceTree = "<group>"; };
 		BA669165A1F26B91F6CE77DE /* EntitlementRefresher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntitlementRefresher.swift; sourceTree = "<group>"; };
+		BD302624D7C607CCD253E224 /* GsRadius.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GsRadius.swift; sourceTree = "<group>"; };
 		BE64869C73B206FEB664F6FD /* UpstreamVpnRouteDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpstreamVpnRouteDetector.swift; sourceTree = "<group>"; };
 		C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemExtensionInstaller.swift; sourceTree = "<group>"; };
 		C86C39DA03DEF188889E61E7 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
@@ -269,6 +271,14 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
+		853E40D8E1DA1A169EBFDA02 /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				BD302624D7C607CCD253E224 /* GsRadius.swift */,
+			);
+			path = Theme;
+			sourceTree = "<group>";
+		};
 		88BFCB57990DC1F2E63C9A84 /* Window */ = {
 			isa = PBXGroup;
 			children = (
@@ -291,6 +301,7 @@
 				15BDD09A23A40C89FEAE03BA /* Servers */,
 				7672F78F0B9FFACB05137932 /* Settings */,
 				0E5E088C52A13F12A203700E /* Sidebar */,
+				853E40D8E1DA1A169EBFDA02 /* Theme */,
 				88BFCB57990DC1F2E63C9A84 /* Window */,
 			);
 			path = UI;
@@ -505,6 +516,7 @@
 				091CE0CF5FC66B113F2A9C69 /* EntitlementRefresher.swift in Sources */,
 				79C9C49C81ACB0CFF7C6CF63 /* FontRegistration.swift in Sources */,
 				856469DBCB4079F628A8EA90 /* GhostStreamApp.swift in Sources */,
+				4D993D530BE54E371136CC50 /* GsRadius.swift in Sources */,
 				F3D51C560BF28A8BE013BE19 /* HostLogMirror.swift in Sources */,
 				1D4AE3DFB7E2576885B5D556 /* KeyboardShortcutHint.swift in Sources */,
 				402B5A68469B69DD852C660E /* LegacyMigration.swift in Sources */,
@@ -549,7 +561,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = GhostStream/GhostStream.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 38;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -558,7 +570,7 @@
 				INFOPLIST_FILE = GhostStream/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.26.2;
+				MARKETING_VERSION = 0.26.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client;
 				PROVISIONING_PROFILE_SPECIFIER = "$(GHOSTSTREAM_APP_PROVISIONING_PROFILE_SPECIFIER)";
 				SDKROOT = macosx;
@@ -573,7 +585,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 38;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -582,7 +594,7 @@
 				INFOPLIST_FILE = GhostStream/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.26.2;
+				MARKETING_VERSION = 0.26.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client;
 				PROVISIONING_PROFILE_SPECIFIER = ghoststream;
 				SDKROOT = macosx;
@@ -665,7 +677,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnelExtension/PacketTunnelExtension.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 38;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -674,7 +686,7 @@
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.26.2;
+				MARKETING_VERSION = 0.26.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client.tunnel;
 				PRODUCT_MODULE_NAME = PacketTunnelExtension;
 				PRODUCT_NAME = com.ghoststream.client.tunnel;
@@ -691,7 +703,7 @@
 				CODE_SIGN_IDENTITY = "Developer ID Application";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 38;
 				ENABLE_HARDENED_RUNTIME = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited) $(PROJECT_DIR)/../ios/Frameworks",
@@ -700,7 +712,7 @@
 				INFOPLIST_FILE = PacketTunnelExtension/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.26.2;
+				MARKETING_VERSION = 0.26.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ghoststream.client.tunnel;
 				PRODUCT_MODULE_NAME = PacketTunnelExtension;
 				PRODUCT_NAME = com.ghoststream.client.tunnel;

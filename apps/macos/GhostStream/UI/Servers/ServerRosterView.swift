@@ -135,7 +135,7 @@ public struct ServerRosterView: View {
                 .foregroundStyle(C.signal)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
+                .gsStroke(C.signal, GsRadius.control)
             }
             .buttonStyle(.plain)
             .keyboardShortcut("n", modifiers: .command)
@@ -147,7 +147,7 @@ public struct ServerRosterView: View {
                     .foregroundStyle(C.bone)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                    .gsStroke(C.hairBold, GsRadius.control)
             }
             .buttonStyle(.plain)
 
@@ -287,8 +287,8 @@ public struct ServerRosterView: View {
             .width(30)
         }
         .scrollContentBackground(.hidden)
-        .background(C.bgElev)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .gsClip(GsRadius.card)
+        .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
     }
 
     private func regionBadge(_ region: String) -> some View {
@@ -311,9 +311,7 @@ public struct ServerRosterView: View {
             .foregroundStyle(color)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
-            .overlay(
-                Rectangle().stroke(color.opacity(0.35), lineWidth: 1)
-            )
+            .gsStroke(color.opacity(0.35), GsRadius.chip)
     }
 
     /// Профиль ходит через дополнительный хоп — endpoint в строке уже
@@ -325,9 +323,7 @@ public struct ServerRosterView: View {
             .foregroundStyle(C.warn)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
-            .overlay(
-                Rectangle().stroke(C.warn.opacity(0.35), lineWidth: 1)
-            )
+            .gsStroke(C.warn.opacity(0.35), GsRadius.chip)
     }
 
     @ViewBuilder
@@ -342,8 +338,7 @@ public struct ServerRosterView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
-        .background(C.bgElev2)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .gsCard(fill: C.bgElev2, stroke: C.hair, radius: GsRadius.card)
     }
 
     // MARK: - Rows

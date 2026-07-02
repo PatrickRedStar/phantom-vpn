@@ -68,8 +68,9 @@ public struct PasteGhsField: View {
             }
             .frame(minHeight: 120)
         }
-        .background(C.bgElev2)
-        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+        .gsClip(GsRadius.card)
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.hairBold, lineWidth: 1))
     }
 
     private var charCounter: String {

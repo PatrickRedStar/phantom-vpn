@@ -304,9 +304,10 @@ public struct DashboardView: View {
                     .padding(.horizontal, 22)
                     .padding(.vertical, 12)
                     .overlay(
-                        Rectangle().stroke(buttonTint, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous)
+                            .stroke(buttonTint, lineWidth: 1)
                     )
-                    .contentShape(Rectangle())
+                    .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 // UI-AUDIT-07/2026: гейт по открытой палитре — раньше ⌘K
@@ -472,7 +473,8 @@ public struct DashboardView: View {
             .frame(height: 240)
             .background(C.bgElev2)
         }
-        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+        .gsClip(GsRadius.card)
+        .gsStroke(C.hairBold, GsRadius.card)
     }
 
     // MARK: - 4. bottom row
@@ -541,7 +543,8 @@ public struct DashboardView: View {
             .padding(.vertical, 22)
             .background(C.bgElev)
         }
-        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+        .gsClip(GsRadius.card)
+        .gsStroke(C.hairBold, GsRadius.card)
     }
 
     @ViewBuilder
@@ -569,8 +572,9 @@ public struct DashboardView: View {
                    unit:  active ? splitBytes(totalRxBytes).unit : "",
                    highlight: false)
         }
-        .background(C.bgElev2)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+        .gsClip(GsRadius.card)
+        .gsStroke(C.hair, GsRadius.card)
     }
 
     @ViewBuilder

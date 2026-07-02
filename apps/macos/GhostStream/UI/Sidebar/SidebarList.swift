@@ -108,7 +108,7 @@ public struct SidebarList: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous)
                     .fill(active ? C.signal.opacity(0.07) : Color.clear)
             )
             .contentShape(Rectangle())

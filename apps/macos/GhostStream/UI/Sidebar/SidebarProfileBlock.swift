@@ -61,8 +61,12 @@ public struct SidebarProfileBlock: View {
             profilePillContent
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .menuStyle(.borderlessButton)
+        // .menuStyle(.borderlessButton) на macOS схлопывает кастомный лейбл
+        // до огрызка «— ⌄» (игнорит предложенную ширину). Автоматический
+        // стиль + plain + скрытый индикатор (свой шеврон в pillContent)
+        // рендерит пилюлю целиком.
         .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityLabel("Choose active profile")
     }
@@ -96,9 +100,6 @@ public struct SidebarProfileBlock: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(C.bgElev2)
-        .overlay(
-            Rectangle().stroke(C.hairBold, lineWidth: 1)
-        )
+        .gsCard(fill: C.bgElev2, stroke: C.hairBold, radius: GsRadius.card, lineWidth: 1)
     }
 }

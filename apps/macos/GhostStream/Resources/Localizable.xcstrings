@@ -1327,6 +1327,23 @@
         }
       }
     },
+    "profile.add.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ADD BY LINK"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ДОБАВИТЬ ПО ССЫЛКЕ"
+          }
+        }
+      }
+    },
     "profile.delete": {
       "localizations": {
         "en": {
@@ -1419,6 +1436,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Адрес туннеля (CIDR)"
+          }
+        }
+      }
+    },
+    "profile.import": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IMPORT"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ИМПОРТИРОВАТЬ"
           }
         }
       }

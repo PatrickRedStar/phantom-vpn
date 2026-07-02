@@ -232,11 +232,10 @@ public struct TailView: View {
     @ViewBuilder
     private var toolbar: some View {
         HStack(spacing: 0) {
-            // Pill group — joined borders
-            HStack(spacing: 0) {
-                ForEach(Array(LevelFilter.allCases.enumerated()), id: \.element) { idx, filter in
+            // Level filter chips — rounded pills per full-rounded mockup.
+            HStack(spacing: 6) {
+                ForEach(Array(LevelFilter.allCases.enumerated()), id: \.element) { _, filter in
                     let isActive = activeFilter == filter
-                    let isLast = idx == LevelFilter.allCases.count - 1
                     Button { activeFilter = filter } label: {
                         Text(filter.label)
                             .font(.custom("DepartureMono-Regular", size: 10.5))
@@ -244,29 +243,11 @@ public struct TailView: View {
                             .foregroundStyle(isActive ? C.signal : C.textDim)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .background(isActive ? C.signal.opacity(0.06) : C.bgElev)
-                            .overlay(alignment: .top) {
-                                Rectangle()
-                                    .fill(isActive ? C.signalDim : C.hairBold)
-                                    .frame(height: 1)
-                            }
-                            .overlay(alignment: .bottom) {
-                                Rectangle()
-                                    .fill(isActive ? C.signalDim : C.hairBold)
-                                    .frame(height: 1)
-                            }
-                            .overlay(alignment: .leading) {
-                                Rectangle()
-                                    .fill(isActive ? C.signalDim : C.hairBold)
-                                    .frame(width: 1)
-                            }
-                            .overlay(alignment: .trailing) {
-                                if isLast {
-                                    Rectangle()
-                                        .fill(isActive ? C.signalDim : C.hairBold)
-                                        .frame(width: 1)
-                                }
-                            }
+                            .background(
+                                RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
+                                    .fill(isActive ? C.signal.opacity(0.06) : C.bgElev)
+                            )
+                            .gsStroke(isActive ? C.signalDim : C.hairBold, GsRadius.chip)
                     }
                     .buttonStyle(.plain)
                 }
@@ -284,9 +265,7 @@ public struct TailView: View {
                     .padding(.vertical, 6)
                     .frame(minWidth: 280)
                     .focused($searchFieldFocused)
-                    .overlay(
-                        Rectangle().stroke(C.hairBold, lineWidth: 1)
-                    )
+                    .gsStroke(C.hairBold, GsRadius.control)
                 Button {
                     regexSearch.toggle()
                 } label: {
@@ -296,8 +275,11 @@ public struct TailView: View {
                         .foregroundStyle(regexSearch ? C.signal : C.textDim)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 6)
-                        .background(regexSearch ? C.signal.opacity(0.06) : C.bgElev)
-                        .overlay(Rectangle().stroke(regexSearch ? C.signalDim : C.hairBold, lineWidth: 1))
+                        .background(
+                            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
+                                .fill(regexSearch ? C.signal.opacity(0.06) : C.bgElev)
+                        )
+                        .gsStroke(regexSearch ? C.signalDim : C.hairBold, GsRadius.chip)
                 }
                 .buttonStyle(.plain)
                 .help("Toggle regex search")
@@ -308,7 +290,7 @@ public struct TailView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(C.textDim)
                         .frame(width: 28, height: 28)
-                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                        .gsStroke(C.hairBold, GsRadius.control)
                 }
                 .buttonStyle(.plain)
                 .help("Clear log buffer (⇧⌘⌫)")
@@ -346,7 +328,7 @@ public struct TailView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(C.textDim)
                         .frame(width: 28, height: 28)
-                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                        .gsStroke(C.hairBold, GsRadius.control)
                 }
                 .buttonStyle(.plain)
                 .help("Copy visible logs (⌥⌘C)")
@@ -366,7 +348,7 @@ public struct TailView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(C.textDim)
                         .frame(width: 28, height: 28)
-                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                        .gsStroke(C.hairBold, GsRadius.control)
                 }
                 .buttonStyle(.plain)
                 .help("Export visible logs (⇧⌘E)")
@@ -380,7 +362,7 @@ public struct TailView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(C.textDim)
                         .frame(width: 28, height: 28)
-                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                        .gsStroke(C.hairBold, GsRadius.control)
                 }
                 .buttonStyle(.plain)
                 .help("Reveal runtime.log in Finder")
@@ -393,8 +375,11 @@ public struct TailView: View {
                         .foregroundStyle(followTail ? C.signal : C.textDim)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 6)
-                        .background(followTail ? C.signal.opacity(0.06) : C.bgElev)
-                        .overlay(Rectangle().stroke(followTail ? C.signalDim : C.hairBold, lineWidth: 1))
+                        .background(
+                            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
+                                .fill(followTail ? C.signal.opacity(0.06) : C.bgElev)
+                        )
+                        .gsStroke(followTail ? C.signalDim : C.hairBold, GsRadius.chip)
                 }
                 .buttonStyle(.plain)
                 .help("Toggle follow tail")
@@ -445,8 +430,11 @@ public struct TailView: View {
                         .foregroundStyle(isOn ? C.signal : C.textFaint)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(isOn ? C.signal.opacity(0.06) : C.bgElev)
-                        .overlay(Rectangle().stroke(isOn ? C.signalDim : C.hairBold, lineWidth: 1))
+                        .background(
+                            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
+                                .fill(isOn ? C.signal.opacity(0.06) : C.bgElev)
+                        )
+                        .gsStroke(isOn ? C.signalDim : C.hairBold, GsRadius.chip)
                 }
                 .buttonStyle(.plain)
                 .help(isOn ? "Hide \(category) events" : "Show \(category) events")
@@ -462,7 +450,7 @@ public struct TailView: View {
                         .foregroundStyle(C.textDim)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                        .gsStroke(C.hairBold, GsRadius.chip)
                 }
                 .buttonStyle(.plain)
                 .help("Reset category filter")
@@ -511,10 +499,11 @@ public struct TailView: View {
             .foregroundStyle(tailStatusColor(status.tone))
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(tailStatusColor(status.tone).opacity(0.06))
-            .overlay(
-                Rectangle().stroke(tailStatusColor(status.tone).opacity(0.35), lineWidth: 1)
+            .background(
+                RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
+                    .fill(tailStatusColor(status.tone).opacity(0.06))
             )
+            .gsStroke(tailStatusColor(status.tone).opacity(0.35), GsRadius.card)
         }
     }
 
@@ -576,8 +565,12 @@ public struct TailView: View {
                 scrollToBottom(proxy: proxy, animated: false)
             }
         }
-        .background(C.bgElev2)
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .background(
+            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
+                .fill(C.bgElev2)
+        )
+        .gsClip(GsRadius.card)
+        .gsStroke(C.hair, GsRadius.card)
     }
 
     /// Scroll the tail table to the bottom anchor. Deferred via
@@ -631,7 +624,10 @@ public struct TailView: View {
                     .foregroundStyle(levelChip.fg)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(levelChip.bg)
+                    .background(
+                        RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
+                            .fill(levelChip.bg)
+                    )
                     .frame(minWidth: 38, alignment: .leading)
 
                 // Category chip — outlined, color-coded by domain.
@@ -641,14 +637,11 @@ public struct TailView: View {
                     .foregroundStyle(categoryKey.isEmpty ? C.textFaint : categoryAccent)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .overlay(
-                        Rectangle()
-                            .stroke(
-                                categoryKey.isEmpty
-                                    ? C.hairBold.opacity(0.6)
-                                    : categoryAccent.opacity(0.55),
-                                lineWidth: 1
-                            )
+                    .gsStroke(
+                        categoryKey.isEmpty
+                            ? C.hairBold.opacity(0.6)
+                            : categoryAccent.opacity(0.55),
+                        GsRadius.chip
                     )
                     .frame(minWidth: 84, alignment: .leading)
 

@@ -2,7 +2,9 @@
 //  ProfileEditorSheet.swift
 //  GhostStream (macOS)
 //
-//  CRUD профилей: paste new ghs:// + name + delete.
+//  CRUD профилей: список карточек + единая форма редактирования (все поля
+//  видны сразу, включая relay) + импорт по ghs://-ссылке.
+//  Rounded-редизайн 2026-07 (мокап editor-rounded.html / full-rounded §6).
 //
 
 import PhantomKit
@@ -32,123 +34,207 @@ public struct ProfileEditorSheet: View {
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("PROFILES")
-                    .font(Typography.labelMono)
-                    .tracking(0.2 * 10.5)
-                    .foregroundStyle(C.textFaint)
-                Spacer()
-                Button("Закрыть") { dismiss() }
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Rectangle()
+                .fill(C.hair)
+                .frame(height: 1)
+                .padding(.top, 14)
+                .padding(.bottom, 16)
 
-            HairlineDivider()
-
-            if profiles.profiles.isEmpty {
-                Text(L("roster.empty"))
-                    .font(Typography.body)
-                    .foregroundStyle(C.textFaint)
-                    .padding(.vertical, 16)
-            } else {
-                List {
-                    ForEach(profiles.profiles) { profile in
-                        if editingId == profile.id {
-                            editorRow(for: profile)
-                        } else {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(profile.name).font(Typography.profileName).foregroundStyle(C.bone)
-                                    Text(profile.serverAddr).font(Typography.host).foregroundStyle(C.textFaint)
-                                }
-                                Spacer()
-                                Button(L("profile.edit")) {
-                                    beginEditing(profile)
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(C.signal)
-                                Button(L("profile.delete"), role: .destructive) {
-                                    profiles.remove(id: profile.id)
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(C.danger)
-                            }
-                            .padding(.vertical, 6)
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let editingId,
+                       let profile = profiles.profiles.first(where: { $0.id == editingId }) {
+                        editorForm(for: profile)
+                    } else {
+                        listSection
+                        importSection
+                            .padding(.top, 20)
                     }
                 }
-                .frame(minHeight: 160)
             }
+        }
+        .padding(22)
+        .frame(width: 480, height: 560)
+        .background(RoundedRectangle(cornerRadius: GsRadius.window, style: .continuous).fill(C.bg))
+    }
 
-            Text("ADD NEW")
-                .font(Typography.labelMonoTiny)
-                .foregroundStyle(C.textFaint)
+    // MARK: - Header (title + custom close ✕)
 
-            TextField("Имя", text: $newName)
-                .textFieldStyle(.plain)
+    private var header: some View {
+        HStack(spacing: 0) {
+            if let editingId,
+               let profile = profiles.profiles.first(where: { $0.id == editingId }) {
+                Text("\(L("profile.edit")) · \(profile.name)")
+                    .font(.custom("DepartureMono-Regular", size: 11))
+                    .tracking(0.2 * 11)
+                    .foregroundStyle(C.textFaint)
+            } else {
+                Text("PROFILES · \(profiles.profiles.count)")
+                    .font(.custom("DepartureMono-Regular", size: 11))
+                    .tracking(0.2 * 11)
+                    .foregroundStyle(C.textFaint)
+            }
+            Spacer()
+            closeButton
+        }
+    }
+
+    /// Кастомный крестик ✕ в рамке вместо нативной кнопки «Закрыть».
+    private var closeButton: some View {
+        Button {
+            if editingId != nil {
+                cancelEditing()
+            } else {
+                dismiss()
+            }
+        } label: {
+            Text("✕")
+                .font(.system(size: 12))
+                .foregroundStyle(C.textDim)
+                .frame(width: 26, height: 26)
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hairBold, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Profile list (rounded cards)
+
+    @ViewBuilder
+    private var listSection: some View {
+        if profiles.profiles.isEmpty {
+            Text(L("roster.empty"))
                 .font(Typography.body)
-                .padding(10)
-                .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                .foregroundStyle(C.textFaint)
+                .padding(.vertical, 16)
+        } else {
+            VStack(spacing: 8) {
+                ForEach(profiles.profiles) { profile in
+                    profileCard(profile)
+                }
+            }
+        }
+    }
 
-            TextField("ghs://...", text: $newGhs, axis: .vertical)
+    private func profileCard(_ profile: VpnProfile) -> some View {
+        let isActive = profile.id == profiles.activeId
+        return HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.name)
+                    .font(.custom("SpaceGrotesk-Bold", size: 15))
+                    .tracking(-0.01 * 15)
+                    .foregroundStyle(C.bone)
+                Text(profile.serverAddr)
+                    .font(.custom("JetBrainsMono-Regular", size: 10))
+                    .foregroundStyle(C.textFaint)
+            }
+            Spacer()
+            HStack(spacing: 14) {
+                Button {
+                    beginEditing(profile)
+                } label: {
+                    Text(L("profile.edit"))
+                        .font(.custom("DepartureMono-Regular", size: 9.5))
+                        .tracking(0.14 * 9.5)
+                        .foregroundStyle(C.signal)
+                }
+                .buttonStyle(.plain)
+                Button {
+                    profiles.remove(id: profile.id)
+                } label: {
+                    Text(L("profile.delete"))
+                        .font(.custom("DepartureMono-Regular", size: 9.5))
+                        .tracking(0.14 * 9.5)
+                        .foregroundStyle(C.danger)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
+                .fill(isActive ? C.signal.opacity(0.05) : C.bgElev2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
+                .stroke(isActive ? C.signalDim : C.hairBold, lineWidth: 1)
+        )
+    }
+
+    // MARK: - Import by link
+
+    private var importSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            fieldLabel(L("profile.add.title"))
+
+            TextField(L("profile.field.name"), text: $newName)
                 .textFieldStyle(.plain)
                 .font(.custom("JetBrainsMono-Regular", size: 12))
+                .foregroundStyle(C.bone)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
+                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
+
+            TextField("ghs://…", text: $newGhs, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.custom("JetBrainsMono-Regular", size: 12))
+                .foregroundStyle(C.bone)
                 .lineLimit(4, reservesSpace: true)
-                .padding(10)
-                .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
+                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
+                .padding(.top, 8)
 
             if let err = importError {
                 Text(err)
-                    .font(Typography.bodySmall)
+                    .font(.custom("JetBrainsMono-Regular", size: 11))
                     .foregroundStyle(C.danger)
+                    .padding(.top, 8)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack {
-                Spacer()
-                Button {
-                    importProfile()
-                } label: {
-                    Text("ИМПОРТИРОВАТЬ")
-                        .font(Typography.labelMono)
-                        .tracking(0.18 * 10.5)
-                        .foregroundStyle(C.signal)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .disabled(newGhs.isEmpty)
+            formButton(L("profile.import"), prominent: true, disabled: newGhs.isEmpty) {
+                importProfile()
             }
+            .padding(.top, 16)
         }
-        .padding(24)
-        .frame(width: 480, height: 520)
-        .background(C.bg)
     }
 
-    // MARK: - Edit existing profile
+    // MARK: - Editor form (single form, everything visible)
 
     @ViewBuilder
-    private func editorRow(for profile: VpnProfile) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func editorForm(for profile: VpnProfile) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             editField(L("profile.field.name"), text: $editName)
             editField(L("profile.field.endpoint"), text: $editEndpoint, mono: true)
             editField(L("profile.field.sni"), text: $editSni, mono: true)
             editField(L("profile.field.tun"), text: $editTun, mono: true)
+
             relayEditor
+
             if let editError {
-                Text(editError).font(Typography.bodySmall).foregroundStyle(C.danger)
+                Text(editError)
+                    .font(.custom("JetBrainsMono-Regular", size: 11))
+                    .foregroundStyle(C.danger)
+                    .padding(.top, 10)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            HStack {
-                Spacer()
-                Button(L("logs.clear.confirm.cancel")) { cancelEditing() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(C.textDim)
-                Button(L("profile.save")) { saveEditing(profile) }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(C.signal)
-                    .disabled(editName.isEmpty || editEndpoint.isEmpty)
+
+            HStack(spacing: 10) {
+                formButton(L("logs.clear.confirm.cancel"), prominent: false, disabled: false) {
+                    cancelEditing()
+                }
+                formButton(L("profile.save"), prominent: true, disabled: editName.isEmpty || editEndpoint.isEmpty) {
+                    saveEditing(profile)
+                }
             }
+            .padding(.top, 20)
         }
-        .padding(.vertical, 6)
     }
 
     /// Relay — дополнительный хоп между клиентом и exit-сервером
@@ -156,14 +242,15 @@ public struct ProfileEditorSheet: View {
     /// в ghs://-экспорт не попадает.
     @ViewBuilder
     private var relayEditor: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(L("profile.relay.toggle"))
-                    .font(Typography.body)
+                    .font(.custom("SpaceGrotesk-Bold", size: 13))
                     .foregroundStyle(C.bone)
                 Text(L("profile.relay.desc"))
-                    .font(Typography.bodySmall)
+                    .font(.custom("JetBrainsMono-Regular", size: 10))
                     .foregroundStyle(C.textFaint)
+                    .lineSpacing(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
@@ -171,24 +258,73 @@ public struct ProfileEditorSheet: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .tint(C.signal)
+                .padding(.top, 2)
         }
-        .padding(.top, 4)
+        .padding(.top, 14)
+        .padding(.bottom, 4)
+
         if editRelayEnabled {
-            editField(L("profile.relay.addr"), text: $editRelayAddr, mono: true)
+            editField(L("profile.relay.addr"), text: $editRelayAddr, mono: true, signal: true)
         }
     }
 
+    // MARK: - Pieces
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.custom("DepartureMono-Regular", size: 9.5))
+            .tracking(0.16 * 9.5)
+            .foregroundStyle(C.textFaint)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
+    }
+
     @ViewBuilder
-    private func editField(_ label: String, text: Binding<String>, mono: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(Typography.labelMonoTiny).foregroundStyle(C.textFaint)
+    private func editField(
+        _ label: String,
+        text: Binding<String>,
+        mono: Bool = false,
+        signal: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            fieldLabel(label)
             TextField(label, text: text)
                 .textFieldStyle(.plain)
-                .font(mono ? .custom("JetBrainsMono-Regular", size: 12) : Typography.body)
-                .padding(8)
-                .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                .font(mono ? .custom("JetBrainsMono-Regular", size: 12) : .custom("SpaceGrotesk-Regular", size: 13))
+                .foregroundStyle(C.bone)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 11)
+                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev))
+                .overlay(
+                    RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous)
+                        .stroke(signal ? C.signalDim : C.hair, lineWidth: 1)
+                )
         }
     }
+
+    private func formButton(
+        _ title: String,
+        prominent: Bool,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.custom("DepartureMono-Regular", size: 10))
+                .tracking(0.16 * 10)
+                .foregroundStyle(prominent ? C.bg : C.textDim)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(prominent ? C.signal : Color.clear))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(prominent ? C.signal : C.hairBold, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.5 : 1)
+    }
+
+    // MARK: - Editing lifecycle
 
     private func beginEditing(_ profile: VpnProfile) {
         editingId = profile.id

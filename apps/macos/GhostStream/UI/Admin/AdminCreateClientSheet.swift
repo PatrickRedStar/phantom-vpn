@@ -47,7 +47,7 @@ struct AdminCreateClientSheet: View {
         }
         .padding(24)
         .frame(width: 520)
-        .background(C.bgElev)
+        .background(RoundedRectangle(cornerRadius: GsRadius.window, style: .continuous).fill(C.bgElev))
     }
 
     // MARK: - Form
@@ -60,8 +60,8 @@ struct AdminCreateClientSheet: View {
             .font(.custom("JetBrainsMono-Regular", size: 12))
             .foregroundStyle(C.bone)
             .padding(10)
-            .background(C.bg)
-            .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bg))
+            .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
 
         fieldLabel(L("admin.create.duration"))
         HStack(spacing: 0) {
@@ -77,12 +77,13 @@ struct AdminCreateClientSheet: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 9)
                         .background(selected ? C.bgElev2 : Color.clear)
-                        .contentShape(Rectangle())
+                        .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
                 }
                 .buttonStyle(.plain)
             }
         }
-        .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
 
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 3) {
@@ -145,8 +146,8 @@ struct AdminCreateClientSheet: View {
                 .padding(10)
         }
         .frame(maxHeight: 120)
-        .background(C.bg)
-        .overlay(Rectangle().stroke(C.signalDim, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bg))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signalDim, lineWidth: 1))
 
         HStack(spacing: 8) {
             bigButton(L("admin.create.copy"), prominent: true, disabled: false) {
@@ -185,9 +186,9 @@ struct AdminCreateClientSheet: View {
                 .foregroundStyle(prominent ? C.bg : C.textDim)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 11)
-                .background(prominent ? C.signal : Color.clear)
-                .overlay(Rectangle().stroke(prominent ? C.signal : C.hairBold, lineWidth: 1))
-                .contentShape(Rectangle())
+                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(prominent ? C.signal : Color.clear))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(prominent ? C.signal : C.hairBold, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
         }
         .buttonStyle(.plain)
         .disabled(disabled)

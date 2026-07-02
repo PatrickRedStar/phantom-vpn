@@ -56,12 +56,15 @@ public struct CommandPalette: View {
             }
             .frame(width: 600, height: 420)
             .background(
-                LinearGradient(
-                    colors: [C.bg.opacity(0.95), C.bg.opacity(0.98)],
-                    startPoint: .top, endPoint: .bottom
+                RoundedRectangle(cornerRadius: GsRadius.window, style: .continuous).fill(
+                    LinearGradient(
+                        colors: [C.bg.opacity(0.95), C.bg.opacity(0.98)],
+                        startPoint: .top, endPoint: .bottom
+                    )
                 )
             )
-            .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+            .gsClip(GsRadius.window)
+            .overlay(RoundedRectangle(cornerRadius: GsRadius.window, style: .continuous).stroke(C.hairBold, lineWidth: 1))
             .shadow(color: .black.opacity(0.6), radius: 32, y: 12)
             .padding(.top, 60)
         }
@@ -111,7 +114,7 @@ public struct CommandPalette: View {
                 .foregroundStyle(C.textFaint)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .overlay(Rectangle().stroke(C.hair, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.hair, lineWidth: 1))
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 18)
@@ -233,8 +236,11 @@ public struct CommandPalette: View {
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 10)
-            .background(active ? C.signal.opacity(0.06) : Color.clear)
-            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
+                    .fill(active ? C.signal.opacity(0.06) : Color.clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous))
         }
         .buttonStyle(.plain)
     }

@@ -269,7 +269,7 @@ private struct PasteStepView: View {
             Image(systemName: "doc.on.clipboard")
                 .foregroundStyle(C.signal)
                 .frame(width: 24, height: 24)
-                .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.signal, lineWidth: 1))
             (Text("В буфере найдено ")
                 .foregroundColor(C.bone)
             + Text("ghs://")
@@ -293,18 +293,20 @@ private struct PasteStepView: View {
                 .foregroundStyle(C.signal)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signal, lineWidth: 1))
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(
-            LinearGradient(colors: [C.signal.opacity(0.04), .clear],
-                           startPoint: .top, endPoint: .bottom)
+            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(
+                LinearGradient(colors: [C.signal.opacity(0.04), .clear],
+                               startPoint: .top, endPoint: .bottom)
+            )
         )
         .overlay(
-            Rectangle().strokeBorder(
+            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).strokeBorder(
                 C.signalDim,
                 style: StrokeStyle(lineWidth: 1, dash: [4, 3])
             )
@@ -323,20 +325,22 @@ private struct PasteStepView: View {
                         .font(.custom("DepartureMono-Regular", size: 9.5))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
-                        .overlay(Rectangle().stroke(C.signalDim, lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.signalDim, lineWidth: 1))
                 }
                 .foregroundStyle(ghsText.isEmpty ? C.textFaint : C.signal)
                 .padding(.horizontal, 28)
                 .padding(.vertical, 14)
-                .overlay(
-                    Rectangle().stroke(ghsText.isEmpty ? C.hairBold : C.signal, lineWidth: 1)
-                )
                 .background(
-                    LinearGradient(
-                        colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                        startPoint: .top, endPoint: .bottom
+                    RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
+                        LinearGradient(
+                            colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
+                            startPoint: .top, endPoint: .bottom
+                        )
                     )
                     .opacity(ghsText.isEmpty ? 0 : 1)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(ghsText.isEmpty ? C.hairBold : C.signal, lineWidth: 1)
                 )
             }
             .buttonStyle(.plain)
@@ -424,13 +428,15 @@ private struct InstallExtStepView: View {
                         .foregroundStyle(C.signal)
                         .padding(.horizontal, 28)
                         .padding(.vertical, 14)
-                        .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
                         .background(
-                            LinearGradient(
-                                colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                                startPoint: .top, endPoint: .bottom
+                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
+                                LinearGradient(
+                                    colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
+                                    startPoint: .top, endPoint: .bottom
+                                )
                             )
                         )
+                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signal, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
 
@@ -512,8 +518,8 @@ private struct AwaitingApprovalStepView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
-            .background(C.bgElev2)
-            .overlay(Rectangle().stroke(C.warn.opacity(0.4), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+            .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.warn.opacity(0.4), lineWidth: 1))
             .padding(.bottom, 22)
 
             HStack(spacing: 14) {
@@ -526,13 +532,15 @@ private struct AwaitingApprovalStepView: View {
                         .foregroundStyle(C.signal)
                         .padding(.horizontal, 28)
                         .padding(.vertical, 14)
-                        .overlay(Rectangle().stroke(C.signal, lineWidth: 1))
                         .background(
-                            LinearGradient(
-                                colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                                startPoint: .top, endPoint: .bottom
+                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
+                                LinearGradient(
+                                    colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
+                                    startPoint: .top, endPoint: .bottom
+                                )
                             )
                         )
+                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signal, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
 
@@ -616,8 +624,8 @@ private struct ConfigureVpnStepView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
-                .background(C.bgElev2)
-                .overlay(Rectangle().stroke(C.warn.opacity(0.4), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
+                .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.warn.opacity(0.4), lineWidth: 1))
                 .padding(.bottom, 22)
             }
 
@@ -631,14 +639,16 @@ private struct ConfigureVpnStepView: View {
                         .foregroundStyle(coordinator.awaitingVpnApproval ? C.textFaint : C.signal)
                         .padding(.horizontal, 28)
                         .padding(.vertical, 14)
-                        .overlay(Rectangle().stroke(coordinator.awaitingVpnApproval ? C.hairBold : C.signal, lineWidth: 1))
                         .background(
-                            LinearGradient(
-                                colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                                startPoint: .top, endPoint: .bottom
+                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
+                                LinearGradient(
+                                    colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
+                                    startPoint: .top, endPoint: .bottom
+                                )
                             )
                             .opacity(coordinator.awaitingVpnApproval ? 0 : 1)
                         )
+                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(coordinator.awaitingVpnApproval ? C.hairBold : C.signal, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .disabled(coordinator.awaitingVpnApproval)
@@ -704,7 +714,10 @@ private struct ReadyStepView: View {
                         .foregroundStyle(profiles.activeProfile == nil ? C.textFaint : C.bg)
                         .padding(.horizontal, 28)
                         .padding(.vertical, 14)
-                        .background(profiles.activeProfile == nil ? C.hairBold : C.signal)
+                        .background(
+                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous)
+                                .fill(profiles.activeProfile == nil ? C.hairBold : C.signal)
+                        )
                 }
                 .buttonStyle(.plain)
                 .disabled(profiles.activeProfile == nil)
@@ -720,7 +733,7 @@ private struct ReadyStepView: View {
                         .foregroundStyle(C.bone)
                         .padding(.horizontal, 28)
                         .padding(.vertical, 14)
-                        .overlay(Rectangle().stroke(C.hairBold, lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hairBold, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
 
