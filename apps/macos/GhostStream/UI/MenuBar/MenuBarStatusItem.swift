@@ -2,12 +2,11 @@
 //  MenuBarStatusItem.swift
 //  GhostStream (macOS)
 //
-//  Menu bar label — uses the brand `MenuBarIcon` asset (rendered from
-//  `icons/v4-03-scope/ic_launcher_monochrome.svg` at 18/36/54 px) marked
-//  as a template image so macOS auto-tints it to match the system menu
-//  bar foreground (black on light, white on dark). A small coloured dot
-//  beside the glyph reflects the current `ConnState` — macOS 14+ keeps
-//  custom-colour SwiftUI shapes inside menu bar labels.
+//  Menu bar label — цветной призрак-логотип (тот же, что AppIcon), вырезан
+//  из иконки приложения с прозрачным фоном. Рендерится в цвете
+//  (`renderingMode(.original)` + asset `template-rendering-intent: original`),
+//  а не монохромным template-силуэтом (раньше macOS красил его сплошным
+//  белым «блобом»). Маленькая цветная точка рядом отражает `ConnState`.
 //
 
 import PhantomKit
@@ -58,7 +57,7 @@ public struct MenuBarStatusItem: View {
         HStack(spacing: 3) {
             Image("MenuBarIcon")
                 .resizable()
-                .renderingMode(.template)
+                .renderingMode(.original)
                 .interpolation(.high)
                 .scaledToFit()
                 .frame(width: 18, height: 18)
