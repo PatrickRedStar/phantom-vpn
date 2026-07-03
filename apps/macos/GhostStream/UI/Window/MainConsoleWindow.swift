@@ -21,11 +21,16 @@ public struct MainConsoleWindow: View {
         ZStack {
             NavigationSplitView {
                 SidebarList()
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+                    .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 260)
             } detail: {
                 detailPane
-                    .navigationSplitViewColumnWidth(min: 740, ideal: 980)
+                    .navigationSplitViewColumnWidth(min: 820, ideal: 1000)
             }
+            // `.balanced` держит сайдбар и деталь РЯДОМ на всех ширинах.
+            // Без него `.automatic` на macOS при узком окне уводил сайдбар
+            // в overlay поверх детали — левый край контента (чипы уровней,
+            // строки) прятался под сайдбаром. Паритет колонок = нет overlay.
+            .navigationSplitViewStyle(.balanced)
             .background(C.bg)
             // UI-R2-R02: when the command palette is open, the
             // underlying split view stays in the responder tree and
@@ -42,7 +47,9 @@ public struct MainConsoleWindow: View {
                     .transition(.opacity)
             }
         }
-        .frame(minWidth: 960, minHeight: 640)
+        // Контенту детали нужно ~820pt (toolbar логов/таблицы), + сайдбар
+        // 210 = разумный пол окна ~1040. Ниже него ломалась раскладка.
+        .frame(minWidth: 1040, minHeight: 680)
     }
 
     @ViewBuilder

@@ -263,7 +263,7 @@ public struct TailView: View {
                     .foregroundStyle(C.bone)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .frame(minWidth: 280)
+                    .frame(minWidth: 140, maxWidth: 340)
                     .focused($searchFieldFocused)
                     .gsStroke(C.hairBold, GsRadius.control)
                 Button {
@@ -383,10 +383,6 @@ public struct TailView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Toggle follow tail")
-                KeyboardShortcutHint("⌘F")
-                KeyboardShortcutHint("⇧⌘⌫")
-                KeyboardShortcutHint("⌥⌘C")
-                KeyboardShortcutHint("⇧⌘E")
 
                 // UI-C3 hidden chord: ⌘F focuses the filter field.
                 // Implemented as a zero-size Button so the SwiftUI
@@ -419,27 +415,33 @@ public struct TailView: View {
                 .font(.custom("DepartureMono-Regular", size: 9.5))
                 .tracking(0.18 * 9.5)
                 .foregroundStyle(C.textFaint)
-            ForEach(allCategories, id: \.self) { category in
-                let isOn = selectedCategories.isEmpty || selectedCategories.contains(category)
-                Button {
-                    toggleCategory(category, total: allCategories)
-                } label: {
-                    Text(category)
-                        .font(.custom("DepartureMono-Regular", size: 9.5))
-                        .tracking(0.14 * 9.5)
-                        .foregroundStyle(isOn ? C.signal : C.textFaint)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
-                                .fill(isOn ? C.signal.opacity(0.06) : C.bgElev)
-                        )
-                        .gsStroke(isOn ? C.signalDim : C.hairBold, GsRadius.chip)
+            // Категории могут не влезть в узкое окно — горизонтальный
+            // скролл вместо переполнения под сайдбар/за край.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(allCategories, id: \.self) { category in
+                        let isOn = selectedCategories.isEmpty || selectedCategories.contains(category)
+                        Button {
+                            toggleCategory(category, total: allCategories)
+                        } label: {
+                            Text(category)
+                                .font(.custom("DepartureMono-Regular", size: 9.5))
+                                .tracking(0.14 * 9.5)
+                                .foregroundStyle(isOn ? C.signal : C.textFaint)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
+                                        .fill(isOn ? C.signal.opacity(0.06) : C.bgElev)
+                                )
+                                .gsStroke(isOn ? C.signalDim : C.hairBold, GsRadius.chip)
+                        }
+                        .buttonStyle(.plain)
+                        .help(isOn ? "Hide \(category) events" : "Show \(category) events")
+                    }
                 }
-                .buttonStyle(.plain)
-                .help(isOn ? "Hide \(category) events" : "Show \(category) events")
+                .padding(.vertical, 1)
             }
-            Spacer(minLength: 0)
             if !selectedCategories.isEmpty {
                 Button {
                     selectedCategories = []

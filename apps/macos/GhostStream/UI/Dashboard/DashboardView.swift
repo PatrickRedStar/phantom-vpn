@@ -551,30 +551,26 @@ public struct DashboardView: View {
     private var kvGrid: some View {
         let frame = stateMgr.statusFrame
         let active = frame.state == .connected
-        HStack(spacing: 0) {
+        // 4 отдельные скруглённые карточки (паритет с мокапом и stats-полосой
+        // админки), а не один контейнер с вертикальными разделителями.
+        HStack(spacing: 10) {
             kvCell(label: "RX · RATE",
                    value: active ? splitRate(displayRxRateBps).val : "—",
                    unit:  active ? splitRate(displayRxRateBps).unit : "",
                    highlight: true)
-            kvDivider
             kvCell(label: "TX · RATE",
                    value: active ? splitRate(displayTxRateBps).val : "—",
                    unit:  active ? splitRate(displayTxRateBps).unit : "",
                    highlight: false)
-            kvDivider
             kvCell(label: "RTT",
                    value: frame.rttMs.map { "\($0)" } ?? "—",
                    unit:  frame.rttMs != nil ? "MS" : "",
                    highlight: false)
-            kvDivider
             kvCell(label: "TOTAL RX",
                    value: active ? splitBytes(totalRxBytes).val : "—",
                    unit:  active ? splitBytes(totalRxBytes).unit : "",
                    highlight: false)
         }
-        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
-        .gsClip(GsRadius.card)
-        .gsStroke(C.hair, GsRadius.card)
     }
 
     @ViewBuilder
@@ -598,14 +594,9 @@ public struct DashboardView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
-    }
-
-    private var kvDivider: some View {
-        Rectangle()
-            .fill(C.hair)
-            .frame(width: 1)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
     }
 
     // MARK: - Helpers

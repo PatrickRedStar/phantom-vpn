@@ -357,56 +357,120 @@ public struct AdminConsoleView: View {
             .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
             .gsStroke(C.hair, GsRadius.card)
         } else {
-            Table(rows(vm), sortOrder: $sortOrder) {
-                TableColumn(L("admin.col.client"), value: \.name) { row in
-                    clientCell(row)
-                }
-                .width(min: 140)
-
-                TableColumn("tun", value: \.tunAddr) { row in
-                    selectableCell(row) {
-                        Text(row.tunAddr)
-                            .font(.custom("JetBrainsMono-Regular", size: 11))
-                            .foregroundStyle(C.textDim)
+            // Кастомный список вместо native Table: единый скруглённый
+            // контейнер + hairline-строки, без пустых filler-«пилюль» и с
+            // адаптивной колонкой клиента. Паритет с мокапом (§5).
+            ScrollView {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        let rs = rows(vm)
+                        ForEach(Array(rs.enumerated()), id: \.element.id) { idx, row in
+                            adminRow(vm, row)
+                            if idx < rs.count - 1 {
+                                Rectangle().fill(C.hair).frame(height: 1)
+                            }
+                        }
+                    } header: {
+                        VStack(spacing: 0) {
+                            adminHeader
+                            Rectangle().fill(C.hair).frame(height: 1)
+                        }
+                        .background(C.bgElev)
                     }
                 }
-                .width(90)
-
-                TableColumn(L("admin.col.status"), value: \.statusSort) { row in
-                    selectableCell(row) {
-                        AdminStatusChip(chip: row.chip)
-                    }
-                }
-                .width(110)
-
-                TableColumn("rx / tx", value: \.trafficSort) { row in
-                    selectableCell(row) {
-                        Text("\(AdminConsoleFormat.bytes(row.bytesRx)) / \(AdminConsoleFormat.bytes(row.bytesTx))")
-                            .font(.custom("JetBrainsMono-Regular", size: 10.5))
-                            .foregroundStyle(C.textDim)
-                    }
-                }
-                .width(150)
-
-                TableColumn(L("admin.col.subscription"), value: \.subscriptionSort) { row in
-                    selectableCell(row) {
-                        Text(AdminConsoleFormat.subscriptionShort(row.expiresAt))
-                            .font(.custom("JetBrainsMono-Regular", size: 11))
-                            .foregroundStyle(AdminConsoleFormat.subscriptionColor(row.expiresAt, C: C))
-                    }
-                }
-                .width(110)
-
-                TableColumn("") { row in
-                    rowMenu(vm, row)
-                }
-                .width(30)
             }
-            .scrollContentBackground(.hidden)
-            .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
             .gsClip(GsRadius.card)
-            .gsStroke(C.hair, GsRadius.card)
         }
+    }
+
+    private enum ACol {
+        static let tun: CGFloat = 100
+        static let status: CGFloat = 96
+        static let traffic: CGFloat = 150
+        static let sub: CGFloat = 96
+        static let menu: CGFloat = 34
+    }
+
+    private var adminHeader: some View {
+        HStack(spacing: 10) {
+            adminSortHeader(L("admin.col.client"), key: \.name)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            adminHeaderLabel("tun").frame(width: ACol.tun, alignment: .leading)
+            adminSortHeader(L("admin.col.status"), key: \.statusSort)
+                .frame(width: ACol.status, alignment: .leading)
+            adminHeaderLabel("rx / tx").frame(width: ACol.traffic, alignment: .leading)
+            adminSortHeader(L("admin.col.subscription"), key: \.subscriptionSort)
+                .frame(width: ACol.sub, alignment: .leading)
+            Color.clear.frame(width: ACol.menu)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+
+    private func adminHeaderLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.custom("DepartureMono-Regular", size: 9))
+            .tracking(0.14 * 9)
+            .foregroundStyle(C.textFaint)
+    }
+
+    private func adminSortHeader<V: Comparable>(_ title: String, key: KeyPath<AdminClientRow, V>) -> some View {
+        Button {
+            if let cur = sortOrder.first, cur.keyPath == key {
+                sortOrder = [KeyPathComparator(key, order: cur.order == .forward ? .reverse : .forward)]
+            } else {
+                sortOrder = [KeyPathComparator(key, order: .forward)]
+            }
+        } label: {
+            HStack(spacing: 4) {
+                adminHeaderLabel(title)
+                if let cur = sortOrder.first, cur.keyPath == key {
+                    Image(systemName: cur.order == .forward ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 7))
+                        .foregroundStyle(C.textDim)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func adminRow(_ vm: AdminViewModel, _ row: AdminClientRow) -> some View {
+        HStack(spacing: 10) {
+            clientCell(row)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            selectableCell(row) {
+                Text(row.tunAddr)
+                    .font(.custom("JetBrainsMono-Regular", size: 11))
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
+            }
+            .frame(width: ACol.tun, alignment: .leading)
+            selectableCell(row) {
+                AdminStatusChip(chip: row.chip)
+            }
+            .frame(width: ACol.status, alignment: .leading)
+            selectableCell(row) {
+                Text("\(AdminConsoleFormat.bytes(row.bytesRx)) / \(AdminConsoleFormat.bytes(row.bytesTx))")
+                    .font(.custom("JetBrainsMono-Regular", size: 10.5))
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
+            }
+            .frame(width: ACol.traffic, alignment: .leading)
+            selectableCell(row) {
+                Text(AdminConsoleFormat.subscriptionShort(row.expiresAt))
+                    .font(.custom("JetBrainsMono-Regular", size: 11))
+                    .foregroundStyle(AdminConsoleFormat.subscriptionColor(row.expiresAt, C: C))
+            }
+            .frame(width: ACol.sub, alignment: .leading)
+            rowMenu(vm, row)
+                .frame(width: ACol.menu)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(row.selected ? C.signal.opacity(0.05) : Color.clear)
     }
 
     @ViewBuilder

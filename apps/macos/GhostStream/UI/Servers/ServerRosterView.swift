@@ -200,95 +200,181 @@ public struct ServerRosterView: View {
 
     // MARK: - 3. table
 
+    // Кастомный список вместо нативного Table: единый скруглённый
+    // контейнер + hairline-строки, без пустых filler-«пилюль» (их рисовал
+    // native Table). Колонки адаптивные — name/endpoint тянутся, остальные
+    // фикс. Паритет с мокапом (§4).
     @ViewBuilder
     private var tableView: some View {
-        Table(rows, sortOrder: $sortOrder) {
-            TableColumn("") { row in
-                rowActionArea(row) {
-                    Image(systemName: row.active ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(row.active ? C.signal : C.textFaint)
-                        .font(.system(size: 13))
-                }
-            }
-            .width(30)
-
-            TableColumn("name", value: \.name) { row in
-                rowActionArea(row) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.name)
-                            .font(.custom("SpaceGrotesk-Bold", size: 14))
-                            .foregroundStyle(C.bone)
-                        if row.active {
-                            Text("● ACTIVE")
-                                .font(.custom("DepartureMono-Regular", size: 9.5))
-                                .tracking(0.14 * 9.5)
-                                .foregroundStyle(C.signal)
+        ScrollView {
+            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    let rs = rows
+                    ForEach(Array(rs.enumerated()), id: \.element.id) { idx, row in
+                        rosterRow(row)
+                        if idx < rs.count - 1 {
+                            Rectangle().fill(C.hair).frame(height: 1)
                         }
                     }
-                    .padding(.leading, row.active ? 6 : 0)
-                    .overlay(alignment: .leading) {
-                        if row.active {
-                            Rectangle().fill(C.signal).frame(width: 2)
-                        }
+                } header: {
+                    VStack(spacing: 0) {
+                        rosterHeader
+                        Rectangle().fill(C.hair).frame(height: 1)
                     }
+                    .background(C.bgElev)
                 }
             }
-            .width(min: 140)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
+        .gsClip(GsRadius.card)
+    }
 
-            TableColumn("endpoint", value: \.endpoint) { row in
-                rowActionArea(row) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.endpoint)
-                            .font(.custom("JetBrainsMono-Regular", size: 11.5))
-                            .foregroundStyle(C.textDim)
-                        if !row.sni.isEmpty {
-                            Text("sni: \(row.sni)")
-                                .font(.custom("JetBrainsMono-Regular", size: 10))
-                                .foregroundStyle(C.textFaint)
-                        }
-                    }
-                }
-            }
+    // Ширины колонок (общие для шапки и строк).
+    private enum Col {
+        static let active: CGFloat = 30
+        static let name: CGFloat = 170
+        static let region: CGFloat = 160
+        static let rtt: CGFloat = 66
+        static let state: CGFloat = 86
+        static let menu: CGFloat = 34
+    }
 
-            TableColumn("region") { row in
-                rowActionArea(row) {
-                    HStack(spacing: 6) {
-                        regionBadge(row.region)
-                        if row.relay {
-                            relayBadge
-                        }
-                    }
-                }
-            }
-            .width(150)
+    private var rosterHeader: some View {
+        HStack(spacing: 10) {
+            Color.clear.frame(width: Col.active)
+            sortHeader("name", key: \.name)
+                .frame(width: Col.name, alignment: .leading)
+            Text("endpoint")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(HeaderLabel())
+            Text("region").modifier(HeaderLabel())
+                .frame(width: Col.region, alignment: .leading)
+            sortHeader("rtt", key: \.rttSort)
+                .frame(width: Col.rtt, alignment: .leading)
+            Text("state").modifier(HeaderLabel())
+                .frame(width: Col.state, alignment: .leading)
+            Color.clear.frame(width: Col.menu)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
 
-            TableColumn("rtt", value: \.rttSort) { row in
-                rowActionArea(row) {
-                    Text(row.rttLabel)
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.04 * 11)
-                        .foregroundStyle(rttColor(row.rttMs))
-                }
-            }
-            .width(80)
-
-            TableColumn("state", value: \.status) { row in
-                rowActionArea(row) {
-                    Text(row.status.lowercased())
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
+    /// Кликабельный заголовок-сортировка с кареткой.
+    private func sortHeader<V: Comparable>(_ title: String, key: KeyPath<RosterRow, V>) -> some View {
+        Button {
+            toggleSort(key: key)
+        } label: {
+            HStack(spacing: 4) {
+                Text(title).modifier(HeaderLabel())
+                if let cur = sortOrder.first, cur.keyPath == key {
+                    Image(systemName: cur.order == .forward ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8))
                         .foregroundStyle(C.textDim)
                 }
             }
-            .width(120)
-
-            TableColumn("") { row in
-                rowMenu(row)
-            }
-            .width(30)
         }
-        .scrollContentBackground(.hidden)
-        .gsClip(GsRadius.card)
-        .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
+        .buttonStyle(.plain)
+    }
+
+    private func toggleSort<V: Comparable>(key: KeyPath<RosterRow, V>) {
+        if let cur = sortOrder.first, cur.keyPath == key {
+            sortOrder = [KeyPathComparator(key, order: cur.order == .forward ? .reverse : .forward)]
+        } else {
+            sortOrder = [KeyPathComparator(key, order: .forward)]
+        }
+    }
+
+    @ViewBuilder
+    private func rosterRow(_ row: RosterRow) -> some View {
+        HStack(spacing: 10) {
+            rowActionArea(row) {
+                Image(systemName: row.active ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(row.active ? C.signal : C.textFaint)
+                    .font(.system(size: 13))
+            }
+            .frame(width: Col.active)
+
+            rowActionArea(row) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name)
+                        .font(.custom("SpaceGrotesk-Bold", size: 14))
+                        .foregroundStyle(C.bone)
+                        .lineLimit(1)
+                    if row.active {
+                        Text("● ACTIVE")
+                            .font(.custom("DepartureMono-Regular", size: 9.5))
+                            .tracking(0.14 * 9.5)
+                            .foregroundStyle(C.signal)
+                    }
+                }
+                .padding(.leading, row.active ? 6 : 0)
+                .overlay(alignment: .leading) {
+                    if row.active {
+                        Rectangle().fill(C.signal).frame(width: 2)
+                    }
+                }
+            }
+            .frame(width: Col.name, alignment: .leading)
+
+            rowActionArea(row) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.endpoint)
+                        .font(.custom("JetBrainsMono-Regular", size: 11.5))
+                        .foregroundStyle(C.textDim)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if !row.sni.isEmpty {
+                        Text("sni: \(row.sni)")
+                            .font(.custom("JetBrainsMono-Regular", size: 10))
+                            .foregroundStyle(C.textFaint)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            rowActionArea(row) {
+                HStack(spacing: 6) {
+                    regionBadge(row.region)
+                    if row.relay { relayBadge }
+                }
+            }
+            .frame(width: Col.region, alignment: .leading)
+
+            rowActionArea(row) {
+                Text(row.rttLabel)
+                    .font(.custom("DepartureMono-Regular", size: 11))
+                    .tracking(0.04 * 11)
+                    .foregroundStyle(rttColor(row.rttMs))
+            }
+            .frame(width: Col.rtt, alignment: .leading)
+
+            rowActionArea(row) {
+                Text(row.status.lowercased())
+                    .font(.custom("JetBrainsMono-Regular", size: 11))
+                    .foregroundStyle(C.textDim)
+            }
+            .frame(width: Col.state, alignment: .leading)
+
+            rowMenu(row)
+                .frame(width: Col.menu)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(row.active ? C.signal.opacity(0.04) : Color.clear)
+    }
+
+    /// Единый стиль лейбла колонки-заголовка.
+    private struct HeaderLabel: ViewModifier {
+        @Environment(\.gsColors) private var C
+        func body(content: Content) -> some View {
+            content
+                .font(.custom("DepartureMono-Regular", size: 9.5))
+                .tracking(0.14 * 9.5)
+                .foregroundStyle(C.textFaint)
+        }
     }
 
     private func regionBadge(_ region: String) -> some View {
