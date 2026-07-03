@@ -2,9 +2,12 @@
 //  ProfileEditorSheet.swift
 //  GhostStream (macOS)
 //
-//  CRUD профилей: список карточек + единая форма редактирования (все поля
-//  видны сразу, включая relay) + импорт по ghs://-ссылке.
-//  Rounded-редизайн 2026-07 (мокап editor-rounded.html / full-rounded §6).
+//  Две независимые сущности, оба — модальный шит (rounded):
+//   • edit-режим (init(editProfileId:)) — редактор ОДНОГО профиля
+//     (имя/сервер/SNI/tun/relay), открывается кликом по ⋯ в СПИСКЕ.
+//     Никакого списка профилей внутри — сам СПИСОК и есть список.
+//   • new-режим (init()) — импорт нового профиля по ghs://-ссылке
+//     (кнопка «+ NEW PROFILE»).
 //
 
 import PhantomKit
@@ -17,12 +20,16 @@ public struct ProfileEditorSheet: View {
     @Environment(\.gsColors) private var C
     @Environment(ProfilesStore.self) private var profiles
 
+    /// Если задан — шит открывается сразу в режиме редактирования этого
+    /// профиля. Если nil — режим импорта нового профиля.
+    private let editProfileId: String?
+
+    // new-режим
     @State private var newGhs: String = ""
     @State private var newName: String = ""
     @State private var importError: String?
 
-    /// id профиля в режиме редактирования + рабочая копия полей.
-    @State private var editingId: String?
+    // edit-режим — рабочая копия полей
     @State private var editName: String = ""
     @State private var editEndpoint: String = ""
     @State private var editSni: String = ""
@@ -30,8 +37,17 @@ public struct ProfileEditorSheet: View {
     @State private var editRelayEnabled: Bool = false
     @State private var editRelayAddr: String = ""
     @State private var editError: String?
+    @State private var loaded = false
+    @State private var showDeleteConfirm = false
 
-    public init() {}
+    public init(editProfileId: String? = nil) {
+        self.editProfileId = editProfileId
+    }
+
+    private var editingProfile: VpnProfile? {
+        guard let editProfileId else { return nil }
+        return profiles.profiles.first(where: { $0.id == editProfileId })
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,142 +59,75 @@ public struct ProfileEditorSheet: View {
                 .padding(.bottom, 16)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let editingId,
-                       let profile = profiles.profiles.first(where: { $0.id == editingId }) {
-                        editorForm(for: profile)
-                    } else {
-                        listSection
-                        importSection
-                            .padding(.top, 20)
-                    }
+                if let profile = editingProfile {
+                    editorForm(for: profile)
+                } else {
+                    importSection
                 }
             }
         }
         .padding(22)
-        .frame(width: 480, height: 560)
+        .frame(width: 480, height: editProfileId != nil ? 560 : 360)
         .background(RoundedRectangle(cornerRadius: GsRadius.window, style: .continuous).fill(C.bg))
+        .onAppear(perform: loadIfNeeded)
+        .alert(L("profile.delete"), isPresented: $showDeleteConfirm) {
+            Button(L("profile.delete"), role: .destructive) {
+                if let editProfileId { profiles.remove(id: editProfileId) }
+                dismiss()
+            }
+            Button(L("general.cancel"), role: .cancel) {}
+        } message: {
+            if let p = editingProfile {
+                Text(String(format: L("profile.delete.confirm"), p.name))
+            }
+        }
     }
 
-    // MARK: - Header (title + custom close ✕)
+    // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 0) {
-            if let editingId,
-               let profile = profiles.profiles.first(where: { $0.id == editingId }) {
+        HStack(spacing: 10) {
+            if let profile = editingProfile {
                 Text("\(L("profile.edit")) · \(profile.name)")
                     .font(.custom("DepartureMono-Regular", size: 11))
                     .tracking(0.2 * 11)
                     .foregroundStyle(C.textFaint)
             } else {
-                Text("PROFILES · \(profiles.profiles.count)")
+                Text(L("profile.add.title.new"))
                     .font(.custom("DepartureMono-Regular", size: 11))
                     .tracking(0.2 * 11)
                     .foregroundStyle(C.textFaint)
             }
             Spacer()
-            closeButton
+            if editingProfile != nil {
+                iconButton(systemName: "trash", danger: true) { showDeleteConfirm = true }
+            }
+            iconButton(text: "✕") { dismiss() }
         }
     }
 
-    /// Кастомный крестик ✕ в рамке вместо нативной кнопки «Закрыть».
-    private var closeButton: some View {
-        Button {
-            if editingId != nil {
-                cancelEditing()
-            } else {
-                dismiss()
+    private func iconButton(systemName: String? = nil, text: String? = nil, danger: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Group {
+                if let systemName { Image(systemName: systemName).font(.system(size: 12)) }
+                else { Text(text ?? "").font(.system(size: 12)) }
             }
-        } label: {
-            Text("✕")
-                .font(.system(size: 12))
-                .foregroundStyle(C.textDim)
-                .frame(width: 26, height: 26)
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hairBold, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
+            .foregroundStyle(danger ? C.danger : C.textDim)
+            .frame(width: 26, height: 26)
+            .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(danger ? C.danger.opacity(0.4) : C.hairBold, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
         }
         .buttonStyle(.plain)
     }
 
-    // MARK: - Profile list (rounded cards)
-
-    @ViewBuilder
-    private var listSection: some View {
-        if profiles.profiles.isEmpty {
-            Text(L("roster.empty"))
-                .font(Typography.body)
-                .foregroundStyle(C.textFaint)
-                .padding(.vertical, 16)
-        } else {
-            VStack(spacing: 8) {
-                ForEach(profiles.profiles) { profile in
-                    profileCard(profile)
-                }
-            }
-        }
-    }
-
-    private func profileCard(_ profile: VpnProfile) -> some View {
-        let isActive = profile.id == profiles.activeId
-        return HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(profile.name)
-                    .font(.custom("SpaceGrotesk-Bold", size: 15))
-                    .tracking(-0.01 * 15)
-                    .foregroundStyle(C.bone)
-                Text(profile.serverAddr)
-                    .font(.custom("JetBrainsMono-Regular", size: 10))
-                    .foregroundStyle(C.textFaint)
-            }
-            Spacer()
-            HStack(spacing: 14) {
-                Button {
-                    beginEditing(profile)
-                } label: {
-                    Text(L("profile.edit"))
-                        .font(.custom("DepartureMono-Regular", size: 9.5))
-                        .tracking(0.14 * 9.5)
-                        .foregroundStyle(C.signal)
-                }
-                .buttonStyle(.plain)
-                Button {
-                    profiles.remove(id: profile.id)
-                } label: {
-                    Text(L("profile.delete"))
-                        .font(.custom("DepartureMono-Regular", size: 9.5))
-                        .tracking(0.14 * 9.5)
-                        .foregroundStyle(C.danger)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
-                .fill(isActive ? C.signal.opacity(0.05) : C.bgElev2)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
-                .stroke(isActive ? C.signalDim : C.hairBold, lineWidth: 1)
-        )
-    }
-
-    // MARK: - Import by link
+    // MARK: - New profile (import by ghs://)
 
     private var importSection: some View {
         VStack(alignment: .leading, spacing: 0) {
+            fieldLabel(L("profile.field.name"))
+            plainField(L("profile.field.name"), text: $newName)
+
             fieldLabel(L("profile.add.title"))
-
-            TextField(L("profile.field.name"), text: $newName)
-                .textFieldStyle(.plain)
-                .font(.custom("JetBrainsMono-Regular", size: 12))
-                .foregroundStyle(C.bone)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 11)
-                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev))
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
-
             TextField("ghs://…", text: $newGhs, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.custom("JetBrainsMono-Regular", size: 12))
@@ -188,7 +137,6 @@ public struct ProfileEditorSheet: View {
                 .padding(.vertical, 11)
                 .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev))
                 .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
-                .padding(.top, 8)
 
             if let err = importError {
                 Text(err)
@@ -198,14 +146,15 @@ public struct ProfileEditorSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            formButton(L("profile.import"), prominent: true, disabled: newGhs.isEmpty) {
-                importProfile()
+            HStack(spacing: 10) {
+                formButton(L("logs.clear.confirm.cancel"), prominent: false, disabled: false) { dismiss() }
+                formButton(L("profile.import"), prominent: true, disabled: newGhs.isEmpty) { importProfile() }
             }
-            .padding(.top, 16)
+            .padding(.top, 18)
         }
     }
 
-    // MARK: - Editor form (single form, everything visible)
+    // MARK: - Editor form (single profile)
 
     @ViewBuilder
     private func editorForm(for profile: VpnProfile) -> some View {
@@ -226,9 +175,7 @@ public struct ProfileEditorSheet: View {
             }
 
             HStack(spacing: 10) {
-                formButton(L("logs.clear.confirm.cancel"), prominent: false, disabled: false) {
-                    cancelEditing()
-                }
+                formButton(L("logs.clear.confirm.cancel"), prominent: false, disabled: false) { dismiss() }
                 formButton(L("profile.save"), prominent: true, disabled: editName.isEmpty || editEndpoint.isEmpty) {
                     saveEditing(profile)
                 }
@@ -237,9 +184,6 @@ public struct ProfileEditorSheet: View {
         }
     }
 
-    /// Relay — дополнительный хоп между клиентом и exit-сервером
-    /// (SNI-passthrough, шифрование end-to-end). Настройка профиля,
-    /// в ghs://-экспорт не попадает.
     @ViewBuilder
     private var relayEditor: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -277,6 +221,17 @@ public struct ProfileEditorSheet: View {
             .foregroundStyle(C.textFaint)
             .padding(.top, 14)
             .padding(.bottom, 6)
+    }
+
+    private func plainField(_ label: String, text: Binding<String>) -> some View {
+        TextField(label, text: text)
+            .textFieldStyle(.plain)
+            .font(.custom("JetBrainsMono-Regular", size: 12))
+            .foregroundStyle(C.bone)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 11)
+            .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev))
+            .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -324,22 +279,17 @@ public struct ProfileEditorSheet: View {
         .opacity(disabled ? 0.5 : 1)
     }
 
-    // MARK: - Editing lifecycle
+    // MARK: - Logic
 
-    private func beginEditing(_ profile: VpnProfile) {
-        editingId = profile.id
+    private func loadIfNeeded() {
+        guard !loaded, let profile = editingProfile else { return }
+        loaded = true
         editName = profile.name
         editEndpoint = profile.serverAddr
         editSni = profile.serverName
         editTun = profile.tunAddr
         editRelayEnabled = profile.relayEnabled ?? false
         editRelayAddr = profile.relayAddr ?? ""
-        editError = nil
-    }
-
-    private func cancelEditing() {
-        editingId = nil
-        editError = nil
     }
 
     private func saveEditing(_ original: VpnProfile) {
@@ -352,15 +302,13 @@ public struct ProfileEditorSheet: View {
         updated.relayEnabled = editRelayEnabled
         updated.relayAddr = relayAddr.isEmpty ? nil : relayAddr
 
-        // connString кодирует endpoint/SNI/tun — пересобираем из
-        // обновлённых полей + существующих cert/key (в памяти, из
-        // Keychain). Если PEM недоступны, оставляем connString пустым:
-        // провайдер соберёт его сам при старте (ConnStringBuilder.build).
+        // connString кодирует endpoint/SNI/tun — пересобираем из обновлённых
+        // полей + существующих cert/key. Если PEM недоступны — оставляем
+        // пустым, провайдер соберёт сам при старте (ConnStringBuilder.build).
         updated.connString = ConnStringBuilder.build(from: updated)
 
         profiles.update(updated)
-        editingId = nil
-        editError = nil
+        dismiss()
     }
 
     private func importProfile() {
@@ -371,9 +319,7 @@ public struct ProfileEditorSheet: View {
                 profile.name = newName
                 profiles.update(profile)
             }
-            newGhs = ""
-            newName = ""
-            importError = nil
+            dismiss()
         } catch {
             importError = "Неверная ghs:// строка"
         }

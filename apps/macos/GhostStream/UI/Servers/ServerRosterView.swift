@@ -28,6 +28,11 @@ public struct ServerRosterView: View {
 
     @State private var rttCache: [String: UInt32] = [:]
     @State private var showAddSheet = false
+    /// Профиль, открытый в редакторе (по клику ⋯). Отдельная сущность от
+    /// самого списка — редактор одного профиля, не список.
+    @State private var editTarget: EditTarget?
+
+    private struct EditTarget: Identifiable { let id: String }
     @State private var rosterStatusBanner: RosterStatusBanner?
     @State private var rosterStatusTtlTask: Task<Void, Never>?
     @State private var probeStatus: String = "RTT PROBE UNAVAILABLE"
@@ -70,6 +75,9 @@ public struct ServerRosterView: View {
         .background(C.bg)
         .sheet(isPresented: $showAddSheet) {
             ProfileEditorSheet()
+        }
+        .sheet(item: $editTarget) { target in
+            ProfileEditorSheet(editProfileId: target.id)
         }
         .task {
             await probeLoop()
@@ -586,15 +594,15 @@ public struct ServerRosterView: View {
                 profiles.setActive(id: row.id)
                 setRosterStatus("Active profile: \(row.name)", kind: .success)
             }
-            .contextMenu {
-                rowMenuCommands(row)
-            }
     }
 
+    /// Клик по ⋯ сразу открывает редактор ЭТОГО профиля (Image #15) —
+    /// без промежуточного выпадающего меню. Set Active = тап по строке;
+    /// удаление/копирование — внутри редактора.
     @ViewBuilder
     private func rowMenu(_ row: RosterRow) -> some View {
-        Menu {
-            rowMenuCommands(row)
+        Button {
+            editTarget = EditTarget(id: row.id)
         } label: {
             Image(systemName: "ellipsis")
                 .foregroundStyle(C.textFaint)
@@ -602,42 +610,8 @@ public struct ServerRosterView: View {
                 .frame(width: 28, height: 24)
                 .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
         .buttonStyle(.plain)
-        .accessibilityLabel("Profile actions")
-    }
-
-    @ViewBuilder
-    private func rowMenuCommands(_ row: RosterRow) -> some View {
-        Button("Set Active") {
-            profiles.setActive(id: row.id)
-            setRosterStatus("Active profile: \(row.name)", kind: .success)
-        }
-        // UI-AUDIT-07/2026: было «Edit», но шит умеет только add/delete —
-        // редактирования существующего профиля там нет. Честный лейбл.
-        Button("Manage…") {
-            profiles.setActive(id: row.id)
-            showAddSheet = true
-        }
-        Button("Copy endpoint") {
-            copy(row.endpoint)
-            setRosterStatus("Endpoint copied", kind: .info)
-        }
-        if let connString = row.connString, !connString.isEmpty {
-            Button("Copy ghs://") {
-                copy(connString)
-                setRosterStatus("ghs:// copied", kind: .info)
-            }
-        }
-        Button("Delete", role: .destructive) {
-            profiles.remove(id: row.id)
-            setRosterStatus("Deleted \(row.name)", kind: .info)
-        }
-    }
-
-    private func copy(_ value: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+        .accessibilityLabel("Edit profile")
     }
 }
 
