@@ -77,14 +77,26 @@ pub async fn run_h2_accept_loop(
                 .map(|certs| certs.to_vec())
                 .unwrap_or_default();
 
-            if peer_certs.is_empty() {
+            // Client fingerprint = identity, derived from the mTLS client cert.
+            // No cert ⇒ not a client ⇒ fake app-face. This branch is the only
+            // authentication boundary on the transport port.
+            //
+            // Do NOT reintroduce an escape hatch that assigns an identity without a
+            // cert (there used to be a PHANTOM_TEST_CERTLESS_FP env var here). The
+            // server TLS config uses `.allow_unauthenticated()` — see
+            // crates/core/src/h2_transport.rs — so a certless handshake *does* reach
+            // this point, and any such branch is an unauthenticated VPN open to the
+            // internet: exit through the NL node, reachability of 10.7.0.0/24 and of
+            // the admin API on 10.7.0.1:8080, under a real client's identity.
+            // The experiment it served (is mTLS what RU DPI throttles?) is finished —
+            // answer is no, see docs/knowledge/architecture/dpi-tspu.md.
+            let client_fp = if peer_certs.is_empty() {
                 tracing::info!("Unauthenticated TLS from {} → fake app-face", remote);
                 fakeapp::handle(tls_stream, remote).await;
                 return;
-            }
-
-            // Fingerprint allowlist check
-            let client_fp = vpn_session::cert_fingerprint(peer_certs[0].as_ref());
+            } else {
+                vpn_session::cert_fingerprint(peer_certs[0].as_ref())
+            };
             {
                 let allowed = allow_list.read().await;
                 if !allowed.is_empty() && !allowed.contains(&client_fp) {

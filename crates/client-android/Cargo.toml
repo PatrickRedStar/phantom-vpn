@@ -19,3 +19,9 @@ jni                   = { version = "0.21", features = ["invocation"] }
 bytes                 = "1"
 serde                 = { version = "1", features = ["derive"] }
 serde_json            = "1"
+
+[features]
+# OFF by default — see client-core-runtime's `lab-overrides`. On top of that one,
+# this enables reading a TransportPolicy from a shell-writable path on the device
+# (`/data/local/tmp`), which is why it must never be compiled into a shipped APK.
+lab-overrides = ["client-core-runtime/lab-overrides"]

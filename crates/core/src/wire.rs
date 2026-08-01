@@ -187,8 +187,9 @@ pub const HEARTBEAT_SENTINEL_VERSION: u8 = 0x00;
 /// The inner packet is `uniform(HEARTBEAT_PKT_MIN, HEARTBEAT_PKT_MAX)` random bytes
 /// with `buf[0] = HEARTBEAT_SENTINEL_VERSION` so receivers' IPv4 filters drop it.
 pub fn build_heartbeat_frame() -> Bytes {
+    let hb = crate::policy::current().heartbeat.clone();
     let mut rng = rand::thread_rng();
-    let pkt_len: usize = rng.gen_range(HEARTBEAT_PKT_MIN..=HEARTBEAT_PKT_MAX);
+    let pkt_len: usize = rng.gen_range(hb.pkt_min..=hb.pkt_max);
 
     // frame body = [2B pkt_len][pkt_bytes][2B 0x0000]
     let body_len = 2 + pkt_len + 2;
@@ -226,8 +227,8 @@ pub fn is_heartbeat_packet(pkt: &[u8]) -> bool {
 /// Used for scheduling the next heartbeat after the first one fires or after
 /// real traffic suppressed a scheduled heartbeat.
 pub fn next_heartbeat_delay() -> Duration {
-    let secs = rand::thread_rng()
-        .gen_range(HEARTBEAT_INTERVAL_MIN_SECS..=HEARTBEAT_INTERVAL_MAX_SECS);
+    let hb = crate::policy::current().heartbeat.clone();
+    let secs = rand::thread_rng().gen_range(hb.interval_min_secs..=hb.interval_max_secs);
     Duration::from_secs(secs)
 }
 
@@ -235,8 +236,8 @@ pub fn next_heartbeat_delay() -> Duration {
 /// seconds. Used once per stream at creation time so streams desynchronize
 /// instead of all firing their first heartbeat at t=20s.
 pub fn first_heartbeat_delay() -> Duration {
-    let secs = rand::thread_rng()
-        .gen_range(HEARTBEAT_START_JITTER_MIN_SECS..=HEARTBEAT_START_JITTER_MAX_SECS);
+    let hb = crate::policy::current().heartbeat.clone();
+    let secs = rand::thread_rng().gen_range(hb.start_jitter_min_secs..=hb.start_jitter_max_secs);
     Duration::from_secs(secs)
 }
 

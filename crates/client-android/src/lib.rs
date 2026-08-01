@@ -229,6 +229,42 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         }
     };
 
+    // Transport policy (ADR 0014). The real source is the server
+    // (`ClientConfigResponse`). Reset to built-in defaults on every start so a
+    // policy installed by a previous tunnel in this same process can't leak in.
+    phantom_core::policy::reset();
+
+    // Anti-DPI lab harness ONLY — levers pushed with `adb push` + reconnect, no
+    // rebuild (docs/knowledge/architecture/dpi-tspu.md, "Харнесс").
+    // Compiled out unless `--features lab-overrides`. It must be a cargo feature
+    // and not `cfg(debug_assertions)`: the JNI lib is built `--release` even for
+    // debug APKs, so a debug_assertions gate would have shipped this. Left
+    // enabled, any local process that can write `/data/local/tmp` rewrites the
+    // whole transport — and, before the supervise.rs fix, also turned off
+    // server-certificate verification.
+    #[cfg(feature = "lab-overrides")]
+    {
+        // `/data/local/tmp` is shell-writable AND app-readable on this device
+        // (Samsung Knox blocks run-as writes into the app files dir), so levers
+        // can be pushed via `adb shell` without run-as. Falls back to files dir.
+        let paths = [
+            "/data/local/tmp/gs_policy.json",
+            "/data/user/0/io.ghoststream.vpn.debug/files/policy_override.json",
+        ];
+        for path in paths {
+            if let Ok(txt) = std::fs::read_to_string(path) {
+                match serde_json::from_str::<phantom_core::policy::TransportPolicy>(&txt) {
+                    Ok(pol) => {
+                        phantom_core::policy::install_policy(&pol);
+                        logcat(4, &format!("[policy] override loaded from {path}"));
+                    }
+                    Err(e) => logcat(5, &format!("[policy] override parse failed ({path}): {e}")),
+                }
+                break;
+            }
+        }
+    }
+
     // ── 3. TUN fd ────────────────────────────────────────────────────────────
     // Don't dup here — client_core_runtime::run() dups internally for
     // BlockingThreads and closes the dup'd fd on supervisor exit.

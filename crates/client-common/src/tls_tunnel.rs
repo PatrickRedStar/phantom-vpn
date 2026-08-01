@@ -191,6 +191,14 @@ pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
     let batch_limit = BATCH_MAX_PLAINTEXT - 16;
     let mut batch: Vec<Bytes> = Vec::with_capacity(64);
 
+    // #3 shaping (ADR 0014): pad each batch up to `padding.target` as a floor so the
+    // tunnel doesn't look like a raw bulk stream. `0`/disabled = legacy (no padding),
+    // so behavior is unchanged unless the server pushes a padding policy.
+    let pad_target = {
+        let p = phantom_core::policy::current();
+        if p.padding.enabled { p.padding.target } else { 0 }
+    };
+
     // First heartbeat is jittered per-stream so all N streams don't fire at t=20.
     let mut next_heartbeat: Instant = Instant::now() + first_heartbeat_delay();
 
@@ -218,7 +226,7 @@ pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
                 }
 
                 let refs: Vec<&[u8]> = batch.iter().map(|p| p.as_ref()).collect();
-                let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
+                let pt_len = match build_batch_plaintext(&refs, pad_target, &mut frame_buf[4..]) {
                     Ok(n) => n,
                     Err(_) => continue,
                 };
@@ -238,7 +246,7 @@ pub async fn tls_tx_loop<W: AsyncWriteExt + Unpin>(
                     match tun_rx.try_recv() {
                         Ok(extra_pkt) => {
                             let refs: Vec<&[u8]> = vec![extra_pkt.as_ref()];
-                            let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
+                            let pt_len = match build_batch_plaintext(&refs, pad_target, &mut frame_buf[4..]) {
                                 Ok(n) => n,
                                 Err(_) => continue,
                             };

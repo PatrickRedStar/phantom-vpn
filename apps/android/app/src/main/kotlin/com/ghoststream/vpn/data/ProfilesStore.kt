@@ -32,7 +32,27 @@ class ProfilesStore private constructor(private val context: Context) {
     val activeId: StateFlow<String?> = _activeId.asStateFlow()
 
     init {
+        maybeImportDebugProfiles()
         load()
+    }
+
+    /**
+     * TEST SCAFFOLDING (debug builds only): if no profile exists yet, seed
+     * profiles.json from /data/local/tmp/gs_profiles.json. That dir is
+     * shell-writable AND app-readable and survives reinstalls, so a clean
+     * `ship-android` install auto-provisions the test profile without needing
+     * run-as write access (blocked by Samsung Knox). No-op in release.
+     */
+    private fun maybeImportDebugProfiles() {
+        if (!com.ghoststream.vpn.BuildConfig.DEBUG) return
+        if (file.exists()) return
+        runCatching {
+            val src = File("/data/local/tmp/gs_profiles.json")
+            if (src.exists()) {
+                file.writeText(src.readText())
+                android.util.Log.i("ProfilesStore", "debug: seeded profiles from ${src.path}")
+            }
+        }
     }
 
     fun getActiveProfile(): VpnProfile? =

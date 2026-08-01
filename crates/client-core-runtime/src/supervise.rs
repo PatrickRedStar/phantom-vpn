@@ -15,7 +15,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use client_common::helpers;
-use client_common::{tls_connect, tls_connect_with_tcp, tls_rx_loop, tls_tx_loop, write_handshake};
+use client_common::{
+    tls_connect, tls_connect_boring, tls_connect_with_tcp, tls_connect_with_tcp_boring,
+    tls_rx_loop, tls_tx_loop, write_handshake, ClientTls,
+};
 use ghoststream_gui_ipc::{ConnState, ConnectProfile, StatusFrame, TunnelSettings};
 use phantom_core::wire::{flow_stream_idx, n_data_streams_with_override};
 use tokio::sync::{watch, Mutex};
@@ -175,7 +178,11 @@ pub async fn supervise(
 
         let tun_addr = cfg.network.tun_addr.clone().unwrap_or_default();
         let sni = cfg.network.server_name.clone().unwrap_or_default();
-        let n_streams = n_data_streams_with_override(settings.streams);
+        // Stream count resolution (ADR 0014): explicit user setting wins, else the
+        // server-pushed transport policy, else automatic (CPU-derived). `None`
+        // everywhere = legacy behavior.
+        let streams_override = settings.streams.or_else(|| phantom_core::policy::current().streams);
+        let n_streams = n_data_streams_with_override(streams_override);
 
         let telemetry = Arc::new(Telemetry::new(
             n_streams,
@@ -447,9 +454,45 @@ async fn drive_tunnel(
     dpi_recycle_secs: Option<u32>,
     dpi_recycle_bytes: Option<u64>,
 ) -> anyhow::Result<()> {
-    let client_tls =
-        phantom_core::h2_transport::make_h2_client_tls(server_ca, client_identity)
-            .context("build TLS client config")?;
+    // Fingerprint dispatch (ADR 0014 Phase 2): rustls by default; boring (uTLS,
+    // browser-family ClientHello) when the transport policy selects a fingerprint.
+    let pol = phantom_core::policy::current();
+    let fingerprint = pol.fingerprint.clone();
+    // mTLS toggle (hypothesis test): when disabled, drop the client certificate
+    // from the TLS handshake entirely (auth then must move in-stream, server-side).
+    let client_identity = if pol.mtls {
+        client_identity
+    } else {
+        tracing::warn!(category = "handshake", "mTLS DISABLED by policy — no client cert in handshake");
+        None
+    };
+    let client_tls = match &fingerprint {
+        phantom_core::policy::ResolvedFingerprint::Default => ClientTls::Rustls(
+            phantom_core::h2_transport::make_h2_client_tls(server_ca, client_identity)
+                .context("build TLS client config")?,
+        ),
+        other => {
+            let profile = match other {
+                phantom_core::policy::ResolvedFingerprint::Named(n) => n.clone(),
+                _ => "boring".to_string(),
+            };
+            // Server-cert verification stays ON. This was hardcoded `true` during
+            // the ADR 0014 Phase 2 boring experiments (to avoid solving Android
+            // root-store loading first); shipping that silently disables cert
+            // verification for every non-default fingerprint — an ADR 0011
+            // violation, and it makes the tunnel MITM-able. Fail closed instead:
+            // if a server-pushed policy selects a fingerprint and the root store
+            // isn't wired up yet, the handshake fails loudly rather than trusting
+            // anything. Opt in only for the lab harness.
+            let insecure = cfg!(feature = "lab-overrides");
+            tracing::warn!(category = "handshake", fp = %profile, insecure,
+                "boring uTLS fingerprint path selected");
+            ClientTls::Boring(
+                client_common::make_boring_client_tls(server_ca, client_identity, profile, insecure)
+                    .context("build boring TLS client config")?,
+            )
+        }
+    };
     let server_name = cfg
         .network
         .server_name
@@ -554,14 +597,22 @@ async fn drive_tunnel(
                             .with_context(|| format!("stream {} tcp connect timeout", idx))?
                             .with_context(|| format!("stream {} tcp connect", idx))?;
 
-                            tls_connect_with_tcp(tcp, server_name.clone(), client_tls.clone())
-                                .await
-                                .with_context(|| format!("stream {} tls connect", idx))?
+                            match &client_tls {
+                                ClientTls::Rustls(c) =>
+                                    tls_connect_with_tcp(tcp, server_name.clone(), c.clone()).await,
+                                ClientTls::Boring(c) =>
+                                    tls_connect_with_tcp_boring(tcp, server_name.clone(), c.clone()).await,
+                            }
+                            .with_context(|| format!("stream {} tls connect", idx))?
                         } else {
                             // Linux/iOS/macOS: no socket protection needed.
-                            tls_connect(server_addr, server_name.clone(), client_tls.clone())
-                                .await
-                                .with_context(|| format!("stream {} tls connect", idx))?
+                            match &client_tls {
+                                ClientTls::Rustls(c) =>
+                                    tls_connect(server_addr, server_name.clone(), c.clone()).await,
+                                ClientTls::Boring(c) =>
+                                    tls_connect_boring(server_addr, server_name.clone(), c.clone()).await,
+                            }
+                            .with_context(|| format!("stream {} tls connect", idx))?
                         };
                         tracing::debug!(
                             category = "handshake",

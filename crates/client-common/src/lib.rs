@@ -7,6 +7,10 @@ pub mod tls_tunnel;
 
 pub use helpers::Args;
 pub use tls_handshake::{connect as tls_connect, connect_with_tcp as tls_connect_with_tcp};
+pub use tls_handshake::{
+    connect_boring as tls_connect_boring, connect_with_tcp_boring as tls_connect_with_tcp_boring,
+    make_boring_client_tls, BoringClientTls, ClientTls,
+};
 pub use tls_tunnel::{tls_rx_loop, tls_tx_loop, write_handshake};
 
 /// If `addr` lacks a port, append `:<default_port>`. Handles plain hostnames
