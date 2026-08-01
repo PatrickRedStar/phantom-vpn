@@ -40,9 +40,6 @@ class RoutingRulesManager(private val context: Context) {
             "private" to "Приватные сети",
         )
 
-        // Android VpnService has Binder payload limits during Builder.establish().
-        // We coarsen dense country lists to keep route table manageable.
-        private const val ANDROID_MAX_IPV4_PREFIX = 18
     }
 
     fun sourceUrl(code: String): String = "$BASE_URL/$code.txt"
@@ -144,10 +141,23 @@ class RoutingRulesManager(private val context: Context) {
         if (prefix !in 0..32) return null
 
         val ipv4 = ipv4ToInt(addr) ?: return null
-        val effectivePrefix = minOf(prefix, ANDROID_MAX_IPV4_PREFIX)
-        val mask = if (effectivePrefix == 0) 0 else (-1 shl (32 - effectivePrefix))
+        // Keep the prefix EXACTLY as published. Do not clamp it here.
+        //
+        // This used to be `minOf(prefix, 18)` to keep the route table small, but every
+        // entry in this list is an exception carved OUT of the tunnel — the tunnel
+        // routes are its complement, computed in crates/core/src/routing.rs. Widening
+        // an entry therefore does not lose precision, it pushes addresses out of the
+        // tunnel: `5.8.16.0/22` became `5.8.0.0/18`, sending 16× more addresses out in
+        // the clear with the user's real IP. In v2fly/geoip `ru.txt`, 12 169 of 22 710
+        // entries are narrower than /18, so this leaked tens of millions of addresses
+        // the user believed were covered.
+        //
+        // Route-table size is now bounded on the Rust side by
+        // `phantom_core::routing::MAX_VPN_ROUTES`, which sheds routes the only safe
+        // way — dropping direct entries, so the range falls back INTO the tunnel.
+        val mask = if (prefix == 0) 0 else (-1 shl (32 - prefix))
         val network = ipv4 and mask
-        return "${intToIpv4(network)}/$effectivePrefix"
+        return "${intToIpv4(network)}/$prefix"
     }
 
     private fun ipv4ToInt(ip: String): Int? {
