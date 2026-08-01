@@ -464,6 +464,10 @@ pub fn spawn_telem_task(
             cur.last_rx_ms = last_rx_ms;
             cur.last_tx_ms = last_tx_ms;
             cur.idle_rx_secs = idle_rx_secs;
+            if let Some(dns) = phantom_core::dns_observer::last() {
+                cur.dns_observed = Some(format!("{}:{}", dns.addr, dns.port));
+                cur.dns_queries = dns.queries;
+            }
 
             // TSPU-128 signature classification. Log on edge changes.
             let (new_bw, new_counter) = derive_bandwidth_class(

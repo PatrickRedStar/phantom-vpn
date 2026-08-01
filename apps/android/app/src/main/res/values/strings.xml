@@ -112,6 +112,22 @@
 
     <string name="kv_route">Route</string>
     <string name="kv_route_relay">Relay</string>
+
+    <!-- DNS health: a tunnel that carries bytes but resolves no names is unusable. -->
+    <string name="kv_dns">DNS</string>
+    <string name="dns_ok">%1$s · %2$d ms</string>
+    <string name="dns_probing">checking…</string>
+    <string name="dns_dead">%1$s · not responding</string>
+    <!-- Used when the concrete resolver could not be determined. -->
+    <string name="dns_via_tunnel">through tunnel</string>
+    <string name="state_no_names_verb">No names</string>
+    <string name="dns_banner_title">DNS not working</string>
+    <string name="dns_banner_generic">The tunnel is carrying data, but site names are not resolving. Nothing will open until DNS recovers.</string>
+    <string name="dns_banner_private">The tunnel is carrying data, but site names are not resolving. The system has Private DNS in strict mode — %1$s. Android must send every query only there, and that does not get through the tunnel.</string>
+    <string name="dns_banner_open_settings">open DNS settings</string>
+    <string name="dns_banner_why">why this happens →</string>
+    <string name="dns_banner_why_hide">collapse ↑</string>
+    <string name="dns_banner_why_text">Strict mode requires Android to send every DNS query to one specific server, and only over an encrypted channel. If that server is unreachable from inside the tunnel, the system does not fall back: by design it would rather fail than send the query in the clear.\n\nSo names stop resolving entirely, even though data flows through the tunnel and sites open by IP.\n\nSwitching to “Automatic” lifts the requirement — DNS then goes through the tunnel.</string>
     <string name="kv_route_direct">Direct</string>
 
     <string name="tag_active">Active</string>

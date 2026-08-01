@@ -384,6 +384,19 @@ pub struct StatusFrame {
     /// Seconds until the next reconnect attempt. `None` if not waiting.
     #[serde(default)]
     pub reconnect_next_delay_secs: Option<u32>,
+    /// Where DNS queries are actually going, as seen on the wire leaving the
+    /// TUN — e.g. `"8.8.8.8:53"` or `"111.88.96.55:853"` for DoT. `None` until a
+    /// DNS packet is observed.
+    ///
+    /// Observed, not configured. The tunnel's own DNS servers can be overridden
+    /// by the phone (strict Private DNS does), so a resolver read from settings
+    /// answers a different question than "where did the query go".
+    #[serde(default)]
+    pub dns_observed: Option<String>,
+    /// DNS queries observed this session. `0` means we have not seen one yet —
+    /// which is not the same as DNS being broken.
+    #[serde(default)]
+    pub dns_queries: u64,
     /// Unix-ms timestamp of last byte received from server. `0` if no
     /// RX yet this session. New in v0.24.0.
     #[serde(default)]
@@ -423,6 +436,8 @@ impl Default for StatusFrame {
             tun_addr: None,
             server_addr: None,
             sni: None,
+            dns_observed: None,
+            dns_queries: 0,
             last_error: None,
             reconnect_attempt: None,
             reconnect_next_delay_secs: None,

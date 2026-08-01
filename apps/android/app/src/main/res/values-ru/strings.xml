@@ -107,6 +107,22 @@
 
     <string name="kv_route">Маршрут</string>
     <string name="kv_route_relay">Relay</string>
+
+    <!-- DNS health: туннель может нести байты и при этом не разрешать имена. -->
+    <string name="kv_dns">DNS</string>
+    <string name="dns_ok">%1$s · %2$d мс</string>
+    <string name="dns_probing">проверка…</string>
+    <string name="dns_dead">%1$s · не отвечает</string>
+    <!-- Подставляется, когда узнать конкретный сервер не удалось. -->
+    <string name="dns_via_tunnel">через туннель</string>
+    <string name="state_no_names_verb">Нет имён</string>
+    <string name="dns_banner_title">DNS не работает</string>
+    <string name="dns_banner_generic">Туннель передаёт данные, но имена сайтов не разрешаются. Пока DNS не восстановится, ничего не откроется.</string>
+    <string name="dns_banner_private">Туннель передаёт данные, но имена сайтов не разрешаются. В системе включён Приватный DNS в строгом режиме — %1$s. Android обязан отправлять все запросы только туда, и через туннель это не проходит.</string>
+    <string name="dns_banner_open_settings">открыть настройки DNS</string>
+    <string name="dns_banner_why">почему так →</string>
+    <string name="dns_banner_why_hide">свернуть ↑</string>
+    <string name="dns_banner_why_text">Строгий режим обязывает Android слать все DNS-запросы только на указанный сервер и только по шифрованному каналу. Если этот сервер недоступен изнутри туннеля, система не подставляет запасной вариант: по замыслу лучше отказать, чем отправить запрос в открытом виде.\n\nПоэтому имена не разрешаются совсем, хотя данные через туннель идут и сайты по IP открываются.\n\nРежим «Автоматически» снимает это требование — DNS пойдёт через туннель.</string>
     <string name="kv_route_direct">Напрямую</string>
 
     <string name="tag_active">Активен</string>

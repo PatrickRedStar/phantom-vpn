@@ -617,6 +617,11 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // sessions through the VPN within minutes.
         acquireTunnelWakeLock()
 
+        // Is name resolution actually working through the tunnel? Stream count and
+        // byte counters cannot answer that — see DnsHealthMonitor for the incident
+        // where 6.8 MB/s flowed while nothing resolved and the UI stayed green.
+        DnsHealthMonitor.start(this, serverName)
+
         // Watchdog will transition to Connected once Rust reports state=connected.
         // Note: VpnState.Connecting was already set by DashboardViewModel.startVpn()
         // before the service intent was sent, so no update needed here.
@@ -862,6 +867,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // below) so Android's NetworkAgent has time to fully release the VPN
         // network slot before a fresh tunnel attempts to claim it.
         teardownInProgress = true
+        // Clear the DNS indicator immediately — a stale "DNS ok" next to a
+        // torn-down tunnel is exactly the kind of lie this monitor exists to stop.
+        DnsHealthMonitor.stop()
         // v0.27.0 (W8): release the tunnel wake lock as soon as we're tearing
         // down. No reason to keep CPU pinned through the 1500 ms cooldown +
         // nativeStop teardown — those don't need real-time scheduling.

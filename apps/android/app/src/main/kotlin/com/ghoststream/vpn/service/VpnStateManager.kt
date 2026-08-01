@@ -116,6 +116,13 @@ data class StatusFrameData(
     val lastError: String? = null,
     val serverAddr: String? = null,
     val sni: String? = null,
+    /**
+     * Where DNS queries were actually seen going, e.g. `"8.8.8.8:53"` or
+     * `"111.88.96.55:853"`. Observed on the wire by the Rust data path — this is
+     * the real destination, not the configured one, which can differ when the
+     * phone overrides the tunnel's DNS servers.
+     */
+    val dnsObserved: String? = null,
 ) {
     companion object {
         fun fromJson(json: String): StatusFrameData? = runCatching {
@@ -152,6 +159,8 @@ data class StatusFrameData(
                 serverAddr = if (o.has("server_addr") && !o.isNull("server_addr"))
                     o.optString("server_addr") else null,
                 sni = if (o.has("sni") && !o.isNull("sni")) o.optString("sni") else null,
+                dnsObserved = if (o.has("dns_observed") && !o.isNull("dns_observed"))
+                    o.optString("dns_observed") else null,
             )
         }.getOrNull()
     }

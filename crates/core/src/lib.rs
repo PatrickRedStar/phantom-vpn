@@ -2,9 +2,11 @@ pub mod error;
 pub mod wire;
 pub mod mtu;
 pub mod config;
+pub mod policy;
 pub mod tls;
 pub mod h2_transport;
 pub mod routing;
+pub mod dns_observer;
 #[cfg(all(target_os = "linux", feature = "io-uring-tun"))]
 pub mod tun_uring;
 

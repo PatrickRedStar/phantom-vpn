@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -43,6 +44,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -247,6 +249,16 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     // Defined inside DashboardScreen so they can pull profile/stats/
     // viewModel/buffers without prop drilling. Each one is the building
     // block reused across the three layouts.
+    val dnsHealth by com.ghoststream.vpn.service.DnsHealthMonitor.state.collectAsStateWithLifecycle()
+
+    // A tunnel that carries bytes but resolves no names is not a working tunnel,
+    // so the headline has to say so. Previously it read a green "Передача." with
+    // 8/8 streams while nothing opened, which is what kept the 2026-07-31 DNS
+    // failure invisible. Only override once the tunnel is actually up — during
+    // Connecting/Error the tunnel state is the more useful thing to show.
+    val dnsDead = dnsHealth is com.ghoststream.vpn.service.DnsHealth.Dead &&
+        (vpnState is VpnState.Connected || vpnState is VpnState.Stale || vpnState is VpnState.Throttled)
+
     val stateHeadlineSection: @Composable () -> Unit = {
         Column(Modifier.padding(horizontal = 22.dp, vertical = 16.dp).padding(top = 12.dp)) {
             Text(
@@ -256,32 +268,36 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
             )
             Spacer(Modifier.height(10.dp))
             AnimatedContent(
-                targetState = vpnState,
+                targetState = vpnState to dnsDead,
                 transitionSpec = {
                     (fadeIn() + slideInVertically { it / 3 }) togetherWith
                         (fadeOut() + slideOutVertically { -it / 3 })
                 },
                 label = "state_headline",
-            ) { state ->
-                val (verb, tail) = when (state) {
-                    is VpnState.Connected     -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
-                    is VpnState.Stale         -> stringResource(R.string.state_stale_verb) to " ${state.idleRxSecs}s${stringResource(R.string.state_period)}"
-                    is VpnState.Throttled     -> stringResource(R.string.state_throttled_verb) to " ${state.currentKbps} kbps${stringResource(R.string.state_period)}"
-                    is VpnState.Reconnecting  -> stringResource(R.string.state_reconnecting_verb) to " ${state.attempt}/8${stringResource(R.string.state_ellipsis)}"
-                    is VpnState.Connecting    -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
-                    is VpnState.Error         -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
-                    is VpnState.Disconnecting -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
-                    else                      -> stringResource(R.string.state_standby_verb) to stringResource(R.string.state_period)
+            ) { (state, noNames) ->
+                // `noNames` wins over the tunnel state: bytes are moving but the
+                // tunnel is unusable, and that is the more important fact.
+                val (verb, tail) = when {
+                    noNames                        -> stringResource(R.string.state_no_names_verb) to stringResource(R.string.state_period)
+                    state is VpnState.Connected    -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
+                    state is VpnState.Stale        -> stringResource(R.string.state_stale_verb) to " ${state.idleRxSecs}s${stringResource(R.string.state_period)}"
+                    state is VpnState.Throttled    -> stringResource(R.string.state_throttled_verb) to " ${state.currentKbps} kbps${stringResource(R.string.state_period)}"
+                    state is VpnState.Reconnecting -> stringResource(R.string.state_reconnecting_verb) to " ${state.attempt}/8${stringResource(R.string.state_ellipsis)}"
+                    state is VpnState.Connecting   -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
+                    state is VpnState.Error        -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
+                    state is VpnState.Disconnecting -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
+                    else                           -> stringResource(R.string.state_standby_verb) to stringResource(R.string.state_period)
                 }
-                val accent = when (state) {
-                    is VpnState.Connected      -> C.signal
-                    is VpnState.Stale          -> C.warn
-                    is VpnState.Throttled      -> C.warn
-                    is VpnState.Reconnecting   -> C.danger
-                    is VpnState.Error          -> C.danger
-                    is VpnState.Connecting,
-                    is VpnState.Disconnecting  -> C.warn
-                    else                       -> C.textDim
+                val accent = when {
+                    noNames                        -> C.danger
+                    state is VpnState.Connected    -> C.signal
+                    state is VpnState.Stale        -> C.warn
+                    state is VpnState.Throttled    -> C.warn
+                    state is VpnState.Reconnecting -> C.danger
+                    state is VpnState.Error        -> C.danger
+                    state is VpnState.Connecting ||
+                        state is VpnState.Disconnecting -> C.warn
+                    else                           -> C.textDim
                 }
                 Text(
                     text = serifAccent(verb, tail, accent),
@@ -472,6 +488,150 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         }
     }
 
+    // ── СЕТЬ: is the tunnel actually usable? ─────────────────────────────────
+    // Byte counters and stream count cannot answer that; only a real resolve can.
+    val networkCardSection: @Composable () -> Unit = {
+        val dns = dnsHealth
+        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.kv_dns),
+                        style = com.ghoststream.vpn.ui.theme.GsText.labelMono,
+                        color = C.textFaint,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val dotColor = when (dns) {
+                            is com.ghoststream.vpn.service.DnsHealth.Ok -> C.signal
+                            is com.ghoststream.vpn.service.DnsHealth.Dead -> C.danger
+                            else -> C.textFaint
+                        }
+                        Box(
+                            Modifier
+                                .size(7.dp)
+                                .background(dotColor, androidx.compose.foundation.shape.CircleShape),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        // Always name the server that is actually resolving. "Through
+                        // the tunnel" on its own is ambiguous — the same address can
+                        // sit in both the app and the phone, and strict Private DNS
+                        // silently overrides whatever the tunnel configured.
+                        //
+                        // Prefer what the Rust data path SAW leaving the TUN over what
+                        // is configured anywhere: configuration says what should
+                        // happen, the wire says what did.
+                        val observed = statusFrame?.dnsObserved?.let { raw ->
+                            val ip = raw.substringBeforeLast(':')
+                            val port = raw.substringAfterLast(':', "")
+                            if (port == "853") "$ip · DoT" else ip
+                        }
+                        val configured = (dns as? com.ghoststream.vpn.service.DnsHealth.Ok)?.resolver
+                            ?: (dns as? com.ghoststream.vpn.service.DnsHealth.Dead)?.resolver
+                        val resolverName = observed
+                            ?: configured
+                            ?: stringResource(R.string.dns_via_tunnel)
+                        Text(
+                            text = when (dns) {
+                                is com.ghoststream.vpn.service.DnsHealth.Ok ->
+                                    stringResource(R.string.dns_ok, resolverName, dns.latencyMs)
+                                is com.ghoststream.vpn.service.DnsHealth.Dead ->
+                                    stringResource(R.string.dns_dead, resolverName)
+                                com.ghoststream.vpn.service.DnsHealth.Probing ->
+                                    stringResource(R.string.dns_probing)
+                                else -> stringResource(R.string.kv_value_dash)
+                            },
+                            style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
+                            color = when (dns) {
+                                is com.ghoststream.vpn.service.DnsHealth.Ok -> C.bone
+                                is com.ghoststream.vpn.service.DnsHealth.Dead -> C.danger
+                                else -> C.textDim
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Shown only on a confirmed DNS failure. Names the culprit *only* when the
+    // platform tells us one — the hostname comes from LinkProperties, never a
+    // constant, and when strict Private DNS is off we say nothing about causes.
+    val dnsBannerSection: @Composable () -> Unit = {
+        val dns = dnsHealth
+        if (dns is com.ghoststream.vpn.service.DnsHealth.Dead) {
+            val ctx = LocalContext.current
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp)
+                    .padding(bottom = 12.dp)
+                    .border(1.dp, C.danger.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 14.dp, vertical = 13.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.dns_banner_title).uppercase(),
+                    style = com.ghoststream.vpn.ui.theme.GsText.labelMono,
+                    color = C.danger,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = dns.strictPrivateDnsHost?.let {
+                        stringResource(R.string.dns_banner_private, it)
+                    } ?: stringResource(R.string.dns_banner_generic),
+                    style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
+                    color = C.textDim,
+                )
+                var showWhy by rememberSaveable { mutableStateOf(false) }
+                if (showWhy) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = stringResource(R.string.dns_banner_why_text),
+                        style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
+                        color = C.textFaint,
+                    )
+                }
+                if (dns.strictPrivateDnsHost != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, C.warn, RoundedCornerShape(8.dp))
+                            .clickable { openPrivateDnsSettings(ctx) }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.dns_banner_open_settings).uppercase(),
+                            style = com.ghoststream.vpn.ui.theme.GsText.labelMono,
+                            color = C.warn,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(7.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, C.hairBold, RoundedCornerShape(8.dp))
+                        .clickable { showWhy = !showWhy }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = stringResource(
+                            if (showWhy) R.string.dns_banner_why_hide else R.string.dns_banner_why,
+                        ).uppercase(),
+                        style = com.ghoststream.vpn.ui.theme.GsText.labelMono,
+                        color = C.textDim,
+                    )
+                }
+            }
+        }
+    }
+
     // FAB bar — Stop button is available across *every* "VPN is up-ish"
     // state so the user can bail out of a degraded session without
     // toggling Airplane mode. v0.24.0: include Stale/Throttled/Reconnecting
@@ -612,8 +772,10 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                             .verticalScroll(rememberScrollState())
                             .padding(top = 16.dp),
                     ) {
+                        dnsBannerSection()
                         scopeCardSection()
                         muxCardSection()
+                        networkCardSection()
                         kvCardSection()
                         Spacer(Modifier.height(16.dp))
                     }
@@ -636,8 +798,10 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                         timerRowSection()
                         emptyHintSection()
                         preflightSection()
+                        dnsBannerSection()
                         scopeCardSection()
                         muxCardSection()
+                        networkCardSection()
                         kvCardSection()
                         Spacer(Modifier.height(12.dp))
                         fabSection(Modifier)
@@ -658,8 +822,10 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     timerRowSection()
                     emptyHintSection()
                     preflightSection()
+                    dnsBannerSection()
                     scopeCardSection()
                     muxCardSection()
+                    networkCardSection()
                     kvCardSection()
                     Spacer(Modifier.weight(1f))
                 }
@@ -668,6 +834,37 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
             }
         }
     }
+}
+
+/**
+ * Opens the closest system screen to the Private DNS setting.
+ *
+ * `android.settings.PRIVATE_DNS_SETTINGS` is **not** universal — verified absent
+ * on Galaxy Z Fold 8 / One UI ("No activity found"), where the setting lives under
+ * Connections → More connection settings. So resolve each candidate against the
+ * package manager and launch the first one that actually exists, instead of
+ * relying on startActivity throwing: a button that silently does nothing is worse
+ * than one that lands a screen or two away.
+ */
+private fun openPrivateDnsSettings(ctx: Context) {
+    val candidates = listOf(
+        "android.settings.PRIVATE_DNS_SETTINGS",
+        Settings.ACTION_WIRELESS_SETTINGS,
+        Settings.ACTION_SETTINGS,
+    )
+    // Resolve everything FIRST, launch exactly once. The previous version started
+    // an activity inside the loop, and with FLAG_ACTIVITY_NEW_TASK from an Activity
+    // context One UI both raised the existing Settings task and created another —
+    // two windows, the first collapsing before it finished drawing.
+    val action = candidates.firstOrNull { a ->
+        Intent(a).resolveActivity(ctx.packageManager) != null
+    } ?: return
+    val intent = Intent(action).apply {
+        // NEW_TASK is only required when launching from a non-Activity context.
+        // Adding it from an Activity is what produced the double window.
+        if (ctx !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { ctx.startActivity(intent) }
 }
 
 @Composable

@@ -279,6 +279,9 @@ pub async fn run(
                 }
                 tun_fd_to_close = Some(raw_fd);
                 tracing::info!(category = "tun", name = "blocking", mtu = 0, addr = "", tun_fd = raw_fd, "created");
+                // Fresh tunnel, fresh observations — never show the previous
+                // session's resolver next to a new tunnel.
+                phantom_core::dns_observer::reset();
 
                 // ── Persistent reader/writer threads (CRIT-2, v0.25.2) ──────
                 //
@@ -345,6 +348,10 @@ pub async fn run(
                                 );
                                 break;
                             }
+                            // Note where DNS is actually going. Header-only, no
+                            // allocation — see dns_observer for why configuration
+                            // is not a trustworthy answer to that question.
+                            phantom_core::dns_observer::observe(&buf[..n as usize]);
                             let pkt = Bytes::copy_from_slice(&buf[..n as usize]);
                             if persist_read_tx.blocking_send(pkt).is_err() {
                                 tracing::debug!(category = "tun", tun_fd = tun_fd_reader, "reader: channel closed");
