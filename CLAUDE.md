@@ -82,11 +82,16 @@ gstack CLI (обязателен): [docs/knowledge/tools/gstack.md](docs/knowled
 
 | Алиас | IP | Роль |
 |---|---|---|
-| `vdsina` | 89.110.109.128 | NL exit — phantom-server + nginx frontend |
-| `vps_balancer` | 158.160.135.140 | RU relay (за nginx SNI map :443→:5443) + phantom-client → microsocks SOCKS5:10808 для 3x-ui outbound. **Также: 3x-ui панель + xray** — менять nginx/iptables только через reload, не restart. |
-| — | 193.187.95.128 | Прежний RU relay — выводится из ротации после v0.22.x. |
+| `vdsina` | 89.110.109.128 | **NL exit** — `phantom-server.service` (systemd) на `:8443` + admin API `10.7.0.1:8080` + nginx frontend. ⚠️ **Из РФ фильтруются порты 22 и 443** этого IP (SYN проходит, TLS/SSH молчат); `:8443` работает. Поэтому upstream реле — только `:8443`. |
+| `balancer.bikini-bottom.com` | **158.160.135.140** | **БОЕВОЙ RU relay с 2026-07-31.** `phantom-relay` на `127.0.0.1:5443` за nginx-stream (`ssl_preread` уже маршрутизирует `tls.nl2.*` и `relay.*` сюда — правка nginx не нужна). Upstream `89.110.109.128:8443`. Даёт **6 МБ/с** с мобильной сети. SSH `vps_balancer` (порт 9083). ⚠️ Здесь же прод 3x-ui + xray — трогать только `phantom-relay`, nginx максимум reload. |
+| `relay.bikini-bottom.com` | 89.169.175.55 | **Выведен из тракта: оператор режет этот IP до ~15 КБ/с** (проверено сырым HTTPS, любой порт/SNI; с NL и из дома тот же адрес даёт 57/34 МБ/с). Реле настроено и живо, серт автопродляется — держим как резерв, но клиентов сюда не направлять. Прежний **боевой RU relay** — `phantom-relay.service`, биндится `0.0.0.0:443` напрямую, без nginx и без docker. Passthrough → `89.110.109.128:8443`, `expected_sni = tls.nl2.bikini-bottom.com`. certbot standalone на `:80`, серт своего имени автопродляется, `renew_hook` рестартует relay (серт читается только при старте). SSH: `ssh -l spongebob 89.169.175.55 -i ~/.ssh/personal`. |
+| `vps_balancer` | 158.160.135.140 | 3x-ui панель + xray + phantom-client → microsocks SOCKS5:10808. Relay-ветка здесь **мертва** (в журнале только SNI mismatch). Менять nginx/iptables только через reload, не restart. |
+| — | 82.38.66.138 | poland — **выведен**, VPS не продлевается. Из тракта убран 2026-07-31. |
+| — | 193.187.95.128 | Прежний RU relay — из ротации выведен. |
 
-SSH: алиасы в `~/.ssh/config`. Claude Code обычно запущен на vdsina — сборка server/linux/android идёт локально.
+SSH: алиасы в `~/.ssh/config`.
+
+**Инвариант топологии:** `клиент → relay 89.169.175.55:443 (SNI=tls.nl2.bikini-bottom.com) → exit 89.110.109.128:8443`. Если `expected_sni` реле не совпадёт с SNI клиента — реле отдаёт свой fallback-серт `relay.bikini-bottom.com`, и **все** клиенты падают с `BadCertificate`. Это не мягкий отказ.
 
 ## Текущая версия
 
@@ -151,7 +156,7 @@ Key routing rules:
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ghoststream** (8595 symbols, 29895 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ghoststream** (9240 symbols, 36108 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

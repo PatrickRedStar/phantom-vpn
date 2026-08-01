@@ -1,23 +1,38 @@
-# phantom-relay on vps_balancer (158.160.135.140), behind nginx stream.
+# phantom-relay on the production RU relay: 89.169.175.55 (Yandex Cloud AS200350).
+# systemd unit, no docker, no nginx in front — binds :443 directly.
 #
 # Public traffic flow:
 #   client TLS w/ SNI=tls.nl2.bikini-bottom.com  (NL phantom-server cert SAN)
-#     → :443 nginx (ssl_preread; map matches both relay.* and tls.nl2.*)
-#       → 127.0.0.1:5443 phantom-relay
-#         → 89.110.109.128:443 phantom-server (NL exit)
+#     → 89.169.175.55:443 phantom-relay  (raw copy_bidirectional, no TLS termination)
+#       → 89.110.109.128:8443 phantom-server (NL exit, vdsina)
 #
-# expected_sni MUST equal the SNI clients send. Clients pin the cert chain
-# of the NL phantom-server, whose cert is for tls.nl2.bikini-bottom.com — so
-# that's the SNI they put in ClientHello, even when the TCP destination is
-# the relay host.
+# upstream MUST be :8443, NOT :443.
+#   Measured 2026-07-31 from two RU hosts: 89.110.109.128:443 accepts the SYN but
+#   the TLS handshake never completes (silent drop, no RST) — same for :22. Port
+#   8443 on the very same IP answers in ~150 ms with a valid cert. So the NL exit
+#   is reachable from RU only on non-443 ports; :443 is filtered on the RU side.
+#   The host itself has ufw inactive and no DROP/REJECT rules — not host-side.
 #
-# Fallback (cert/key) — LE cert for relay.bikini-bottom.com, served only
-# when something hits relay with the wrong SNI (probe, scanner). Real
-# clients never trigger fallback because nginx already gates the SNIs that
-# reach relay.
+# expected_sni MUST equal the SNI clients send. Clients pin the cert chain of the
+# NL phantom-server, whose LE cert covers tls.nl2.bikini-bottom.com — so that's
+# the SNI in their ClientHello even though the TCP destination is the relay host.
+# A mismatch here is not a soft failure: the relay falls back to its own
+# relay.bikini-bottom.com cert and every client dies with BadCertificate.
+#
+# Fallback (cert/key) — LE cert for relay.bikini-bottom.com, served only when
+# something hits the relay with the wrong SNI (probe, scanner).
+#
+# Since 2026-07-31 `relay.bikini-bottom.com` resolves to .55 and the cert is issued
+# and renewed on the host itself: certbot standalone on :80 (port is free — the relay
+# owns :443 only), renewal config carries `renew_hook = systemctl restart
+# phantom-relay` because the relay reads the cert once at startup and would otherwise
+# keep serving the expired one until the next manual restart.
+#
+# Giving the relay its own name on its own RU IP is also the precondition for ADR 0014
+# P1 (relay terminates honest TLS on its own domain instead of raw passthrough).
 
-listen_addr  = "127.0.0.1:5443"
-upstream_addr = "89.110.109.128:443"
+listen_addr  = "0.0.0.0:443"
+upstream_addr = "89.110.109.128:8443"
 expected_sni = "tls.nl2.bikini-bottom.com"
 
 cert_path = "/etc/letsencrypt/live/relay.bikini-bottom.com/fullchain.pem"

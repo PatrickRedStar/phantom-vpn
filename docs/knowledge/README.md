@@ -18,6 +18,7 @@ updated: 2026-04-17
 |---|---|
 | `crates/core/src/wire.rs`, batch/frame/padding | [architecture/wire-format.md](architecture/wire-format.md) |
 | `crates/core/src/tls.rs`, mTLS, handshake, mimicry warmup | [architecture/handshake.md](architecture/handshake.md), [architecture/crypto.md](architecture/crypto.md) |
+| DPI/ТСПУ, обход детекта, ClientHello fingerprint, SNI, relay-камуфляж | [architecture/dpi-tspu.md](architecture/dpi-tspu.md) |
 | `server/server/src/vpn_session.rs`, SessionCoordinator, attach/detach | [architecture/sessions.md](architecture/sessions.md) |
 | `server/server/src/main.rs`, TLS accept, nginx passthrough | [architecture/transport.md](architecture/transport.md), [platforms/server.md](platforms/server.md) |
 | `crates/relay/` или RU-хоп (193.187.95.128) | [platforms/server.md](platforms/server.md) (секция "Relay SNI passthrough") |
