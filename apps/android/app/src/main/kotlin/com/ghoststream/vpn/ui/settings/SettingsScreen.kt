@@ -44,6 +44,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -665,6 +666,7 @@ fun SettingsScreen(
                     GhostFab(
                         text = stringResource(R.string.action_admin_panel),
                         outline = true,
+                        glow = false,
                         onClick = {
                             val id = editingProfile!!.id
                             editingProfile = null
@@ -758,6 +760,13 @@ private fun PhoneSettingsBody(
     onEditProfile: (VpnProfile) -> Unit,
     onAdminNavigate: (String) -> Unit,
 ) {
+    // Живой туннель важнее TCP-ping — см. ProfileCard.vpnLive
+    val vpnLiveState by com.ghoststream.vpn.service.VpnStateManager.derivedVpnState
+        .collectAsStateWithLifecycle()
+    val vpnLive = vpnLiveState is com.ghoststream.vpn.service.VpnState.Connected ||
+        vpnLiveState is com.ghoststream.vpn.service.VpnState.Stale ||
+        vpnLiveState is com.ghoststream.vpn.service.VpnState.Throttled ||
+        vpnLiveState is com.ghoststream.vpn.service.VpnState.Reconnecting
     val context = LocalContext.current
     val version = com.ghoststream.vpn.BuildConfig.VERSION_NAME
     val gitTag = com.ghoststream.vpn.BuildConfig.GIT_TAG
@@ -770,7 +779,7 @@ private fun PhoneSettingsBody(
     ) {
         ScreenHeader(
             brand = stringResource(R.string.brand_settings),
-            meta = { HeaderMeta(text = stringResource(R.string.version_fmt, version, gitTag)) },
+            meta = { HeaderMeta(text = version) },
         )
 
         // ── Endpoints ───────────────────────────────────────────────
@@ -793,6 +802,7 @@ private fun PhoneSettingsBody(
                     subscriptionText = profileSubscriptions[profile.id],
                     onTap = { viewModel.setActiveProfile(profile.id) },
                     onEdit = { onEditProfile(profile) },
+                    vpnLive = vpnLive,
                     onLongPressAdmin = if (profile.cachedIsAdmin == true) {
                         { onAdminNavigate(profile.id) }
                     } else null,
@@ -904,6 +914,13 @@ private fun MasterPane(
     onEditProfile: (VpnProfile) -> Unit,
     onAdminNavigate: (String) -> Unit,
 ) {
+    // Живой туннель важнее TCP-ping — см. ProfileCard.vpnLive
+    val vpnLiveState by com.ghoststream.vpn.service.VpnStateManager.derivedVpnState
+        .collectAsStateWithLifecycle()
+    val vpnLive = vpnLiveState is com.ghoststream.vpn.service.VpnState.Connected ||
+        vpnLiveState is com.ghoststream.vpn.service.VpnState.Stale ||
+        vpnLiveState is com.ghoststream.vpn.service.VpnState.Throttled ||
+        vpnLiveState is com.ghoststream.vpn.service.VpnState.Reconnecting
     val version = com.ghoststream.vpn.BuildConfig.VERSION_NAME
     val gitTag = com.ghoststream.vpn.BuildConfig.GIT_TAG
 
@@ -915,7 +932,7 @@ private fun MasterPane(
     ) {
         ScreenHeader(
             brand = stringResource(R.string.brand_settings),
-            meta = { HeaderMeta(text = stringResource(R.string.version_fmt, version, gitTag)) },
+            meta = { HeaderMeta(text = version) },
         )
 
         // ── Endpoints ───────────────────────────────────────────────
@@ -939,6 +956,8 @@ private fun MasterPane(
                     // detail-pane selection so master-detail correlation
                     // is visually clear on Expanded.
                     active = profile.id == activeProfileId || isSelectedInDetail,
+                    isActiveProfile = profile.id == activeProfileId,
+                    vpnLive = vpnLive,
                     latencyMs = pingResults[profile.id],
                     isPinging = profile.id in pinging,
                     subscriptionText = profileSubscriptions[profile.id],
@@ -977,24 +996,27 @@ private fun MasterPane(
         // is highlighted in lime — mirrors selected ProfileCard styling
         // so the user knows where they are.
         SectionLabel(text = stringResource(R.string.set_sections))
-        SectionCard {
-            SectionSelectorRow(
+        // ADR 0015 (мокап v3): разделы — полноширинные pill-чипы, активный
+        // lime. Прежний остров со стрелками «→» читался как список настроек,
+        // а не как переключатель панелей.
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SectionChip(
                 label = stringResource(R.string.set_routing),
                 selected = selectedDetail is SettingsDetailKind.Tunnel,
                 onClick = { onSelectSection(SettingsDetailKind.Tunnel) },
-                showDivider = true,
             )
-            SectionSelectorRow(
+            SectionChip(
                 label = stringResource(R.string.set_appearance),
                 selected = selectedDetail is SettingsDetailKind.System,
                 onClick = { onSelectSection(SettingsDetailKind.System) },
-                showDivider = true,
             )
-            SectionSelectorRow(
+            SectionChip(
                 label = stringResource(R.string.set_diagnostic),
                 selected = selectedDetail is SettingsDetailKind.Diagnostic,
                 onClick = { onSelectSection(SettingsDetailKind.Diagnostic) },
-                showDivider = false,
             )
         }
 
@@ -1016,37 +1038,34 @@ private fun MasterPane(
     }
 }
 
-// ── Section selector row ────────────────────────────────────────────────────
+// ── Section chip (ADR 0015) ─────────────────────────────────────────────────
+// Полноширинный pill: активный — лаймовая заливка с чёрным текстом, как чип
+// фильтра в Журнале. Заменил строку-со-стрелкой, которая читалась как пункт
+// настроек, а не как выбор панели.
 @Composable
-private fun SectionSelectorRow(
+private fun SectionChip(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    showDivider: Boolean,
 ) {
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = label.uppercase(),
-                style = GsText.labelMono,
-                color = if (selected) C.signal else C.textDim,
-                modifier = Modifier.weight(1f),
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(com.ghoststream.vpn.ui.theme.GsShapePill)
+            .background(
+                if (selected) C.signal
+                else C.bone.copy(alpha = 0.045f),
             )
-            Text(
-                text = "→",
-                style = GsText.labelMono,
-                color = if (selected) C.signal else C.textFaint,
-            )
-        }
-        if (showDivider) {
-            DashedHairline(modifier = Modifier.padding(horizontal = 14.dp))
-        }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+    ) {
+        Text(
+            text = label.uppercase(),
+            style = GsText.labelMono,
+            color = if (selected) C.bg else C.textDim,
+            maxLines = 1,
+            softWrap = false,
+        )
     }
 }
 
@@ -1461,35 +1480,11 @@ private fun SectionLabel(text: String) {
 
 @Composable
 private fun SectionCard(content: @Composable () -> Unit) {
-    val hairColor = C.hair
-    Column(
+    // ADR 0015: секция настроек — «остров» (tonal card 26 dp), как в One UI
+    com.ghoststream.vpn.ui.components.GhostCard(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp)
-            .background(C.bgElev)
-            .drawBehind {
-                // hairline border
-                drawRect(
-                    color = hairColor,
-                    topLeft = Offset(0f, 0f),
-                    size = androidx.compose.ui.geometry.Size(size.width, 1f),
-                )
-                drawRect(
-                    color = hairColor,
-                    topLeft = Offset(0f, size.height - 1f),
-                    size = androidx.compose.ui.geometry.Size(size.width, 1f),
-                )
-                drawRect(
-                    color = hairColor,
-                    topLeft = Offset(0f, 0f),
-                    size = androidx.compose.ui.geometry.Size(1f, size.height),
-                )
-                drawRect(
-                    color = hairColor,
-                    topLeft = Offset(size.width - 1f, 0f),
-                    size = androidx.compose.ui.geometry.Size(1f, size.height),
-                )
-            },
+            .padding(horizontal = 20.dp),
     ) {
         content()
     }
@@ -1537,6 +1532,12 @@ private fun SettingRow(
 private fun ProfileCard(
     profile: VpnProfile,
     active: Boolean,
+    // Тег статуса берём отдельно от подсветки: на master-detail карточка
+    // подсвечивается ещё и когда просто открыта справа, и тогда «АКТИВЕН»
+    // висел сразу на двух профилях (баг-репорт 2026-08-01).
+    isActiveProfile: Boolean = active,
+    /** Туннель реально несёт байты — важнее результата TCP-ping. */
+    vpnLive: Boolean = false,
     latencyMs: Long?,
     isPinging: Boolean,
     subscriptionText: String?,
@@ -1571,12 +1572,12 @@ private fun ProfileCard(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (active)
+                    text = if (isActiveProfile)
                         stringResource(R.string.tag_active).uppercase()
                     else
                         stringResource(R.string.tag_standby).uppercase(),
                     style = GsText.labelMono,
-                    color = if (active) C.signal else C.textFaint,
+                    color = if (isActiveProfile) C.signal else C.textFaint,
                 )
             }
             Spacer(Modifier.height(4.dp))
@@ -1587,16 +1588,25 @@ private fun ProfileCard(
             )
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                PingDot(latencyMs = latencyMs, isPinging = isPinging)
+                PingDot(
+                    latencyMs = if (isActiveProfile && vpnLive) 1L else latencyMs,
+                    isPinging = isPinging && !(isActiveProfile && vpnLive),
+                )
                 Spacer(Modifier.width(6.dp))
+                // «offline» висел всегда: TCP-ping на :443 режется DPI, хотя
+                // туннель жив. Для активного профиля источник истины — состояние
+                // туннеля, а не пинг; для остальных не врём «offline», а честно
+                // говорим «нет отклика».
+                val tunnelUp = isActiveProfile && vpnLive
                 Text(
                     text = when {
-                        isPinging       -> "…"
-                        latencyMs == null -> "offline"
-                        else            -> "${latencyMs} ms"
+                        tunnelUp          -> stringResource(R.string.ping_tunnel_up)
+                        isPinging         -> "…"
+                        latencyMs != null -> "${latencyMs} ms"
+                        else              -> stringResource(R.string.ping_no_reply)
                     },
                     style = GsText.valueMono,
-                    color = pingColor(latencyMs),
+                    color = if (tunnelUp) C.signal else pingColor(latencyMs),
                 )
                 if (!subscriptionText.isNullOrBlank()) {
                     Spacer(Modifier.width(12.dp))

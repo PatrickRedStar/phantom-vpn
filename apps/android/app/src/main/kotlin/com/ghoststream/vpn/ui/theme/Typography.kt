@@ -65,16 +65,21 @@ object GsText {
     // ticker'ом 26sp снизу. Medium portrait тоже понижен до 56sp — на 10"
     // portrait 72sp слишком doминирует над остальной телеметрией. Compact
     // (phone) не трогаем — там пропорции уже выверены.
+    // ADR 0015 (v0.28): кегли из утверждённых мокапов. Expanded 52 (hero теперь
+    // на всю ширину — 64 больше не нужен и не влезал бы в колонку), medium 46,
+    // compact 44, узкие телефоны (<400 dp: S21 360, вытянутые 385) — 36.
     val stateHeadline: TextStyle
         @Composable get() {
             val cfg = LocalConfiguration.current
             val (fs, lh) = when {
                 cfg.smallestScreenWidthDp >= 600 && cfg.screenWidthDp >= 840 ->
-                    64.sp to 68.sp
+                    52.sp to 56.sp
                 cfg.smallestScreenWidthDp >= 600 ->
-                    56.sp to 60.sp
+                    46.sp to 50.sp
+                cfg.screenWidthDp < 400 ->
+                    36.sp to 38.sp
                 else ->
-                    54.sp to 56.sp
+                    44.sp to 47.sp
             }
             return TextStyle(
                 fontFamily = SpaceGrotesk,

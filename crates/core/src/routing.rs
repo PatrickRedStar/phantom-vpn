@@ -41,6 +41,34 @@ pub struct VpnRoute {
 /// produced in production, so it is known-survivable, and buys back ~4 % coverage.
 pub const MAX_VPN_ROUTES: usize = 8_000;
 
+/// Бюджет маршрутов для Android с учётом ЧУЖИХ процессов (v0.28.1).
+///
+/// [`MAX_VPN_ROUTES`] выбирался по лимиту одной Binder-транзакции в
+/// `establish()` — 8 000 маршрутов туда влезают. Но тот же список уезжает в
+/// `LinkProperties` VPN-сети, а её через `ConnectivityManager` читает любой
+/// желающий процесс, и там действует уже per-process лимит буфера (~1 МБ).
+/// Замер на Galaxy Z Fold 8: 7 982 маршрута → `LinkProperties` 295 КБ текста
+/// (≈940 КБ в parcel) → при открытии Настройки → Подключения → Другие
+/// настройки буфер Настроек забивается целиком, и падает уже следующая
+/// 96-байтная транзакция:
+///
+/// ```text
+/// libbinder: Binder transaction failure ... error: -28 (Binder buffer full)
+/// AndroidRuntime: FATAL EXCEPTION: DeadSystemException
+/// ```
+///
+/// Под удар попадает не только Настройки — то же получает любое приложение,
+/// читающее состояние сети (антифрод, детекторы VPN). Держим ≈17 % лимита.
+pub const ANDROID_ROUTE_BUDGET: usize = 1_500;
+
+/// Максимальная «дырка», которую разрешено проглотить при склейке (в адресах).
+///
+/// Порог /17 — решение владельца от 2026-08-01 по замерам на настоящем
+/// `ru.txt` (12 813 IPv4-блоков): 1 417 маршрутов при 52 % российских адресов,
+/// доступных напрямую. Соседние пороги для контекста: /18 → 2 561 маршрут и
+/// 65 % (parcel 300 КБ, слишком близко к краю), /16 → 741 маршрут и 40 %.
+const GAP_MERGE_MAX: u32 = (1u32 << 15) - 1; // /17 == 32 768 адресов
+
 impl RoutingTable {
     /// Parse a text file with one CIDR per line. Skips blank lines and `#` comments.
     pub fn from_cidrs(text: &str) -> Self {
@@ -81,6 +109,35 @@ impl RoutingTable {
     /// Widest-first ordering maximises the share of address space that still bypasses
     /// the tunnel per route spent (a /12 protects 1 M addresses for the same ~2
     /// routes a /24 spends on 256).
+    /// Как [`Self::compute_vpn_routes`], но вместо выбрасывания direct-записей
+    /// СКЛЕИВАЕТ соседние туннельные блоки, проглатывая мелкие дырки между ними.
+    ///
+    /// Точная агрегация уже сделана в [`complement_of`] (соседние блоки, которые
+    /// складываются без потерь, сложены) — 29 961 маршрут на `ru.txt` это уже
+    /// минимальное точное покрытие. Дальше сжимать можно только с потерями, и
+    /// направление выбрано безопасное: расширяется ТУННЕЛЬ, а не прямой доступ.
+    /// Проглоченная дырка — это российская подсеть, которая поедет через выход
+    /// вместо direct; ни один не-российский адрес наружу не выходит, поэтому
+    /// инвариант коммита dd94139b («не расширять direct») соблюдён.
+    ///
+    /// Порог адаптивный: начинаем с [`GAP_MERGE_MAX`] и удваиваем, пока не
+    /// уложимся в `budget`. Если не помогло — отдаём старый путь с урезанием.
+    pub fn compute_vpn_routes_merged(&self, budget: usize) -> Vec<VpnRoute> {
+        let exact = complement_of(&self.direct);
+        if exact.len() <= budget {
+            return exact;
+        }
+        let mut gap = GAP_MERGE_MAX;
+        for _ in 0..8 {
+            let merged = merge_small_gaps(&exact, gap);
+            if merged.len() <= budget {
+                return merged;
+            }
+            gap = gap.saturating_mul(2).saturating_add(1);
+        }
+        self.compute_vpn_routes()
+    }
+
     pub fn compute_vpn_routes(&self) -> Vec<VpnRoute> {
         let mut routes = complement_of(&self.direct);
         if routes.len() <= MAX_VPN_ROUTES {
@@ -116,10 +173,13 @@ impl RoutingTable {
     }
 }
 
-/// Complement of `direct` (plus the always-excluded private/link-local ranges)
-/// within `0.0.0.0/0` — i.e. everything that should enter the tunnel.
-fn complement_of(direct: &[Ipv4Net]) -> Vec<VpnRoute> {
-    let private_ranges: Vec<Ipv4Net> = [
+/// Диапазоны, которые НИКОГДА не уходят в туннель: приватные сети, loopback,
+/// link-local, CGNAT, multicast. Датапас их доставить не может — если они
+/// попадут в туннель, отвалятся LAN, mDNS и локальные устройства. Один список
+/// на [`complement_of`] и на склейку [`merge_small_gaps`], чтобы они не
+/// разъехались.
+fn special_ranges() -> Vec<Ipv4Net> {
+    [
         "0.0.0.0/8",
         "10.0.0.0/8",
         "100.64.0.0/10",
@@ -132,7 +192,13 @@ fn complement_of(direct: &[Ipv4Net]) -> Vec<VpnRoute> {
     ]
     .iter()
     .filter_map(|s| s.parse().ok())
-    .collect();
+    .collect()
+}
+
+/// Complement of `direct` (plus the always-excluded private/link-local ranges)
+/// within `0.0.0.0/0` — i.e. everything that should enter the tunnel.
+fn complement_of(direct: &[Ipv4Net]) -> Vec<VpnRoute> {
+    let private_ranges = special_ranges();
 
     // Merge direct CIDRs with private ranges — all of these are excluded from VPN
     let mut excluded = direct.to_vec();
@@ -151,6 +217,83 @@ fn complement_of(direct: &[Ipv4Net]) -> Vec<VpnRoute> {
 }
 
 /// Subtract a sorted+aggregated set of exclusions from a single parent network.
+/// Склеивает соседние маршруты, если дырка между ними ≤ `max_gap` адресов,
+/// затем заново вырезает private/link-local/multicast — при широких порогах
+/// склейка может накрыть их, а датапас такие пакеты доставить не умеет
+/// (LAN, mDNS, CGNAT перестали бы работать).
+fn merge_small_gaps(routes: &[VpnRoute], max_gap: u32) -> Vec<VpnRoute> {
+    if routes.is_empty() {
+        return Vec::new();
+    }
+    let mut nets: Vec<Ipv4Net> = routes
+        .iter()
+        .map(|r| Ipv4Net::new(r.addr, r.prefix).expect("route from complement is valid"))
+        .collect();
+    nets.sort_by_key(|n| u32::from(n.network()));
+
+    // Собираем непрерывные диапазоны [start; end], перескакивая мелкие дырки.
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    let mut start = u32::from(nets[0].network());
+    let mut end = u32::from(nets[0].broadcast());
+    for n in &nets[1..] {
+        let s = u32::from(n.network());
+        let e = u32::from(n.broadcast());
+        // end == u32::MAX означает, что диапазон уже дотянулся до конца адресного
+        // пространства — тогда дырки быть не может, и +1 переполнилось бы.
+        let gap = if end == u32::MAX { u32::MAX } else { s.saturating_sub(end + 1) };
+        if s > end && gap <= max_gap {
+            end = e.max(end);
+        } else if s <= end {
+            end = e.max(end); // перекрытие — просто расширяем
+        } else {
+            ranges.push((start, end));
+            start = s;
+            end = e;
+        }
+    }
+    ranges.push((start, end));
+
+    // Диапазоны обратно в префиксы, затем повторно вычитаем спец-диапазоны.
+    let mut out: Vec<Ipv4Net> = Vec::new();
+    for (s, e) in ranges {
+        out.extend(range_to_prefixes(s, e));
+    }
+    let specials = special_ranges();
+    let mut safe: Vec<VpnRoute> = Vec::new();
+    for net in out {
+        for piece in subtract_nets(net, &specials) {
+            safe.push(VpnRoute { addr: piece.network(), prefix: piece.prefix_len() });
+        }
+    }
+    safe
+}
+
+/// Минимальный набор CIDR, точно покрывающий диапазон адресов [start; end].
+fn range_to_prefixes(start: u32, end: u32) -> Vec<Ipv4Net> {
+    let mut out = Vec::new();
+    let mut cur = start;
+    loop {
+        // Самый большой блок, который выровнен по `cur` и не выходит за `end`.
+        let max_by_align = cur.trailing_zeros().min(32);
+        let mut len = 32 - max_by_align as u8;
+        while len < 32 {
+            let size = 1u64 << (32 - len);
+            if cur as u64 + size - 1 <= end as u64 {
+                break;
+            }
+            len += 1;
+        }
+        let net = Ipv4Net::new(Ipv4Addr::from(cur), len).expect("aligned prefix is valid");
+        out.push(net);
+        let last = u32::from(net.broadcast());
+        if last >= end {
+            break;
+        }
+        cur = last + 1;
+    }
+    out
+}
+
 fn subtract_nets(parent: Ipv4Net, exclusions: &[Ipv4Net]) -> Vec<Ipv4Net> {
     // Start with ranges covering the parent
     let mut remaining: Vec<Ipv4Net> = vec![parent];
@@ -338,4 +481,77 @@ pub fn routes_to_json(routes: &[VpnRoute]) -> String {
         .map(|r| format!(r#"{{"addr":"{}","prefix":{}}}"#, r.addr, r.prefix))
         .collect();
     format!("[{}]", entries.join(","))
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn tbl(cidrs: &[&str]) -> RoutingTable {
+        RoutingTable::from_cidrs(&cidrs.join("\n"))
+    }
+
+    /// Главный инвариант: склейка расширяет ТУННЕЛЬ, а не прямой доступ.
+    /// Ни один адрес вне direct-списка не имеет права остаться без маршрута —
+    /// иначе он уйдёт мимо туннеля открытым текстом.
+    #[test]
+    fn merged_never_leaves_foreign_address_unrouted() {
+        let direct = tbl(&["1.1.1.0/24", "8.8.8.0/24", "203.0.113.0/24"]);
+        let routes = direct.compute_vpn_routes_merged(16);
+        let specials = special_ranges();
+
+        // Пробуем набор чужих адресов — каждый обязан попасть в какой-то маршрут.
+        for probe in [
+            "2.2.2.2", "9.9.9.9", "64.233.160.1", "104.16.0.1", "198.51.100.7",
+        ] {
+            let ip: Ipv4Addr = probe.parse().unwrap();
+            let covered = routes.iter().any(|r| {
+                Ipv4Net::new(r.addr, r.prefix).unwrap().contains(&ip)
+            });
+            let is_special = specials.iter().any(|n| n.contains(&ip));
+            assert!(covered || is_special, "{probe} остался без маршрута — утечка");
+        }
+    }
+
+    /// Спец-диапазоны обязаны остаться вне туннеля даже при агрессивной склейке,
+    /// иначе отваливается LAN (роутер, принтер, Chromecast).
+    #[test]
+    fn merged_keeps_private_ranges_out_of_tunnel() {
+        let direct = tbl(&["1.0.0.0/24", "50.0.0.0/24", "150.0.0.0/24"]);
+        let routes = direct.compute_vpn_routes_merged(4); // заставляем склеить максимально
+        for probe in ["192.168.1.1", "10.0.0.5", "127.0.0.1", "169.254.1.1", "224.0.0.251"] {
+            let ip: Ipv4Addr = probe.parse().unwrap();
+            let inside = routes.iter().any(|r| {
+                Ipv4Net::new(r.addr, r.prefix).unwrap().contains(&ip)
+            });
+            assert!(!inside, "{probe} затянут в туннель — LAN сломается");
+        }
+    }
+
+    /// Склейка обязана укладываться в бюджет — ради этого всё и делалось.
+    #[test]
+    fn merged_respects_budget() {
+        // Много мелких дырок: точный комплемент такого списка заведомо больше бюджета.
+        let cidrs: Vec<String> = (0..400)
+            .map(|i| format!("{}.{}.0.0/24", 20 + i / 250, i % 250))
+            .collect();
+        let refs: Vec<&str> = cidrs.iter().map(|s| s.as_str()).collect();
+        let table = tbl(&refs);
+        let exact = table.compute_vpn_routes();
+        let merged = table.compute_vpn_routes_merged(64);
+        assert!(merged.len() <= 64, "бюджет не соблюдён: {} маршрутов", merged.len());
+        assert!(merged.len() < exact.len(), "склейка не уменьшила таблицу");
+    }
+
+    /// Если точный комплемент и так влезает в бюджет — не портим его склейкой.
+    #[test]
+    fn merged_is_exact_when_it_fits() {
+        let table = tbl(&["1.0.0.0/8"]);
+        let exact = table.compute_vpn_routes();
+        let merged = table.compute_vpn_routes_merged(1_500);
+        assert_eq!(exact.len(), merged.len());
+        for (a, b) in exact.iter().zip(merged.iter()) {
+            assert_eq!((a.addr, a.prefix), (b.addr, b.prefix));
+        }
+    }
 }

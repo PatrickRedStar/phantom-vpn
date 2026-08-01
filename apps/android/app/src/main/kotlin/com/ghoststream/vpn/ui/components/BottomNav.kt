@@ -194,7 +194,7 @@ fun GhostBottomNav(
                                 fontSize = 9.sp,
                                 letterSpacing = 0.02.sp,
                             ),
-                            color = if (active) C.bone else C.textFaint,
+                            color = if (active) C.signal else C.textFaint,
                             maxLines = 1,
                         )
                     }

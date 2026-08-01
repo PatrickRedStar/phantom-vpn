@@ -32,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -289,6 +290,7 @@ fun AdminScreen(
                 text = stringResource(R.string.admin_new_client),
                 onClick = { showAddDialog = true },
                 outline = true,
+                glow = false,
             )
         }
     }
@@ -306,9 +308,9 @@ private fun StatCell(
 ) {
     Column(
         modifier = modifier
+            .clip(com.ghoststream.vpn.ui.theme.GsShapeInner)
             .background(C.bgElev)
-            .hairlineBottom(C.hair)
-            .padding(10.dp),
+            .padding(12.dp),
     ) {
         Text(
             text = label.uppercase(),

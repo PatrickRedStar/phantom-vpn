@@ -12,9 +12,9 @@ android {
         applicationId = "io.ghoststream.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 116
-        versionName = "0.27.14"
-        buildConfigField("String", "GIT_TAG", "\"v0.27.10\"")
+        versionCode = 117
+        versionName = "0.28.0"
+        buildConfigField("String", "GIT_TAG", "\"v0.28.0\"")
     }
 
     signingConfigs {
@@ -92,6 +92,11 @@ dependencies {
     implementation("androidx.compose.material3.adaptive:adaptive-layout:1.2.0")
     implementation("androidx.compose.material3.adaptive:adaptive-navigation:1.2.0")
     implementation("androidx.compose.material3:material3-adaptive-navigation-suite:1.3.0")
+
+    // v0.28 (ADR 0015): Flex Mode — FoldingFeature (HALF_OPENED) для tabletop-
+    // раскладки на Fold/Flip. adaptive тянет window транзитивно, но API
+    // WindowInfoTracker используем напрямую — пиним явно.
+    implementation("androidx.window:window:1.3.0")
 
     // Activity Compose
     implementation("androidx.activity:activity-compose:1.9.3")

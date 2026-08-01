@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -31,6 +32,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -48,6 +51,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -67,12 +71,15 @@ import com.ghoststream.vpn.ui.components.HeaderMeta
 import com.ghoststream.vpn.ui.components.MuxBars
 import com.ghoststream.vpn.ui.components.ScopeChart
 import com.ghoststream.vpn.ui.components.ScreenHeader
+import com.ghoststream.vpn.ui.components.PulseDot
 import com.ghoststream.vpn.ui.components.isTabletExpanded
 import com.ghoststream.vpn.ui.components.isTabletPortrait
+import com.ghoststream.vpn.ui.components.phosphorAura
 import com.ghoststream.vpn.ui.components.serifAccent
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.LocalIsDark
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.LaunchedEffect as LE
 
 @Composable
@@ -101,8 +108,20 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         ActivityResultContracts.RequestPermission(),
     ) { /* granted or not — connection proceeds regardless */ }
 
-    // Scope window (tap to cycle: 1m → 5m → 30m → 1h)
+    // Подсказка «что это такое»: пара (заголовок, текст) или null.
+    // Пользователь просил, чтобы по надписям на Потоке можно было тапнуть и
+    // узнать, что они означают.
+    var explain by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    // Scope window (tap to cycle: 1m → 5m → 30m → 1h).
+    // v0.28.1: выбор запоминается между запусками — раньше всегда сбрасывался
+    // на 1m, и приходилось переключать заново после каждого старта.
+    val prefsStore = remember { com.ghoststream.vpn.data.PreferencesStore(context.applicationContext) }
+    val savedScopeWindow by prefsStore.scopeWindowSecs.collectAsStateWithLifecycle(initialValue = 60)
     var scopeWindowSecs by remember { mutableIntStateOf(60) }
+    // Подхватываем сохранённое значение, когда DataStore его отдал
+    LE(savedScopeWindow) { scopeWindowSecs = savedScopeWindow }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val scopeLabel = when (scopeWindowSecs) {
         60 -> "1m"
         300 -> "5m"
@@ -244,6 +263,8 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     // state across rotation regardless of which branch renders.
     val isExpanded = isTabletExpanded()
     val isMediumP  = isTabletPortrait()
+    // Flex Mode: null = обычная поза; иначе — доля высоты окна над шарниром
+    val tabletopRatio by com.ghoststream.vpn.ui.components.rememberTabletopHingeRatio()
 
     // ── Section composables — captured lambdas read enclosing state ──────
     // Defined inside DashboardScreen so they can pull profile/stats/
@@ -299,9 +320,17 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                         state is VpnState.Disconnecting -> C.warn
                     else                           -> C.textDim
                 }
+                // ADR 0015: фосфорное свечение вокруг активного глагола.
+                // Shadow красится в accent — хвост тоже попадает под blur,
+                // но при alpha 0.35 это читается как общий ореол, не грязь.
                 Text(
                     text = serifAccent(verb, tail, accent),
-                    style = com.ghoststream.vpn.ui.theme.GsText.stateHeadline,
+                    style = com.ghoststream.vpn.ui.theme.GsText.stateHeadline.copy(
+                        shadow = androidx.compose.ui.graphics.Shadow(
+                            color = accent.copy(alpha = 0.35f),
+                            blurRadius = 24f,
+                        ),
+                    ),
                     color = C.bone,
                 )
             }
@@ -372,10 +401,12 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         }
     }
 
-    val scopeCardSection: @Composable () -> Unit = {
-        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+    // ADR 0015: осциллограф и мультиплекс — ОДНА карточка с внутренним
+    // разделителем (меньше рамок, телеметрия читается единым блоком).
+    val telemetryCardSection: @Composable () -> Unit = {
+        GhostCard(Modifier.padding(horizontal = 20.dp).padding(bottom = 12.dp)) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -388,28 +419,30 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
                     color = C.textFaint,
                     modifier = Modifier.clickable {
-                        scopeWindowSecs = when (scopeWindowSecs) {
+                        val next = when (scopeWindowSecs) {
                             60 -> 300
                             300 -> 1800
                             1800 -> 3600
                             3600 -> 60
                             else -> 60
                         }
-                        // Clear buffers when changing window
-                        rxBuffer.clear()
-                        txBuffer.clear()
+                        scopeWindowSecs = next
+                        // Буферы НЕ чистим: при расширении окна история остаётся
+                        // видимой, при сужении лишние сэмплы обрежет флаш-цикл.
+                        // Раньше график обнулялся на каждое переключение.
+                        scope.launch { runCatching { prefsStore.setScopeWindowSecs(next) } }
                     },
                 )
             }
-            Box(Modifier.height(1.dp).fillMaxWidth().background(C.hair))
             ScopeChart(rxSamples = rxBuffer.toList(), txSamples = txBuffer.toList())
-        }
-    }
-
-    val muxCardSection: @Composable () -> Unit = {
-        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+            // inset-разделитель между осциллографом и мультиплексом
+            Box(
+                Modifier.padding(horizontal = 16.dp).padding(top = 6.dp)
+                    .height(1.dp).fillMaxWidth()
+                    .background(C.bone.copy(alpha = 0.06f)),
+            )
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
@@ -434,7 +467,6 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     },
                 )
             }
-            Box(Modifier.height(1.dp).fillMaxWidth().background(C.hair))
             MuxBars(
                 heights = barHeights.toList(),
                 // Only flag dead streams (red) while the tunnel is live; in
@@ -443,59 +475,25 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 liveCount = if (vpnState.isLive())
                     statusFrame.streamsUp.coerceIn(0, barHeights.size)
                 else barHeights.size,
+                animate = vpnState.isLive(),
             )
         }
     }
 
+    // ADR 0015: «остров» — DNS-индикатор первой строкой + KV-строки с
+    // inset-разделителями (паттерн настроек One UI). Бывшие networkCard +
+    // kvCard слиты в одну поверхность.
     val kvCardSection: @Composable () -> Unit = {
-        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
-                KvRow(
-                    stringResource(R.string.kv_identity),
-                    activeProfile?.name ?: "—",
-                    C.bone,
-                )
-                DashedHairline()
-                val relayActive = activeProfile?.relayEnabled == true && !activeProfile?.relayAddr.isNullOrBlank()
-                KvRow(
-                    stringResource(R.string.kv_route),
-                    if (relayActive)
-                        "${stringResource(R.string.kv_route_relay)} · ${activeProfile!!.relayAddr}"
-                    else
-                        stringResource(R.string.kv_route_direct),
-                    if (relayActive) C.signal else C.bone,
-                )
-                DashedHairline()
-                KvRow(
-                    stringResource(R.string.kv_assigned),
-                    activeProfile?.tunAddr ?: "—",
-                    C.bone,
-                )
-                DashedHairline()
-                val subColour = when {
-                    subscriptionText == null -> C.bone
-                    subscriptionText!!.contains("⚠") -> C.danger
-                    subscriptionText!!.contains("истек", true) -> C.danger
-                    subscriptionText!!.contains("expire", true) -> C.danger
-                    else -> C.signal
-                }
-                KvRow(
-                    stringResource(R.string.kv_subscription),
-                    subscriptionText ?: stringResource(R.string.kv_value_dash),
-                    subColour,
-                )
-            }
-        }
-    }
-
-    // ── СЕТЬ: is the tunnel actually usable? ─────────────────────────────────
-    // Byte counters and stream count cannot answer that; only a real resolve can.
-    val networkCardSection: @Composable () -> Unit = {
         val dns = dnsHealth
-        GhostCard(Modifier.padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 4.dp)) {
+        GhostCard(Modifier.padding(horizontal = 20.dp).padding(bottom = 12.dp)) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                 Row(
-                    Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            explain = R.string.explain_dns_t to R.string.explain_dns_d
+                        }
+                        .padding(vertical = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -510,20 +508,11 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                             is com.ghoststream.vpn.service.DnsHealth.Dead -> C.danger
                             else -> C.textFaint
                         }
-                        Box(
-                            Modifier
-                                .size(7.dp)
-                                .background(dotColor, androidx.compose.foundation.shape.CircleShape),
-                        )
+                        com.ghoststream.vpn.ui.components.PulseDot(color = dotColor, size = 7.dp)
                         Spacer(Modifier.width(8.dp))
-                        // Always name the server that is actually resolving. "Through
-                        // the tunnel" on its own is ambiguous — the same address can
-                        // sit in both the app and the phone, and strict Private DNS
-                        // silently overrides whatever the tunnel configured.
-                        //
-                        // Prefer what the Rust data path SAW leaving the TUN over what
-                        // is configured anywhere: configuration says what should
-                        // happen, the wire says what did.
+                        // Always name the server that is actually resolving. Prefer
+                        // what the Rust data path SAW leaving the TUN over what is
+                        // configured anywhere (см. комментарий в v0.27).
                         val observed = statusFrame?.dnsObserved?.let { raw ->
                             val ip = raw.substringBeforeLast(':')
                             val port = raw.substringAfterLast(':', "")
@@ -553,6 +542,103 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                         )
                     }
                 }
+                DashedHairline()
+                KvRow(
+                    stringResource(R.string.kv_identity),
+                    activeProfile?.name ?: "—",
+                    C.bone,
+                ) { explain = R.string.explain_identity_t to R.string.explain_identity_d }
+                DashedHairline()
+                val relayActive = activeProfile?.relayEnabled == true && !activeProfile?.relayAddr.isNullOrBlank()
+                KvRow(
+                    stringResource(R.string.kv_route),
+                    if (relayActive)
+                        "${stringResource(R.string.kv_route_relay)} · ${activeProfile!!.relayAddr}"
+                    else
+                        stringResource(R.string.kv_route_direct),
+                    if (relayActive) C.signal else C.bone,
+                ) { explain = R.string.explain_route_t to R.string.explain_route_d }
+                DashedHairline()
+                KvRow(
+                    stringResource(R.string.kv_assigned),
+                    activeProfile?.tunAddr ?: "—",
+                    C.bone,
+                ) { explain = R.string.explain_assigned_t to R.string.explain_assigned_d }
+                DashedHairline()
+                val subColour = when {
+                    subscriptionText == null -> C.bone
+                    subscriptionText!!.contains("⚠") -> C.danger
+                    subscriptionText!!.contains("истек", true) -> C.danger
+                    subscriptionText!!.contains("expire", true) -> C.danger
+                    else -> C.signal
+                }
+                KvRow(
+                    stringResource(R.string.kv_subscription),
+                    subscriptionText ?: stringResource(R.string.kv_value_dash),
+                    subColour,
+                ) { explain = R.string.explain_sub_t to R.string.explain_sub_d }
+            }
+        }
+    }
+
+    // ADR 0015: транспорт — заполняет правую колонку на раскрытом экране.
+    // Все значения реальные: H2/TLS 1.3 — инвариант протокола, остальное из
+    // профиля и StatusFrame.
+    val transportCardSection: @Composable () -> Unit = {
+        val relayActive = activeProfile?.relayEnabled == true &&
+            !activeProfile?.relayAddr.isNullOrBlank()
+        GhostCard(Modifier.padding(horizontal = 20.dp).padding(bottom = 12.dp)) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                Text(
+                    text = stringResource(R.string.lbl_transport).uppercase(),
+                    style = com.ghoststream.vpn.ui.theme.GsText.hdrMeta,
+                    color = C.textDim,
+                )
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    InfoPill("H2 · TLS 1.3") {
+                        explain = R.string.explain_h2_t to R.string.explain_h2_d
+                    }
+                    InfoPill("mTLS") {
+                        explain = R.string.explain_mtls_t to R.string.explain_mtls_d
+                    }
+                    if (relayActive) InfoPill("SNI passthrough", accent = true) {
+                        explain = R.string.explain_sni_t to R.string.explain_sni_d
+                    }
+                    val n = statusFrame.nStreams
+                    if (n > 0) InfoPill(String.format(stringResource(R.string.lbl_streams_n), n)) {
+                        explain = R.string.explain_streams_t to R.string.explain_streams_d
+                    }
+                }
+            }
+        }
+    }
+
+    // ADR 0015: итоги сессии — остров для широких/вытянутых раскладок,
+    // закрывает пустоту под телеметрией реальными счётчиками.
+    val statsCardSection: @Composable () -> Unit = {
+        GhostCard(Modifier.padding(horizontal = 20.dp).padding(bottom = 12.dp)) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                KvRow(
+                    stringResource(R.string.kv_rx_total),
+                    formatBytes(statusFrame.bytesRx),
+                    C.bone,
+                )
+                DashedHairline()
+                KvRow(
+                    stringResource(R.string.kv_tx_total),
+                    formatBytes(statusFrame.bytesTx),
+                    C.bone,
+                )
+                DashedHairline()
+                KvRow(
+                    stringResource(R.string.kv_exit),
+                    activeProfile?.serverAddr?.substringBefore(':') ?: "—",
+                    C.bone,
+                )
             }
         }
     }
@@ -646,7 +732,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     // before, where a tap in the Disconnecting state would slip past the
     // Service's tunnelGeneration guard via a fresh startVpn() launch.
     val fabSection: @Composable (Modifier) -> Unit = { fabModifier ->
-        Box(fabModifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 12.dp)) {
+        Box(fabModifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 20.dp)) {
             val isConnectedOrBusy = vpnState is VpnState.Connected ||
                 vpnState is VpnState.Stale ||
                 vpnState is VpnState.Throttled ||
@@ -663,9 +749,11 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 else -> stringResource(R.string.action_connect)
             }
             val fabEnabled = vpnState !is VpnState.Disconnecting
+            // ADR 0015: filled lime = призыв «Подключить» (standby), tonal =
+            // спокойное «Отключить» пока туннель живёт. Инверсия старого маппинга.
             GhostFab(
                 text = fabText,
-                outline = !isConnectedOrBusy,
+                outline = isConnectedOrBusy,
                 enabled = fabEnabled,
                 onClick = {
                     when (vpnState) {
@@ -690,11 +778,49 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(C.bg)) {
-        ScreenHeader(
-            brand = stringResource(R.string.brand_stream),
-            meta = { HeaderMeta(headerMeta, pulse = metaPulse) },
-        )
+    // ADR 0015: дышащая аура за контентом — цвет от состояния туннеля
+    val auraColor = when {
+        dnsDead -> C.danger
+        vpnState is VpnState.Connected -> C.signal
+        vpnState is VpnState.Stale || vpnState is VpnState.Throttled ||
+            vpnState is VpnState.Connecting || vpnState is VpnState.Disconnecting -> C.warn
+        vpnState is VpnState.Reconnecting || vpnState is VpnState.Error -> C.danger
+        else -> C.textDim
+    }
+    Column(
+        Modifier.fillMaxSize().background(C.bg).phosphorAura(auraColor),
+    ) {
+        // На expanded бренд живёт только в drawer'е (ADR 0015: дубль убран);
+        // контент начинается сразу с hero.
+        if (!isExpanded) {
+            ScreenHeader(
+                brand = stringResource(R.string.brand_stream),
+                meta = { HeaderMeta(headerMeta, pulse = metaPulse) },
+            )
+        }
+
+        // Подсказка «что это такое» — по тапу на чип транспорта или KV-строку.
+        explain?.let { (titleRes, bodyRes) ->
+            com.ghoststream.vpn.ui.components.GhostDialog(
+                onDismissRequest = { explain = null },
+                title = stringResource(titleRes),
+                content = {
+                    Text(
+                        text = stringResource(bodyRes),
+                        style = com.ghoststream.vpn.ui.theme.GsText.body,
+                        color = C.textDim,
+                        lineHeight = androidx.compose.ui.unit.TextUnit(20f, androidx.compose.ui.unit.TextUnitType.Sp),
+                    )
+                },
+                confirmButton = {
+                    com.ghoststream.vpn.ui.components.GhostDialogButton(
+                        stringResource(R.string.action_close),
+                        onClick = { explain = null },
+                        color = C.textDim,
+                    )
+                },
+            )
+        }
 
         // Invisible TalkBack live region — announces only the state word,
         // not the changing bytes/timer in HeaderMeta. Rendered at 1.dp /
@@ -712,6 +838,48 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         )
 
         when {
+            // ── Flex Mode (ADR 0015): полусложенный шарнир, tabletop ──────
+            // Верхняя половина — «экран»: hero + осциллограф. Нижняя, лежащая
+            // на столе — «пульт»: DNS-остров, кнопка. Деление — по реальному
+            // bounds шарнира (dp-пороги эту позу не видят в принципе).
+            tabletopRatio != null -> {
+                val ratio = tabletopRatio!!
+                // верх — «экран»
+                Column(Modifier.weight(ratio).fillMaxWidth()) {
+                    val wide = androidx.compose.ui.platform.LocalConfiguration
+                        .current.screenWidthDp >= 600
+                    if (wide) {
+                        Row(Modifier.weight(1f).fillMaxWidth()) {
+                            Column(Modifier.weight(0.45f)) {
+                                stateHeadlineSection()
+                                timerRowSection()
+                            }
+                            Column(Modifier.weight(0.55f).padding(top = 8.dp)) {
+                                telemetryCardSection()
+                            }
+                        }
+                    } else {
+                        stateHeadlineSection()
+                        timerRowSection()
+                        Box(Modifier.weight(1f).padding(top = 8.dp)) { telemetryCardSection() }
+                    }
+                }
+                // зазор над сгибом — контент не заезжает на шарнир
+                Spacer(Modifier.height(24.dp))
+                // низ — «пульт»
+                Column(
+                    Modifier.weight(1f - ratio).fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    dnsBannerSection()
+                    kvCardSection()
+                    Spacer(Modifier.height(8.dp))
+                    fabSection(Modifier)
+                    Spacer(Modifier.height(12.dp))
+                    Box(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
+                }
+            }
+
             // ── Expanded: tablet landscape / unfolded foldable ───────────
             // 2-col hero: left = STATE + SESSION + CONNECT pinned bottom.
             // right = SCOPE / MUX / KV stacked, independently scrollable.
@@ -727,59 +895,78 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
             //   3. FAB max-width 360 dp — on Tab S11 the 42% pane is ~445 dp
             //      wide and a full-width CONNECT button looks comically
             //      large. Centre it within a fillMaxWidth wrapper.
+            // ADR 0015: hero на всю ширину (заголовок больше не рвётся посреди
+            // слова в узкой колонке), под ним две колонки телеметрии, снизу док
+            // с кнопкой. Дубль бренда убран — бренд живёт в drawer'е.
             isExpanded -> {
-                val isDark = LocalIsDark.current
-                val dividerColor = if (isDark) C.hair else C.hairBold
-                val dividerWidth = if (isDark) 1.dp else 1.5.dp
-                Row(Modifier.weight(1f).fillMaxWidth()) {
-                    // Left pane 42% — hero copy + CONNECT
-                    Column(
-                        modifier = Modifier
-                            .weight(0.42f)
-                            .fillMaxHeight()
-                            .verticalScroll(rememberScrollState())
-                            .padding(top = 16.dp),
-                    ) {
+                // Hero row: заголовок слева, таймер справа
+                Row(
+                    Modifier.fillMaxWidth().padding(end = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    Column(Modifier.weight(1f)) {
                         stateHeadlineSection()
-                        timerRowSection()
-                        emptyHintSection()
-                        preflightSection()
-                        Spacer(Modifier.weight(1f))
-                        // Centered FAB capped at 360 dp on the wide pane.
-                        // The inner Box.fillMaxWidth honours pane width
-                        // while the widthIn caps the visual extent of the
-                        // CONNECT button; fabSection itself still applies
-                        // its 18 dp horizontal padding inside that 360 dp.
-                        Box(
-                            modifier = Modifier.fillMaxWidth(),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            fabSection(Modifier.widthIn(max = 360.dp))
-                        }
                     }
-                    // Vertical divider between panes (theme-aware)
-                    Box(
-                        Modifier
-                            .width(dividerWidth)
-                            .fillMaxHeight()
-                            .background(dividerColor),
-                    )
-                    // Right pane 58% — telemetry cards
-                    Column(
-                        modifier = Modifier
-                            .weight(0.58f)
-                            .fillMaxHeight()
-                            .verticalScroll(rememberScrollState())
-                            .padding(top = 16.dp),
-                    ) {
-                        dnsBannerSection()
-                        scopeCardSection()
-                        muxCardSection()
-                        networkCardSection()
-                        kvCardSection()
-                        Spacer(Modifier.height(16.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = if (vpnState.isLive()) timerText else "--:--:--",
+                            style = com.ghoststream.vpn.ui.theme.GsText.ticker,
+                            color = when (vpnState) {
+                                is VpnState.Connected -> C.bone
+                                is VpnState.Stale,
+                                is VpnState.Throttled -> C.warn
+                                is VpnState.Reconnecting -> C.danger
+                                else -> C.textFaint
+                            },
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = stringResource(R.string.lbl_session).uppercase(),
+                            style = com.ghoststream.vpn.ui.theme.GsText.labelMonoSmall,
+                            color = C.textFaint,
+                        )
                     }
                 }
+                emptyHintSection()
+                preflightSection()
+                // Две колонки: слева телеметрия+итоги, справа KV-остров
+                Row(Modifier.weight(1f).fillMaxWidth().padding(top = 10.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(0.53f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        dnsBannerSection()
+                        telemetryCardSection()
+                        statsCardSection()
+                        Spacer(Modifier.height(4.dp))
+                        fabSection(Modifier.widthIn(max = 420.dp))
+                        if (vpnState.isLive()) {
+                            Text(
+                                text = headerMeta.uppercase(),
+                                style = com.ghoststream.vpn.ui.theme.GsText.labelMonoSmall,
+                                color = C.textFaint,
+                                modifier = Modifier.padding(start = 20.dp, bottom = 4.dp),
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(0.47f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        kvCardSection()
+                        transportCardSection()
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
+                // v0.28.1: кнопка едет вместе с левой колонкой, а не висит в
+                // приколоченном доке — на раскрытом экране док точно так же
+                // обрезал контент по стыку со скроллом.
             }
 
             // ── Medium portrait: tablet portrait (sw ≥ 600, w < 840) ─────
@@ -799,10 +986,9 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                         emptyHintSection()
                         preflightSection()
                         dnsBannerSection()
-                        scopeCardSection()
-                        muxCardSection()
-                        networkCardSection()
+                        telemetryCardSection()
                         kvCardSection()
+                        statsCardSection()
                         Spacer(Modifier.height(12.dp))
                         fabSection(Modifier)
                         // Bottom-nav is a NavigationRail on medium portrait
@@ -817,20 +1003,25 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
             // Original layout — preserved verbatim including the 80 dp
             // tail spacer for the floating bottom NavigationBar.
             else -> {
-                Column(Modifier.weight(1f).fillMaxWidth()) {
+                // v0.28.1: кнопка едет ВНУТРИ прокрутки, как содержимое других
+                // вкладок. Приколоченная к низу, она обрезала карточку на стыке
+                // со скроллом — и обрез читался как «полоса» под контентом.
+                Column(
+                    Modifier.weight(1f).fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
                     stateHeadlineSection()
                     timerRowSection()
                     emptyHintSection()
                     preflightSection()
                     dnsBannerSection()
-                    scopeCardSection()
-                    muxCardSection()
-                    networkCardSection()
+                    telemetryCardSection()
                     kvCardSection()
-                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.height(10.dp))
+                    fabSection(Modifier)
+                    // хвост под плавающую капсулу навигации
+                    Spacer(Modifier.height(84.dp))
                 }
-                fabSection(Modifier)
-                Spacer(Modifier.height(80.dp))
             }
         }
     }
@@ -867,6 +1058,41 @@ private fun openPrivateDnsSettings(ctx: Context) {
     runCatching { ctx.startActivity(intent) }
 }
 
+/**
+ * Инфо-pill карточки транспорта. Кликается — открывает подсказку «что это
+ * такое»: термины вроде mTLS и SNI passthrough ничего не говорят человеку,
+ * который просто хочет знать, защищён ли он.
+ */
+@Composable
+private fun InfoPill(text: String, accent: Boolean = false, onClick: (() -> Unit)? = null) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .clip(com.ghoststream.vpn.ui.theme.GsShapePill)
+            .background(
+                if (accent) C.signal.copy(alpha = 0.10f)
+                else C.bone.copy(alpha = 0.045f),
+            )
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 7.dp),
+    ) {
+        Text(
+            text = text.uppercase(),
+            style = com.ghoststream.vpn.ui.theme.GsText.chipText,
+            color = if (accent) C.signal else C.textDim,
+        )
+        if (onClick != null) {
+            Spacer(Modifier.width(6.dp))
+            // Точка-подсказка: намекает, что чип можно нажать
+            Text(
+                text = "?",
+                style = com.ghoststream.vpn.ui.theme.GsText.chipText,
+                color = if (accent) C.signal.copy(alpha = 0.7f) else C.textFaint,
+            )
+        }
+    }
+}
+
 @Composable
 private fun LabelValueLegend(label: String, value: String, dotColor: androidx.compose.ui.graphics.Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -892,9 +1118,17 @@ private fun LabelValueLegend(label: String, value: String, dotColor: androidx.co
 }
 
 @Composable
-private fun KvRow(key: String, value: String, valueColor: androidx.compose.ui.graphics.Color) {
+private fun KvRow(
+    key: String,
+    value: String,
+    valueColor: androidx.compose.ui.graphics.Color,
+    onClick: (() -> Unit)? = null,
+) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 9.dp),
+        Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(vertical = 9.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(
@@ -907,6 +1141,16 @@ private fun KvRow(key: String, value: String, valueColor: androidx.compose.ui.gr
             style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
             color = valueColor,
         )
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    val b = bytes.coerceAtLeast(0)
+    return when {
+        b >= 1_000_000_000L -> "%.2f ГБ".format(b / 1_000_000_000f)
+        b >= 1_000_000L     -> "%.0f МБ".format(b / 1_000_000f)
+        b >= 1_000L         -> "%.0f КБ".format(b / 1_000f)
+        else                -> "$b Б"
     }
 }
 

@@ -264,6 +264,34 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // Safety cap: too many addRoute() entries can overflow Binder transaction
         // in VpnService.Builder.establish() and crash with TransactionTooLargeException.
         private const val MAX_SPLIT_ROUTES = 8000
+
+        /**
+         * Бюджет маршрутов с учётом ЧУЖИХ процессов.
+         *
+         * MAX_SPLIT_ROUTES выбирался под лимит одной Binder-транзакции в
+         * establish(). Но тот же список уезжает в LinkProperties VPN-сети, а её
+         * читает любой процесс через ConnectivityManager — и там свой per-process
+         * лимит буфера (~1 МБ). Замер на Z Fold 8: 7982 маршрута → LinkProperties
+         * 295 КБ → Настройки падают с "Binder buffer full" при открытии
+         * Подключения → Другие настройки. Держим ~17 % лимита.
+         */
+        private const val ROUTE_BUDGET = 1500
+
+        /** Порог склейки: дырка до /17 (32 768 адресов). Решение владельца 2026-08-01. */
+        private const val GAP_MERGE_START = (1L shl 15) - 1
+
+        /** Те же диапазоны, что special_ranges() в crates/core/src/routing.rs. */
+        private val SPECIAL_RANGES: List<Pair<Long, Long>> = listOf(
+            0x00000000L to 0x00FFFFFFL, // 0.0.0.0/8
+            0x0A000000L to 0x0AFFFFFFL, // 10.0.0.0/8
+            0x64400000L to 0x647FFFFFL, // 100.64.0.0/10
+            0x7F000000L to 0x7FFFFFFFL, // 127.0.0.0/8
+            0xA9FE0000L to 0xA9FEFFFFL, // 169.254.0.0/16
+            0xAC100000L to 0xAC1FFFFFL, // 172.16.0.0/12
+            0xC0A80000L to 0xC0A8FFFFL, // 192.168.0.0/16
+            0xE0000000L to 0xEFFFFFFFL, // 224.0.0.0/4
+            0xF0000000L to 0xFFFFFFFFL, // 240.0.0.0/4
+        )
     }
 
     // ── PhantomListener implementation ────────────────────────────────────────
@@ -471,13 +499,27 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                         stopSelf()
                         return
                     }
-                    var count = 0
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.getJSONObject(i)
-                        builder.addRoute(obj.getString("addr"), obj.getInt("prefix"))
-                        count++
+                    // Пустой комплемент = fail-OPEN, а не «нет маршрутов»: такое
+                    // бывает, когда direct-список накрывает 0.0.0.0/0 (или /1../7).
+                    // Раньше цикл ниже не добавлял НИ ОДНОГО IPv4-маршрута,
+                    // establish() проходил, статус показывал «Подключено», а весь
+                    // IPv4 шёл мимо туннеля открытым текстом. Полный туннель —
+                    // единственный безопасный ответ на пустой список.
+                    if (arr.length() == 0) {
+                        Log.w(TAG, "Empty VPN route set (direct list covers everything?), full tunnel")
+                        builder.addRoute("0.0.0.0", 0)
+                    } else {
+                        // v0.28.1: склейка соседних туннельных блоков перед addRoute.
+                        // Rust уже умеет это (compute_vpn_routes_merged), но в APK
+                        // лежит prebuilt .so, поэтому страхуемся здесь же — логика
+                        // безопасна по построению: расширяется ТУННЕЛЬ, наружу ничего
+                        // не выходит. Уберём, когда .so пересоберут с NDK.
+                        val merged = mergeSmallGaps(arr, ROUTE_BUDGET)
+                        for ((addr, prefix) in merged) {
+                            builder.addRoute(addr, prefix)
+                        }
+                        Log.i(TAG, "Split routing: ${merged.size} VPN routes added (from ${arr.length()})")
                     }
-                    Log.i(TAG, "Split routing: $count VPN routes added")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to parse VPN routes, falling back to full tunnel", e)
                     builder.addRoute("0.0.0.0", 0)
@@ -951,6 +993,116 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         stopTunnel()
         super.onRevoke()
     }
+
+    /**
+     * Склеивает соседние туннельные маршруты, проглатывая дырки ≤ maxGap адресов,
+     * пока таблица не уложится в [budget]. Проглоченная дырка — российская подсеть,
+     * которая поедет через выход вместо direct; НИ ОДИН не-российский адрес при
+     * этом не покидает туннель, поэтому инвариант dd94139b соблюдён.
+     *
+     * После склейки заново вырезаем приватные/link-local/multicast: широкий порог
+     * может их накрыть, а датапас такие пакеты не доставит (отвалился бы LAN).
+     */
+    private fun mergeSmallGaps(arr: JSONArray, budget: Int): List<Pair<String, Int>> {
+        data class R(val start: Long, val end: Long)
+        val nets = ArrayList<R>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val base = ipToLong(o.getString("addr")) ?: continue
+            val prefix = o.getInt("prefix").coerceIn(0, 32)
+            val size = 1L shl (32 - prefix)
+            nets.add(R(base, base + size - 1))
+        }
+        if (nets.isEmpty()) return emptyList()
+        nets.sortBy { it.start }
+
+        var gap = GAP_MERGE_START
+        var result: List<Pair<String, Int>> = emptyList()
+        for (attempt in 0 until 8) {
+            val ranges = ArrayList<R>()
+            var cs = nets[0].start
+            var ce = nets[0].end
+            for (k in 1 until nets.size) {
+                val n = nets[k]
+                when {
+                    n.start <= ce + 1 -> ce = maxOf(ce, n.end)          // смежно/перекрытие
+                    n.start - ce - 1 <= gap -> ce = maxOf(ce, n.end)    // мелкая дырка — глотаем
+                    else -> { ranges.add(R(cs, ce)); cs = n.start; ce = n.end }
+                }
+            }
+            ranges.add(R(cs, ce))
+
+            val out = ArrayList<Pair<String, Int>>()
+            for (r in ranges) {
+                for (piece in rangeToPrefixes(r.start, r.end)) {
+                    out.addAll(carveSpecials(piece.first, piece.second))
+                }
+            }
+            result = out
+            if (out.size <= budget) {
+                Log.i(TAG, "Route merge: gap<=$gap → ${out.size} routes")
+                return out
+            }
+            gap = gap * 2 + 1
+        }
+        Log.w(TAG, "Route merge hit attempt limit, ${result.size} routes")
+        return result
+    }
+
+    /** Минимальный набор выровненных CIDR, точно покрывающий [start; end]. */
+    private fun rangeToPrefixes(start: Long, end: Long): List<Pair<Long, Int>> {
+        val out = ArrayList<Pair<Long, Int>>()
+        var cur = start
+        while (cur <= end) {
+            var len = 32 - java.lang.Long.numberOfTrailingZeros(cur).coerceAtMost(32)
+            if (cur == 0L) len = 0
+            while (len < 32) {
+                val size = 1L shl (32 - len)
+                if (cur + size - 1 <= end) break
+                len++
+            }
+            out.add(cur to len)
+            val last = cur + (1L shl (32 - len)) - 1
+            if (last >= end || last == 0xFFFFFFFFL) break
+            cur = last + 1
+        }
+        return out
+    }
+
+    /** Вырезает из блока спец-диапазоны, возвращая куски в виде "addr"/prefix. */
+    private fun carveSpecials(base: Long, prefix: Int): List<Pair<String, Int>> {
+        val size = 1L shl (32 - prefix)
+        var pieces = listOf(base to base + size - 1)
+        for ((sStart, sEnd) in SPECIAL_RANGES) {
+            val next = ArrayList<Pair<Long, Long>>()
+            for ((a, b) in pieces) {
+                if (sEnd < a || sStart > b) { next.add(a to b); continue }
+                if (sStart > a) next.add(a to sStart - 1)
+                if (sEnd < b) next.add(sEnd + 1 to b)
+            }
+            pieces = next
+        }
+        val out = ArrayList<Pair<String, Int>>()
+        for ((a, b) in pieces) {
+            for ((p, l) in rangeToPrefixes(a, b)) out.add(longToIp(p) to l)
+        }
+        return out
+    }
+
+    private fun ipToLong(s: String): Long? {
+        val parts = s.split('.')
+        if (parts.size != 4) return null
+        var v = 0L
+        for (p in parts) {
+            val b = p.toIntOrNull() ?: return null
+            if (b !in 0..255) return null
+            v = (v shl 8) or b.toLong()
+        }
+        return v
+    }
+
+    private fun longToIp(v: Long): String =
+        "${(v shr 24) and 0xFF}.${(v shr 16) and 0xFF}.${(v shr 8) and 0xFF}.${v and 0xFF}"
 
     override fun onDestroy() {
         unregisterNetworkCallback()

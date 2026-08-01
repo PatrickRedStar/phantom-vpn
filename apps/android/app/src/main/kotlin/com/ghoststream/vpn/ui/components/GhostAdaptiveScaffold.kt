@@ -7,7 +7,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -28,6 +30,10 @@ import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldLayout
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.res.stringResource
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -228,7 +234,7 @@ private fun GhostPermanentDrawer(
                             style = GsText.labelMono,
                         )
                     },
-                    shape = RoundedCornerShape(10.dp),
+                    shape = com.ghoststream.vpn.ui.theme.GsShapePill,
                     colors = NavigationDrawerItemDefaults.colors(
                         selectedContainerColor = pillColor,
                         unselectedContainerColor = Color.Transparent,
@@ -249,6 +255,10 @@ private fun GhostPermanentDrawer(
                 )
             }
 
+            // ADR 0015: активный профиль в drawer'е. Без него между тремя
+            // пунктами и версией зияла пустота на всю высоту раскрытого экрана.
+            ActiveProfileCard(Modifier.padding(top = 22.dp, start = 12.dp, end = 12.dp))
+
             // Spacer pushes footer to the bottom.
             Spacer(Modifier.weight(1f))
 
@@ -258,6 +268,65 @@ private fun GhostPermanentDrawer(
                 style = GsText.labelMono,
                 color = C.textFaint,
                 modifier = Modifier.padding(start = 22.dp, bottom = 22.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Активный профиль в drawer'е (ADR 0015): имя, хост, признак relay.
+ * Читает ProfilesStore напрямую — drawer живёт вне графа навигации, прокидывать
+ * профиль через все экраны ради одной карточки не стоит.
+ */
+@Composable
+private fun ActiveProfileCard(modifier: Modifier = Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val store = remember {
+        com.ghoststream.vpn.data.ProfilesStore.getInstance(context.applicationContext)
+    }
+    val profiles by store.profiles.collectAsStateWithLifecycle()
+    val activeId by store.activeId.collectAsStateWithLifecycle()
+    val profile = profiles.find { it.id == activeId } ?: profiles.firstOrNull() ?: return
+    val relayOn = profile.relayEnabled && !profile.relayAddr.isNullOrBlank()
+
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(com.ghoststream.vpn.ui.theme.GsShapeInner)
+            .background(C.bgElev2)
+            .padding(14.dp),
+    ) {
+        Text(
+            text = stringResource(com.ghoststream.vpn.R.string.set_endpoints).uppercase(),
+            style = GsText.labelMonoSmall,
+            color = C.textFaint,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = profile.name,
+            style = GsText.clientName,
+            color = C.bone,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(5.dp))
+        Text(
+            text = profile.serverAddr.substringBefore(':').ifEmpty { "—" },
+            style = GsText.host,
+            color = C.textDim,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+        )
+        if (relayOn) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = stringResource(com.ghoststream.vpn.R.string.kv_route_relay).uppercase(),
+                style = GsText.chipText,
+                color = C.signal,
+                modifier = Modifier
+                    .clip(com.ghoststream.vpn.ui.theme.GsShapePill)
+                    .background(C.signal.copy(alpha = 0.10f))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
             )
         }
     }

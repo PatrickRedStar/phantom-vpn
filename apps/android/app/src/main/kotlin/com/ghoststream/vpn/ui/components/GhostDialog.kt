@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,12 +19,15 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.ghoststream.vpn.ui.theme.C
+import com.ghoststream.vpn.ui.theme.GsShapeCard
+import com.ghoststream.vpn.ui.theme.GsShapeField
 import com.ghoststream.vpn.ui.theme.GsText
 
 // ── GhostDialog ─────────────────────────────────────────────────────────────
@@ -39,8 +44,9 @@ fun GhostDialog(
         Column(
             Modifier
                 .fillMaxWidth()
-                .background(C.bgElev)
-                .border(1.dp, C.hair)
+                .clip(GsShapeCard)
+                .background(C.bgElev2)
+                .border(1.dp, C.bone.copy(alpha = 0.07f), GsShapeCard)
                 .padding(20.dp),
         ) {
             Text(title.uppercase(), style = GsText.labelMono, color = C.bone)
@@ -56,7 +62,7 @@ fun GhostDialog(
                 ) {
                     dismissButton?.invoke()
                     if (dismissButton != null && confirmButton != null) {
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(8.dp))
                     }
                     confirmButton?.invoke()
                 }
@@ -83,8 +89,9 @@ fun GhostFullDialog(
             Modifier
                 .fillMaxWidth(0.95f)
                 .fillMaxHeight(0.8f)
-                .background(C.bgElev)
-                .border(1.dp, C.hair)
+                .clip(GsShapeCard)
+                .background(C.bgElev2)
+                .border(1.dp, C.bone.copy(alpha = 0.07f), GsShapeCard)
                 .padding(20.dp),
         ) {
             Text(title.uppercase(), style = GsText.labelMono, color = C.bone)
@@ -102,7 +109,7 @@ fun GhostFullDialog(
                 ) {
                     dismissButton?.invoke()
                     if (dismissButton != null && confirmButton != null) {
-                        Spacer(Modifier.width(12.dp))
+                        Spacer(Modifier.width(8.dp))
                     }
                     confirmButton?.invoke()
                 }
@@ -120,19 +127,50 @@ fun GhostDialogButton(
     color: Color = C.signal,
     enabled: Boolean = true,
 ) {
-    Text(
-        text.uppercase(),
-        style = GsText.labelMono,
-        color = if (enabled) color else C.textFaint,
-        modifier = Modifier
+    // ADR 0015: кнопка диалога должна ВЫГЛЯДЕТЬ кнопкой. Голый текст был
+    // неинформативен (баг-репорт 2026-08-01). Роль выводим из color, чтобы не
+    // трогать ~20 call site'ов: signal → filled, danger → outlined-danger,
+    // остальное → tonal.
+    val pill = com.ghoststream.vpn.ui.theme.GsShapePill
+    val isPrimary = color == C.signal
+    val isDanger = color == C.danger
+    val bg = when {
+        !enabled       -> C.bone.copy(alpha = 0.04f)
+        isPrimary      -> C.signal
+        isDanger       -> C.danger.copy(alpha = 0.10f)
+        else           -> C.bone.copy(alpha = 0.06f)
+    }
+    val fg = when {
+        !enabled  -> C.textFaint
+        isPrimary -> C.bg
+        else      -> color
+    }
+    Box(
+        Modifier
+            .clip(pill)
+            .background(bg)
+            .then(
+                if (isDanger && enabled)
+                    Modifier.border(1.dp, C.danger.copy(alpha = 0.45f), pill)
+                else Modifier,
+            )
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text.uppercase(),
+            style = GsText.labelMono,
+            color = fg,
+            maxLines = 1,
+            softWrap = false, // «СОХР/АНИТ/Ь» в 3 строки — тот же баг-репорт
+        )
+    }
 }
 
 // ── Ghost-styled TextField helpers ──────────────────────────────────────────
 
-val GhostTextFieldShape = RectangleShape
+val GhostTextFieldShape = GsShapeField
 
 @Composable
 fun ghostTextFieldColors() = OutlinedTextFieldDefaults.colors(
@@ -143,6 +181,6 @@ fun ghostTextFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedBorderColor = C.hairBold,
     focusedLabelColor = C.signal,
     unfocusedLabelColor = C.textDim,
-    focusedContainerColor = C.bg,
-    unfocusedContainerColor = C.bg,
+    focusedContainerColor = C.bgElev2,
+    unfocusedContainerColor = C.bgElev2,
 )

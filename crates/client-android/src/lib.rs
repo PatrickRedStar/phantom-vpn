@@ -599,8 +599,12 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     let table = phantom_core::routing::RoutingTable::from_cidrs(&text);
     logcat(4, &format!("Routing: loaded {} direct CIDRs from {}", table.direct_count(), path_str));
 
-    let routes = table.compute_vpn_routes();
-    logcat(4, &format!("Routing: computed {} VPN routes", routes.len()));
+    // v0.28.1: склейка вместо урезания. Бюджет считается по ЧУЖИМ процессам,
+    // читающим LinkProperties, а не по нашему establish() — см. ANDROID_ROUTE_BUDGET.
+    let routes = table.compute_vpn_routes_merged(
+        phantom_core::routing::ANDROID_ROUTE_BUDGET,
+    );
+    logcat(4, &format!("Routing: computed {} VPN routes (merged)", routes.len()));
 
     let json = phantom_core::routing::routes_to_json(&routes);
     env.new_string(&json)

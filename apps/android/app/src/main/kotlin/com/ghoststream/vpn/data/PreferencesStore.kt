@@ -34,6 +34,8 @@ class PreferencesStore(private val context: Context) {
         // prompts (battery-optimisation exemption + POST_NOTIFICATIONS). Shown
         // at most once so we're not nagging on every Connect.
         private val ONBOARD_PROMPTS_SHOWN = booleanPreferencesKey("onboard_prompts_shown")
+        /** Окно осциллографа в секундах: 60 / 300 / 1800 / 3600. */
+        private val SCOPE_WINDOW_SECS = androidx.datastore.preferences.core.intPreferencesKey("scope_window_secs")
         private val LANGUAGE_OVERRIDE  = stringPreferencesKey("language_override")
         private val APP_ICON           = stringPreferencesKey("app_icon")
         // v0.27.0 (W11): null/0 = disabled, >0 = recycle threshold in bytes
@@ -61,6 +63,13 @@ class PreferencesStore(private val context: Context) {
 
     suspend fun setOnboardPromptsShown(shown: Boolean) {
         context.dataStore.edit { it[ONBOARD_PROMPTS_SHOWN] = shown }
+    }
+
+    /** Выбранное окно графика — переживает перезапуск приложения. */
+    val scopeWindowSecs: Flow<Int> = context.dataStore.data.map { it[SCOPE_WINDOW_SECS] ?: 60 }
+
+    suspend fun setScopeWindowSecs(secs: Int) {
+        context.dataStore.edit { it[SCOPE_WINDOW_SECS] = secs }
     }
 
     val autoStartOnBoot: Flow<Boolean> = context.dataStore.data.map { it[AUTO_START_ON_BOOT] ?: false }

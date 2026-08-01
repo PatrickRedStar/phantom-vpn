@@ -36,12 +36,19 @@ data class LogEntry(
     val category: String? = null,
     /** Stringified key/value attributes from the structured emitter. */
     val fields: Map<String, String> = emptyMap(),
+    /** Сколько подряд идущих одинаковых строк свёрнуто в эту. 1 = нет свёртки. */
+    val repeats: Int = 1,
 )
 
 class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private val LEVEL_ORDER = listOf("TRACE", "DEBUG", "INFO", "WARN", "ERROR")
+
+        /** "[дата ]время УРОВЕНЬ [категория] сообщение" — дата опциональна. */
+        private val LOG_LINE_RE = Regex(
+            """^(?:\d{4}-\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(\S+)(?:\s+\[([^]]*)])?\s*(.*)$""",
+        )
         /** Max lines kept in RAM for the live tail. */
         private const val MAX_LIVE_LINES = 50_000
         const val ALL_CATEGORIES = "all"
@@ -52,7 +59,9 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs
 
-    private val _filter = MutableStateFlow("ALL")
+    // ADR 0015: по умолчанию INFO — DEBUG-рукопожатия засоряли экран
+    // (мин-порог: INFO показывает INFO/WARN/ERROR).
+    private val _filter = MutableStateFlow("INFO")
     val filter: StateFlow<String> = _filter
 
     /** Active category filter ("all" or a specific category string). v0.24.0. */
@@ -146,7 +155,39 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                     }
             }
             passLevel && passCat && passQuery
+        }.let(::collapseRepeats)
+    }
+
+    /**
+     * Сворачивает подряд идущие одинаковые строки в одну со счётчиком.
+     *
+     * Системные колбэки сети (`onCapabilitiesChanged`) валятся десятками
+     * подряд и превращали журнал в стену одинакового текста. Свёртка
+     * сохраняет ПОСЛЕДНЮЮ строку группы (у неё свежий таймстемп) и её
+     * `repeats` — так видно и факт повторов, и их число, а экран остаётся
+     * читаемым.
+     */
+    private fun collapseRepeats(list: List<LogEntry>): List<LogEntry> {
+        if (list.size < 2) return list
+        val out = ArrayList<LogEntry>(list.size)
+        var run = list[0]
+        var n = 1
+        for (i in 1 until list.size) {
+            val e = list[i]
+            val same = e.level == run.level &&
+                e.category == run.category &&
+                e.message == run.message
+            if (same) {
+                n++
+                run = e // держим самый свежий таймстемп группы
+            } else {
+                out.add(if (n > 1) run.copy(repeats = n) else run)
+                run = e
+                n = 1
+            }
         }
+        out.add(if (n > 1) run.copy(repeats = n) else run)
+        return out
     }
 
     fun setFilter(level: String) {
@@ -184,29 +225,20 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
             if (take.isEmpty()) return@runCatching
             val parsed = mutableListOf<LogEntry>()
             for (line in take) {
-                // Format: "yyyy-MM-dd HH:mm:ss.SSS LEVEL [cat] msg k=v k=v"
-                // Parse softly — anything that doesn't match is shown as-is.
-                val space1 = line.indexOf(' ', 11) // after date
-                val space2 = if (space1 >= 0) line.indexOf(' ', space1 + 1) else -1
-                val space3 = if (space2 >= 0) line.indexOf(' ', space2 + 1) else -1
-                if (space3 < 0) {
+                // Format: "[yyyy-MM-dd ]HH:mm:ss[.SSS] LEVEL [cat] msg k=v k=v"
+                //
+                // Дата опциональна. Прежний парсер её ТРЕБОВАЛ (искал пробел с
+                // индекса 11) и на строках без даты сдвигал все поля на одну
+                // колонку: уровень попадал в timestamp, категория — в уровень.
+                // Это ломало не только вид, но и фильтр по уровням (level
+                // становился "[TU"). Баг-репорт 2026-08-01.
+                val m = LOG_LINE_RE.matchEntire(line.trim())
+                if (m == null) {
                     parsed.add(LogEntry(nextSeq++, "", "INFO", line))
                     continue
                 }
-                val tsPart = line.substring(0, space2).trim()
-                val level = line.substring(space2 + 1, space3).trim()
-                val rest = line.substring(space3 + 1).trim()
-                var cat: String? = null
-                var msg = rest
-                if (rest.startsWith("[")) {
-                    val close = rest.indexOf(']')
-                    if (close > 0) {
-                        cat = rest.substring(1, close)
-                        msg = rest.substring(close + 1).trim()
-                    }
-                }
-                // Convert "yyyy-MM-dd HH:mm:ss.SSS" → "HH:mm:ss.SSS"
-                val displayTs = if (tsPart.length >= 23) tsPart.substring(11) else tsPart
+                val (displayTs, level, catRaw, msg) = m.destructured
+                val cat = catRaw.ifEmpty { null }
                 parsed.add(
                     LogEntry(
                         seq = nextSeq++,

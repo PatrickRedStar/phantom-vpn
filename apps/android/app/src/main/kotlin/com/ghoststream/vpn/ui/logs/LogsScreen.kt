@@ -33,6 +33,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -265,8 +269,6 @@ private fun FilterPane(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        SectionLabel(stringResource(R.string.chip_all).let { "FILTER" })
-        Spacer(Modifier.height(6.dp))
         SearchBox(
             value = searchQuery,
             onChange = onSearchChange,
@@ -284,13 +286,17 @@ private fun FilterPane(
             "WARN"  to stringResource(R.string.chip_warn),
             "ERROR" to stringResource(R.string.chip_error),
         )
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // ADR 0015: чипы укладываются в сетку, а не столбиком на всю ширину —
+        // столбик из шести кнопок читался как меню, а не как фильтр.
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             levelOptions.forEach { (code, label) ->
                 GhostChip(
                     text = label,
                     active = levelFilter == code,
                     onClick = { onLevelChange(code) },
-                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
@@ -298,37 +304,28 @@ private fun FilterPane(
         Spacer(Modifier.height(14.dp))
         SectionLabel("КАТЕГОРИЯ")
         Spacer(Modifier.height(6.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             GhostChip(
                 text = stringResource(R.string.chip_cat_all),
                 active = categoryFilter == LogsViewModel.ALL_CATEGORIES,
                 onClick = { onCategoryChange(LogsViewModel.ALL_CATEGORIES) },
-                modifier = Modifier.fillMaxWidth(),
             )
-            if (availableCategories.isEmpty()) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "—",
-                    style = GsText.labelMono,
-                    color = C.textFaint,
-                    modifier = Modifier.padding(start = 4.dp),
+            // Пустой список категорий больше не рисует одинокое «—»:
+            // сам чип «все» уже говорит, что фильтра нет.
+            availableCategories.forEach { cat ->
+                GhostChip(
+                    text = cat,
+                    active = categoryFilter == cat,
+                    onClick = { onCategoryChange(cat) },
                 )
-            } else {
-                availableCategories.forEach { cat ->
-                    GhostChip(
-                        text = cat,
-                        active = categoryFilter == cat,
-                        onClick = { onCategoryChange(cat) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
             }
         }
 
-        Spacer(Modifier.height(14.dp))
-        SectionLabel("ДЕЙСТВИЯ")
-        Spacer(Modifier.height(6.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Spacer(Modifier.height(18.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             GhostChip(
                 text = stringResource(R.string.chip_clear),
                 active = false,
@@ -373,9 +370,10 @@ private fun SearchBox(
 ) {
     Box(
         modifier
+            .clip(com.ghoststream.vpn.ui.theme.GsShapePill)
             .background(C.bgElev)
-            .border(0.5.dp, C.hair)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .border(1.dp, C.hairBold, com.ghoststream.vpn.ui.theme.GsShapePill)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
         if (value.isEmpty()) {
             Text(
@@ -463,15 +461,22 @@ private fun LogEntryRow(entry: LogEntry) {
     val msgColor = when (entry.level.uppercase()) {
         "ERROR" -> C.danger.copy(alpha = 0.85f)
         "WARN"  -> C.warn.copy(alpha = 0.8f)
-        "DEBUG" -> BlueDebug.copy(alpha = 0.7f)
+        "DEBUG" -> C.textDim
         "TRACE" -> C.textFaint
+        else    -> C.textDim // INFO: тело dim, категория и значения — акценты
+    }
+    val catColor = when (entry.level.uppercase()) {
+        "ERROR" -> C.danger
+        "WARN"  -> C.warn
+        "DEBUG", "TRACE" -> C.textDim
         else    -> C.bone
     }
     val rowBg = when (entry.level.uppercase()) {
-        "ERROR" -> C.danger.copy(alpha = 0.08f)
-        "WARN"  -> C.warn.copy(alpha = 0.05f)
-        else    -> Color.Transparent
+        "ERROR" -> C.danger.copy(alpha = 0.05f)
+        else    -> Color.Transparent // WARN обходится цветом текста, как в мокапе
     }
+    val sepColor = C.bone.copy(alpha = 0.035f)
+    val accentBar = entry.level.uppercase() in setOf("WARN", "ERROR")
     val lvlShort = when (entry.level.uppercase()) {
         "ERROR" -> "ERR"
         "WARN"  -> "WRN"
@@ -490,48 +495,80 @@ private fun LogEntryRow(entry: LogEntry) {
             .fillMaxWidth()
             .background(rowBg)
             .drawBehind {
-                drawRect(
-                    color = lvlColor,
-                    topLeft = Offset.Zero,
-                    size = androidx.compose.ui.geometry.Size(2.dp.toPx(), size.height),
+                // Мокап: строки разделены тонким inset-волоском, без цветной
+                // полоски-маркера — она рябила на каждой строке. Уровень несут
+                // цвет текста и сам ярлык DBG/INF/WRN/ERR.
+                drawLine(
+                    color = sepColor,
+                    start = Offset(0f, 0.5f),
+                    end = Offset(size.width, 0.5f),
+                    strokeWidth = 1f,
                 )
+                // WARN/ERROR всё же помечаем — коротким штрихом у левого края
+                if (accentBar) {
+                    drawRoundRect(
+                        color = lvlColor,
+                        topLeft = Offset(0f, 6.dp.toPx()),
+                        size = androidx.compose.ui.geometry.Size(
+                            2.dp.toPx(),
+                            (size.height - 12.dp.toPx()).coerceAtLeast(1f),
+                        ),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()),
+                    )
+                }
             }
             .let { if (entry.fields.isNotEmpty()) it.clickable { expanded = !expanded } else it }
-            .padding(start = 6.dp, top = 2.dp, bottom = 2.dp),
+            .padding(start = 6.dp, top = 5.dp, bottom = 5.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
             Text(
                 text = shortTs(entry.timestamp),
                 style = GsText.logTs,
                 color = C.textFaint,
-                modifier = Modifier.width(54.dp),
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.width(60.dp),
             )
             Text(
                 text = lvlShort,
-                style = GsText.labelMono,
+                style = GsText.logLevel,
                 color = lvlColor,
-                modifier = Modifier.width(32.dp),
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.width(40.dp),
             )
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(6.dp))
             Column(Modifier.fillMaxWidth()) {
                 // First line: optional category badge + the message body.
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (entry.category != null) {
-                        Text(
-                            text = entry.category,
-                            style = GsText.labelMono,
-                            color = C.textDim,
-                            modifier = Modifier
-                                .background(C.bgElev2)
-                                .border(0.5.dp, C.hair)
-                                .padding(horizontal = 4.dp, vertical = 1.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
+                    // Мокап: «tunnel · 8 streams up…» — категория выделена
+                    // цветом кости ВНУТРИ текста, плашка была визуальным шумом
+                    // на каждой строке.
+                    val line = buildAnnotatedString {
+                        if (entry.category != null) {
+                            withStyle(SpanStyle(color = catColor)) {
+                                append(entry.category)
+                            }
+                            withStyle(SpanStyle(color = C.textFaint)) { append("  ·  ") }
+                        }
+                        // Значения после «=» — цветом кости: глаз цепляется за
+                        // данные (stream_id=3, rtt=38ms), а не за служебные слова.
+                        appendHighlighted(entry.message, msgColor, C.bone)
+                        if (entry.fields.isNotEmpty() && !expanded) {
+                            withStyle(SpanStyle(color = C.textFaint)) { append(" …") }
+                        }
+                        if (entry.repeats > 1) {
+                            withStyle(SpanStyle(color = C.signal)) {
+                                append("  ×${entry.repeats}")
+                            }
+                        }
                     }
                     Text(
-                        text = entry.message + if (entry.fields.isNotEmpty() && !expanded) " …" else "",
+                        text = line,
                         style = GsText.logMsg,
                         color = msgColor,
+                        maxLines = if (expanded) Int.MAX_VALUE else 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -559,10 +596,38 @@ private fun LogEntryRow(entry: LogEntry) {
     }
 }
 
+/**
+ * Добавляет сообщение, подсвечивая значения после «=» цветом [valueColor].
+ * Служебная часть («key=») остаётся в [baseColor] — так строка читается как
+ * данные, а не как монотонный текст.
+ */
+private fun androidx.compose.ui.text.AnnotatedString.Builder.appendHighlighted(
+    msg: String,
+    baseColor: androidx.compose.ui.graphics.Color,
+    valueColor: androidx.compose.ui.graphics.Color,
+) {
+    var i = 0
+    while (i < msg.length) {
+        val eq = msg.indexOf('=', i)
+        if (eq < 0) {
+            withStyle(SpanStyle(color = baseColor)) { append(msg.substring(i)) }
+            return
+        }
+        withStyle(SpanStyle(color = baseColor)) { append(msg.substring(i, eq + 1)) }
+        // значение — до первого пробела (или до конца строки)
+        var end = eq + 1
+        while (end < msg.length && !msg[end].isWhitespace()) end++
+        withStyle(SpanStyle(color = valueColor)) { append(msg.substring(eq + 1, end)) }
+        i = end
+    }
+}
+
 /** Strip leading date if timestamp has form "YYYY-MM-DD HH:MM:SS". */
 private fun shortTs(ts: String): String {
     val sp = ts.indexOf(' ')
-    return if (sp in 1 until ts.length - 1) ts.substring(sp + 1) else ts
+    val time = if (sp in 1 until ts.length - 1) ts.substring(sp + 1) else ts
+    // "12:26:38.242" → "12:26:38": доли секунды не влезали и рвали строку
+    return time.substringBefore('.').trim()
 }
 
 private fun formatCount(n: Int): String = when {
