@@ -142,33 +142,52 @@ jobs:
           name: PhantomVPN-Android-AAB
           path: apps/android/app/build/outputs/bundle/release/app-release.aab
 
-      # v0.26.7+: auto-publish AAB to Play Console Internal Testing track.
-      # The service account JSON lives in PLAY_STORE_SERVICE_ACCOUNT_JSON.
-      # Track flow: internal (here) → user promotes to production manually
-      # in Play Console once verified.
+      # «Что нового» для карточки в Play. Берём верхнюю секцию CHANGELOG.md,
+      # снимаем markdown и режем до 500 символов — столько разрешает Play.
+      # Без этого шага каждый релиз уезжал бы с пустым описанием.
+      - name: Release notes for Play
+        run: |
+          mkdir -p distribution/whatsnew
+          python3 - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          # первая секция вида "## [...] - дата" до следующей такой же
+          m = re.search(r"^## \[.*?\n(.*?)(?=^## \[)", text, re.S | re.M)
+          body = m.group(1) if m else ""
+          lines = []
+          for raw in body.splitlines():
+              s = raw.strip()
+              if not s or s.startswith("###"):
+                  continue
+              s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)      # жирный
+              s = re.sub(r"`(.+?)`", r"\1", s)            # код
+              s = re.sub(r"^[-*]\s*", "• ", s)            # маркеры
+              lines.append(s)
+          out = "\n".join(lines)[:500].rsplit("\n", 1)[0] or "Обновление PhantomVPN."
+          pathlib.Path("distribution/whatsnew/whatsnew-ru-RU").write_text(out, encoding="utf-8")
+          print(out)
+          PY
+
+      # v0.28.4+: публикуем сразу в production. Раньше уезжало в internal, и
+      # промоушен нужно было протыкивать руками в Console — что стабильно
+      # забывалось, и выпуска не происходило вовсе.
       #
-      # First-run note: Google takes up to 24 h to propagate service account
-      # permissions. Initial upload may fail with permission_denied; that's
-      # expected. After propagation it works on every subsequent tag.
+      # Шаг НЕ continue-on-error: тихий сбой публикации хуже красного billd'а.
+      # Если Play откажет (versionCode занят, аккаунт не прошёл обязательное
+      # closed testing, GCP API выключен) — сборка падает и это видно сразу.
+      # AAB при этом уже лежит артефактом выше, промоушен руками возможен.
       #
-      # If Play rejects because versionCode already used (e.g. manual upload
-      # of the same build): this step fails — bump version via
-      # `tools/ship-android.sh --bump --tag` to push a new code.
-      #
-      # continue-on-error: Play upload is best-effort. Failure here (e.g.
-      # GCP API not enabled, transient Google outage, versionCode collision)
-      # must NOT block the GitHub Release job that runs after Android.
-      # AAB stays as a GitHub artifact regardless — promote manually if Play
-      # auto-upload doesn't work.
-      - name: Publish to Play Console (internal track)
+      # Первый прогон после выдачи прав service account может упасть с
+      # permission_denied: Google раскатывает права до 24 ч.
+      - name: Publish to Play Console (production)
         uses: r0adkll/upload-google-play@v1
-        continue-on-error: true
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           packageName: io.ghoststream.vpn
           releaseFiles: apps/android/app/build/outputs/bundle/release/app-release.aab
-          track: internal
+          track: production
           status: completed
+          whatsNewDirectory: distribution/whatsnew
           inAppUpdatePriority: 2
 
 # ─────────────────────────────────────────────────────────────────────────────
