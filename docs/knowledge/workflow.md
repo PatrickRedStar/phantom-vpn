@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-08-02
 ---
 
 # Мульти-агентный workflow
@@ -25,11 +25,12 @@ updated: 2026-04-17
 
 | Агент | Зона |
 |-------|------|
-| **Dev-Server** | `crates/server/` |
+| **Dev-Server** | `server/server/`, `server/relay/` |
 | **Dev-Android** | `apps/android/`, `crates/client-android/` |
-| **Dev-Linux** | `crates/client-linux/`, `apps/linux/` |
-| **Dev-macOS-GUI** | `apps/ios/` (UI/Swift) |
-| **general-purpose (ios-core)** | `crates/client-apple/` |
+| **Dev-Linux** / **Dev-Linux-GUI** | `apps/linux/` (cli / gui / helper) |
+| **Dev-macOS-GUI** | `apps/macos/` (UI/Swift) |
+| **Dev-Windows-GUI** | `apps/windows/`, `crates/client-windows-core/` |
+| **general-purpose (ios)** | `apps/ios/` + `crates/client-apple/` |
 | **general-purpose** | `crates/core/`, `crates/client-common/`, `crates/client-core-runtime/` (можно разбить по желанию) |
 | **general-purpose (docs)** | `*.md`, `docs/knowledge/`, `server/config/`, `server/scripts/` |
 

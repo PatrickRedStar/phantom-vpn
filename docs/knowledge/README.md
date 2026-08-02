@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-08-02
 ---
 
 # GhostStream Knowledge Vault
@@ -21,12 +21,13 @@ updated: 2026-04-17
 | DPI/ТСПУ, обход детекта, ClientHello fingerprint, SNI, relay-камуфляж | [architecture/dpi-tspu.md](architecture/dpi-tspu.md) |
 | `server/server/src/vpn_session.rs`, SessionCoordinator, attach/detach | [architecture/sessions.md](architecture/sessions.md) |
 | `server/server/src/main.rs`, TLS accept, nginx passthrough | [architecture/transport.md](architecture/transport.md), [platforms/server.md](platforms/server.md) |
-| `crates/relay/` или RU-хоп (193.187.95.128) | [platforms/server.md](platforms/server.md) (секция "Relay SNI passthrough") |
+| `server/relay/` или RU-хоп (`balancer.bikini-bottom.com`) | [platforms/server.md](platforms/server.md) (секция "Relay SNI passthrough") |
 | `crates/client-common/`, `client-core-runtime/` | [architecture/transport.md](architecture/transport.md) |
 | `crates/client-android/` + `apps/android/` | [platforms/android.md](platforms/android.md) |
 | `crates/client-apple/` + `apps/ios/` | [platforms/ios.md](platforms/ios.md) |
 | `crates/client-apple/` + `apps/macos/` | [platforms/macos.md](platforms/macos.md) |
-| `crates/client-linux/` + `apps/linux/` | [platforms/linux.md](platforms/linux.md) |
+| `apps/linux/` (cli + gui + helper) | [platforms/linux.md](platforms/linux.md) |
+| `apps/windows/` + `crates/client-windows-core/` | [platforms/windows.md](platforms/windows.md) |
 | `server/server/src/admin.rs`, conn_string, подписки | [architecture/admin-api.md](architecture/admin-api.md) |
 | Любое слово-жаргон (`effective_n`, `flow_stream_idx`, ...) | [glossary.md](glossary.md) |
 
@@ -60,6 +61,9 @@ updated: 2026-04-17
 docs/knowledge/
 ├── README.md              # этот файл — индекс + правила
 ├── glossary.md            # термины проекта
+├── build.md               # где что собирается, деплой, релизный процесс, CI
+├── troubleshooting.md     # частые ошибки, команды диагностики
+├── workflow.md            # мульти-агентный workflow (декомпозиция по зонам)
 ├── architecture/          # "как работает" (дополняет gitnexus)
 │   ├── _index.md          # карта страниц этого раздела
 │   ├── wire-format.md
@@ -67,20 +71,29 @@ docs/knowledge/
 │   ├── transport.md
 │   ├── sessions.md
 │   ├── crypto.md
+│   ├── dpi-tspu.md
 │   └── admin-api.md
 ├── platforms/             # per-platform notes
 │   ├── _index.md
 │   ├── server.md
 │   ├── android.md
 │   ├── ios.md
+│   ├── macos.md
 │   ├── linux.md
-│   └── openwrt.md
+│   ├── openwrt.md
+│   └── windows.md
 ├── decisions/             # ADR-ки ("почему")
 │   ├── _index.md
 │   └── NNNN-<slug>.md
-└── incidents/             # постмортемы
-    ├── _index.md
-    └── YYYY-MM-DD-<slug>.md
+├── incidents/             # постмортемы
+│   ├── _index.md
+│   └── YYYY-MM-DD-<slug>.md
+├── audits/                # bug-hunt отчёты (YYYY-MM-DD-<slug>.md)
+├── history/
+│   └── timeline.md        # история версий
+└── tools/                 # инструментарий
+    ├── gitnexus.md
+    └── gstack.md
 ```
 
 ---
@@ -111,8 +124,11 @@ tags: [optional]        # для Obsidian search
 
 ---
 
-## Status: bootstrap
+## Status
 
-Начальный скелет (2026-04-17). Страницы архитектуры/платформ изначально =
-stub + ссылки на CLAUDE.md. Наполняются по мере работы над соответствующими
-зонами. Принцип: пишу когда имею контекст, не заранее.
+Vault заведён 2026-04-17, с тех пор наполняется по ходу работы. На 2026-08-02:
+17 ADR в `decisions/`, 6 постмортемов в `incidents/`, два bug-hunt отчёта в
+`audits/`, страницы по всем платформам кроме Windows (`platforms/windows.md`
+описывает клиент, код которого пока живёт на ветке `feature/windows-client`).
+
+Принцип прежний: страница появляется, когда есть содержание — не заранее.

@@ -1,5 +1,5 @@
 ---
-updated: 2026-06-04
+updated: 2026-08-02
 ---
 
 # Сборка и деплой
@@ -10,25 +10,40 @@ updated: 2026-06-04
 
 ## Среда разработки
 
-**Claude Code запущен прямо на сервере vdsina (`89.110.109.128`).** `cargo` установлен локально — сборка server/linux/android идёт напрямую на этом же хосте. APK собирается на домашнем ПК через SSH (тулчейн Android SDK/JDK там). SSH ключ для всех удалённых хостов — `~/.ssh/bot`, алиасы в `~/.ssh/config`.
+**Claude Code работает на локальной машине разработчика** (macOS, а также Windows — см. [Сборка с Windows-хоста](#сборка-с-windows-хоста)). Репозиторий клонирован локально, сборка идёт локально, на серверы ходим по SSH. Никакой Claude-сессии «прямо на сервере» нет — все команды из разделов про сервер выполняются **после `ssh`**.
+
+Что где собирается:
+
+| Артефакт | Где собирают |
+|---|---|
+| `phantom-server`, `phantom-relay`, Linux CLI/GUI | локально `cargo` (Linux/macOS-хост) или CI |
+| Android `.so` + APK/AAB | локально `tools/ship-android.sh` (нужен Android SDK/NDK + JDK 17) или CI |
+| macOS `.app`/`.dmg` | только macOS-хост, `apps/macos/scripts/ship-macos.sh` |
+| Windows `.exe` | Windows-хост с MSVC-тулчейном (см. ниже) или CI |
+| OpenWrt | только CI (cross/zigbuild) |
 
 ## Хосты
 
+Канонический список с ролями и оговорками — таблица «Хосты» в [CLAUDE.md](../../CLAUDE.md) (корень репо). Коротко:
+
 | Алиас | IP | Роль | DNS |
 |-------|-----|------|-----|
-| `vdsina` | 89.110.109.128 | NL exit-нода (phantom-server + nginx frontend) | `tls.nl2.bikini-bottom.com` |
-| — | 193.187.95.128 | RU relay-нода (phantom-relay, SNI passthrough) | `hostkey.bikini-bottom.com` |
+| `vdsina` | 89.110.109.128 | NL exit-нода (phantom-server `:8443` + nginx frontend). Из РФ фильтруются порты 22 и 443 — upstream реле только `:8443` | `tls.nl2.bikini-bottom.com` |
+| `vps_balancer` | 158.160.135.140 | **боевой RU relay** — `phantom-relay` на `127.0.0.1:5443` за nginx-stream (`ssl_preread`) | `balancer.bikini-bottom.com` |
+| — | 89.169.175.55 | резервный RU relay, из тракта выведен (оператор режет IP до ~15 КБ/с) | `relay.bikini-bottom.com` |
 
-SSH на RU relay (нет алиаса): `ssh -i ~/.ssh/bot root@193.187.95.128`.
+Прежний RU relay `193.187.95.128` из ротации выведен. SSH-алиасы — в `~/.ssh/config`.
+
+**Инвариант тракта:** `клиент → balancer.bikini-bottom.com:443 (SNI=tls.nl2.bikini-bottom.com) → 89.110.109.128:8443`.
 
 ---
 
 ## Rust — Server / Linux клиент (локально)
 
-Собирается на vdsina, там же и деплоится.
+Собирается локально в корне репозитория, бинарь потом уезжает на хост по `scp`/CI.
 
 ```bash
-cd /opt/github_projects/phantom-vpn
+cd <корень репозитория>
 cargo build --release -p phantom-server
 cargo build --release -p phantom-client-linux
 ```
@@ -39,7 +54,7 @@ cargo build --release -p phantom-client-linux
 
 ## Android .so (cargo ndk, локально)
 
-Rust-ядро для Android собирается прямо на vdsina, результат потом забирается домашним ПК при сборке APK (копируется в `apps/android/app/src/main/jniLibs/arm64-v8a/`).
+Rust-ядро для Android собирается локально, результат копируется в `apps/android/app/src/main/jniLibs/arm64-v8a/`. Вручную это делать не нужно — `tools/ship-android.sh` собирает `.so` + APK и ставит на устройство одной командой (только Unix-хост, см. ниже).
 
 ```bash
 export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
@@ -48,12 +63,12 @@ cp target/aarch64-linux-android/release/libphantom_android.so \
   apps/android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
 ```
 
-## Android APK (домашний ПК)
+## Android APK (локально)
 
-JAVA 17 обязателен (gradle требует).
+JDK 17 обязателен (gradle требует) — путь берётся из системы (`JAVA_HOME` уже настроен, либо `JAVA_HOME=$(/usr/libexec/java_home -v17)` на macOS, `/usr/lib/jvm/java-17-*` на Linux).
 
 ```bash
-cd apps/android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
+cd apps/android && ./gradlew assembleDebug --no-daemon
 # APK: apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -61,11 +76,35 @@ cd apps/android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebu
 
 ---
 
+## Сборка с Windows-хоста
+
+Что нужно поставить один раз:
+
+| Что | Зачем |
+|---|---|
+| `rustup target add x86_64-pc-windows-msvc` | целевой тулчейн (GNU-таргет не поддерживается) |
+| **Visual Studio Build Tools** с workload «Desktop development with C++» | линкер + `rc.exe` (ресурсы `app.rc`/`app.manifest`) |
+| **cmake**, **NASM**, **Perl** (Strawberry или ActivePerl) — все в `PATH` | без них не собирается `boring-sys`: `boring`/`tokio-boring` — безусловные зависимости `crates/client-common` (uTLS-fingerprint по ADR [0014](decisions/0014-transport-policy-pushable.md)) |
+| `wintun.dll` (amd64) с [wintun.net](https://www.wintun.net/) | TUN-адаптер; кладётся **рядом с .exe**, fallback — `C:\Windows\System32\wintun.dll`. CI берёт `wintun-0.14.1.zip` и сверяет SHA256 |
+| Терминал **от администратора** | адаптер и маршруты требуют прав; в манифесте приложения `requestedExecutionLevel level="requireAdministrator"` |
+
+```powershell
+cargo build --release -p ghoststream-windows
+# .exe: target\release\ghoststream-windows.exe — рядом положить wintun.dll
+```
+
+**Ship-скрипты (`tools/ship-android.sh`, `apps/macos/scripts/*.sh`) — только для Unix-хоста**: bash + adb/xcodebuild/notarytool. С Windows Android собирается напрямую через `gradlew.bat`, macOS-сборка невозможна в принципе — только через CI.
+
+Код Windows-клиента (`apps/windows/`, `crates/client-windows-core/`) живёт на ветке `feature/windows-client` и в master не влит. Детали — [platforms/windows.md](platforms/windows.md).
+
+---
+
 ## Развёртывание сервера
 
-| Что | Где |
+Всё в этом разделе — команды **на сервере**, после `ssh vdsina`.
+
+| Что | Где (на сервере) |
 |---|---|
-| Исходники | `/opt/github_projects/phantom-vpn/` |
 | Runtime | `/opt/phantom-vpn/` |
 | Сервис | `phantom-server.service` (systemd) |
 | Конфиг | `/opt/phantom-vpn/config/server.toml` |
@@ -73,18 +112,20 @@ cd apps/android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebu
 | Клиентские серты | `/opt/phantom-vpn/config/clients/<name>.{crt,key}` |
 
 ```bash
-# Сборка + деплой (всё локально на vdsina)
-cd /opt/github_projects/phantom-vpn
+# Локально: собрать и залить бинарь
 cargo build --release -p phantom-server
-install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
+scp target/release/phantom-server vdsina:/tmp/phantom-server
+
+# На сервере (ssh vdsina):
+install -m 0755 /tmp/phantom-server /opt/phantom-vpn/phantom-server
 systemctl restart phantom-server.service
 
-# Статус и логи
+# Статус и логи — тоже на сервере
 systemctl status phantom-server.service
 journalctl -u phantom-server.service -n 50 -f
 ```
 
-Деплой RU relay — отдельная процедура (sshim на `193.187.95.128`, процесс аналогичен, сервис `phantom-relay.service`). Детали — [platforms/server.md](platforms/server.md).
+Деплой RU relay — отдельная процедура на relay-хосте (`balancer.bikini-bottom.com`), процесс аналогичен, сервис `phantom-relay.service`. Детали — [platforms/server.md](platforms/server.md).
 
 ---
 
@@ -174,6 +215,8 @@ buildConfigField("String", "GIT_TAG", "\"vX.Y.Z\"")
 
 ### Таблица версий (для расчёта versionCode)
 
+**Источник истины — `apps/android/app/build.gradle.kts`** (`versionCode` / `versionName`). Таблица ниже — только история, при расхождении верить файлу.
+
 | Tag | versionCode |
 |-----|-------------|
 | v0.8.5 | 11 |
@@ -195,16 +238,35 @@ buildConfigField("String", "GIT_TAG", "\"vX.Y.Z\"")
 | v0.22.2 | 57 |
 | v0.22.4 | 59 |
 | v0.23.0 (Android 0.22.6) | 61 |
-| **v0.23.1** | **62** ← текущий в `build.gradle.kts` |
+| v0.23.1 | 62 |
+| v0.23.4 | 65 |
+| v0.24.0 | 66 |
+| v0.24.4 | 70 |
+| v0.25.1 | 73 |
+| v0.26.8 (Android 0.26.7) | 81 |
+| v0.26.22 | 100 |
+| v0.27.0 | 102 |
+| v0.28.4 | 122 |
+| **v0.28.5** | **123** ← текущий в `build.gradle.kts` |
 
-Для нового Android релиза: взять `55 + N` (N = число релизов после v0.21.0, у которых был APK).
+Для нового релиза: взять текущий `versionCode` из `build.gradle.kts` и прибавить 1. Монотонность обязательна — Play не примет AAB с уже использованным кодом.
+
+`applicationId` = `io.ghoststream.vpn` (debug-сборка получает суффикс `.debug`). Пакет `com.ghoststream.vpn` — legacy-установка из Play Market, её не трогаем.
 
 ### Процедура релиза
 
 ```bash
-# 1. Обновить build.gradle.kts (versionCode++ + versionName + GIT_TAG)
-# 2. Собрать APK (на домашнем ПК)
-cd apps/android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
+# Всё сразу — bump версии, сборка Rust + APK, чистая установка на устройство:
+tools/ship-android.sh --bump          # только локально
+tools/ship-android.sh --bump --tag    # + тег и запуск CI
+```
+
+Вручную (если ship-скрипт недоступен — например, с Windows-хоста):
+
+```bash
+# 1. Обновить build.gradle.kts (versionCode++ + versionName; GIT_TAG подставляется из versionName)
+# 2. Собрать APK
+cd apps/android && ./gradlew assembleDebug --no-daemon
 
 # 3. Коммит + тег + пуш
 git add apps/android/app/build.gradle.kts ...
@@ -212,22 +274,32 @@ git commit -m "feat: vX.Y.Z ..."
 git tag vX.Y.Z
 git push origin master && git push origin vX.Y.Z
 
-# 4. Установить на телефон (для smoke-теста)
-adb uninstall com.ghoststream.vpn 2>/dev/null
+# 4. Установить на телефон (для smoke-теста; НЕ трогать com.ghoststream.vpn)
+adb uninstall io.ghoststream.vpn.debug 2>/dev/null
 adb install apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ### GitHub Actions
 
-`.github/workflows/release.yml` — триггер тег `v*` или `workflow_dispatch`. Автоматически делает Release со всеми артефактами.
+В master два workflow: `.github/workflows/release.yml` и `.github/workflows/docker.yml`.
+
+`release.yml` — триггер тег `v*` или `workflow_dispatch`, собирает всё и делает GitHub Release.
 
 | Job | Runner | Артефакт |
 |-----|--------|---------|
 | `build-linux` | ubuntu-latest | `phantom-client-linux` (x86_64) |
-| `build-android` | ubuntu-latest | `app-debug.apk` |
-| `release` | ubuntu-latest | GitHub Release |
+| `build-server` | ubuntu-latest | `phantom-server`, `phantom-keygen` |
+| `build-android` | ubuntu-latest | подписанные `.apk` + `.aab`; **по тегу AAB публикуется в Google Play, трек `production`, `status: completed`** |
+| `build-linux-gui` | ubuntu-24.04 | `ghoststream-linux-gui-x86_64` (tarball: GUI + helper) |
+| `build-macos` | macos-latest | `.dmg` (Developer ID + notarize .app и .dmg) |
+| `build-openwrt` | ubuntu-latest | matrix: mipsel / armv7 / aarch64 / x86_64 musl |
+| `release` | ubuntu-latest | GitHub Release со всеми артефактами |
 
-`.github/workflows/openwrt.yml` — cross-compile OpenWrt клиента (MIPS/ARM). Отдельный триггер.
+⚠️ Публикация в Play идёт **сразу в production** — тег `v*` = релиз для всех пользователей. `workflow_dispatch` ничего не публикует.
+
+`docker.yml` — по тегу `v*` собирает и пушит multi-arch образы `ghcr.io/<owner>/ghoststream-{server,relay}`.
+
+Отдельного `openwrt.yml` нет — OpenWrt собирается job'ом внутри `release.yml`. `windows-ci.yml` существует пока только на ветке `feature/windows-client` (в master не влит).
 
 ---
 

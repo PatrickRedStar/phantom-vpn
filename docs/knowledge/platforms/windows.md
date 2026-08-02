@@ -26,7 +26,7 @@ master, а не merge.
 
 | Компонент | Путь | Роль |
 |---|---|---|
-| `client-windows-core` | [crates/client-windows-core/](../../../crates/client-windows-core/) | Headless Rust core: `WintunBackend` (cfg=windows), `MockBackend` (cfg=not(windows) для тестов), profile load/save |
+| `client-windows-core` | `crates/client-windows-core/` | Headless Rust core: `WintunBackend` (cfg=windows), `MockBackend` (cfg=not(windows) для тестов), profile load/save |
 | `ghoststream-windows` | [apps/windows/gui/](../../../apps/windows/gui/) | GUI бинарь — Slint UI + tokio worker + tray + Wintun wiring |
 | `client-core-runtime` | [crates/client-core-runtime/](../../../crates/client-core-runtime/) | Кросс-платформенный — добавлен `TunIo::Backend(Arc<dyn TunBackend>)` variant для Windows + headless тестов (ADR [0005](../decisions/0005-client-core-runtime.md)) |
 | Wintun DLL | bundled рядом с .exe | Юзер-mode TUN драйвер, скачивается в CI с wintun.net и кладётся в ZIP artifact |
@@ -87,7 +87,7 @@ apps/windows/gui/
 - **MTU 1350** — стандарт GhostStream, явная установка через
   `adapter.set_mtu(1350)`. Wintun дефолт 1500 → фрагментация под TSPU.
 - **Address 10.7.0.2/30** — захардкожено в MVP (`WintunConfig` в
-  [controller.rs](../../../apps/windows/gui/src/controller.rs)). В следующих
+  `controller.rs`). В следующих
   итерациях выводится из handshake response.
 - **IPv6 leak** — Wintun по умолчанию не блокирует IPv6 через physical
   adapter. TODO: `netsh interface ipv6 set route ::/0 <wintun_idx>` после
@@ -149,7 +149,7 @@ Wintun.
 
 ### В CI (windows-latest)
 
-[.github/workflows/windows-ci.yml](../../../.github/workflows/windows-ci.yml):
+`.github/workflows/windows-ci.yml`:
 
 - `cargo test -p client-windows-core` — те же 3 теста что и на Mac
 - `cargo build --release -p ghoststream-windows` → `ghoststream-windows.exe`

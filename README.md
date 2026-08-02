@@ -1,14 +1,14 @@
 # PhantomVPN / GhostStream 👻
 
-> Версия репозитория: **v0.19.4** · транспорт: **HTTP/2 + TLS 1.3 over TCP (единственный)**
+> Версия репозитория: последний тег (`git tag --sort=-v:refname | head -1`) и [CHANGELOG.md](CHANGELOG.md) · транспорт: **HTTP/2 + TLS 1.3 over TCP (единственный)**
 
 PhantomVPN (бренд Android-приложения — **GhostStream**) — кастомный VPN-протокол, маскирующий трафик под обычный HTTPS/gRPC, чтобы устойчиво обходить DPI и ТСПУ.
 
-Изначально (`v0.3–v0.14`) протокол строился вокруг QUIC/H3 и шейпинга под H.264 видеозвонок. После того как ТСПУ стал дросселить QUIC/UDP на потребительских каналах до ~80 Mbps, начиная с **v0.15** был добавлен параллельный транспорт на TCP/TLS + HTTP/2, который и стал основным для мобильных клиентов. Текущий дизайн подробно описан в [`other_docs/PLAN_v2_transport.md`](other_docs/PLAN_v2_transport.md) (историческая плановая запись) и актуализирован в [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Изначально (`v0.3–v0.14`) протокол строился вокруг QUIC/H3 и шейпинга под H.264 видеозвонок. После того как ТСПУ стал дросселить QUIC/UDP на потребительских каналах до ~80 Mbps, начиная с **v0.15** был добавлен параллельный транспорт на TCP/TLS + HTTP/2, который и стал основным для мобильных клиентов. Историческая плановая запись — [`other_docs/PLAN_v2_transport.md`](other_docs/PLAN_v2_transport.md); актуальная архитектура — [docs/knowledge/](docs/knowledge/README.md).
 
 ---
 
-## Что есть сейчас (v0.19.4)
+## Что есть сейчас
 
 * **Транспорт:** TLS 1.3 + HTTP/2 поверх TCP, мультистрим с flow-affine hash-раскладкой по стримам. На 2+ CPU сервера 8 параллельных стримов работают в параллельных батч-циклах (download с одного клиента 138→625 Mbit/s, v0.17.2). QUIC полностью удалён в v0.19.x (ТСПУ дросселировал UDP до ~80 Mbps).
 * **Auth:** **mTLS** (клиентский cert = identity, fingerprint сверяется с сервером). Noise IK был в v0.3–v0.4, удалён в opt-v4 в пользу mTLS.
@@ -22,7 +22,7 @@ PhantomVPN (бренд Android-приложения — **GhostStream**) — к�
 * **Управление сервером:**
   * HTTP Admin API на `10.7.0.1:8080` (через VPN-тоннель, Bearer token) — CRUD клиентов, подписки, conn_string, stats, live dest-log.
   * **Telegram-бот** (`tools/telegram-bot/`) — single-admin бот над admin API: добавить/удалить клиента, QR-код, подписки, enable/disable. При создании клиента выбирается роль admin/regular: для regular поле `admin` вырезается из conn_string перед отправкой.
-* **Платформы:** Android (Kotlin + Compose, JNI через `libphantom_android.so`), Linux CLI, Server, RU-relay. iOS существовал в v0.15.4–v0.15.8 и был удалён из дерева.
+* **Платформы:** Android (Kotlin + Compose, JNI через `libphantom_android.so`), iOS и macOS (SwiftUI + NEPacketTunnelProvider), Linux (CLI + Slint GUI), OpenWrt, Server, RU-relay. Общее ядро клиентов — `crates/client-core-runtime`.
 
 ### Замеры пропускной способности (v0.17.2, RU→NL hop)
 
@@ -38,28 +38,32 @@ PhantomVPN (бренд Android-приложения — **GhostStream**) — к�
 
 ```
 phantom-vpn/
-├── crates/
-│   ├── core/               # общая библиотека (крипто, wire-формат, шейпинг, H.264 shaper)
+├── crates/                 # Общие Rust-библиотеки
+│   ├── core/               # крипто, wire-формат, шейпинг, H.264 shaper
+│   ├── client-common/      # TX/RX циклы, H2/TLS handshake
+│   ├── client-core-runtime/ # единый tunnel runtime для всех клиентов
+│   ├── client-android/     # JNI → libphantom_android.so
+│   ├── client-apple/       # FFI для iOS/macOS
+│   └── gui-ipc/            # wire-типы GUI ↔ helper (StatusFrame, LogFrame…)
+├── server/
 │   ├── server/             # phantom-server + phantom-keygen
 │   ├── relay/              # phantom-relay — RU SNI-passthrough
-│   ├── client-common/      # TX/RX циклы, H2/TLS handshake (общий для всех клиентов)
-│   ├── client-linux/       # Linux TUN CLI клиент
-│   └── client-android/     # JNI → libphantom_android.so
-├── android/                # Android-приложение (Kotlin + Jetpack Compose)
-│   └── app/src/main/
-│       ├── kotlin/com/ghoststream/vpn/  # UI, ViewModels, VpnService, парсинг профилей
-│       └── jniLibs/arm64-v8a/           # собранный libphantom_android.so
+│   ├── config/             # server.example.toml, client.example.toml
+│   └── scripts/            # deploy.sh, deploy-relay.sh, keys.py, install.py
+├── apps/
+│   ├── android/            # Kotlin + Jetpack Compose
+│   │   └── app/src/main/{kotlin/com/ghoststream/vpn,jniLibs/arm64-v8a}
+│   ├── ios/                # SwiftUI + NEPacketTunnelProvider + PhantomKit
+│   ├── macos/              # SwiftUI + NEPacketTunnelProvider + system extension
+│   ├── linux/              # cli + gui (Slint) + helper
+│   ├── openwrt/            # netifd proto + LuCI UI
+│   └── windows/            # Slint GUI (полный код — в ветке feature/windows-client)
+├── docs/knowledge/         # ADR, инварианты, платформы, инциденты, глоссарий
 ├── tools/
+│   ├── ship-android.sh     # локальный Android-билд + install (Unix-хост)
 │   └── telegram-bot/       # Python Telegram-бот для управления сервером
-├── config/
-│   ├── server.example.toml
-│   └── client.example.toml
-├── scripts/
-│   ├── deploy.sh           # one-click деплой server на хост
-│   ├── keys.py             # keyring management CLI
-│   └── install.py          # первичная провижионка
 └── .github/workflows/
-    └── release.yml         # CI: Linux + Android APK + Server + phantom-keygen → GitHub Release
+    └── release.yml         # CI: Linux CLI/GUI + Android + Server + macOS + OpenWrt → GitHub Release
 ```
 
 ---
@@ -69,10 +73,13 @@ phantom-vpn/
 | Платформа | Статус | Описание |
 |-----------|--------|----------|
 | Android | ✅ Production | Compose UI, JNI, Foreground VPN Service, admin-панель, QR |
-| Linux client | ✅ Production | CLI `phantom-client-linux` |
+| iOS | ✅ Production | SwiftUI + NEPacketTunnelProvider, PhantomKit |
+| macOS | ✅ Production | SwiftUI + NEPacketTunnelProvider (system extension), .dmg в релизе |
+| Linux client | ✅ Production | CLI `phantom-client-linux` + Slint GUI `ghoststream-gui` |
+| OpenWrt | ✅ Production | netifd proto + LuCI UI |
+| Windows | 🚧 На ветке | Slint GUI `ghoststream-windows` + `crates/client-windows-core` в `feature/windows-client`; в master не влит |
 | Server | ✅ Production | `phantom-server` (vdsina NL exit) |
 | RU relay | ✅ Production | `phantom-relay` (SNI passthrough) |
-| macOS/iOS | ❌ Removed | Существовали в v0.10–v0.15, удалены из дерева (см. CHANGELOG) |
 
 ---
 
@@ -83,18 +90,21 @@ phantom-vpn/
 ```bash
 git clone https://github.com/PatrickRedStar/phantom-vpn.git
 cd phantom-vpn
-cargo build --release -p phantom-server -p phantom-keygen
+cargo build --release -p phantom-server   # даёт оба бинаря: phantom-server и phantom-keygen
 ```
 
 ### 2. Готовые бинарники из GitHub Releases
 
-Начиная с v0.18.2 в релизе публикуется не только Android APK и Linux client, но и **phantom-server** с **phantom-keygen**:
+По тегу `v*` CI собирает и публикует:
 
 ```
-phantom-client-linux          # Linux CLI клиент (x86_64)
-phantom-server                # Сервер (x86_64)
-phantom-keygen                # Генератор ключей (x86_64)
-app-debug.apk                 # Android APK (arm64)
+phantom-client-linux                  # Linux CLI клиент (x86_64)
+ghoststream-linux-gui-x86_64.tar.gz   # Linux GUI
+phantom-server                        # Сервер (x86_64)
+phantom-keygen                        # Генератор ключей (x86_64)
+app-release.apk                       # Android APK (arm64)
+GhostStream-*-macOS.dmg               # macOS
+openwrt-{aarch64,armv7,x86_64,mipsel} # OpenWrt
 ```
 
 ### 3. Первый запуск
@@ -103,24 +113,24 @@ app-debug.apk                 # Android APK (arm64)
 # Сгенерировать ключи
 ./target/release/phantom-keygen
 
-# Отредактировать config/server.toml (см. config/server.example.toml)
+# Отредактировать server.toml (см. server/config/server.example.toml)
 sudo ./target/release/phantom-server -c /etc/phantom-vpn/server.toml
 ```
 
 ### 4. One-click deploy (рекомендуется)
 
 ```bash
-bash ./scripts/deploy.sh root@<server-host> ~/.ssh/personal
+bash ./server/scripts/deploy.sh root@<server-host> ~/.ssh/personal
 ```
 
-Деплой собирает `phantom-server` + `phantom-keygen` локально, заливает в `/opt/phantom-vpn/`, ставит systemd-юнит `phantom-server.service` и запускает сервис. Подробности — в `scripts/deploy.sh`.
+Деплой собирает `phantom-server` + `phantom-keygen` локально, заливает в `/opt/phantom-vpn/`, ставит systemd-юнит `phantom-server.service` и запускает сервис. Подробности — в `server/scripts/deploy.sh`.
 
 ---
 
 ## Быстрый старт — Android клиент
 
 1. Скачать APK из [последнего GitHub Release](https://github.com/PatrickRedStar/phantom-vpn/releases).
-2. Установить: `adb install app-debug.apk` или открыть файл на телефоне.
+2. Установить: `adb install app-release.apk` или открыть файл на телефоне.
 3. Получить строку подключения от админа сервера (см. ниже про бота).
 4. В приложении: **Settings → Import profile → Paste** или **Scan QR**.
 5. Нажать **Connect**.
@@ -141,7 +151,7 @@ bash ./scripts/deploy.sh root@<server-host> ~/.ssh/personal
 # Собрать или скачать phantom-client-linux
 cargo build --release -p phantom-client-linux
 
-# Отредактировать config/client.toml (см. client.example.toml)
+# Отредактировать client.toml (см. server/config/client.example.toml)
 sudo ./target/release/phantom-client-linux -c /etc/phantom-vpn/client.toml -vv
 ```
 
@@ -153,7 +163,7 @@ sudo ./target/release/phantom-client-linux -c /etc/phantom-vpn/client.toml -vv
 
 Сервер поднимает HTTP API на туннельном интерфейсе (`10.7.0.1:8080` по умолчанию). Доступен **только через активный VPN-тоннель** — извне закрыт. Авторизация: `Authorization: Bearer <token>` из `[admin]` секции `server.toml`.
 
-Полный список эндпоинтов (GET/POST/DELETE), схемы запросов и ответов описаны в [CLAUDE.md](CLAUDE.md). Краткая сводка:
+Реализация и полный список эндпоинтов — `server/server/src/admin.rs`. Краткая сводка:
 
 | Путь | Что делает |
 |---|---|
@@ -220,8 +230,8 @@ Base64url-кодированный JSON. Формат:
 }
 ```
 
-Парсер: `android/app/src/main/kotlin/.../data/ConnStringParser.kt`.
-Генератор: `crates/server/src/admin.rs::build_conn_string()`.
+Парсер: `apps/android/app/src/main/kotlin/com/ghoststream/vpn/data/ConnStringParser.kt`.
+Генератор: `server/server/src/admin.rs::build_conn_string()`.
 
 Поле `admin` — опциональное. Бот для regular-клиентов вырезает его → такой клиент подключится к VPN, но панель управления в приложении будет скрыта.
 
@@ -229,14 +239,20 @@ Base64url-кодированный JSON. Формат:
 
 ## Конфиги
 
-### Сервер — `config/server.toml`
+### Сервер — `server.toml` (пример: `server/config/server.example.toml`)
 
 ```toml
+[network]
 listen_addr   = "0.0.0.0:8443"          # H2 TLS listener (часто за nginx SNI-router на 443)
 tun_addr      = "10.7.0.1/24"
+tun_mtu       = 1350
 wan_iface     = "ens3"
+
+[keys]
 server_private_key = "..."
 server_public_key  = "..."
+
+[quic]                                   # легаси-имя секции, читается для cert_subjects
 cert_subjects = ["89.110.109.128", "vpn.example.com"]
 
 [admin]
@@ -248,15 +264,19 @@ ca_key_path  = "/opt/phantom-vpn/config/ca.key"
 admin_url    = "http://10.7.0.1:8080"
 ```
 
-### Клиент Linux — `/etc/phantom-vpn/client.toml`
+### Клиент Linux — `/etc/phantom-vpn/client.toml` (пример: `server/config/client.example.toml`)
 
 ```toml
+[network]
 server_addr = "server.example.com:443"
 server_name = "server.example.com"
 insecure    = true                       # false если есть CA
+tun_name    = "tun0"
 tun_addr    = "10.7.0.2/24"
 tun_mtu     = 1350
 default_gw  = "10.7.0.1"
+
+[keys]
 client_private_key = "..."
 client_public_key  = "..."
 server_public_key  = "..."
@@ -266,14 +286,22 @@ server_public_key  = "..."
 
 ## Сборка Android (локально)
 
+Рекомендуемый путь (Unix-хост) — один скрипт собирает Rust + Kotlin и ставит APK на устройство:
+
+```bash
+bash ./tools/ship-android.sh
+```
+
+Вручную:
+
 ```bash
 export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
 cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android
 cp target/aarch64-linux-android/release/libphantom_android.so \
-   android/app/src/main/jniLibs/arm64-v8a/
+   apps/android/app/src/main/jniLibs/arm64-v8a/
 
-cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
-# APK: android/app/build/outputs/apk/debug/app-debug.apk
+cd apps/android && ./gradlew assembleDebug --no-daemon
+# APK: apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
@@ -283,12 +311,11 @@ cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --n
 | Файл | Что там |
 |---|---|
 | [README.md](README.md) | Этот файл — обзор проекта |
-| [CHANGELOG.md](CHANGELOG.md) | История версий v0.3 → v0.18.2 |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Текущая архитектура + исторический анализ производительности |
-| [ROADMAP.md](ROADMAP.md) | Таблица версий с замерами + план на будущее |
-| [CLAUDE.md](CLAUDE.md) | Подробная операционная документация (для контрибьюторов и AI-агентов) |
-| [ANALYZE.md](ANALYZE.md) | Исторический внешний аудит (2025, QUIC era) |
-| [ANALYZE_RESPONSE.md](ANALYZE_RESPONSE.md) | Ответ на аудит с результатами оптимизаций |
+| [CHANGELOG.md](CHANGELOG.md) | История версий |
+| [docs/knowledge/](docs/knowledge/README.md) | Карта проекта: архитектура, ADR, платформы, инциденты, глоссарий |
+| [docs/knowledge/build.md](docs/knowledge/build.md) | Сборка, деплой, релиз |
+| [docs/knowledge/troubleshooting.md](docs/knowledge/troubleshooting.md) | Ошибки и странное поведение |
+| [CLAUDE.md](CLAUDE.md) | Операционная документация (для контрибьюторов и AI-агентов) |
 | [other_docs/PLAN_v2_transport.md](other_docs/PLAN_v2_transport.md) | Исторический план миграции с QUIC на HTTP/2 (QUIC полностью удалён в v0.19.x) |
 | [tools/telegram-bot/README.md](tools/telegram-bot/README.md) | Telegram-бот |
 

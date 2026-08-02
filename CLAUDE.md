@@ -20,8 +20,10 @@
 |---|---|
 | Android (Kotlin + Compose) | ✅ Production |
 | iOS (SwiftUI + NEPacketTunnelProvider) | ✅ Production |
+| macOS (SwiftUI + NEPacketTunnelProvider + system extension) | ✅ Production |
 | Linux (CLI + Slint GUI) | ✅ Production |
 | OpenWrt (netifd + LuCI) | ✅ Production |
+| Windows (Slint GUI + Wintun) | 🚧 Код есть, но на ветке `feature/windows-client`, в master не влит |
 | Server (NL exit + RU SNI-passthrough relay) | ✅ Production |
 
 ## Что я хочу получить на выходе
@@ -41,16 +43,17 @@ crates/                    # Shared Rust libs
   core/                    # wire format, TLS, tun_uring, константы
   client-common/           # H2/TLS handshake + TX/RX
   client-core-runtime/     # Unified tunnel runtime (все клиенты)
-  client-{android,apple,linux}/
-  server/                  # phantom-server + phantom-keygen
-  relay/                   # phantom-relay (RU SNI-passthrough)
+  client-{android,apple}/
   gui-ipc/                 # canonical wire types (StatusFrame, LogFrame...)
 apps/                      # Per-platform apps
   android/                 # Kotlin + Jetpack Compose
   ios/                     # SwiftUI + NEPacketTunnelProvider + PhantomKit
+  macos/                   # SwiftUI + NEPacketTunnelProvider + system extension
   linux/                   # cli + gui (Slint) + helper
   openwrt/                 # netifd proto + LuCI UI
-server/                    # Серверные бинари + configs + deploy scripts
+  windows/                 # Slint GUI — в master только шрифты и ui/theme.slint
+server/                    # server/ (phantom-server + phantom-keygen) + relay/ (phantom-relay)
+                           # + config/ + scripts/ (deploy)
 ```
 
 Подробная карта: [docs/knowledge/README.md](docs/knowledge/README.md).
@@ -62,11 +65,24 @@ server/                    # Серверные бинари + configs + deploy 
 | **gitnexus** (MCP) | Код-граф: callers, callees, blast radius, execution flows. |
 | **docs/knowledge/** | Смысл: ADR, invariants, глоссарий, платформы, инциденты, история. |
 | **memory/** | Personal pointers Claude между сессиями. Автозагружается. |
-| `tools/ship-android.sh` | Android тестовый билд: Rust + Kotlin + clean install на устройство. Не собирать руками через gradle/adb. |
-| `apps/macos/scripts/ship-macos.sh` | macOS релиз: archive → notarize → dmg → staple → Downloads. |
+| `tools/ship-android.sh` | Android тестовый билд: Rust + Kotlin + clean install на устройство. Не собирать руками через gradle/adb. **Только Unix-хост (macOS/Linux).** |
+| `apps/macos/scripts/ship-macos.sh` | macOS релиз: archive → notarize → dmg → staple → Downloads. **Только macOS-хост.** |
 
 Использование gitnexus: [docs/knowledge/tools/gitnexus.md](docs/knowledge/tools/gitnexus.md).
 gstack CLI (обязателен): [docs/knowledge/tools/gstack.md](docs/knowledge/tools/gstack.md).
+
+## Работа с Windows-машины
+
+Что уже есть: рабочий Windows-клиент живёт на ветке `feature/windows-client` (17 коммитов, отстала от master на 126) — Slint GUI в `apps/windows/gui/`, крейт `crates/client-windows-core/`, CI `.github/workflows/windows-ci.yml`. В master из этого влиты только шрифты и `apps/windows/gui/ui/theme.slint`. Начинать с `git checkout feature/windows-client` и ребейза на master.
+
+Чем окружение отличается:
+
+- Нет `adb`, `xcodebuild`, `cargo ndk` — значит `tools/ship-android.sh`, `apps/macos/scripts/ship-macos.sh` и `smoke-test.sh` неприменимы. Android/iOS/macOS отсюда не собираются: их правки проверяет CI или Unix-хост.
+- Тулчейн — MSVC (`x86_64-pc-windows-msvc`, нужны Build Tools + Windows SDK), сборка обычным `cargo build --release -p ghoststream-windows`, тесты — `cargo test -p client-windows-core`.
+- Оболочка — PowerShell, не zsh: пути с `\`, переменные `$env:VAR`, `~/.ssh/config` → `%USERPROFILE%\.ssh\config`.
+- Linux/сервер собираются кросс-компиляцией или в CI; локально из-под Windows их не гонять.
+
+Детали платформы: [docs/knowledge/platforms/windows.md](docs/knowledge/platforms/windows.md).
 
 ## Перед тем как что-то делать
 
@@ -76,7 +92,7 @@ gstack CLI (обязателен): [docs/knowledge/tools/gstack.md](docs/knowled
 4. **Сборка / деплой / релиз** → [docs/knowledge/build.md](docs/knowledge/build.md).
 5. **Ошибка / странное поведение** → [docs/knowledge/troubleshooting.md](docs/knowledge/troubleshooting.md).
 6. **Крупная задача (>5 файлов, ≥3 зон)** → [docs/knowledge/workflow.md](docs/knowledge/workflow.md) — мульти-агентный workflow.
-7. **macOS правка cross-process boundary** (PacketTunnelProvider / VpnTunnelController / Keychain / PhantomBridge / client-apple / entitlements) → после fix ОБЯЗАТЕЛЬНО прогнать `apps/macos/scripts/smoke-test.sh` ДО следующего audit/round. Static checks lie на macOS sandbox + system extension boundary — единственный надёжный gate это real Connect. Постмортем: [incidents/2026-05-17-cert-pem-keychain-regression.md](docs/knowledge/incidents/2026-05-17-cert-pem-keychain-regression.md). ADR: [0009-cert-pem-providerConfiguration.md](docs/knowledge/decisions/0009-cert-pem-providerConfiguration.md).
+7. **macOS правка cross-process boundary** (PacketTunnelProvider / VpnTunnelController / Keychain / PhantomBridge / client-apple / entitlements) — только с macOS-хоста, с Windows этот путь закрыт → после fix ОБЯЗАТЕЛЬНО прогнать `apps/macos/scripts/smoke-test.sh` ДО следующего audit/round. Static checks lie на macOS sandbox + system extension boundary — единственный надёжный gate это real Connect. Постмортем: [incidents/2026-05-17-cert-pem-keychain-regression.md](docs/knowledge/incidents/2026-05-17-cert-pem-keychain-regression.md). ADR: [0009-cert-pem-providerConfiguration.md](docs/knowledge/decisions/0009-cert-pem-providerConfiguration.md).
 
 ## По окончании работы (обязательно)
 
@@ -101,7 +117,7 @@ gstack CLI (обязателен): [docs/knowledge/tools/gstack.md](docs/knowled
 | — | 82.38.66.138 | poland — **выведен**, VPS не продлевается. Из тракта убран 2026-07-31. |
 | — | 193.187.95.128 | Прежний RU relay — из ротации выведен. |
 
-SSH: алиасы в `~/.ssh/config`.
+SSH: алиасы в `~/.ssh/config` (на Windows — `%USERPROFILE%\.ssh\config`, встроенный OpenSSH; ключи и синтаксис те же).
 
 **Инвариант топологии:** `клиент → relay balancer.bikini-bottom.com (158.160.135.140):443 (SNI=tls.nl2.bikini-bottom.com) → exit 89.110.109.128:8443`. Если `expected_sni` реле не совпадёт с SNI клиента — реле отдаёт fallback-серт, и **все** клиенты падают с `BadCertificate`. Это не мягкий отказ.
 
@@ -122,7 +138,7 @@ SSH: алиасы в `~/.ssh/config`.
 
 ## gstack и скиллы
 
-gstack установлен глобально в `~/.claude/skills/gstack/` (скиллы /qa, /ship, /review, /investigate, /browse; веб-браузинг — через /browse). Если отсутствует: `git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup --team`.
+gstack установлен глобально в `~/.claude/skills/gstack/` (скиллы /qa, /ship, /review, /investigate, /browse; веб-браузинг — через /browse). Если отсутствует: `git clone --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack && cd ~/.claude/skills/gstack && ./setup --team`. На Windows этот установщик не работает (POSIX-shell) — либо ставить из WSL, либо жить без gstack.
 
 Роутинг: нетривиальный баг → investigate, деплой/релиз → ship, QA → qa, ревью диффа → review. Скилл — когда задача реально ложится на его workflow; не тащить церемонию в тривиальные правки.
 

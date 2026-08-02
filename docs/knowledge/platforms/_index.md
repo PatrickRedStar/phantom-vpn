@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-08-02
 ---
 
 # Platforms — Index
@@ -15,6 +15,7 @@ updated: 2026-04-17
 | [macos.md](macos.md) | SwiftUI host + system extension `NEPacketTunnelProvider` + shared PhantomKit/PhantomUI с iOS, MenuBar primary + Console secondary, Sparkle 2 auto-update, Direct distribution (DMG + Developer ID notarize) | `crates/client-apple/` + `apps/macos/` |
 | [linux.md](linux.md) | Три независимых приложения — CLI + GUI (Slint) + privileged helper, io_uring TUN с fallback на blocking, gui-ipc wire protocol | `apps/linux/cli/`, `apps/linux/gui/`, `apps/linux/helper/` |
 | [openwrt.md](openwrt.md) | phantom-client-openwrt + netifd proto (`ghoststream.sh`) + LuCI, CI cross-compile для MIPS/arm/arm64/x86_64, MIPS build специфика | `apps/openwrt/` |
+| [windows.md](windows.md) | Slint GUI + tray + Wintun-адаптер, маршруты через `route`/`netsh`, MSVC-тулчейн и `wintun.dll`. **Статус: код на ветке `origin/feature/windows-client`, в master не влит** (в master лежат только шрифты/тема и нет `windows-ci.yml`) | `apps/windows/gui/`, `crates/client-windows-core/` |
 
 Общие runtime-штуки (`TunIo` enum, supervise FSM, `StatusFrame` EMA) — в
 [../glossary.md](../glossary.md) (раздел "Client runtime"). Unified tunnel
