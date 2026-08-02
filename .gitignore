@@ -63,3 +63,9 @@ apps/macos/*.xcuserdata/
 .gstack/
 .worktrees/
 .gitnexus
+
+# Личные настройки Xcode (какие файлы открыты, breakpoints) — у каждого свои
+xcuserdata/
+
+# Кросс-сборка Linux, 412 МБ артефактов
+target-linux-amd64/
