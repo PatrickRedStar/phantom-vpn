@@ -118,6 +118,15 @@ class RoutingRulesManager(private val context: Context) {
     fun missingSelectedLists(countryCodes: List<String>): List<String> =
         countryCodes.filterNot { File(rulesDir, "$it.txt").exists() }
 
+    /** Скачанные, но давно: geoip меняется медленно, месяца хватает. */
+    fun staleSelectedLists(countryCodes: List<String>): List<String> {
+        val cutoff = System.currentTimeMillis() - 30L * 24 * 3600 * 1000
+        return countryCodes.filter { code ->
+            val f = File(rulesDir, "$code.txt")
+            f.exists() && f.lastModified() < cutoff
+        }
+    }
+
     fun previewRuleList(code: String, maxLines: Int = 30): List<String> {
         val file = File(rulesDir, "$code.txt")
         if (!file.exists()) return emptyList()

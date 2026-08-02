@@ -624,11 +624,25 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun setSplitRouting(enabled: Boolean) {
+        // Включённый split без единой страны — тихий полный туннель. Дефолт: RU.
+        // Обе правки одной записью: два асинхронных saveConfig гоняются и затирают друг друга.
+        val addRu = enabled && config.value.directCountries.isEmpty()
         val profile = profilesStore.getActiveProfile()
         if (profile != null) {
-            profilesStore.updateProfile(profile.copy(splitRouting = enabled))
+            profilesStore.updateProfile(profile.copy(
+                splitRouting = enabled,
+                directCountries = if (addRu) listOf("ru") else profile.directCountries,
+            ))
         } else {
-            viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(splitRouting = enabled)) }
+            viewModelScope.launch {
+                preferencesStore.saveConfig(config.value.copy(
+                    splitRouting = enabled,
+                    directCountries = if (addRu) listOf("ru") else config.value.directCountries,
+                ))
+            }
+        }
+        if (addRu && !routingRulesManager.isDownloaded("ru")) {
+            downloadCountryRules("ru")
         }
     }
 
@@ -647,12 +661,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun toggleDirectCountry(code: String) {
         val current = config.value.directCountries.toMutableList()
-        if (code in current) current.remove(code) else current.add(code)
+        val added = code !in current
+        if (added) current.add(code) else current.remove(code)
         val profile = profilesStore.getActiveProfile()
         if (profile != null) {
             profilesStore.updateProfile(profile.copy(directCountries = current))
         } else {
             viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(directCountries = current)) }
+        }
+        if (added && !routingRulesManager.isDownloaded(code)) {
+            downloadCountryRules(code)
         }
     }
 

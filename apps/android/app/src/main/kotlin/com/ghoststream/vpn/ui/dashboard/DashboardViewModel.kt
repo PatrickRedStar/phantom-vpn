@@ -248,15 +248,30 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             _preflightWarning.value = null
             VpnStateManager.update(VpnState.Connecting)
             val directCidrsPath = if (cfg.splitRouting && cfg.directCountries.isNotEmpty()) {
-                val missing = withContext(Dispatchers.IO) {
+                var missing = withContext(Dispatchers.IO) {
                     routingRulesManager.missingSelectedLists(cfg.directCountries)
                 }
                 if (missing.isNotEmpty()) {
+                    // Докачиваем на месте — раньше тут был хард-стоп с отсылкой в Настройки.
+                    missing.forEach { routingRulesManager.downloadRuleList(it) }
+                    missing = withContext(Dispatchers.IO) {
+                        routingRulesManager.missingSelectedLists(cfg.directCountries)
+                    }
+                }
+                if (missing.isNotEmpty()) {
                     _preflightWarning.value =
-                        "Не загружены списки: ${missing.joinToString(", ")}. Загрузите их в Настройках."
+                        "Не удалось загрузить списки: ${missing.joinToString(", ")}. Проверьте сеть и попробуйте снова."
                     VpnStateManager.update(VpnState.Error("Списки маршрутов не загружены"))
                     return@launch
                 } else {
+                    // Протухшие обновляем в фоне: подключение ждать не должно,
+                    // свежий список пригодится к следующему разу.
+                    val stale = withContext(Dispatchers.IO) {
+                        routingRulesManager.staleSelectedLists(cfg.directCountries)
+                    }
+                    if (stale.isNotEmpty()) {
+                        viewModelScope.launch { stale.forEach { routingRulesManager.downloadRuleList(it) } }
+                    }
                     withContext(Dispatchers.IO) {
                         routingRulesManager.mergeSelectedLists(cfg.directCountries) ?: ""
                     }

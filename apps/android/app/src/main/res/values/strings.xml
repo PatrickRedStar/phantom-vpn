@@ -135,6 +135,7 @@
     <string name="split_download_all">Download all</string>
     <string name="split_download">Download</string>
     <string name="split_downloaded">Downloaded</string>
+    <string name="split_apply_hint">Changes apply on next connect</string>
 
     <string name="kv_route">Route</string>
     <string name="kv_route_relay">Relay</string>

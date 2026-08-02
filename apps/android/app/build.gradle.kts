@@ -12,8 +12,8 @@ android {
         applicationId = "io.ghoststream.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 117
-        versionName = "0.28.0"
+        versionCode = 121
+        versionName = "0.28.3"
         buildConfigField("String", "GIT_TAG", "\"v0.28.0\"")
     }
 
@@ -145,6 +145,11 @@ tasks.register<Exec>("buildRustAndroid") {
         "cargo", "ndk",
         "-t", "arm64-v8a",
         "-o", "${projectDir}/src/main/jniLibs",
+        "--platform", "26",
         "build", "--release", "-p", "phantom-client-android"
     )
 }
+
+// Без этой привязки задача никогда не запускается и в APK уезжает протухший .so
+// (постмортем: split-routing v0.28.0 не работал именно из-за этого).
+tasks.named("preBuild") { dependsOn("buildRustAndroid") }

@@ -130,6 +130,7 @@
     <string name="split_download_all">Скачать все</string>
     <string name="split_download">Скачать</string>
     <string name="split_downloaded">Загружен</string>
+    <string name="split_apply_hint">Изменения применятся при следующем подключении</string>
 
     <string name="kv_route">Маршрут</string>
     <string name="kv_route_relay">Relay</string>

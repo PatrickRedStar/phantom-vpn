@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
 import android.net.ConnectivityManager
+import android.net.IpPrefix
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -23,6 +24,8 @@ import com.ghoststream.vpn.BuildConfig
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.widget.WidgetState
+import java.io.File
+import java.net.InetAddress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -277,6 +280,28 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
          */
         private const val ROUTE_BUDGET = 1500
 
+        /**
+         * Бюджет для excludeRoute-пути (API 33+). Замер на S21: 12 820 префиксов
+         * дают parcel 1 077 464 Б и establish() падает с TransactionTooLargeException
+         * — то есть ≈84 Б на запись при лимите Binder в 1 МБ. 10 000 оставляет
+         * ~160 КБ запаса под остальное содержимое Builder; geoip ru при этом
+         * укладывается со склейкой дырок ≤256 адресов (+0,5 % лишнего).
+         *
+         * Но узкое место не establish(), а чтение LinkProperties сторонним
+         * процессом: 9406 записей дают reply IConnectivityManager в 1 317 500 Б
+         * (≈140 Б на запись), Binder этого не переживает и уносит system_server
+         * вместе с «Настройками». 6000 записей ≈ 840 КБ — с запасом.
+         */
+        private const val EXCLUDE_BUDGET = 6000
+
+        /**
+         * Потолок склейки exclude-списка: разрыв до 1024 адресов (4 × /24).
+         * Ровно столько чужих адресов может уйти мимо туннеля на каждый разрыв;
+         * на geoip ru это ≈1,5 млн адресов (0,03 % IPv4) против десятков
+         * миллионов при неограниченном росте порога.
+         */
+        private const val EXCLUDE_MAX_GAP = 1024L
+
         /** Порог склейки: дырка до /17 (32 768 адресов). Решение владельца 2026-08-01. */
         private const val GAP_MERGE_START = (1L shl 15) - 1
 
@@ -485,7 +510,28 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             .setMtu(1300)
 
         // ── Routing ──────────────────────────────────────────────────────
-        if (splitRouting && directCidrsPath.isNotBlank()) {
+        if (splitRouting && directCidrsPath.isNotBlank() &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        ) {
+            // Перечислить сами direct-подсети дешевле, чем их комплемент: 12–13 тыс.
+            // записей против ~30 тыс., и ни одна подсеть не теряется по дороге.
+            // Комплемент приходилось резать до ROUTE_BUDGET, и склейка съедала
+            // ровно те блоки, ради которых split включают (Яндекс /22 и подобные).
+            val excluded = loadExcludePrefixes(directCidrsPath, EXCLUDE_BUDGET)
+            if (excluded.isEmpty()) {
+                Log.w(TAG, "Direct list empty after parse, full tunnel")
+                builder.addRoute("0.0.0.0", 0)
+            } else {
+                builder.addRoute("0.0.0.0", 0)
+                var applied = 0
+                for (p in excluded) {
+                    try { builder.excludeRoute(p); applied++ } catch (e: Exception) {
+                        Log.w(TAG, "excludeRoute($p) rejected", e)
+                    }
+                }
+                Log.i(TAG, "Split routing: $applied excluded prefixes (API 33+ path)")
+            }
+        } else if (splitRouting && directCidrsPath.isNotBlank()) {
             val routesJson = nativeComputeVpnRoutes(directCidrsPath)
             if (routesJson != null) {
                 try {
@@ -598,7 +644,14 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         vpnInterface = null
         runCatching { oldIface?.close() }
 
-        vpnInterface = builder.establish() ?: run {
+        // Слишком длинная таблица маршрутов не влезает в Binder-транзакцию и
+        // раньше валила процесс целиком (TransactionTooLargeException).
+        vpnInterface = try {
+            builder.establish()
+        } catch (e: Exception) {
+            Log.e(TAG, "establish() failed", e)
+            null
+        } ?: run {
             VpnStateManager.update(VpnState.Error("Не удалось создать TUN"))
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -1047,6 +1100,79 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         }
         Log.w(TAG, "Route merge hit attempt limit, ${result.size} routes")
         return result
+    }
+
+    /**
+     * Читает direct-список и отдаёт префиксы для excludeRoute(): сами российские
+     * подсети плюс приватные диапазоны, чтобы LAN остался доступен.
+     *
+     * Точный список влезает в бюджет целиком — склейка нужна только если стран
+     * выбрано много. Склейка здесь выталкивает чужие адреса из туннеля (обратная
+     * сторона dd94139b), поэтому порог растёт минимально и пишется в лог.
+     */
+    private fun loadExcludePrefixes(path: String, budget: Int): List<IpPrefix> {
+        val nets = ArrayList<Pair<Long, Long>>()
+        try {
+            File(path).forEachLine { line ->
+                val s = line.trim()
+                if (s.isEmpty() || s.startsWith("#") || ':' in s) return@forEachLine
+                val slash = s.indexOf('/')
+                val base = ipToLong(if (slash < 0) s else s.substring(0, slash)) ?: return@forEachLine
+                val prefix = (if (slash < 0) 32 else s.substring(slash + 1).toIntOrNull() ?: return@forEachLine)
+                    .coerceIn(0, 32)
+                val size = 1L shl (32 - prefix)
+                val aligned = base and (0xFFFFFFFFL - size + 1)
+                nets.add(aligned to aligned + size - 1)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read direct list $path", e)
+            return emptyList()
+        }
+        // 127/8 VpnService исключать не даёт («Bad address»), да и в туннель
+        // loopback всё равно не уходит — ядро отдаёт его на lo.
+        for ((s, e) in SPECIAL_RANGES) if (s != 0x7F000000L) nets.add(s to e)
+        if (nets.isEmpty()) return emptyList()
+        nets.sortBy { it.first }
+
+        // Сначала мягкая склейка с жёстким потолком: разрыв до EXCLUDE_MAX_GAP
+        // адресов проглатывается, и ровно столько чужих адресов может уйти мимо
+        // туннеля. Потолок фиксирован, поэтому утечка ограничена ~1,5 млн адресов
+        // на geoip ru — в отличие от растущего порога, который отдавал наружу
+        // десятки миллионов.
+        var prefixes = collapseToPrefixes(nets, 0L)
+        if (prefixes.size > budget) {
+            prefixes = collapseToPrefixes(nets, EXCLUDE_MAX_GAP)
+        }
+        // Если и этого мало — выкидываем самые мелкие блоки. Выкинутый блок
+        // едет через туннель: медленнее, но безопасно. Расширять склейку дальше
+        // нельзя — это выталкивало бы чужие адреса наружу (инвариант dd94139b).
+        val dropped = prefixes.size - budget
+        if (dropped > 0) {
+            prefixes = prefixes.sortedByDescending { 1L shl (32 - it.prefixLength) }.take(budget)
+            Log.w(TAG, "Exclude list trimmed to $budget prefixes ($dropped smallest dropped to tunnel)")
+        } else {
+            Log.i(TAG, "Exclude list: ${prefixes.size} prefixes")
+        }
+        return prefixes
+    }
+
+    /** Склеивает диапазоны, проглатывая разрывы ≤ [gap], и режет результат на CIDR. */
+    private fun collapseToPrefixes(nets: List<Pair<Long, Long>>, gap: Long): List<IpPrefix> {
+        val out = ArrayList<IpPrefix>()
+        var cs = nets[0].first
+        var ce = nets[0].second
+        fun flush() {
+            for ((p, l) in rangeToPrefixes(cs, ce)) {
+                out.add(IpPrefix(InetAddress.getByName(longToIp(p)), l))
+            }
+        }
+        for (k in 1 until nets.size) {
+            val (s, e) = nets[k]
+            if (s <= ce + 1 || s - ce - 1 <= gap) ce = maxOf(ce, e)
+            else { flush(); cs = s; ce = e }
+        }
+        flush()
+        return out
     }
 
     /** Минимальный набор выровненных CIDR, точно покрывающий [start; end]. */

@@ -397,6 +397,8 @@ fun SettingsScreen(
                     Spacer(Modifier.height(8.dp))
                     Text(downloadStatus, style = GsText.host, color = C.textDim)
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(stringResource(R.string.split_apply_hint), style = GsText.host, color = C.textFaint)
             },
             confirmButton = {
                 GhostDialogButton(stringResource(R.string.split_download_all), onClick = { viewModel.downloadAllSelected() }, color = C.textDim)
@@ -1349,10 +1351,14 @@ private fun TunnelRows(
         onClick = { onShowDnsPicker() },
         showDivider = true,
     )
+    val downloadedRulesForSub by viewModel.downloadedRules.collectAsStateWithLifecycle()
     SettingRow(
         label = stringResource(R.string.row_split_tunnel),
         sub = if (config.splitRouting)
-            stringResource(R.string.sub_split_bypass, config.directCountries.size)
+            stringResource(
+                R.string.sub_split_bypass,
+                config.directCountries.sumOf { downloadedRulesForSub[it]?.cidrCount ?: 0 },
+            )
         else "Off",
         right = {
             GhostToggle(
