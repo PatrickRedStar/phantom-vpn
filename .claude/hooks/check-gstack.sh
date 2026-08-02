@@ -1,6 +1,15 @@
 #!/bin/bash
 # Block skill usage when gstack is not installed globally.
 
+# On Windows the gstack installer (./setup --team) does not run, so blocking
+# every Skill call there would make the repo unusable. Let it through instead.
+case "${OS:-}$(uname -s 2>/dev/null)" in
+  Windows_NT*|*MINGW*|*MSYS*|*CYGWIN*)
+    echo '{}'
+    exit 0
+    ;;
+esac
+
 if [ ! -d "$HOME/.claude/skills/gstack/bin" ]; then
   cat >&2 <<'MSG'
 BLOCKED: gstack is not installed globally.

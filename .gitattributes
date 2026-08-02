@@ -1,0 +1,30 @@
+# Переводы строк. Без этого файла checkout на Windows превращает LF в CRLF, и
+# тогда .sh-скрипты перестают запускаться на серверах, а diff шумит на весь файл.
+* text=auto eol=lf
+
+# Файлы, которые обязаны остаться с LF даже на Windows — их исполняет Linux.
+*.sh        text eol=lf
+*.py        text eol=lf
+*.service   text eol=lf
+Dockerfile  text eol=lf
+
+# Родные для Windows — им CRLF привычнее.
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Бинарное — не трогать вообще.
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.otf       binary
+*.ttf       binary
+*.so        binary
+*.dll       binary
+*.dylib     binary
+*.jks       binary
+*.keystore  binary
+*.apk       binary
+*.aab       binary
+*.dmg       binary
+*.zip       binary
