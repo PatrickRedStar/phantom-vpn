@@ -14,7 +14,7 @@ android {
         targetSdk = 36
         versionCode = 122
         versionName = "0.28.4"
-        buildConfigField("String", "GIT_TAG", "\"v0.28.0\"")
+        buildConfigField("String", "GIT_TAG", "\"v$versionName\"")
     }
 
     signingConfigs {
