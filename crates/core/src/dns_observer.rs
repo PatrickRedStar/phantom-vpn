@@ -13,7 +13,8 @@
 //! is not a DNS-shaped destination port.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use portable_atomic::AtomicU64; // у 32-битного MIPS нет нативного 64-бит атомика
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 /// Plain DNS.
 const PORT_DO53: u16 = 53;

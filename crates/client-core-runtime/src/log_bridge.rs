@@ -41,7 +41,8 @@
 
 use ghoststream_gui_ipc::LogFrame;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use portable_atomic::AtomicU64; // у 32-битного MIPS нет нативного 64-бит атомика
+use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 use tracing::field::{Field, Visit};
 use tracing::Event;

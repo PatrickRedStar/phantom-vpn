@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# 32-битный MIPS не имеет 64-битных атомиков в ISA; fallback эмулирует их
+# через spinlock, на остальных платформах это те же std-атомики без накладных.
+portable-atomic     = { version = "1", features = ["fallback"] }
 rand           = "0.8"
 bytes          = "1"
 sha2           = "0.10"

@@ -5,7 +5,8 @@
 //! (α = 0.35), derives per-stream activity levels, and publishes a
 //! `StatusFrame` to the watch channel for the GUI.
 
-use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU64, AtomicU8, Ordering};
+use portable_atomic::AtomicU64; // у 32-битного MIPS нет нативного 64-бит атомика
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
