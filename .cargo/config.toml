@@ -1,0 +1,10 @@
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android24-clang"
+
+# musl 1.2 сделал time_t 64-битным на всех архитектурах, но крейт libc до сих
+# пор по умолчанию отдаёт 32-битный на 32-битных целях. boring-sys генерирует
+# биндинги из настоящих заголовков и получает i64 — сборка armv7 и mipsel
+# падала на `expected i64, found i32` в boring. Флаг синхронизирует libc с
+# реальностью; на 64-битных целях он меняет только имена полей ipc_perm.
+[env]
+RUST_LIBC_UNSTABLE_MUSL_V1_2_3 = "1"

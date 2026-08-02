@@ -7,7 +7,10 @@
 
 # Rust build artifacts
 target/
-.cargo/
+# ...кроме конфига сборки: от него зависит, соберётся ли armv7/mipsel вообще,
+# и он должен быть одинаковым локально и в CI. Секреты живут в credentials.toml.
+.cargo/*
+!.cargo/config.toml
 
 # Python artifacts
 __pycache__/
