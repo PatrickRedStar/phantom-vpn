@@ -139,11 +139,13 @@ dependencies {
 val cargoWorkspaceDir = file("${rootProject.rootDir}/../..")
 
 tasks.register<Exec>("buildRustAndroid") {
-    description = "Build Rust JNI library for Android arm64-v8a"
+    // armeabi-v7a — дешёвые 32-битные ТВ-приставки; без него APK на них не ставится.
+    description = "Build Rust JNI library for Android arm64-v8a + armeabi-v7a"
     workingDir = cargoWorkspaceDir
     commandLine(
         "cargo", "ndk",
         "-t", "arm64-v8a",
+        "-t", "armeabi-v7a",
         "-o", "${projectDir}/src/main/jniLibs",
         "--platform", "26",
         "build", "--release", "-p", "phantom-client-android"
