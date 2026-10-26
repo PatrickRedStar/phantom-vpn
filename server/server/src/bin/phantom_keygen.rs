@@ -36,29 +36,35 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let out = Path::new(&args.out);
 
-    std::fs::create_dir_all(out)
-        .with_context(|| format!("Failed to create output directory: {}", args.out))?;
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(out)
+            .with_context(|| format!("Failed to create output directory: {}", args.out))?;
+    }
 
     // ─── CA cert ─────────────────────────────────────────────────────────────
 
+    // Neutral names: the CA's name can surface in TLS handshakes, so it must
+    // not name the product. Existing installations keep their CA — files are
+    // never overwritten (see write_pem).
     let ca_key = KeyPair::generate()?;
     let mut ca_params = CertificateParams::default();
-    ca_params.distinguished_name.push(DnType::CommonName, "PhantomVPN CA");
+    ca_params.distinguished_name.push(DnType::CommonName, "Root CA");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     // 10 years validity
     ca_params.not_after = time::OffsetDateTime::now_utc()
         + time::Duration::days(3650);
     let ca_cert = ca_params.self_signed(&ca_key)?;
 
-    write_pem(out.join("ca.crt"), ca_cert.pem())?;
-    write_pem(out.join("ca.key"), ca_key.serialize_pem())?;
+    write_pem(out.join("ca.crt"), ca_cert.pem(), 0o644)?;
+    write_pem(out.join("ca.key"), ca_key.serialize_pem(), 0o600)?;
     println!("CA:     {}/ca.crt  {}/ca.key", args.out, args.out);
 
     // ─── Server cert ─────────────────────────────────────────────────────────
 
     let server_key = KeyPair::generate()?;
     let mut srv_params = CertificateParams::default();
-    srv_params.distinguished_name.push(DnType::CommonName, "PhantomVPN Server");
+    srv_params.distinguished_name.push(DnType::CommonName, args.server_name.clone());
     srv_params.is_ca = IsCa::NoCa;
     srv_params.not_after = time::OffsetDateTime::now_utc()
         + time::Duration::days(3650);
@@ -70,33 +76,33 @@ fn main() -> anyhow::Result<()> {
     }
     let server_cert = srv_params.signed_by(&server_key, &ca_cert, &ca_key)?;
 
-    write_pem(out.join("server.crt"), server_cert.pem())?;
-    write_pem(out.join("server.key"), server_key.serialize_pem())?;
+    write_pem(out.join("server.crt"), server_cert.pem(), 0o644)?;
+    write_pem(out.join("server.key"), server_key.serialize_pem(), 0o600)?;
     println!("Server: {}/server.crt  {}/server.key", args.out, args.out);
 
     // ─── Client cert ─────────────────────────────────────────────────────────
 
     let client_key = KeyPair::generate()?;
     let mut cli_params = CertificateParams::default();
-    cli_params.distinguished_name.push(DnType::CommonName, "PhantomVPN Client");
+    cli_params.distinguished_name.push(DnType::CommonName, "client");
     cli_params.is_ca = IsCa::NoCa;
     cli_params.not_after = time::OffsetDateTime::now_utc()
         + time::Duration::days(3650);
     cli_params.subject_alt_names.push(SanType::DnsName("phantom-client".try_into()?));
     let client_cert = cli_params.signed_by(&client_key, &ca_cert, &ca_key)?;
 
-    write_pem(out.join("client.crt"), client_cert.pem())?;
-    write_pem(out.join("client.key"), client_key.serialize_pem())?;
+    write_pem(out.join("client.crt"), client_cert.pem(), 0o644)?;
+    write_pem(out.join("client.key"), client_key.serialize_pem(), 0o600)?;
     println!("Client: {}/client.crt  {}/client.key", args.out, args.out);
 
     println!("\nDone. Deploy:");
     println!("  Server: ca.crt + server.crt + server.key → /opt/phantom-vpn/config/");
     println!("  Client: ca.crt + client.crt + client.key → /etc/phantom-vpn/");
-    println!("\nAdd to server.toml [quic]:");
+    println!("\nAdd to server.toml [tls]:");
     println!("  cert_path    = \"/opt/phantom-vpn/config/server.crt\"");
     println!("  key_path     = \"/opt/phantom-vpn/config/server.key\"");
     println!("  ca_cert_path = \"/opt/phantom-vpn/config/ca.crt\"");
-    println!("\nAdd to client.toml [quic]:");
+    println!("\nAdd to client.toml [tls]:");
     println!("  cert_path    = \"/etc/phantom-vpn/client.crt\"");
     println!("  key_path     = \"/etc/phantom-vpn/client.key\"");
     println!("  ca_cert_path = \"/etc/phantom-vpn/ca.crt\"");
@@ -104,9 +110,18 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn write_pem(path: impl AsRef<Path>, pem: String) -> anyhow::Result<()> {
-    std::fs::write(&path, pem)
-        .with_context(|| format!("Failed to write {}", path.as_ref().display()))
+/// Creates the file with `mode`; refuses to overwrite an existing one, so a
+/// re-run can't replace a live CA and lock every client out.
+fn write_pem(path: impl AsRef<Path>, pem: String, mode: u32) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = path.as_ref();
+    let mut f = std::fs::OpenOptions::new()
+        .write(true).create_new(true).mode(mode)
+        .open(path)
+        .with_context(|| format!("Failed to create {} (already exists?)", path.display()))?;
+    f.write_all(pem.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
 }
 
 fn admin_grant_cmd(args: &[String]) -> anyhow::Result<()> {

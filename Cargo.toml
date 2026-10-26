@@ -36,3 +36,9 @@ inherits      = "release"
 opt-level     = "z"
 strip         = true
 codegen-units = 1
+
+# Серверные бинари (phantom-server, phantom-relay): паника в одном соединении
+# не должна ронять процесс и рвать сессии всех клиентов. Клиентам остаётся abort.
+[profile.release-server]
+inherits = "release"
+panic    = "unwind"

@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 ---
 
 # Admin API
@@ -22,7 +22,7 @@ bytes_rx/tx/last_seen.
 |---|---|---|
 | Конфиг | `[admin].listen_addr` = `10.7.0.1:8080` | `[admin].bot_listen_addr` = `127.0.0.1:8081` |
 | Транспорт | HTTPS + mTLS (self-signed для `10.7.0.1`) | Plain HTTP |
-| Auth | Client cert → fingerprint → `is_admin=true` в keyring | `Authorization: Bearer <[admin].token>` |
+| Auth | Client cert → fingerprint → `is_admin=true` (+ enabled, не истёк) в keyring | `Authorization: Bearer <[admin].token>`, только от loopback-пира |
 | Доступ | Через VPN туннель (клиент уже на `10.7.0.0/24`) | Same-host only (bind `127.0.0.1`) |
 | Для кого | Android/iOS/Linux админ-панели | Telegram-бот, ручной break-glass |
 | Middleware | `require_admin` проверяет `ClientIdentity` extension + keyring | `require_admin` проверяет Bearer token |
@@ -48,13 +48,16 @@ Bootstrap первого админа: `phantom-keygen admin-grant --name <name>
 
 ```rust
 // require_admin:
-//   нет ClientIdentity  + Bearer совпал  → loopback+bot   → OK
-//   ClientIdentity есть + is_admin=true  → admin client   → OK
-//   иначе                                                  → 401 / 403
+//   нет ClientIdentity  + Bearer совпал + пир 127.0.0.1/::1   → loopback+bot → OK
+//   ClientIdentity есть + is_admin + enabled + не истёк       → admin client → OK
+//   иначе                                                      → 401 / 403
 
 // require_valid_client (для /api/me):
 //   любой валидный client cert (mTLS) ИЛИ loopback Bearer → OK
 ```
+
+Bearer проверяется только при `ConnectInfo` с loopback-адресом. mTLS-listener
+в туннеле `ConnectInfo` не кладёт, так что утёкший токен изнутри VPN бесполезен.
 
 `ClientIdentity` — extension, injected в request admin-TLS accept-layer'ом
 (`admin_tls::run_mtls`). Содержит `fingerprint` из peer-cert'а. Keyring
@@ -65,18 +68,17 @@ lookup — на каждый request (с READ-only блокировкой).
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/api/status` | Uptime, active sessions count, server addr, exit IP |
-| GET | `/api/me` | Self-inspection: `{name, is_admin}` (нужен только valid client cert) |
+| GET | `/api/me` | Self-inspection: `{name, is_admin, enabled, expires_at}` (нужен только valid client cert). Отсюда клиенты берут срок своей подписки |
 | GET | `/api/clients` | Полный список клиентов с live-метриками |
-| POST | `/api/clients` | Создать: `{name, expires_days?, is_admin?}` → cert+key gen |
+| POST | `/api/clients` | Создать: `{name, expires_days?, is_admin?}` → cert+key gen. `name` — `[A-Za-z0-9_-]{1,32}`; `expires_days` 0 или нет = бессрочно; tun_addr — следующий свободный из подсети `[network].tun_addr` |
 | POST | `/api/clients/:name/admin` | Toggle admin: `{is_admin: bool}` |
-| DELETE | `/api/clients/:name` | Удалить: keyring entry + cert/key файлы |
-| POST | `/api/clients/:name/enable` | `enabled=true` |
-| POST | `/api/clients/:name/disable` | `enabled=false` (текущая сессия живёт до expire/idle) |
+| DELETE | `/api/clients/:name` | Удалить: keyring entry + cert/key файлы + вытеснить живую сессию |
+| POST | `/api/clients/:name/enable` | `enabled=true`; для истёкшего клиента — 409 с текстом (сначала продлить/снять срок) |
+| POST | `/api/clients/:name/disable` | `enabled=false` + вытеснить живую сессию |
 | GET | `/api/clients/:name/conn_string` | Regenerate `ghs://…` |
 | GET | `/api/clients/:name/stats` | Time-series `[{ts,bytes_rx,bytes_tx}]` |
 | GET | `/api/clients/:name/logs` | Последние 200 dst: `[{ts,dst,port,proto,bytes}]` |
 | POST | `/api/clients/:name/subscription` | Управление expires_at (см. ниже) |
-| GET | `/api/client-config/:tun_addr` | DNS / split-routing / subscription — для клиента по TUN IP |
 
 `/api/me` — единственный endpoint с `require_valid_client`; остальные —
 `require_admin`.
@@ -86,14 +88,18 @@ Subscriptions — POST body:
 ```json
 {"action": "extend", "days": 30}   // expires_at += N дней
 {"action": "set",    "days": 90}   // expires_at = now + N дней
-{"action": "cancel"}               // expires_at = null (бессрочно)
+{"action": "cancel"}               // expires_at = null (бессрочно), enabled не трогает
 {"action": "revoke"}               // enabled=false + expires_at=now (kick now)
 ```
 
-`run_subscription_checker` (server/server/src/admin.rs:791) раз в 60 секунд
+`extend`/`set` с будущим сроком заодно ставят `enabled=true`; `cancel`
+ручную блокировку не снимает.
+
+`run_subscription_checker` (`server/server/src/admin.rs`) раз в 60 секунд
 сканирует keyring: все `expires_at <= now && enabled` → `enabled=false` +
-удаление сессии из `VpnSessionMap`. Lock (`keyring_lock`) общий с admin
-handlers — no TOCTOU.
+вытеснение сессии по отпечатку. Если системные часы прыгнули относительно
+монотонных больше чем на час — тик пропускается. Lock (`keyring_lock`) общий
+с admin handlers — no TOCTOU.
 
 ## GET /api/clients — формат ответа
 
@@ -163,11 +169,13 @@ Build/parse:
   lock'а ⇒ lost write.
 - **`is_admin` проверяется per-request.** Toggle `/api/clients/:name/admin`
   вступает в силу на следующем запросе, без reconnect.
-- **Revoke кикает сессию немедленно**: `enabled=false` + eviction из
-  `VpnSessionMap` + `session.close()`. Клиент получит TCP reset на всех
-  стримах, handshake-reconnect провалится на allow-list check.
+- **Disable / revoke / delete кикают сессию немедленно**: вытеснение по
+  отпечатку из обеих карт (`VpnSessionMap` по IP и карты по отпечатку) +
+  `session.close()`: RX-циклы перестают пускать uplink, writer'ы шлют
+  close_notify + FIN. Reconnect отбивается прямо в TLS-рукопожатии alert'ом
+  `certificate_revoked` — клиент может показать «доступ отозван».
 - **Loopback token — secret**. Попадание `[admin].token` в git / логи =
-  total compromise (bot-listener не проверяет client IP кроме bind'а).
+  доступ к API с самого сервера; Bearer принимается только от loopback-пира.
 - **Conn-string parser strict**: два PEM блока, оба маркера присутствуют,
   sni + tun query-params required, v == 1. Все нарушения ⇒ parse error,
   НЕ graceful defaults.

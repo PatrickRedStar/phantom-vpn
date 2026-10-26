@@ -1,14 +1,16 @@
 //! Admin HTTP API server (embedded in phantom-server).
-//! Listens on [admin].listen_addr (default 10.7.0.1:8080, only reachable through VPN tunnel).
-//! All endpoints require: Authorization: Bearer <token>
+//! Listens on [admin].listen_addr (default 10.7.0.1:8080, only reachable through VPN tunnel)
+//! with mTLS (admin = `is_admin` client cert), plus a loopback listener where
+//! `Authorization: Bearer <token>` is accepted (only from 127.0.0.1 / ::1).
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::{Path as AxPath, Request, State},
+    extract::{ConnectInfo, Path as AxPath, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Json},
@@ -18,7 +20,7 @@ use axum::{
 use base64::Engine;
 use serde::Deserialize;
 
-use crate::vpn_session::{ClientAllowList, VpnSessionMap};
+use crate::vpn_session::{self, ClientAllowList, SessionByFp, VpnSessionMap};
 
 /// Mutex guarding all read-modify-write operations on the keyring file (clients.json).
 /// Prevents TOCTOU race between admin API handlers and the subscription checker.
@@ -27,7 +29,11 @@ pub type KeyringLock = Arc<tokio::sync::Mutex<()>>;
 #[derive(Clone)]
 pub struct AdminState {
     pub sessions: VpnSessionMap,
+    pub sessions_by_fp: SessionByFp,
     pub clients_path: PathBuf,
+    /// Server tunnel address with prefix ([network].tun_addr, e.g. "10.7.0.1/24");
+    /// new clients get the next free address of this subnet.
+    pub tun_addr: String,
     pub token: String,
     pub admin_url: String,
     pub started_at: u64,
@@ -42,8 +48,14 @@ pub struct AdminState {
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
 
+/// Shared token, accepted only from a loopback peer (the bot listener).
+/// The mTLS listener inside the tunnel carries no ConnectInfo, so a leaked
+/// token is useless to a VPN client.
 fn bearer_token_matches(req: &Request, state: &AdminState) -> bool {
-    req.headers()
+    let loopback = req.extensions().get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
+    loopback && req.headers()
         .get("Authorization")
         .and_then(|h| h.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "))
@@ -74,11 +86,16 @@ async fn require_admin(
             let keyring = read_keyring(&state.clients_path)?;
             let clients = keyring.get("clients").and_then(|c| c.as_object())
                 .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+            let now = now_secs();
+            // A disabled or expired admin is not an admin.
             let is_admin = clients.values().any(|info| {
                 let fp_match = info.get("fingerprint").and_then(|v| v.as_str())
                     .map(|fp| fp.eq_ignore_ascii_case(&id.fingerprint)).unwrap_or(false);
                 let admin = info.get("is_admin").and_then(|v| v.as_bool()).unwrap_or(false);
-                fp_match && admin
+                let enabled = info.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let expired = info.get("expires_at").and_then(|v| v.as_u64())
+                    .is_some_and(|e| e <= now);
+                fp_match && admin && enabled && !expired
             });
             if is_admin {
                 Ok(next.run(req).await)
@@ -127,7 +144,6 @@ async fn get_clients(
         .get("clients")
         .and_then(|c| c.as_object())
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let now = now_secs();
     let mut result = Vec::new();
     for (name, info) in clients {
         let fp = info.get("fingerprint").and_then(|f| f.as_str()).unwrap_or("");
@@ -143,7 +159,7 @@ async fn get_clients(
                     true,
                     s.bytes_rx.load(Ordering::Relaxed),
                     s.bytes_tx.load(Ordering::Relaxed),
-                    now.saturating_sub(s.last_seen.load(Ordering::Relaxed)),
+                    s.idle_secs(),
                 )
             })
             .unwrap_or((false, 0, 0, 0));
@@ -183,8 +199,11 @@ async fn create_client(
     State(state): State<AdminState>,
     Json(body): Json<CreateClientBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // The name ends up in file paths, URLs and the cert CN: [A-Za-z0-9_-]{1,32}.
     let name = body.name.trim().to_string();
-    if name.is_empty() || name.contains('/') || name.contains('.') {
+    if name.is_empty() || name.len() > 32
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -209,31 +228,44 @@ async fn create_client(
         return Err(StatusCode::CONFLICT);
     }
 
-    // Find next free tun IP
-    let used_ips: std::collections::HashSet<String> = clients
+    // Find next free tun IP in the server's tunnel subnet (skipping network,
+    // broadcast and the server's own address).
+    let (server_ip, prefix) = state.tun_addr.split_once('/')
+        .and_then(|(ip, p)| Some((ip.parse::<Ipv4Addr>().ok()?, p.parse::<u32>().ok()?)))
+        .filter(|&(_, p)| p <= 30)
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mask = if prefix == 0 { 0 } else { !0u32 << (32 - prefix) };
+    let network = u32::from(server_ip) & mask;
+    let used_ips: std::collections::HashSet<&str> = clients
         .values()
-        .filter_map(|v| v.get("tun_addr").and_then(|t| t.as_str()).map(String::from))
+        .filter_map(|v| v.get("tun_addr").and_then(|t| t.as_str()))
+        .filter_map(|t| t.split('/').next())
         .collect();
-    let tun_addr = (2u8..=254)
-        .map(|i| format!("10.7.0.{}/24", i))
-        .find(|addr| !used_ips.contains(addr))
+    let tun_addr = (1..!mask)
+        .map(|i| Ipv4Addr::from(network + i))
+        .find(|ip| *ip != server_ip && !used_ips.contains(ip.to_string().as_str()))
+        .map(|ip| format!("{}/{}", ip, prefix))
         .ok_or(StatusCode::INSUFFICIENT_STORAGE)?;
 
-    // Save cert files
+    // Save cert files (key 0600, dirs 0700)
     let client_dir = state.clients_path.parent()
         .unwrap_or(Path::new("/opt/phantom-vpn/config"))
         .join("clients")
         .join(&name);
-    std::fs::create_dir_all(&client_dir)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&client_dir)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    }
     let cert_path = client_dir.join("client.crt");
     let key_path  = client_dir.join("client.key");
     std::fs::write(&cert_path, &cert_pem).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    std::fs::write(&key_path,  &key_pem).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    write_private(&key_path, &key_pem).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Add to clients.json
+    // Add to clients.json. expires_days = 0 (Apple clients' "∞") = no expiry.
     let now = chrono_now_iso();
-    let expires_at: Option<u64> = body.expires_days.map(|d| now_secs() + d as u64 * 86400);
+    let expires_at: Option<u64> = body.expires_days.filter(|&d| d > 0)
+        .map(|d| now_secs() + d as u64 * 86400);
     clients.insert(name.clone(), serde_json::json!({
         "fingerprint": fingerprint,
         "cert_path": cert_path.to_string_lossy(),
@@ -292,6 +324,13 @@ async fn delete_client(
 
     write_keyring(&state.clients_path, &keyring)?;
     reload_allow_list(&state.clients_path, &state.allow_list).await;
+
+    // Kick the live session too, like disable does.
+    if let Some(fp) = info.get("fingerprint").and_then(|v| v.as_str()) {
+        if vpn_session::evict_fp(&state.sessions, &state.sessions_by_fp, fp) {
+            tracing::info!("Admin: deleted client '{}', session evicted", name);
+        }
+    }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -307,15 +346,19 @@ async fn disable_client(
 async fn enable_client(
     State(state): State<AdminState>,
     AxPath(name): AxPath<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    set_client_enabled(&state, &name, true).await
+) -> Result<Json<serde_json::Value>, (StatusCode, &'static str)> {
+    set_client_enabled(&state, &name, true).await.map_err(|s| match s {
+        // Otherwise the subscription checker silently disables it again within a minute.
+        StatusCode::CONFLICT => (s, "subscription expired: extend it or make it unlimited first"),
+        _ => (s, ""),
+    })
 }
 
 // ─── POST /api/clients/:name/subscription ────────────────────────────────────
 // body: {"action": "extend"|"set"|"cancel"|"revoke", "days": N}
 // extend: adds days to current expiry (or from now if expired/no expiry)
 // set:    sets expiry to now + N days
-// cancel: removes expiry (access never expires)
+// cancel: removes expiry (access never expires); leaves `enabled` as is
 // revoke: disables immediately + sets expires_at to now
 
 #[derive(Deserialize)]
@@ -334,15 +377,14 @@ async fn manage_subscription(
     let mut keyring = read_keyring(&state.clients_path)?;
     let now = now_secs();
 
-    // Collect tun_ip and current expires_at from immutable borrow first
-    let (tun_ip, current_expires): (Option<std::net::IpAddr>, Option<u64>) = {
+    // Collect fingerprint and current expires_at from immutable borrow first
+    let (fingerprint, current_expires): (Option<String>, Option<u64>) = {
         let clients = keyring.get("clients").and_then(|c| c.as_object())
             .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
         let info = clients.get(&name).ok_or(StatusCode::NOT_FOUND)?;
-        let ip = info.get("tun_addr").and_then(|v| v.as_str())
-            .and_then(|s| s.split('/').next()).and_then(|s| s.parse().ok());
+        let fp = info.get("fingerprint").and_then(|v| v.as_str()).map(String::from);
         let exp = info.get("expires_at").and_then(|v| v.as_u64());
-        (ip, exp)
+        (fp, exp)
     };
 
     let new_expires: Option<u64> = match body.action.as_str() {
@@ -375,8 +417,9 @@ async fn manage_subscription(
             }
             if immediately_disable {
                 obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
-            } else if new_expires.map(|e| e > now).unwrap_or(true) {
-                // Re-enable if extending/setting a future expiry
+            } else if new_expires.is_some_and(|e| e > now) {
+                // Re-enable if extending/setting a future expiry. `cancel` keeps
+                // a manual block in place.
                 obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
             }
         }
@@ -386,10 +429,9 @@ async fn manage_subscription(
     reload_allow_list(&state.clients_path, &state.allow_list).await;
 
     if immediately_disable {
-        if let Some(ip) = tun_ip {
-            if let Some((_, session)) = state.sessions.remove(&ip) {
+        if let Some(fp) = fingerprint {
+            if vpn_session::evict_fp(&state.sessions, &state.sessions_by_fp, &fp) {
                 tracing::info!("Subscription revoked for '{}', evicting session", name);
-                session.close();
             }
         }
     }
@@ -437,10 +479,16 @@ async fn get_me(
         for (name, info) in clients {
             let fp = info.get("fingerprint").and_then(|v| v.as_str()).unwrap_or("");
             if fp.eq_ignore_ascii_case(&ident.fingerprint) {
+                // Same fields/types as the entry in /api/clients: this is where
+                // a non-admin client learns its own subscription.
                 let is_admin = info.get("is_admin").and_then(|v| v.as_bool()).unwrap_or(false);
+                let enabled = info.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let expires_at = info.get("expires_at").and_then(|v| v.as_u64());
                 return Ok(Json(serde_json::json!({
                     "name": name,
                     "is_admin": is_admin,
+                    "enabled": enabled,
+                    "expires_at": expires_at,
                 })));
             }
         }
@@ -465,12 +513,13 @@ async fn set_client_enabled(
 
     let client = clients.get_mut(name).ok_or(StatusCode::NOT_FOUND)?;
 
-    // Extract tun_addr before mutating (needed to find active session)
-    let tun_ip: Option<std::net::IpAddr> = client
-        .get("tun_addr")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.split('/').next())
-        .and_then(|s| s.parse().ok());
+    // Enabling an expired client would be undone by the subscription checker.
+    if enabled && client.get("expires_at").and_then(|v| v.as_u64()).is_some_and(|e| e <= now_secs()) {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    // Extract fingerprint before mutating (needed to find active session)
+    let fingerprint = client.get("fingerprint").and_then(|v| v.as_str()).map(String::from);
 
     if let Some(obj) = client.as_object_mut() {
         obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
@@ -479,15 +528,13 @@ async fn set_client_enabled(
     write_keyring(&state.clients_path, &keyring)?;
     reload_allow_list(&state.clients_path, &state.allow_list).await;
 
-    // If disabling, close and REMOVE the active session immediately.
-    // This is fully server-side: even if the client ignores the QUIC CLOSE frame
-    // or uses an old client version, the session is evicted from the routing table
-    // so no further packets are forwarded for that tunnel IP.
+    // If disabling, evict the session immediately: out of both routing maps,
+    // closed (RX loops stop forwarding uplink, writers send FIN). Reconnects
+    // are refused in the TLS handshake.
     if !enabled {
-        if let Some(ip) = tun_ip {
-            if let Some((_, session)) = state.sessions.remove(&ip) {
+        if let Some(fp) = fingerprint {
+            if vpn_session::evict_fp(&state.sessions, &state.sessions_by_fp, &fp) {
                 tracing::info!("Admin: evicting session and closing connection for disabled client '{}'", name);
-                session.close();
             }
         }
     }
@@ -581,68 +628,6 @@ async fn get_client_stats(
     Ok(Json(serde_json::json!(samples)))
 }
 
-// ─── GET /api/client-config/:tun_addr ────────────────────────────────────────
-
-#[derive(serde::Serialize)]
-struct ClientConfigResponse {
-    tun_addr: String,
-    dns_servers: Vec<String>,
-    split_routing: bool,
-    direct_countries: Vec<String>,
-    per_app_mode: String,
-    subscription: SubscriptionStatus,
-}
-
-#[derive(serde::Serialize)]
-struct SubscriptionStatus {
-    expires_at: Option<u64>,
-    enabled: bool,
-}
-
-async fn get_client_config(
-    State(state): State<AdminState>,
-    AxPath(tun_addr): AxPath<String>,
-) -> Result<Json<ClientConfigResponse>, StatusCode> {
-    let keyring = read_keyring(&state.clients_path)?;
-    let clients = keyring
-        .get("clients")
-        .and_then(|c| c.as_object())
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    // Найти клиента по tun_addr (сравниваем без префикса /24)
-    let client_info = clients
-        .values()
-        .find(|info| {
-            info.get("tun_addr")
-                .and_then(|v| v.as_str())
-                .map(|t| t.split('/').next() == tun_addr.split('/').next())
-                .unwrap_or(false)
-        })
-        .ok_or(StatusCode::NOT_FOUND)?;
-
-    let expires_at = client_info
-        .get("expires_at")
-        .and_then(|v| v.as_u64())
-        .filter(|&v| v > 0);
-    let enabled = client_info
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-
-    Ok(Json(ClientConfigResponse {
-        tun_addr: client_info
-            .get("tun_addr")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        dns_servers: vec!["8.8.8.8".into(), "1.1.1.1".into()],
-        split_routing: false,
-        direct_countries: vec![],
-        per_app_mode: "none".into(),
-        subscription: SubscriptionStatus { expires_at, enabled },
-    }))
-}
-
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 pub fn make_router(state: AdminState) -> Router {
@@ -658,7 +643,6 @@ pub fn make_router(state: AdminState) -> Router {
         .route("/api/clients/:name/stats",        get(get_client_stats))
         .route("/api/clients/:name/subscription", post(manage_subscription))
         .route("/api/clients/:name/admin", post(set_client_admin))
-        .route("/api/client-config/:tun_addr", get(get_client_config))
         .layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
     // /api/me — requires only a valid client cert (handled inside handler)
@@ -707,12 +691,23 @@ fn write_keyring(path: &Path, keyring: &serde_json::Value) -> Result<(), StatusC
     Ok(())
 }
 
+/// Write a private key readable by the owner only (0600).
+pub(crate) fn write_private(path: &Path, data: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true).create(true).truncate(true).mode(0o600)
+        .open(path)?;
+    // mode() only applies to a new file; tighten a pre-existing one too.
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.write_all(data.as_bytes())
+}
+
 async fn reload_allow_list(clients_path: &Path, allow_list: &ClientAllowList) {
-    match crate::vpn_session::load_allow_list(clients_path) {
+    match vpn_session::load_allow_list(clients_path) {
         Ok(fps) => {
-            let mut list = allow_list.write().await;
-            *list = fps;
-            tracing::info!("Allow list reloaded: {} entries", list.len());
+            tracing::info!("Allow list reloaded: {} entries", fps.len());
+            vpn_session::set_allow_list(allow_list, fps);
         }
         Err(e) => tracing::error!("Failed to reload allow list: {}", e),
     }
@@ -791,13 +786,32 @@ fn generate_client_cert(
 pub async fn run_subscription_checker(
     clients_path: std::path::PathBuf,
     sessions: VpnSessionMap,
+    sessions_by_fp: SessionByFp,
     allow_list: ClientAllowList,
     keyring_lock: KeyringLock,
 ) {
+    let mut last_wall = now_secs();
+    let mut last_mono = std::time::Instant::now();
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
         let now = now_secs();
+
+        // Expiry is wall-clock by nature. If the wall clock jumped by more than
+        // an hour against the monotonic one (bad NTP step, manual date), skip
+        // this tick instead of mass-disabling clients; the next tick runs
+        // against the new baseline.
+        let mono_elapsed = last_mono.elapsed().as_secs() as i64;
+        let wall_elapsed = now as i64 - last_wall as i64;
+        last_wall = now;
+        last_mono = std::time::Instant::now();
+        if (wall_elapsed - mono_elapsed).abs() > 3600 {
+            tracing::warn!(
+                "Subscription checker: wall clock jumped by {} s, skipping this tick",
+                wall_elapsed - mono_elapsed
+            );
+            continue;
+        }
 
         let _guard = keyring_lock.lock().await;
 
@@ -811,62 +825,51 @@ pub async fn run_subscription_checker(
         };
 
         // Collect expired clients (immutable pass)
-        let (expired_names, to_evict): (Vec<String>, Vec<std::net::IpAddr>) = {
+        let (expired_names, to_evict): (Vec<String>, Vec<String>) = {
             let clients = match keyring.get("clients").and_then(|c| c.as_object()) {
                 Some(c) => c,
                 None => continue,
             };
             let mut names = Vec::new();
-            let mut ips = Vec::new();
+            let mut fps = Vec::new();
             for (name, info) in clients.iter() {
                 let expires_at = info.get("expires_at").and_then(|v| v.as_u64());
                 let enabled = info.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
                 if expires_at.map(|e| e <= now).unwrap_or(false) && enabled {
                     names.push(name.clone());
-                    if let Some(ip) = info.get("tun_addr").and_then(|v| v.as_str())
-                        .and_then(|s| s.split('/').next())
-                        .and_then(|s| s.parse::<std::net::IpAddr>().ok())
-                    {
-                        ips.push(ip);
+                    if let Some(fp) = info.get("fingerprint").and_then(|v| v.as_str()) {
+                        fps.push(fp.to_string());
                     }
                 }
             }
-            (names, ips)
+            (names, fps)
         };
 
-        if expired_names.is_empty() {
-            continue;
-        }
-
         // Disable expired clients (mutable pass)
-        {
-            let clients = match keyring.get_mut("clients").and_then(|c| c.as_object_mut()) {
-                Some(c) => c,
-                None => continue,
-            };
-            for name in &expired_names {
-                if let Some(info) = clients.get_mut(name.as_str()) {
-                    if let Some(obj) = info.as_object_mut() {
+        if !expired_names.is_empty() {
+            if let Some(clients) = keyring.get_mut("clients").and_then(|c| c.as_object_mut()) {
+                for name in &expired_names {
+                    if let Some(obj) = clients.get_mut(name.as_str()).and_then(|i| i.as_object_mut()) {
                         obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
                         tracing::info!("Subscription expired for '{}', disabling", name);
                     }
                 }
             }
+            let _ = write_keyring(&clients_path, &keyring);
         }
 
-        let _ = write_keyring(&clients_path, &keyring);
-
-        match crate::vpn_session::load_allow_list(&clients_path) {
-            Ok(fps) => { *allow_list.write().await = fps; }
+        // Reload every tick, not only after expiry: clients added or removed
+        // by editing clients.json directly (keys.py) take effect within a
+        // minute even without SIGHUP.
+        match vpn_session::load_allow_list(&clients_path) {
+            Ok(fps) => vpn_session::set_allow_list(&allow_list, fps),
             Err(e) => tracing::error!("Subscription checker: reload allow list failed: {}", e),
         }
 
         drop(_guard);
 
-        for ip in to_evict {
-            if let Some((_, session)) = sessions.remove(&ip) {
-                session.close();
-            }
+        for fp in to_evict {
+            vpn_session::evict_fp(&sessions, &sessions_by_fp, &fp);
         }
     }
 }

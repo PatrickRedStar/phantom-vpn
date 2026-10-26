@@ -16,6 +16,9 @@ const TUNSETIFF:       libc::c_ulong = 0x400454CA;
 const IFF_TUN:         libc::c_short = 0x0001;
 const IFF_NO_PI:       libc::c_short = 0x1000;
 const IFF_MULTI_QUEUE: libc::c_short = 0x0100;
+/// Fail with EBUSY if the interface already exists (e.g. a second server
+/// instance must not silently attach to the live tun).
+const IFF_TUN_EXCL:    libc::c_short = 0x8000u16 as libc::c_short;
 
 #[repr(C)]
 struct Ifreq {
@@ -34,7 +37,7 @@ pub struct TunInterface {
 impl TunInterface {
     /// Открывает /dev/net/tun и настраивает интерфейс через ioctl TUNSETIFF
     pub fn create(name: &str) -> io::Result<Self> {
-        let file = Self::open_queue(name, IFF_TUN | IFF_NO_PI)?;
+        let file = Self::open_queue(name, IFF_TUN | IFF_NO_PI | IFF_TUN_EXCL)?;
         Ok(TunInterface { name: name.to_string(), file })
     }
 
@@ -43,7 +46,9 @@ impl TunInterface {
     /// Each queue can be read/written independently by a separate thread.
     pub fn create_multiqueue(name: &str, n_queues: usize) -> io::Result<(Self, Vec<File>)> {
         let flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE;
-        let first = Self::open_queue(name, flags)?;
+        // EXCL only on the creating open: attaching further queues to the
+        // interface we just made would fail with it.
+        let first = Self::open_queue(name, flags | IFF_TUN_EXCL)?;
         let mut extra_fds = Vec::with_capacity(n_queues.saturating_sub(1));
         for _ in 1..n_queues {
             extra_fds.push(Self::open_queue(name, flags)?);
@@ -203,51 +208,77 @@ impl AsRawFd for AsyncTun {
 
 // ─── NAT ─────────────────────────────────────────────────────────────────────
 
-pub fn setup_nat(tun_name: &str, wan_iface: &str, subnet: &str, exit_ip: Option<&str>) -> io::Result<()> {
-    let comment = format!("phantom-vpn-{}", tun_name);
-    let _ = run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"]);
-    if let Some(ip) = exit_ip {
+/// Private / special destinations a client must not reach through the exit
+/// (the provider's internal networks, other clients, link-local metadata).
+const BLOCKED_DST: &[&str] = &[
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+];
+
+/// All iptables rules of the server: (table, chain, rule spec). The order is
+/// the final order inside each chain: setup inserts them at the top (`-I … 1`)
+/// in reverse, teardown deletes by the same spec — so both never drift apart.
+fn nat_rules(tun: &str, wan: &str, subnet: &str, exit_ip: Option<&str>, admin_port: u16)
+    -> Vec<(&'static str, &'static str, Vec<String>)>
+{
+    let comment = format!("phantom-vpn-{}", tun);
+    let rule = |table: &'static str, chain: &'static str, spec: &[&str]| {
+        let mut v: Vec<String> = spec.iter().map(|s| s.to_string()).collect();
+        v.extend(["-m", "comment", "--comment", &comment].map(String::from));
+        (table, chain, v)
+    };
+    let admin_port = admin_port.to_string();
+    let mut rules = vec![match exit_ip {
         // SNAT: трафик выходит с конкретного IP (второй IP сервера)
-        let _ = run_cmd("iptables", &["-t", "nat", "-I", "POSTROUTING", "1",
-            "-s", subnet, "-o", wan_iface, "-j", "SNAT", "--to-source", ip,
-            "-m", "comment", "--comment", &comment]);
-        tracing::info!("NAT: {} → {} via SNAT {} (subnet {})", tun_name, wan_iface, ip, subnet);
-    } else {
-        let _ = run_cmd("iptables", &["-t", "nat", "-A", "POSTROUTING",
-            "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
-            "-m", "comment", "--comment", &comment]);
-        tracing::info!("NAT: {} → {} via MASQUERADE (subnet {})", tun_name, wan_iface, subnet);
+        Some(ip) => rule("nat", "POSTROUTING", &["-s", subnet, "-o", wan, "-j", "SNAT", "--to-source", ip]),
+        None => rule("nat", "POSTROUTING", &["-s", subnet, "-o", wan, "-j", "MASQUERADE"]),
+    }];
+    // FORWARD: no private destinations, no SMTP (spam from the only exit IP
+    // gets it blacklisted), then the usual tun ⇄ wan accept.
+    for dst in BLOCKED_DST {
+        rules.push(rule("filter", "FORWARD", &["-i", tun, "-d", dst, "-j", "DROP"]));
     }
-    let _ = run_cmd("iptables", &["-A", "FORWARD",
-        "-i", tun_name, "-o", wan_iface, "-j", "ACCEPT",
-        "-m", "comment", "--comment", &comment]);
-    let _ = run_cmd("iptables", &["-A", "FORWARD",
-        "-i", wan_iface, "-o", tun_name,
-        "-m", "state", "--state", "RELATED,ESTABLISHED",
-        "-j", "ACCEPT",
-        "-m", "comment", "--comment", &comment]);
+    rules.push(rule("filter", "FORWARD", &["-i", tun, "-p", "tcp", "--dport", "25", "-j", "REJECT"]));
+    rules.push(rule("filter", "FORWARD", &["-i", tun, "-o", wan, "-j", "ACCEPT"]));
+    rules.push(rule("filter", "FORWARD", &["-i", wan, "-o", tun,
+        "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]));
+    // INPUT from the tunnel: only the admin API, SSH, DNS and ping reach the
+    // exit host itself; everything else on it stays invisible to clients.
+    rules.push(rule("filter", "INPUT", &["-i", tun, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]));
+    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "icmp", "-j", "ACCEPT"]));
+    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "tcp", "--dport", &admin_port, "-j", "ACCEPT"]));
+    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "tcp", "--dport", "22", "-j", "ACCEPT"]));
+    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "udp", "--dport", "53", "-j", "ACCEPT"]));
+    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"]));
+    rules.push(rule("filter", "INPUT", &["-i", tun, "-j", "DROP"]));
+    rules
+}
+
+/// Forwarding + NAT + tunnel firewall. Any failure is returned: a server that
+/// "works" without NAT gives clients a connected tunnel with no internet.
+pub fn setup_nat(tun_name: &str, wan_iface: &str, subnet: &str, exit_ip: Option<&str>, admin_port: u16) -> io::Result<()> {
+    if !std::path::Path::new("/sys/class/net").join(wan_iface).exists() {
+        return Err(io::Error::other(format!("WAN interface '{}' not found ([network].wan_iface)", wan_iface)));
+    }
+    run_cmd("sysctl", &["-w", "net.ipv4.ip_forward=1"])?;
+    for (table, chain, spec) in nat_rules(tun_name, wan_iface, subnet, exit_ip, admin_port).iter().rev() {
+        let mut args = vec!["-t", table, "-I", chain, "1"];
+        args.extend(spec.iter().map(String::as_str));
+        run_cmd("iptables", &args)?;
+    }
+    match exit_ip {
+        Some(ip) => tracing::info!("NAT: {} → {} via SNAT {} (subnet {})", tun_name, wan_iface, ip, subnet),
+        None => tracing::info!("NAT: {} → {} via MASQUERADE (subnet {})", tun_name, wan_iface, subnet),
+    }
     Ok(())
 }
 
-pub fn teardown_nat(tun_name: &str, wan_iface: &str, subnet: &str, exit_ip: Option<&str>) {
-    let comment = format!("phantom-vpn-{}", tun_name);
-    if let Some(ip) = exit_ip {
-        let _ = run_cmd("iptables", &["-t", "nat", "-D", "POSTROUTING",
-            "-s", subnet, "-o", wan_iface, "-j", "SNAT", "--to-source", ip,
-            "-m", "comment", "--comment", &comment]);
-    } else {
-        let _ = run_cmd("iptables", &["-t", "nat", "-D", "POSTROUTING",
-            "-s", subnet, "-o", wan_iface, "-j", "MASQUERADE",
-            "-m", "comment", "--comment", &comment]);
+pub fn teardown_nat(tun_name: &str, wan_iface: &str, subnet: &str, exit_ip: Option<&str>, admin_port: u16) {
+    for (table, chain, spec) in nat_rules(tun_name, wan_iface, subnet, exit_ip, admin_port) {
+        let mut args = vec!["-t", table, "-D", chain];
+        args.extend(spec.iter().map(String::as_str));
+        // Rule may be absent (first start / already removed) — that's fine.
+        let _ = run_cmd("iptables", &args);
     }
-    let _ = run_cmd("iptables", &["-D", "FORWARD",
-        "-i", tun_name, "-o", wan_iface, "-j", "ACCEPT",
-        "-m", "comment", "--comment", &comment]);
-    let _ = run_cmd("iptables", &["-D", "FORWARD",
-        "-i", wan_iface, "-o", tun_name,
-        "-m", "state", "--state", "RELATED,ESTABLISHED",
-        "-j", "ACCEPT",
-        "-m", "comment", "--comment", &comment]);
     tracing::info!("NAT teardown: {} → {}", tun_name, wan_iface);
 }
 
