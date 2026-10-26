@@ -233,23 +233,29 @@ fn nat_rules(tun: &str, wan: &str, subnet: &str, exit_ip: Option<&str>, admin_po
         None => rule("nat", "POSTROUTING", &["-s", subnet, "-o", wan, "-j", "MASQUERADE"]),
     }];
     // FORWARD: no private destinations, no SMTP (spam from the only exit IP
-    // gets it blacklisted), then the usual tun ⇄ wan accept.
+    // gets it blacklisted), then the usual tun ⇄ wan accept. DNAT'ed traffic
+    // (docker-published ports of services on the exit's public IP) is exempt:
+    // it lands on a private bridge address but is public by intent.
     for dst in BLOCKED_DST {
-        rules.push(rule("filter", "FORWARD", &["-i", tun, "-d", dst, "-j", "DROP"]));
+        rules.push(rule("filter", "FORWARD", &["-i", tun, "-d", dst,
+            "-m", "conntrack", "!", "--ctstate", "DNAT", "-j", "DROP"]));
     }
     rules.push(rule("filter", "FORWARD", &["-i", tun, "-p", "tcp", "--dport", "25", "-j", "REJECT"]));
     rules.push(rule("filter", "FORWARD", &["-i", tun, "-o", wan, "-j", "ACCEPT"]));
     rules.push(rule("filter", "FORWARD", &["-i", wan, "-o", tun,
         "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]));
-    // INPUT from the tunnel: only the admin API, SSH, DNS and ping reach the
-    // exit host itself; everything else on it stays invisible to clients.
-    rules.push(rule("filter", "INPUT", &["-i", tun, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]));
-    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "icmp", "-j", "ACCEPT"]));
-    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "tcp", "--dport", &admin_port, "-j", "ACCEPT"]));
-    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "tcp", "--dport", "22", "-j", "ACCEPT"]));
-    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "udp", "--dport", "53", "-j", "ACCEPT"]));
-    rules.push(rule("filter", "INPUT", &["-i", tun, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"]));
-    rules.push(rule("filter", "INPUT", &["-i", tun, "-j", "DROP"]));
+    // INPUT from the tunnel to the exit's tunnel-side address: only the admin
+    // API, SSH, DNS and ping. The host's public addresses stay reachable as
+    // from the internet — sites hosted on the exit must work through the VPN.
+    let to_tun = ["-i", tun, "-d", subnet];
+    let input = |spec: &[&str]| rule("filter", "INPUT", &[&to_tun[..], spec].concat());
+    rules.push(input(&["-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]));
+    rules.push(input(&["-p", "icmp", "-j", "ACCEPT"]));
+    rules.push(input(&["-p", "tcp", "--dport", &admin_port, "-j", "ACCEPT"]));
+    rules.push(input(&["-p", "tcp", "--dport", "22", "-j", "ACCEPT"]));
+    rules.push(input(&["-p", "udp", "--dport", "53", "-j", "ACCEPT"]));
+    rules.push(input(&["-p", "tcp", "--dport", "53", "-j", "ACCEPT"]));
+    rules.push(input(&["-j", "DROP"]));
     rules
 }
 
