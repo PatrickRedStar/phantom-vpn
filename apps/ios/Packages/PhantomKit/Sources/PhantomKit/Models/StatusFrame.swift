@@ -2,9 +2,10 @@ import Foundation
 
 /// Fine-grained health classification for a `.connected` tunnel — mirrors
 /// Rust `TunnelHealth` from `crates/gui-ipc/src/lib.rs`. When the underlying
-/// transport is silent for >stale threshold (`.stale`), partially throttled
-/// (`.degraded`) or mid-recovery (`.reconnecting`), the lifecycle state can
-/// still be `.connected` while the UI signals an honest degraded status.
+/// transport is silent for >stale threshold (`.stale`), partially broken
+/// (`.degraded`), mid-recovery (`.reconnecting`) or has no live streams at
+/// all (`.dead`), the lifecycle state can still be `.connected` while the UI
+/// signals an honest degraded status.
 ///
 /// `.unknown` is the sentinel returned from `init(from:)` when the Rust
 /// runtime ships a variant this build doesn't recognise (forward compat).
@@ -13,6 +14,8 @@ public enum TunnelHealth: String, Codable, Equatable {
     case stale
     case degraded
     case reconnecting
+    /// No live streams — teardown + reconnect in progress.
+    case dead
     /// Sentinel for unknown variants delivered by a newer runtime.
     case unknown
 

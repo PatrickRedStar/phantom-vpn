@@ -217,6 +217,10 @@
 "native.dashboard.streams.count.format" = "%d из %d";
 "native.dashboard.reconnecting" = "Переподключение";
 "native.dashboard.reconnect.detail.format" = "Попытка %d · след. через %dс";
+"native.dashboard.health.dead" = "Все потоки упали — переподключение";
+"native.dashboard.health.degraded.format" = "Деградация: живы %d из %d потоков";
+"native.dashboard.health.stale.format" = "Тишина в канале %d с";
+"native.dashboard.health.throttled" = "Скорость ограничена";
 "native.dashboard.subscription.remaining.format" = "Подписка: %lldд %lldч";
 "native.dashboard.subscription.hours.format" = "Подписка: %lldч";
 "native.dashboard.subscription.less_than_hour" = "Подписка: < 1ч";
