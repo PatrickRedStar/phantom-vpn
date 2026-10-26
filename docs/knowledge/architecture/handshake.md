@@ -8,8 +8,9 @@ updated: 2026-10-26
 
 Handshake устанавливает одну VPN-сессию, которая состоит из нескольких
 параллельных TLS-стримов (обычно `2..16`, см. [wire format](./wire-format.md)).
-Каждый стрим — отдельный TCP/TLS connection, проходящий через nginx
-(SNI-passthrough на NL:443) и попадающий на phantom-server. Handshake делится
+Каждый стрим — отдельный TCP/TLS connection, проходящий через RU-реле
+(SNI-passthrough, TLS не терминируется) и попадающий на phantom-server
+(NL exit `:8443`). Handshake делится
 на два этапа: (1) стандартный mTLS — сервер получает client cert,
 вычисляет SHA-256 fingerprint, проверяет keyring; (2) application handshake
 в 2 байта — клиент объявляет свой `stream_idx` и `client_max_streams`, сервер
@@ -18,7 +19,7 @@ Handshake устанавливает одну VPN-сессию, которая �
 ## Последовательность
 
 ```
-1. Client: N TCP connect → tls.nl2.bikini-bottom.com:443, СТРОГО ПОСЛЕДОВАТЕЛЬНО
+1. Client: N TCP connect → реле :443 (SNI = tls.nl2.bikini-bottom.com), СТРОГО ПОСЛЕДОВАТЕЛЬНО
    (следующий стрим — после полного хендшейка предыдущего; залп SYN'ов —
    DPI-признак, v0.27.1). Сокет создаёт ядро: на Android он проходит через
    VpnService.protect() до connect, на всех платформах — connect ≤ 15 с и
@@ -27,16 +28,19 @@ Handshake устанавливает одну VPN-сессию, которая �
    реконнекты идут TLS-resumption'ом — если прежнее соединение (сессия или
    стрим) прожило ≥ 30 с. После короткоживущего — полный хендшейк (см. ниже).
 
-2. nginx (NL :443, ssl_preread):
-   SNI == tls.nl2 → stream passthrough к 127.0.0.1:8443 (phantom-server)
-   SNI другой     → LE cert на frontend + HTML-заглушка
+2. RU-реле (nginx stream ssl_preread → phantom-relay):
+   SNI == tls.nl2 → сырой passthrough к exit 89.110.109.128:8443
+   SNI другой     → ответ как у nginx на fallback-серте (см. transport)
 
-3. phantom-server: TLS 1.3 accept + mTLS
+3. phantom-server: TLS 1.3 accept + mTLS, дедлайн 10 с на рукопожатие
+   вместе с 2-байтовым заголовком.
    CertificateRequest без списка имён CA (clear_root_hint_subjects).
-   peer_certificates — обязательное поле:
-     нет cert'а      → fakeapp::handle (H2 "сайт", см. ниже)
-     cert есть       → SHA-256 DER fingerprint → allow_list lookup
-     fp не в allow   → connection drop (no reply body)
+   Клиентский серт проверяется прямо в рукопожатии (свой верификатор):
+     нет cert'а          → fakeapp::handle (H2 "сайт", см. ниже)
+     cert из allowlist   → SHA-256 DER fingerprint → сессия
+     cert не в allowlist → TLS-алерт certificate_revoked
+   После рукопожатия allowlist проверяется ещё раз: resumed-сессия
+   верификатор не вызывает.
 
 4. Client → Server: первая запись каждого TLS-стрима
    [1B stream_idx][1B n_streams][heartbeat-frame]
@@ -49,10 +53,8 @@ Handshake устанавливает одну VPN-сессию, которая �
    SessionCoordinator: attach_stream(stream_idx, mpsc::Sender)
    (один SessionCoordinator на fingerprint, Vec<Mutex<Option<Sender>>>)
 
-6. Mimicry warmup: если is_new && stream_idx == 0 → warmup_write()
-   (см. ниже). Остальные стримы подключаются сразу без warmup.
-
-7. Frame loop: [4B frame_len][batch] штатно.
+6. Frame loop: [4B frame_len][batch] штатно. Первые 10–20 кадров каждого
+   стрима обе стороны добивают паддингом до случайного размера (см. wire format).
 ```
 
 Код: [server/server/src/h2_server.rs](../../../server/server/src/h2_server.rs)
@@ -95,34 +97,18 @@ captive portal или fallback-серт реле. Обрыв без алерта
 переподключался бы вечно. Поэтому после соединения, прожившего меньше 30 с,
 клиент идёт полным хендшейком, и на нём алерт приходит.
 
-## Mimicry warmup (`server/server/src/mimicry.rs`)
+## Warmup-мимикрии больше нет
 
-Чтобы не давать клиенту сразу после TLS handshake открыть full-bandwidth поток
-(DPI-tell: "handshake → instant hammering"), сервер на stream_idx==0
-эмитирует стадированную последовательность frame'ов под паттерн typical
-mobile HTTPS page load:
-
-| Delay (ms) | Size (KB) | "Like"  |
-|---|---|---|
-| 70  | 2  | HTML |
-| 330 | 8  | image 1 |
-| 200 | 16 | image 2 |
-| 200 | 24 | bundle |
-
-Total ≈ 50 KB за ≈ 800 мс. Delay и size получают jitter ±25 % / ±20 % per
-session, чтобы не возникло таймингового fingerprint'а. Каждый warmup-frame —
-валидный batch, содержащий один 16-байтный placeholder с `buf[0] = 0x00`
-(version nibble != 4), который receiver'ы дропают через IPv4-фильтр в
-`tls_rx_loop` — никаких изменений в data path не требуется.
-
-Только первый connect сессии (stream_idx==0 и `is_new == true`) запускает
-warmup; последующие стримы подключаются без warmup — суммарный warmup-бюджет
-фиксирован ~60 KB на сессию.
+До v0.29.0 сервер после рукопожатия stream 0 сам выталкивал четыре нарастающих
+всплеска (`mimicry.rs`, «HTML → картинки → бандл»). У каждой сессии подпись была
+одна и та же, то есть это был не камуфляж, а отпечаток. Модуль удалён; маскировку
+начала соединения даёт паддинг первых кадров стрима (см. [wire format](./wire-format.md)
+и [ADR 0019](../decisions/0019-owner-decisions-audit-2026-10.md)).
 
 ## Fakeapp fallback (`server/server/src/fakeapp.rs`)
 
-Если на TLS-handshake клиент не предъявил cert (или он не проходит по
-allowlist), сервер не отвечает 404 / blank — это DPI-tell. Вместо этого
+Если на TLS-handshake клиент не предъявил cert, сервер не отвечает 404 / blank —
+это DPI-tell. Вместо этого
 запускается минимальный H2-сервер, имитирующий легитимный mobile backend:
 
 | Path | Response |
@@ -137,7 +123,9 @@ allowlist), сервер не отвечает 404 / blank — это DPI-tell. 
 | default | 404 + plain text |
 
 Headers: `server: nginx/1.24.0`, `cache-control: public, max-age=3600`,
-`x-request-id: <16 random hex>`. Connection idle timeout — 30 с.
+`x-request-id: <16 random hex>`. Тело запроса не читается — ответ уходит сразу
+(POST без конца тела не вешает обработчик). Простой — 30 с, всё соединение
+вместе с h2-рукопожатием — не дольше 45 с.
 
 Обнаружить fakeapp со стороны probe'а без правильного cert'а невозможно:
 TLS handshake, H2 negotiation и набор endpoint'ов выглядят как честный
@@ -152,10 +140,7 @@ TLS handshake, H2 negotiation и набор endpoint'ов выглядят ка�
 - `client_max_streams` проходит `clamp(MIN, MAX)` на сервере. Misbehaving
   клиент не может продавить параллелизм выше `MAX_N_STREAMS`.
 - Клиент drop'ит все non-IPv4 пакеты (и короче 20 байт) в `tls_rx_loop`.
-  Это обеспечивает прозрачный фильтр для mimicry placeholder'ов и
-  heartbeat'ов — они не попадают в TUN.
-- Warmup запускается ровно один раз на сессию — на `is_new && stream_idx==0`.
-  Re-connect того же stream_idx после disconnect warmup НЕ повторяет.
+  Это обеспечивает прозрачный фильтр для heartbeat'ов — они не попадают в TUN.
 - Empty-cert TCP connection никогда не доходит до VPN-пути — только до
   `fakeapp::handle`.
 
@@ -165,8 +150,6 @@ TLS handshake, H2 negotiation и набор endpoint'ов выглядят ка�
   (разделы `run_h2_accept_loop`, handshake read, attach_stream).
 - Client write: [client-common/src/tls_tunnel.rs](../../../crates/client-common/src/tls_tunnel.rs)
   (`write_handshake`).
-- Mimicry: [mimicry.rs](../../../server/server/src/mimicry.rs) (`warmup_write`,
-  `SCHEDULE`, `jittered_schedule`).
 - Fakeapp: [fakeapp.rs](../../../server/server/src/fakeapp.rs) (`handle`,
   endpoint table).
 - Константы `MIN_N_STREAMS`, `MAX_N_STREAMS`, `n_data_streams`:

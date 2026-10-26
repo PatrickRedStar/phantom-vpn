@@ -71,17 +71,19 @@ roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 на сервере, для выдачи client-cert'ов). CA:
 
 - CA cert + private key: `/opt/phantom-vpn/config/ca.{crt,key}`.
-- Генерится один раз при `setup-server.sh` (CommonName =
-  "PhantomVPN Root CA"). Не ротируется автоматически.
+- Генерится один раз `phantom-keygen --out <config> --server-name <SNI>`
+  (Docker-entrypoint делает это сам при первом старте, [ADR 0010](../decisions/0010-docker-deploy.md)).
+  Не ротируется автоматически, существующие файлы keygen не перезаписывает.
+  Новые установки получают нейтральное имя CA `Root CA`; на проде CA старый,
+  `PhantomVPN CA`, — в рукопожатии оно больше не светится (нет root hints).
 
 На каждого клиента (по имени) генерится отдельный cert+key:
 
-- `/opt/phantom-vpn/config/clients/<name>.crt`
-- `/opt/phantom-vpn/config/clients/<name>.key`
+- `/opt/phantom-vpn/config/clients/<name>/client.crt`
+- `/opt/phantom-vpn/config/clients/<name>/client.key` (0600, каталог 0700)
 - `ExtendedKeyUsage = ClientAuth`, CN = client name.
 
-Генерация выполняется через `phantom-keygen` CLI при `setup-server.sh` или
-динамически — админом через Admin API (`POST /api/clients`) — см.
+Выдача — `keys.py` на сервере или админом через Admin API (`POST /api/clients`) — см.
 [admin API](./admin-api.md) и `generate_client_cert` в
 [admin.rs](../../../server/server/src/admin.rs).
 
@@ -109,9 +111,10 @@ roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
 - **`fingerprint` = SHA-256 от DER client-cert'а.** Identity клиента. Rename
   записи в keyring fingerprint НЕ меняет.
-- **`enabled`** — переключатель "принимать TLS от этого fp". Allow-list
-  фильтр в `h2_server.rs` первым делом проверяет его; `false` ⇒ TCP drop
-  без ответа, клиент увидит TLS-alert-less reset.
+- **`enabled`** — переключатель "принимать TLS от этого fp". Allowlist
+  проверяется прямо в рукопожатии; выключенный, удалённый или неизвестный
+  серт получает TLS-алерт `certificate_revoked`, клиент показывает «Доступ
+  отозван» и не переподключается. Пустой allowlist = никого не пускать.
 - **`is_admin`** — динамический флаг, проверяется per-request в admin-mTLS
   middleware. Toggle через `POST /api/clients/:name/admin` без перевыпуска
   cert'а.
@@ -119,7 +122,8 @@ roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
   переводит `enabled=false` на истёкших и закрывает их сессии (см.
   [admin API](./admin-api.md)).
 
-Reload — hot, через SIGHUP или после каждой admin-mutation. Mutex
+Reload — hot: раз в минуту, по SIGHUP (`keys.py` шлёт его сам) и после каждой
+admin-mutation. Нечитаемый `clients.json` на старте — сервер не стартует. Mutex
 (`keyring_lock`) сериализует read-modify-write операции — защита от
 TOCTOU между handlers и `run_subscription_checker`.
 
@@ -144,10 +148,10 @@ Admin API использует **второй TLS pipeline** — не тот, ч
 |---|---|
 | `/opt/phantom-vpn/config/ca.crt` | PhantomVPN CA (self-signed). Trust anchor для client cert'ов. |
 | `/opt/phantom-vpn/config/ca.key` | CA private key. **Root-only, не бэкапить в git.** |
-| `/opt/phantom-vpn/config/clients/<name>.{crt,key}` | Per-client identity. Key — 1 раз, cert — перевыпускаемый. |
+| `/opt/phantom-vpn/config/clients/<name>/client.{crt,key}` | Per-client identity. Key — 1 раз, cert — перевыпускаемый. |
 | `/opt/phantom-vpn/config/clients.json` | Keyring (enable, is_admin, expires_at, stats). |
 | `/opt/phantom-vpn/config/admin-server.{crt,key}` | Admin listener TLS cert (self-signed, auto-gen). |
-| LE cert (`/etc/letsencrypt/live/tls.nl2…/`) | Публичный server cert. Renewed certbot-ом. |
+| LE cert (`/etc/letsencrypt/live/tls.nl2…/`) | Публичный server cert. Продлевает certbot; сервер читает его только при старте, поэтому нужен `renew_hook` с рестартом ([build.md](../build.md)). |
 
 Связь client-identity ↔ conn-string (`ghs://…`) — см.
 [admin API](./admin-api.md) раздел Connection string и
