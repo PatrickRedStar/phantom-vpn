@@ -1,53 +1,10 @@
-//! HTTP/2 transport: TLS config builders and constants.
-//! Shared between server and client.
+//! HTTP/2 transport: the client TLS config.
 
 use std::sync::Arc;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-/// Tunnel stream path prefix: POST /v1/tunnel/{0..N}
-pub const H2_TUNNEL_PATH: &str = "/v1/tunnel/";
-
-/// TCP MSS for HTTP/2 transport (TCP+TLS overhead > QUIC overhead)
-pub const H2_TUNNEL_MSS: u16 = 1360;
-
-/// Build a `rustls::ServerConfig` for HTTP/2 (ALPN=["h2"], optional mTLS).
-/// Same mTLS logic as QUIC: if `client_ca` is Some, clients without cert get fallback.
-pub fn make_h2_server_tls(
-    certs: Vec<CertificateDer<'static>>,
-    key: PrivateKeyDer<'static>,
-    client_ca: Option<Vec<CertificateDer<'static>>>,
-) -> anyhow::Result<Arc<rustls::ServerConfig>> {
-    let mut tls_config = if let Some(ca_certs) = client_ca {
-        let mut roots = rustls::RootCertStore::empty();
-        for cert in ca_certs {
-            roots.add(cert)?;
-        }
-        // No root hints: by default the CertificateRequest lists the subject of
-        // every trusted CA, i.e. our "PhantomVPN CA" name, to anyone who opens a
-        // TLS session — a scanner fingerprint. Clients pick their cert from the
-        // profile, not from the hint list, so mTLS is unaffected.
-        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-            .allow_unauthenticated()
-            .clear_root_hint_subjects()
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build client verifier: {}", e))?;
-        rustls::ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(certs, key)?
-    } else {
-        rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?
-    };
-
-    tls_config.alpn_protocols = vec![b"h2".to_vec()];
-    tls_config.max_early_data_size = 0;
-
-    Ok(Arc::new(tls_config))
-}
-
 /// Build a `rustls::ClientConfig` (ALPN offer `["h2", "http/1.1"]`, like a
-/// browser; our server only speaks `h2` and always selects it).
+/// browser; our server prefers `h2` and always selects it).
 ///
 /// The server certificate is ALWAYS verified: the webpki public root store
 /// (real CAs like Let's Encrypt — production servers present LE certs) plus any

@@ -67,8 +67,8 @@ const FRAME_QUEUE: usize = 32;
 #[cfg(target_os = "linux")]
 const NOTSENT_LOWAT: libc::c_int = 128 * 1024;
 
-/// Build the transport TLS config. Same as `phantom_core::h2_transport::make_h2_server_tls`
-/// plus: the client cert is checked against the allowlist inside the handshake
+/// Build the transport TLS config: optional mTLS against our CA (a client
+/// without a cert gets the fake app-face); the client cert is checked against the allowlist inside the handshake
 /// (revoked → alert, the client can tell "access revoked" from a network
 /// failure), and the CA name list is not sent in CertificateRequest (it would
 /// name our CA to any prober; rustls clients send their only cert anyway).
@@ -238,7 +238,7 @@ pub async fn run_h2_accept_loop(
             // Do NOT reintroduce an escape hatch that assigns an identity without a
             // cert (there used to be a PHANTOM_TEST_CERTLESS_FP env var here). The
             // server TLS config uses `.allow_unauthenticated()` — see
-            // crates/core/src/h2_transport.rs — so a certless handshake *does* reach
+            // `make_tls_config` above — so a certless handshake *does* reach
             // this point, and any such branch is an unauthenticated VPN open to the
             // internet: exit through the NL node, reachability of 10.7.0.0/24 and of
             // the admin API on 10.7.0.1:8080, under a real client's identity.
