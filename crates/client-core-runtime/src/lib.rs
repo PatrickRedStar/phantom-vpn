@@ -192,6 +192,11 @@ pub fn reconnect_delay_secs(cat: TunnelErrorCategory, attempt: u32) -> u32 {
 /// A server rejecting our certificate answers with a TLS alert; under TLS 1.3
 /// it arrives on the first read after the handshake, so stream errors are
 /// checked too, not only the connect result.
+///
+/// Other certificate failures (unknown issuer, wrong name, a BadCertificate
+/// alert) stay transient on purpose: a captive portal or a relay serving its
+/// fallback certificate shows a foreign certificate until the network or the
+/// relay is fixed, and the tunnel must come back by itself then.
 pub fn fatal_reason(err_chain: &str) -> Option<&'static str> {
     let s = err_chain.to_ascii_lowercase();
     // rustls prints alerts as "received fatal alert: CertificateRevoked".
@@ -207,14 +212,9 @@ pub fn fatal_reason(err_chain: &str) -> Option<&'static str> {
         || s.contains("certificate is not yet valid")
     {
         Some("Сертификат сервера недействителен на текущую дату — проверьте дату и время на устройстве")
-    } else if s.contains("invalid peer certificate") || s.contains("certificate verify failed") {
-        Some("Сертификат сервера не прошёл проверку")
-    } else if s.contains("badcertificate")
-        || s.contains("unknownca")
-        || s.contains("certificateunknown")
-        || s.contains("unsupportedcertificate")
-    {
-        Some("Сервер отклонил сертификат клиента")
+    } else if s.contains("tun reader closed") {
+        // TUN I/O is set up once per run(); its reader never comes back.
+        Some("TUN-интерфейс закрыт")
     } else {
         None
     }
@@ -292,6 +292,7 @@ pub async fn run(
     // of them, so packets were sprayed across the live and the dead channel
     // (CRIT-2, v0.25.2 — and the same bug in the io_uring path).
     let mut blocking_threads: Option<BlockingTun> = None;
+    let mut outbound_task: Option<tokio::task::JoinHandle<()>> = None;
     let (tun_factory, inbound_tx): (supervise::TunFactory, tokio::sync::mpsc::Sender<Bytes>) =
         match tun {
             #[cfg(target_os = "linux")]
@@ -315,12 +316,12 @@ pub async fn run(
                 // it ends once the supervisor's senders are gone.
                 let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel::<Bytes>(PACKET_QUEUE);
                 let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Bytes>(PACKET_QUEUE);
-                tokio::spawn(async move {
+                outbound_task = Some(tokio::spawn(async move {
                     let mut batch = Vec::with_capacity(32);
                     while write_rx.recv_many(&mut batch, 32).await > 0 {
                         io.submit_outbound_batch(std::mem::take(&mut batch));
                     }
-                });
+                }));
                 (per_attempt_factory(inbound_rx, write_tx), inbound_tx)
             }
         };
@@ -353,6 +354,12 @@ pub async fn run(
         // interface down — and only after both threads stopped using it.
         if let Some(threads) = blocking_threads {
             threads.stop().await;
+        }
+        // Callback mode: the outbound task ends once the supervisor's senders
+        // are gone; wait for it, so no packet reaches the callback after this
+        // join handle resolves.
+        if let Some(task) = outbound_task {
+            let _ = task.await;
         }
         let duration_ms = shutdown_started_at.elapsed().as_millis() as u64;
         tracing::info!(category = "runtime", duration_ms, "shutdown.complete");
@@ -580,10 +587,18 @@ mod tests {
             let reason = fatal_reason(&chain(TlsError::InvalidCertificate(e))).unwrap();
             assert!(reason.contains("дату и время"), "{reason}");
         }
-        let unknown_issuer = TlsError::InvalidCertificate(CertificateError::UnknownIssuer);
-        assert!(fatal_reason(&chain(unknown_issuer)).is_some());
-        let bad_cert = TlsError::AlertReceived(AlertDescription::BadCertificate);
-        assert!(fatal_reason(&chain(bad_cert)).is_some());
+        assert_eq!(fatal_reason("TUN reader closed — TX path gone"), Some("TUN-интерфейс закрыт"));
+
+        // A foreign server certificate (captive portal, relay fallback) and
+        // other handshake trouble are retried, not fatal.
+        for e in [
+            TlsError::InvalidCertificate(CertificateError::UnknownIssuer),
+            TlsError::InvalidCertificate(CertificateError::NotValidForName),
+            TlsError::AlertReceived(AlertDescription::BadCertificate),
+            TlsError::AlertReceived(AlertDescription::HandshakeFailure),
+        ] {
+            assert_eq!(fatal_reason(&chain(e)), None);
+        }
 
         // Network trouble is never fatal.
         for transient in [
@@ -596,8 +611,6 @@ mod tests {
         ] {
             assert_eq!(fatal_reason(transient), None, "{transient}");
         }
-        let hs_failure = chain(TlsError::AlertReceived(AlertDescription::HandshakeFailure));
-        assert_eq!(fatal_reason(&hs_failure), None);
     }
 
     /// Fast first retry per category, growing to the 30 s ceiling, never

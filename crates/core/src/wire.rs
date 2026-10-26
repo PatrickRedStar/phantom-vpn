@@ -183,10 +183,12 @@ pub fn batch_packets(mut buf: &[u8]) -> impl Iterator<Item = &[u8]> {
 // ─── Heartbeat / dummy frames (detection vector 12) ────────────────────────
 //
 // An idle stream sends a dummy "heartbeat" batch after a random 30–60 s of
-// silence, independently per stream and per direction (client and server both
-// use these functions). It keeps mobile NAT entries alive and feeds the
-// receivers' liveness timers: client Stale at 75 s since the last frame, dead
-// stream at 90 s (`RX_IDLE_TIMEOUT_SECS`), server read idle at 150 s. The
+// silence, independently per stream and per direction. It keeps mobile NAT
+// entries alive and feeds the receivers' liveness timers: client Stale at 75 s
+// since the last frame, dead stream at 90 s (`RX_IDLE_TIMEOUT_SECS`), server
+// read idle at 150 s. Clients before v0.27 drop a stream after only 45 s of
+// silence, v0.27–v0.28 after 75 s — a server heartbeat gap above 45 s cuts
+// idle streams of the former. The
 // interval is deliberately not synchronised across streams — lock-step timers
 // are a DPI tell — and kept ≥ 30 s so 8–16 streams do not keep the phone's
 // radio awake.

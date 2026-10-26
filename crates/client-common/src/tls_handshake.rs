@@ -151,6 +151,21 @@ pub enum ClientTls {
     Boring(Arc<BoringClientTls>),
 }
 
+impl ClientTls {
+    /// The same config with TLS session resumption off, so every handshake is
+    /// a full one (the boring connector keeps no client sessions anyway).
+    pub fn without_resumption(&self) -> ClientTls {
+        match self {
+            ClientTls::Rustls(c) => {
+                let mut c = (**c).clone();
+                c.resumption = rustls::client::Resumption::disabled();
+                ClientTls::Rustls(Arc::new(c))
+            }
+            ClientTls::Boring(_) => self.clone(),
+        }
+    }
+}
+
 /// A prebuilt BoringSSL client connector (mTLS identity baked in) + the profile
 /// name it was built for. Reused across all N streams.
 pub struct BoringClientTls {

@@ -2,8 +2,8 @@
 //!
 //! `supervise()` runs one `drive_tunnel()` attempt at a time and, on failure,
 //! sleeps a backoff delay before retrying. With `auto_reconnect` it never
-//! gives up on network errors; only fatal errors (bad profile, certificate
-//! problems, revoked access, wrong clock) end in `ConnState::Error`. An
+//! gives up on network errors; only fatal errors (bad profile, revoked or
+//! expired access, wrong clock, closed TUN) end in `ConnState::Error`. An
 //! explicit `cancel` `watch::Receiver<bool>` interrupts any pending sleep
 //! (issued by the caller on explicit disconnect; survives missed signals
 //! because `watch` stores the latest value).
@@ -113,6 +113,11 @@ pub async fn supervise(
             return;
         }
     };
+    let full_tls = client_tls.without_resumption();
+    // Resume TLS only after a healthy session. A resumed handshake skips the
+    // server's client-certificate check, so a revoked client would only ever
+    // see the server hang up; a full handshake gets the revocation alert.
+    let mut resume = true;
 
     let tun_addr = cfg.network.tun_addr.clone().unwrap_or_default();
     let sni = cfg.network.server_name.clone().unwrap_or_default();
@@ -178,11 +183,13 @@ pub async fn supervise(
                     server_addr,
                     server_name: server_name.clone(),
                     client_tls: client_tls.clone(),
+                    full_tls: full_tls.clone(),
                     protect_socket: protect_socket.clone(),
                     n_streams,
                 };
                 let result = drive_tunnel(
                     dialer,
+                    resume,
                     &tun_addr,
                     status_tx.clone(),
                     telemetry.clone(),
@@ -198,6 +205,7 @@ pub async fn supervise(
                     .connected_at
                     .get()
                     .is_some_and(|t| t.elapsed() >= STABLE_SESSION);
+                resume = stable;
                 *shared_telem.lock().await = None;
 
                 if explicit_shutdown {
@@ -495,6 +503,8 @@ struct StreamDialer {
     server_addr: SocketAddr,
     server_name: String,
     client_tls: ClientTls,
+    /// `client_tls` without session resumption — for `resume == false`.
+    full_tls: ClientTls,
     protect_socket: Option<ProtectSocket>,
     n_streams: usize,
 }
@@ -503,8 +513,9 @@ impl StreamDialer {
     /// Open ONE stream at a fixed `idx`: 1 attempt + 2 retries on a fresh
     /// socket with jitter (CONC-A1/A2, 2026-06-13 TSPU fix — the handshake of
     /// some parallel streams is silently blackholed, and a fresh socket almost
-    /// always clears it). Fatal errors are not retried.
-    async fn open(&self, idx: usize) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
+    /// always clears it). Fatal errors are not retried. `resume` allows a
+    /// resumed TLS handshake; pass `false` after a connection that died young.
+    async fn open(&self, idx: usize, resume: bool) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
         const STREAM_OPEN_RETRIES: u32 = 2;
         let mut last_err: Option<anyhow::Error> = None;
         for attempt in 0..=STREAM_OPEN_RETRIES {
@@ -517,7 +528,7 @@ impl StreamDialer {
                     "stream.retry"
                 );
             }
-            match self.dial(idx).await {
+            match self.dial(idx, resume).await {
                 Ok(rw) => {
                     // stream.open — per ADR 0008 §2.
                     tracing::debug!(
@@ -551,7 +562,7 @@ impl StreamDialer {
     /// every platform: Android must `VpnService.protect()` it before any I/O
     /// (including retries, else traffic loops back via tun), and every
     /// platform gets a bounded connect and the TCP user timeout.
-    async fn dial(&self, idx: usize) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
+    async fn dial(&self, idx: usize, resume: bool) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
         let socket = if self.server_addr.is_ipv4() {
             tokio::net::TcpSocket::new_v4()
         } else {
@@ -575,7 +586,8 @@ impl StreamDialer {
         tracing::debug!(category = "handshake", peer = %self.server_addr, stream_id = idx as u64,
             "tcp.connected");
 
-        let (r, mut w) = match &self.client_tls {
+        let tls = if resume { &self.client_tls } else { &self.full_tls };
+        let (r, mut w) = match tls {
             ClientTls::Rustls(c) => tls_connect_with_tcp(tcp, self.server_name.clone(), c.clone()).await,
             ClientTls::Boring(c) => {
                 tls_connect_with_tcp_boring(tcp, self.server_name.clone(), c.clone()).await
@@ -612,8 +624,9 @@ impl StreamDialer {
 /// heals without a synchronized all-N reconnect burst — the server attaches
 /// the new connection to the existing session. A stream that keeps failing
 /// (or dies right after reopening) backs off along `BACKOFF_SECS`, so a
-/// server that refuses us is not hammered. Returns on tunnel teardown
-/// (channels closed) or on a fatal error, which it records in
+/// server that refuses us is not hammered; it also reopens with a full TLS
+/// handshake, which carries the alert if our access was revoked. Returns on
+/// tunnel teardown (channels closed) or on a fatal error, which it records in
 /// `tele.fatal` for the death watcher.
 async fn run_stream(
     idx: usize,
@@ -670,7 +683,7 @@ async fn run_stream(
             let floor_ms = u64::from(crate::BACKOFF_SECS[fails.min(crate::BACKOFF_SECS.len() - 1)]) * 1000;
             let pause_ms = (1_000 + jitter(idx, 9_000)).max(floor_ms + jitter(idx, floor_ms / 4));
             tokio::time::sleep(Duration::from_millis(pause_ms)).await;
-            match dialer.open(idx).await {
+            match dialer.open(idx, fails == 0).await {
                 Ok(rw) => break rw,
                 Err(e) => {
                     fails += 1;
@@ -686,6 +699,17 @@ async fn run_stream(
     }
 }
 
+/// Aborts the held tasks when dropped.
+struct AbortOnDrop(Vec<tokio::task::AbortHandle>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        for h in &self.0 {
+            h.abort();
+        }
+    }
+}
+
 /// Connect TLS streams, spawn I/O tasks, and run until shutdown or error.
 /// Returns `Ok` only on an explicit stop; every other exit is an `Err`
 /// carrying the cause.
@@ -695,6 +719,7 @@ async fn run_stream(
 #[allow(clippy::too_many_arguments)]
 async fn drive_tunnel(
     dialer: StreamDialer,
+    resume: bool,
     tun_addr: &str,
     status_tx: watch::Sender<StatusFrame>,
     telemetry: Arc<Telemetry>,
@@ -741,7 +766,7 @@ async fn drive_tunnel(
         for idx in 0..n_streams {
             opened.push(
                 dialer
-                    .open(idx)
+                    .open(idx, resume)
                     .await
                     .with_context(|| format!("stream {} handshake failed", idx))?,
             );
@@ -819,12 +844,16 @@ async fn drive_tunnel(
     // A dead (reopening) stream drops its flow's packets at once — TCP inside
     // the tunnel retransmits. A live but momentarily full queue gets a short
     // grace before the drop: dropping on the first full slot (2026-05-06 RC1)
-    // cost ×13 throughput, while an unbounded wait let one stuck stream wedge
-    // ALL TX (v0.27.1 DPI regression). The dispatcher only ends when the TUN
-    // reader closes.
+    // cost ×13 throughput. The dispatcher serves every stream, so a stream
+    // whose queue stayed full through the grace (frozen or throttled
+    // connection) is `stalled`: it drops on Full without waiting until its
+    // queue takes a packet again — waiting per packet let one stuck stream
+    // wedge ALL TX (v0.27.1 DPI regression). The dispatcher only ends when
+    // the TUN reader closes.
     let tele = telemetry.clone();
     let mut dispatcher = tokio::spawn(async move {
         let mut first_tx_logged: [bool; 16] = [false; 16];
+        let mut stalled: [bool; 16] = [false; 16];
         while let Some(pkt) = tun_pkt_rx.recv().await {
             let idx = flow_stream_idx(&pkt, n_streams);
             let len = pkt.len() as u64;
@@ -833,14 +862,18 @@ async fn drive_tunnel(
                 first_tx_logged[idx] = true;
                 tracing::trace!(category = "stream", stream_id = idx as u64, bytes = len, "first_packet_tx");
             }
+            let tx = &tx_senders[idx];
             let sent = tele.streams_alive[idx].load(Ordering::Relaxed)
-                && match tx_senders[idx].try_send(pkt) {
-                    Ok(()) => true,
-                    Err(TrySendError::Full(pkt)) => tx_senders[idx]
-                        .send_timeout(pkt, Duration::from_millis(50))
-                        .await
-                        .is_ok(),
-                    Err(TrySendError::Closed(_)) => false,
+                && match tx.try_send(pkt) {
+                    Ok(()) => {
+                        stalled[idx] = false;
+                        true
+                    }
+                    Err(TrySendError::Full(pkt)) if !stalled[idx] => {
+                        stalled[idx] = tx.send_timeout(pkt, Duration::from_millis(50)).await.is_err();
+                        !stalled[idx]
+                    }
+                    Err(_) => false,
                 };
             if sent {
                 tele.bytes_tx.fetch_add(len, Ordering::Relaxed);
@@ -891,39 +924,41 @@ async fn drive_tunnel(
         }
     });
 
+    // Every task of this session, aborted when `tasks` drops — on teardown and
+    // also when this future itself is dropped (the owner aborted `run()`):
+    // a leaked stream task would keep re-dialling with our certificate and
+    // fight the next session for its slot on the server.
+    let mut tasks = AbortOnDrop(vec![dispatcher.abort_handle(), rx_forwarder.abort_handle()]);
+
     // Per-stream tasks (RX + TX + reopen).
-    let stream_tasks: Vec<_> = opened
-        .into_iter()
-        .zip(tx_receivers)
-        .enumerate()
-        .map(|(idx, (rw, tx_queue))| {
-            tokio::spawn(run_stream(
-                idx,
-                rw,
-                tx_queue,
-                rx_sink_tx.clone(),
-                telemetry.clone(),
-                dialer.clone(),
-            ))
-        })
-        .collect();
+    for (idx, (rw, tx_queue)) in opened.into_iter().zip(tx_receivers).enumerate() {
+        let h = tokio::spawn(run_stream(
+            idx,
+            rw,
+            tx_queue,
+            rx_sink_tx.clone(),
+            telemetry.clone(),
+            dialer.clone(),
+        ));
+        tasks.0.push(h.abort_handle());
+    }
     drop(rx_sink_tx);
 
-    let telem_task = spawn_telem_task(telemetry.clone(), status_tx.clone());
+    tasks.0.push(spawn_telem_task(telemetry.clone(), status_tx.clone()).abort_handle());
 
     // Death watcher (ticks 1 s). Tears the session down when:
     //  - ALL streams are dead for ALL_STREAMS_DEAD_TIMEOUT_SECS. A single dead
     //    stream is NOT a reason — its task reopens it alone; tearing down all
     //    N on any single death produced synchronized N-stream reconnect bursts
     //    that carrier-DPI fingerprints (pcap A/B vs v0.22.4);
-    //  - the device just woke up (P6): the wall clock jumped while monotonic
+    //  - the device just woke up: the wall clock jumped while monotonic
     //    timers were stopped, and the server has likely dropped the session —
     //    reconnect now instead of sitting on a dead tunnel for 90 s;
-    //  - a stream hit a fatal error (revoked access, certificate, clock).
+    //  - a stream hit a fatal error (revoked or expired access, clock).
     // The watcher does NOT publish health — telem_task's derive_health() is
     // the single source of truth (I1 fix, v0.26.22).
     let (dead_watcher_tx, mut dead_watcher_rx) = tokio::sync::oneshot::channel::<anyhow::Error>();
-    let dead_watcher = {
+    tasks.0.push({
         let tele = telemetry.clone();
         let status_tx_w = status_tx.clone();
         tokio::spawn(async move {
@@ -972,7 +1007,8 @@ async fn drive_tunnel(
                 }
             }
         })
-    };
+        .abort_handle()
+    });
 
     // Shutdown flag poll.
     let shutdown_poll = {
@@ -1026,7 +1062,9 @@ async fn drive_tunnel(
     tokio::pin!(recycle_trigger);
 
     // `None` = explicit stop; otherwise the cause handed back to the supervisor.
+    // Biased: a user stop wins over whatever it tears down on its way.
     let exit_err: Option<anyhow::Error> = tokio::select! {
+        biased;
         _ = crate::wait_cancelled(&mut cancel) => {
             telemetry.disconnect_kind.store(KIND_USER_DISCONNECT, Ordering::Relaxed);
             tracing::info!(
@@ -1062,15 +1100,16 @@ async fn drive_tunnel(
             Some(res.unwrap_or_else(|_| anyhow::anyhow!("death watcher gone")))
         }
         _ = &mut dispatcher => {
-            // The TUN reader closed: the uplink is gone. Reconnect instead of
-            // zombie-ing. On a clean stop the cancel/shutdown arm wins first.
+            // The TUN reader closed (interface gone, VPN revoked by the OS).
+            // TUN I/O lives for the whole run, so no reconnect can bring the
+            // uplink back — fatal (see `fatal_reason`).
             tracing::error!(
                 category = "tunnel",
                 reason = "dispatcher_ended",
                 tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
                 "TUN→stream dispatcher ended — TX path gone, disconnecting"
             );
-            Some(anyhow::anyhow!("dispatcher ended — TX path gone"))
+            Some(anyhow::anyhow!("TUN reader closed — TX path gone"))
         }
         kind = &mut recycle_trigger => {
             tracing::warn!(
@@ -1097,13 +1136,7 @@ async fn drive_tunnel(
         "teardown.start"
     );
 
-    for h in stream_tasks {
-        h.abort();
-    }
-    telem_task.abort();
-    dead_watcher.abort();
-    dispatcher.abort();
-    rx_forwarder.abort();
+    drop(tasks);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     telemetry.tls_state.store(TLS_CLOSED, Ordering::Relaxed);
