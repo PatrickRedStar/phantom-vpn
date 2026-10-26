@@ -4,10 +4,11 @@ updated: 2026-10-26
 
 # ADR 0014 — Server-pushable Transport Policy (все anti-DPI рычаги в конфиге)
 
-**Status:** Accepted, реализован частично: доставка с сервера не сделана — в проде всегда
-действуют встроенные дефолты (см. «Статус реализации», 2026-10-26)
+**Status:** Accepted, реализован частично: доставки с сервера нет, и канала для неё тоже —
+`/api/client-config` удалён; в проде всегда действуют встроенные дефолты (см. «Статус
+реализации», 2026-10-26)
 **Context-doc:** [architecture/dpi-tspu.md](../architecture/dpi-tspu.md)
-**Связано:** ADR [0002 (Noise→mTLS)](0002-noise-to-mtls.md), [0003 (H2/TLS/TCP)](0003-h2-tls-tcp.md), [0011 (server verify)](0011-remove-insecure-always-verify.md)
+**Связано:** ADR [0002 (Noise→mTLS)](0002-noise-to-mtls.md), [0003 (H2/TLS/TCP)](0003-h2-multistream-transport.md), [0011 (server verify)](0011-remove-insecure-always-verify.md)
 
 ## Context
 
@@ -20,7 +21,7 @@ bulk-профилю. Причём **терпимый набор fingerprint'ов
 
 Проблема: все эти рычаги сейчас — **компайл-тайм `const`** в `crates/core/src/wire.rs`
 (`MAX_N_STREAMS`, heartbeat-интервалы, MTU), в `h2_transport.rs` (ClientHello/ALPN),
-в `server/server/src/mimicry.rs`. Смена подхода = **пересборка и переустановка каждого
+в `server/server/src/mimicry.rs` (удалён в v0.29.0). Смена подхода = **пересборка и переустановка каждого
 клиента и сервера** на всех платформах. При гонке «cat-and-mouse» с ТСПУ это
 неприемлемо — нужно менять fingerprint/топологию/шейпинг **с сервера, без релиза**.
 
@@ -111,15 +112,20 @@ heartbeat-параметры (интервал 1..60 с, заглушка 20..12
 `padding.enabled/target`, `streams.count`, `fingerprint` (`named` → boring-путь; `raw`
 пока тоже просто boring — шаблон не применяется), `mtls`.
 
-**Не сделано (Phase 1 доставка):** секции `[policy]` в `server.toml` нет, поля
-`transport_policy` в `ClientConfigResponse` нет, клиентского fetch/cache нет. В проде
+**Не сделано (Phase 1 доставка):** секции `[policy]` в `server.toml` нет, клиентского
+fetch/cache нет. Эндпоинт `GET /api/client-config`, через который планировалась доставка,
+никто не вызывал — он удалён вместе с `ClientConfigResponse` (2026-10); подписку и
+`enabled` клиенты теперь берут из `/api/me`. При возврате к доставке policy нужен новый
+путь — например, поле в ответе `/api/me`. В проде
 policy всегда = дефолты; `install()` вызывает только лабораторный харнесс (Android, cargo
 feature `lab-overrides`, файл через `adb push`). Phase 3 (single-conn mux) и Phase 4
 (relay terminate) не начинались.
 
 **Поля, которые никто не читает:** `alpn`, `tls_min/max`, `streams.topology`, `mtu`,
 `mss`, `padding.min_frame/pace_ms`, `mimicry`, `recycle`, `relay`, `schema_version`.
-Оставлены в схеме ради совместимости. `heartbeat.enabled` удалён: выключать heartbeat
+Оставлены в схеме ради совместимости; `mimicry` — пустышка: серверная warmup-мимикрия
+удалена ([ADR 0019](0019-owner-decisions-audit-2026-10.md)), начало соединения маскирует
+паддинг первых кадров. `heartbeat.enabled` удалён: выключать heartbeat
 нельзя — на нём держатся NAT-записи и детектор мёртвого стрима.
 
 **Дефолты сейчас:** heartbeat 30–60 с на стрим (несинхронно), ALPN клиента

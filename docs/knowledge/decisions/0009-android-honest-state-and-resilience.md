@@ -1,9 +1,14 @@
 ---
-updated: 2026-05-09
+updated: 2026-10-26
 status: accepted
 ---
 
 # 0009 — Android honest state + TSPU-resilient reconnect
+
+> **2026-10-26:** часть решений заменена [ADR 0018](0018-rust-owns-reconnect.md):
+> лимита в 8 попыток больше нет (ретрай бесконечный), Kotlin-сторож удалён,
+> `setUnderlyingNetworks` не вызывается (система сама следует за сетью по
+> умолчанию), `RX_IDLE_TIMEOUT_SECS` = 90 с, Stale — 75 с от любого кадра.
 
 ## Context
 
