@@ -130,9 +130,11 @@ Admin-server cert для mTLS listener'а — self-signed на `10.7.0.1`, ге�
    вставляются в начало цепочек):
    - `nat POSTROUTING`: MASQUERADE (или SNAT на `exit_ip`) для tun-подсети;
    - `FORWARD -i tun`: DROP в приватные диапазоны (10/8, 172.16/12, 192.168/16,
-     100.64/10, 169.254/16), REJECT на tcp/25, дальше ACCEPT tun ⇄ wan;
-   - `INPUT -i tun`: established, icmp, порт admin API (из `[admin].listen_addr`),
-     22, 53 — остальное DROP.
+     100.64/10, 169.254/16), кроме DNAT-трафика (опубликованные docker-порты
+     сервисов на exit), REJECT на tcp/25, дальше ACCEPT tun ⇄ wan;
+   - `INPUT -i tun -d <tun-подсеть>`: established, icmp, порт admin API (из
+     `[admin].listen_addr`), 22, 53 — остальное DROP. Публичные адреса exit'а
+     из туннеля доступны так же, как из интернета (сайты на самом exit работают).
 
 Любая ошибка iptables/sysctl фатальна: сервер не стартует (systemd покажет
 причину), а не поднимается «с подключением, но без интернета».
