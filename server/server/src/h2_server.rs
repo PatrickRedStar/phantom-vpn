@@ -96,7 +96,10 @@ pub fn make_tls_config(
         }
         None => builder.with_no_client_auth().with_single_cert(certs, key)?,
     };
-    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    // h2 first: our clients offer both and always get h2. http/1.1 is there
+    // for probers — with h2 alone they got a no_application_protocol alert,
+    // which no nginx in front of a website ever sends.
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     cfg.max_early_data_size = 0;
     Ok(Arc::new(cfg))
 }
@@ -243,7 +246,11 @@ pub async fn run_h2_accept_loop(
             // answer is no, see docs/knowledge/architecture/dpi-tspu.md.
             let client_fp = if peer_certs.is_empty() {
                 tracing::info!("Unauthenticated TLS from {} → fake app-face", remote);
-                fakeapp::handle(tls_stream, remote).await;
+                if tls_stream.get_ref().1.alpn_protocol() == Some(b"h2") {
+                    fakeapp::handle(tls_stream, remote).await;
+                } else {
+                    fakeapp::handle_http1(tls_stream, remote).await;
+                }
                 return;
             } else {
                 vpn_session::cert_fingerprint(peer_certs[0].as_ref())

@@ -104,69 +104,10 @@ where
                 Some(Ok((req, mut send))) => {
                     // Answer right away; the request body is never read (a
                     // POST that never ends must not hang this loop).
-                    let path = req.uri().path().to_string();
+                    let (parts, payload) = response(req.uri().path()).into_parts();
                     drop(req);
 
-                    let (status, content_type, payload): (u16, &str, Bytes) = match path.as_str() {
-                        "/" => (
-                            200,
-                            "text/html; charset=utf-8",
-                            Bytes::from_static(INDEX_HTML.as_bytes()),
-                        ),
-                        "/favicon.ico" => (
-                            200,
-                            "image/png",
-                            Bytes::from_static(FAVICON_PNG),
-                        ),
-                        "/robots.txt" => (
-                            200,
-                            "text/plain; charset=utf-8",
-                            Bytes::from_static(ROBOTS_TXT.as_bytes()),
-                        ),
-                        "/manifest.json" => (
-                            200,
-                            "application/manifest+json",
-                            Bytes::from_static(MANIFEST_JSON.as_bytes()),
-                        ),
-                        "/api/v1/health" => (
-                            200,
-                            "application/json",
-                            Bytes::from_static(br#"{"status":"ok","version":"1.24.0"}"#),
-                        ),
-                        "/api/v1/status" => {
-                            let uptime = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            let body = format!(
-                                r#"{{"uptime":{},"region":"nl2","build":"1.24.0"}}"#,
-                                uptime
-                            );
-                            (200, "application/json", Bytes::from(body))
-                        }
-                        p if p.starts_with("/.well-known/") => (
-                            404,
-                            "text/plain; charset=utf-8",
-                            Bytes::from_static(b"Not Found\n"),
-                        ),
-                        _ => (
-                            404,
-                            "text/plain; charset=utf-8",
-                            Bytes::from_static(b"Not Found\n"),
-                        ),
-                    };
-
-                    let response = http::Response::builder()
-                        .status(status)
-                        .header("server", "nginx/1.24.0")
-                        .header("content-type", content_type)
-                        .header("content-length", payload.len().to_string())
-                        .header("cache-control", "public, max-age=3600")
-                        .header("x-request-id", format!("{:016x}", rand_u64()))
-                        .body(())
-                        .unwrap();
-
-                    let mut send = match send.send_response(response, false) {
+                    let mut send = match send.send_response(http::Response::from_parts(parts, ()), false) {
                         Ok(s) => s,
                         Err(_) => break,
                     };
@@ -181,9 +122,108 @@ where
     tracing::debug!("fakeapp connection from {} ended", remote);
 }
 
+/// The same site for a prober that did not negotiate h2 (HTTP/1.1 or no ALPN
+/// at all): a real nginx serves both protocols. hyper adds `Date` and drops
+/// the body of a HEAD response, as nginx does.
+pub async fn handle_http1<S>(stream: S, remote: SocketAddr)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let svc = hyper::service::service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
+        Ok::<_, std::convert::Infallible>(response(req.uri().path()).map(axum::body::Body::from))
+    });
+    let conn = hyper::server::conn::http1::Builder::new()
+        .title_case_headers(true)
+        .serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
+    if tokio::time::timeout(CONN_TIMEOUT, conn).await.is_err() {
+        tracing::debug!("fakeapp HTTP/1.1 connection from {} timed out", remote);
+    }
+}
+
+fn response(path: &str) -> http::Response<Bytes> {
+    let (status, content_type, payload): (u16, &str, Bytes) = match path {
+        "/" => (
+            200,
+            "text/html; charset=utf-8",
+            Bytes::from_static(INDEX_HTML.as_bytes()),
+        ),
+        "/favicon.ico" => (
+            200,
+            "image/png",
+            Bytes::from_static(FAVICON_PNG),
+        ),
+        "/robots.txt" => (
+            200,
+            "text/plain; charset=utf-8",
+            Bytes::from_static(ROBOTS_TXT.as_bytes()),
+        ),
+        "/manifest.json" => (
+            200,
+            "application/manifest+json",
+            Bytes::from_static(MANIFEST_JSON.as_bytes()),
+        ),
+        "/api/v1/health" => (
+            200,
+            "application/json",
+            Bytes::from_static(br#"{"status":"ok","version":"1.24.0"}"#),
+        ),
+        "/api/v1/status" => {
+            let uptime = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let body = format!(
+                r#"{{"uptime":{},"region":"nl2","build":"1.24.0"}}"#,
+                uptime
+            );
+            (200, "application/json", Bytes::from(body))
+        }
+        p if p.starts_with("/.well-known/") => (
+            404,
+            "text/plain; charset=utf-8",
+            Bytes::from_static(b"Not Found\n"),
+        ),
+        _ => (
+            404,
+            "text/plain; charset=utf-8",
+            Bytes::from_static(b"Not Found\n"),
+        ),
+    };
+
+    http::Response::builder()
+        .status(status)
+        .header("server", "nginx/1.24.0")
+        .header("content-type", content_type)
+        .header("content-length", payload.len().to_string())
+        .header("cache-control", "public, max-age=3600")
+        .header("x-request-id", format!("{:016x}", rand_u64()))
+        .body(payload)
+        .unwrap()
+}
+
 /// Random u64 for x-request-id header. Uses thread-local CSPRNG so the
 /// output is not predictable by DPI / active probers.
 fn rand_u64() -> u64 {
     use rand::Rng;
     rand::thread_rng().gen::<u64>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// An HTTP/1.1 prober gets the same site as over h2, with nginx's headers.
+    #[tokio::test]
+    async fn http1_probe_looks_like_nginx() {
+        let (mut probe, server) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(handle_http1(server, "127.0.0.1:1".parse().unwrap()));
+        probe.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").await.unwrap();
+        let mut resp = String::new();
+        probe.read_to_string(&mut resp).await.unwrap();
+        assert!(resp.starts_with("HTTP/1.1 200 OK\r\n"), "{resp}");
+        assert!(resp.contains("Server: nginx/1.24.0\r\n"), "{resp}");
+        assert!(resp.contains("Date: "), "{resp}");
+        assert!(resp.ends_with(INDEX_HTML), "{resp}");
+    }
 }
