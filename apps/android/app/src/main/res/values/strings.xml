@@ -238,6 +238,7 @@
     <string name="subscr_hours">%1$dh</string>
     <string name="subscr_less_hour">&lt; 1h ⚠</string>
     <string name="meta_stale">silent · %1$ds</string>
+    <string name="meta_degraded">degraded · %1$d/%2$d streams</string>
     <string name="meta_throttled">throttled · %1$d kbps</string>
     <string name="meta_reconnecting">reconnecting</string>
     <string name="meta_connecting">connecting</string>

@@ -230,7 +230,11 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     }
 
     val headerMeta = when (vpnState) {
-        is VpnState.Connected   -> "${activeProfile?.name?.take(16) ?: ""} · ${timerText}"
+        // Dead streams without throttling stay Connected (see deriveUiState):
+        // traffic flows, but the user should see that k of n are left.
+        is VpnState.Connected   -> if (statusFrame.health == com.ghoststream.vpn.service.TunnelHealth.DEGRADED)
+            stringResource(R.string.meta_degraded, statusFrame.streamsUp, statusFrame.nStreams)
+        else "${activeProfile?.name?.take(16) ?: ""} · ${timerText}"
         is VpnState.Stale       -> stringResource(R.string.meta_stale, (vpnState as VpnState.Stale).idleRxSecs)
         is VpnState.Throttled   -> stringResource(R.string.meta_throttled, (vpnState as VpnState.Throttled).currentKbps)
         is VpnState.Reconnecting -> {
