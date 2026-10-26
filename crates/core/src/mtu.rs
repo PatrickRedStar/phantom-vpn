@@ -34,6 +34,11 @@ fn clamp_mss_v4(packet: &mut [u8], max_mss: u16) -> Result<bool, MtuError> {
     if packet[9] != IP_PROTO_TCP {
         return Ok(false);
     }
+    // TCP-заголовок есть только в первом фрагменте; в остальных по этому
+    // смещению лежат данные, и «переписать MSS» значило бы испортить их.
+    if u16::from_be_bytes([packet[6], packet[7]]) & 0x1FFF != 0 {
+        return Ok(false);
+    }
     let tcp = &mut packet[ihl..];
     clamp_tcp_options(tcp, max_mss)
 }
@@ -239,6 +244,14 @@ mod tests {
         let mut pkt = make_ipv6_syn_with_ext_header(1000);
         let result = clamp_tcp_mss(&mut pkt, 1340).unwrap();
         assert!(!result);
+    }
+
+    #[test]
+    fn test_mss_clamping_skips_non_first_fragment() {
+        let mut pkt = make_syn_packet(1460);
+        pkt[7] = 0x10; // fragment offset != 0 — bytes at ihl are payload
+        assert!(!clamp_tcp_mss(&mut pkt, 1340).unwrap());
+        assert_eq!(u16::from_be_bytes([pkt[42], pkt[43]]), 1460);
     }
 
     #[test]

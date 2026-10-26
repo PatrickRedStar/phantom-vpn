@@ -7,9 +7,12 @@
 //!   мержем policy поверх `Default` (= текущие компайл-тайм `const`).
 //! - Глобал `install()/current()` даёт рантайму доступ без прокидывания через все слои.
 //!
-//! BACKWARD-COMPAT: без установленной policy `current()` возвращает дефолты, побайтово
-//! равные поведению v0.27.x. Старые клиенты игнорируют незнакомые поля (serde), новые
-//! клиенты на старом сервере получают `None` → дефолты.
+//! BACKWARD-COMPAT: без установленной policy `current()` возвращает дефолты — встроенные
+//! константы (wire.rs / h2_transport.rs). Старые клиенты игнорируют незнакомые поля
+//! (serde), новые клиенты на старом сервере получают `None` → дефолты.
+//!
+//! Статус доставки (см. ADR 0014): сервер policy клиентам не шлёт; в проде всегда
+//! действуют дефолты, `install()` вызывается только лабораторным харнессом.
 
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, RwLock};
@@ -124,8 +127,6 @@ pub struct PaddingPolicy {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HeartbeatPolicy {
     #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
     pub interval_min_secs: Option<u64>,
     #[serde(default)]
     pub interval_max_secs: Option<u64>,
@@ -196,7 +197,6 @@ pub enum ResolvedFingerprint {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedHeartbeat {
-    pub enabled: bool,
     pub interval_min_secs: u64,
     pub interval_max_secs: u64,
     pub start_jitter_min_secs: u64,
@@ -234,11 +234,11 @@ pub struct ResolvedTransportPolicy {
 }
 
 impl Default for ResolvedTransportPolicy {
-    /// Дефолты ПОБАЙТОВО = текущее поведение v0.27.x (см. wire.rs / h2_transport.rs).
+    /// Дефолты = встроенные константы (см. wire.rs / h2_transport.rs).
     fn default() -> Self {
         Self {
             fingerprint: ResolvedFingerprint::Default,
-            alpn: vec!["h2".to_string()],
+            alpn: vec!["h2".to_string(), "http/1.1".to_string()],
             tls_min: None,
             tls_max: None,
             topology: Topology::ParallelPerStream,
@@ -252,7 +252,6 @@ impl Default for ResolvedTransportPolicy {
                 pace_ms: 0,
             },
             heartbeat: ResolvedHeartbeat {
-                enabled: true,
                 interval_min_secs: HEARTBEAT_INTERVAL_MIN_SECS,
                 interval_max_secs: HEARTBEAT_INTERVAL_MAX_SECS,
                 start_jitter_min_secs: HEARTBEAT_START_JITTER_MIN_SECS,
@@ -326,9 +325,6 @@ impl ResolvedTransportPolicy {
             }
         }
         if let Some(hb) = &p.heartbeat {
-            if let Some(e) = hb.enabled {
-                r.heartbeat.enabled = e;
-            }
             if let Some(v) = hb.interval_min_secs {
                 r.heartbeat.interval_min_secs = v;
             }
@@ -359,16 +355,21 @@ impl ResolvedTransportPolicy {
         if let Some(m) = p.mtls {
             r.mtls = m;
         }
-        // Санитизация инвариантов (защита от кривого server-конфига).
-        if r.heartbeat.interval_max_secs < r.heartbeat.interval_min_secs {
-            r.heartbeat.interval_max_secs = r.heartbeat.interval_min_secs;
-        }
-        if r.heartbeat.start_jitter_max_secs < r.heartbeat.start_jitter_min_secs {
-            r.heartbeat.start_jitter_max_secs = r.heartbeat.start_jitter_min_secs;
-        }
-        if r.heartbeat.pkt_max < r.heartbeat.pkt_min {
-            r.heartbeat.pkt_max = r.heartbeat.pkt_min;
-        }
+        // Санитизация инвариантов (защита от кривого server-конфига): heartbeat
+        // не реже HEARTBEAT_INTERVAL_MAX_SECS — иначе живой стрим упрётся в
+        // детектор мёртвого (90 с); заглушка — от 20 байт (нужен байт-сентинел)
+        // и до 1200, чтобы кадр не выглядел аномально и не ломал u16-длину.
+        let hb = &mut r.heartbeat;
+        hb.interval_min_secs = hb.interval_min_secs.clamp(1, HEARTBEAT_INTERVAL_MAX_SECS);
+        hb.interval_max_secs = hb
+            .interval_max_secs
+            .clamp(hb.interval_min_secs, HEARTBEAT_INTERVAL_MAX_SECS);
+        hb.start_jitter_min_secs = hb.start_jitter_min_secs.min(HEARTBEAT_INTERVAL_MAX_SECS);
+        hb.start_jitter_max_secs = hb
+            .start_jitter_max_secs
+            .clamp(hb.start_jitter_min_secs, HEARTBEAT_INTERVAL_MAX_SECS);
+        hb.pkt_min = hb.pkt_min.clamp(20, 1200);
+        hb.pkt_max = hb.pkt_max.clamp(hb.pkt_min, 1200);
         r
     }
 }
@@ -415,11 +416,10 @@ mod tests {
         let d = ResolvedTransportPolicy::default();
         assert_eq!(d.mtu, QUIC_TUNNEL_MTU);
         assert_eq!(d.mss, QUIC_TUNNEL_MSS);
-        assert_eq!(d.alpn, vec!["h2".to_string()]);
+        assert_eq!(d.alpn, vec!["h2".to_string(), "http/1.1".to_string()]);
         assert!(d.streams.is_none());
         assert_eq!(d.topology, Topology::ParallelPerStream);
         assert!(!d.padding.enabled);
-        assert!(d.heartbeat.enabled);
         assert_eq!(d.heartbeat.interval_min_secs, HEARTBEAT_INTERVAL_MIN_SECS);
         assert!(matches!(d.fingerprint, ResolvedFingerprint::Default));
         assert_eq!(d.relay_mode, RelayMode::Passthrough);
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(r.fingerprint, ResolvedFingerprint::Named("firefox".into()));
         // Незаданное осталось дефолтом.
         assert_eq!(r.mtu, QUIC_TUNNEL_MTU);
-        assert!(r.heartbeat.enabled);
+        assert_eq!(r.heartbeat.interval_max_secs, HEARTBEAT_INTERVAL_MAX_SECS);
     }
 
     #[test]
@@ -474,6 +474,26 @@ mod tests {
         };
         let r = ResolvedTransportPolicy::from_policy(&p);
         assert!(r.heartbeat.interval_max_secs >= r.heartbeat.interval_min_secs);
+
+        // Values that used to panic the TX task (empty/oversized dummy packet,
+        // zero interval) or outlive the dead-stream detector are clamped.
+        let p = TransportPolicy {
+            heartbeat: Some(HeartbeatPolicy {
+                interval_min_secs: Some(0),
+                interval_max_secs: Some(600),
+                start_jitter_min_secs: Some(500),
+                start_jitter_max_secs: Some(1),
+                pkt_min: Some(0),
+                pkt_max: Some(100_000),
+            }),
+            ..Default::default()
+        };
+        let hb = ResolvedTransportPolicy::from_policy(&p).heartbeat;
+        assert_eq!(hb.interval_min_secs, 1);
+        assert_eq!(hb.interval_max_secs, HEARTBEAT_INTERVAL_MAX_SECS);
+        assert!(hb.start_jitter_min_secs <= hb.start_jitter_max_secs);
+        assert!(hb.start_jitter_max_secs <= HEARTBEAT_INTERVAL_MAX_SECS);
+        assert_eq!((hb.pkt_min, hb.pkt_max), (20, 1200));
     }
 
     #[test]

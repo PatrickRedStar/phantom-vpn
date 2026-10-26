@@ -22,8 +22,13 @@ pub fn make_h2_server_tls(
         for cert in ca_certs {
             roots.add(cert)?;
         }
+        // No root hints: by default the CertificateRequest lists the subject of
+        // every trusted CA, i.e. our "PhantomVPN CA" name, to anyone who opens a
+        // TLS session — a scanner fingerprint. Clients pick their cert from the
+        // profile, not from the hint list, so mTLS is unaffected.
         let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
             .allow_unauthenticated()
+            .clear_root_hint_subjects()
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build client verifier: {}", e))?;
         rustls::ServerConfig::builder()
@@ -41,7 +46,8 @@ pub fn make_h2_server_tls(
     Ok(Arc::new(tls_config))
 }
 
-/// Build a `rustls::ClientConfig` for HTTP/2 (ALPN=["h2"]).
+/// Build a `rustls::ClientConfig` (ALPN offer `["h2", "http/1.1"]`, like a
+/// browser; our server only speaks `h2` and always selects it).
 ///
 /// The server certificate is ALWAYS verified: the webpki public root store
 /// (real CAs like Let's Encrypt — production servers present LE certs) plus any
@@ -68,7 +74,7 @@ pub fn make_h2_client_tls(
             .with_no_client_auth(),
     };
 
-    tls_config.alpn_protocols = vec![b"h2".to_vec()];
+    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(Arc::new(tls_config))
 }
