@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-02
+updated: 2026-10-26
 ---
 
 # Сборка и деплой
@@ -44,24 +44,17 @@ updated: 2026-08-02
 
 ```bash
 cd <корень репозитория>
-cargo build --release -p phantom-server
+cargo build --locked --profile release-server -p phantom-server   # и phantom-relay
 cargo build --release -p phantom-client-linux
 ```
 
-Бинарники в `target/release/`. Про Linux-клиент (CLI/GUI/helper) — см. [platforms/linux.md](platforms/linux.md).
+Серверные бинари (`phantom-server`, `phantom-keygen`, `phantom-relay`) собираются профилем `release-server` (`panic = "unwind"`: паника в одном соединении не роняет процесс) и лежат в `target/release-server/`; клиенты — в `target/release/`. Про Linux-клиент (CLI/GUI/helper) — см. [platforms/linux.md](platforms/linux.md).
 
 ---
 
-## Android .so (cargo ndk, локально)
+## Android .so (cargo ndk)
 
-Rust-ядро для Android собирается локально, результат копируется в `apps/android/app/src/main/jniLibs/arm64-v8a/`. Вручную это делать не нужно — `tools/ship-android.sh` собирает `.so` + APK и ставит на устройство одной командой (только Unix-хост, см. ниже).
-
-```bash
-export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
-cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android
-cp target/aarch64-linux-android/release/libphantom_android.so \
-  apps/android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
-```
+Rust-ядро для Android собирает сам gradle: `preBuild` зависит от задачи `buildRustAndroid` (`cargo ndk ... -o app/src/main/jniLibs`). Каталог `jniLibs/` в git не хранится. Нужны `cargo-ndk`, NDK (`ANDROID_NDK_HOME` или NDK внутри SDK) и rustup-таргеты `aarch64-linux-android` (+ `armv7-linux-androideabi` для 32-битных TV). `tools/ship-android.sh` делает то же самое + ставит APK на устройство (только Unix-хост, см. ниже).
 
 ## Android APK (локально)
 
@@ -101,31 +94,49 @@ cargo build --release -p ghoststream-windows
 
 ## Развёртывание сервера
 
-Всё в этом разделе — команды **на сервере**, после `ssh vdsina`.
-
 | Что | Где (на сервере) |
 |---|---|
 | Runtime | `/opt/phantom-vpn/` |
-| Сервис | `phantom-server.service` (systemd) |
+| Сервис | `phantom-server.service` (systemd, с sandboxing) |
 | Конфиг | `/opt/phantom-vpn/config/server.toml` |
 | Keyring | `/opt/phantom-vpn/config/clients.json` |
-| Клиентские серты | `/opt/phantom-vpn/config/clients/<name>.{crt,key}` |
+| Клиентские серты | `/opt/phantom-vpn/config/clients/<name>/client.{crt,key}` |
+
+Деплой — одной командой с локальной машины (на не-Linux хосте сборка идёт на сервере):
 
 ```bash
-# Локально: собрать и залить бинарь
-cargo build --release -p phantom-server
-scp target/release/phantom-server vdsina:/tmp/phantom-server
+server/scripts/deploy.sh vdsina ~/.ssh/personal            # --dry-run третьим аргументом — только показать
+server/scripts/deploy-relay.sh vps_balancer ~/.ssh/bot      # RU relay
+```
 
-# На сервере (ssh vdsina):
-install -m 0755 /tmp/phantom-server /opt/phantom-vpn/phantom-server
-systemctl restart phantom-server.service
+`deploy.sh` собирает `--locked --profile release-server`, кладёт новые бинари рядом как `*.new`, останавливает сервис только на время замены (прежние остаются `.prev`), ждёт, пока начнёт слушаться порт `[h2]`, и **сам откатывает** бинарь и unit, если не дождался. `deploy-relay.sh` никогда не перезаписывает `relay.toml` на хосте. Детали — [platforms/server.md](platforms/server.md).
 
-# Статус и логи — тоже на сервере
+```bash
+# Статус и логи — на сервере
 systemctl status phantom-server.service
 journalctl -u phantom-server.service -n 50 -f
 ```
 
-Деплой RU relay — отдельная процедура на relay-хосте (`balancer.bikini-bottom.com`), процесс аналогичен, сервис `phantom-relay.service`. Детали — [platforms/server.md](platforms/server.md).
+### Сертификат exit: продление и контроль срока
+
+`phantom-server` читает LE-сертификат **только при старте** — certbot обновит файл, а сервер продолжит отдавать старый, и через ~90 дней все клиенты разом упадут с «таймаутом». Поэтому на vdsina в `/etc/letsencrypt/renewal/tls.nl2.bikini-bottom.com.conf`, секция `[renewalparams]`:
+
+```ini
+renew_hook = systemctl restart phantom-server
+```
+
+Рестарт рвёт сессии раз в ~60 дней, клиенты переподключаются сами. Если хук уже был настроен на хосте — ничего не менять.
+
+Ежедневная проверка того, что сервер **реально отдаёт** — [`server/scripts/check-cert.sh`](../../server/scripts/check-cert.sh) (ненулевой код и сообщение, если до истечения меньше 14 дней). Ставится на balancer: проверяется тот же `89.110.109.128:8443`, куда ходит реле.
+
+```bash
+install -m 0755 server/scripts/check-cert.sh /usr/local/bin/check-cert.sh   # на balancer
+# crontab -e: письмо на MAILTO или своя отправка алерта по ненулевому коду
+MAILTO=you@example.com
+0 9 * * * /usr/local/bin/check-cert.sh >/dev/null
+```
+
+Вывод в stderr уходит в письмо cron только при проблеме. Вместо почты можно `|| curl -s "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id=$ID -d text="phantom cert"`.
 
 ---
 
@@ -144,10 +155,10 @@ legacy и для случаев когда docker недоступен.
 ```
 docker/
   server/                  # phantom-server (NL exit)
-    Dockerfile             # rust:1.83-bookworm → debian:bookworm-slim
-    entrypoint.sh          # self-bootstrap: CA + server.toml from env
-    compose.example.yml    # network_mode: host, privileged, /dev/net/tun
-    .env.example           # SERVER_NAME, WAN_IFACE, ADMIN_TOKEN
+    Dockerfile             # rust:1-bookworm → debian:bookworm-slim
+    entrypoint.sh          # self-bootstrap: CA + server.toml from env, LE-серт обязателен
+    compose.example.yml    # network_mode: host, privileged, /dev/net/tun, /etc/letsencrypt:ro
+    .env.example           # SERVER_NAME, GHCR_OWNER, TAG, WAN_IFACE, ADMIN_TOKEN
     README.md
   relay/                   # phantom-relay (RU SNI passthrough)
     Dockerfile             # non-root UID 10001
@@ -160,14 +171,18 @@ docker/
 **Быстрый старт (свежий хост):**
 
 ```bash
+certbot certonly --standalone -d <SERVER_NAME>   # только exit: без LE-серта bootstrap падает
 git clone https://github.com/<owner>/phantom-vpn.git
 cd phantom-vpn/docker/server   # или docker/relay
 cp compose.example.yml compose.yml
 cp .env.example .env
-$EDITOR .env                   # SERVER_NAME (server) / UPSTREAM_ADDR+EXPECTED_SNI (relay)
+$EDITOR .env                   # SERVER_NAME (server) / UPSTREAM_ADDR+EXPECTED_SNI (relay), TAG
+docker login ghcr.io           # пакеты ghcr.io/patrickredstar/* приватные
 docker compose up -d
-docker compose logs -f phantom-server   # подсмотреть ADMIN_TOKEN на первом старте
+grep token config/server.toml  # ADMIN_TOKEN — в server.toml (0600), в логи не печатается
 ```
+
+Клиент всегда проверяет серт сервера (ADR 0011), поэтому exit в Docker поднимается **только с Let's Encrypt** (`/etc/letsencrypt` хоста монтируется read-only). После продления — `renew_hook = docker restart phantom-server` (см. `docker/server/README.md`).
 
 **Создать первого клиента:**
 
@@ -194,7 +209,7 @@ docker compose up -d           # entrypoint видит существующий 
 
 **Образы:**
 
-CI собирает на `git push --tag v*` через `.github/workflows/docker.yml`. Push в `ghcr.io/<repo-owner>/ghoststream-server` и `ghcr.io/<repo-owner>/ghoststream-relay`, multi-arch (linux/amd64,linux/arm64), теги `vX.Y.Z`, `X.Y`, `latest`. На новом хосте — `docker compose pull && up -d`.
+CI собирает на `git push --tag v*` через `.github/workflows/docker.yml`. Push в `ghcr.io/patrickredstar/ghoststream-server` и `ghcr.io/patrickredstar/ghoststream-relay`, multi-arch (linux/amd64,linux/arm64), теги `X.Y.Z`, `X.Y` и `latest` (только на релизных, не pre-release тегах; ручной прогон — тег по имени ветки). В `.env` держать конкретный `TAG`, не `latest`. На новом хосте — `docker compose pull && up -d`.
 
 **Когда НЕ нужен docker:**
 
@@ -261,6 +276,10 @@ tools/ship-android.sh --bump          # только локально
 tools/ship-android.sh --bump --tag    # + тег и запуск CI
 ```
 
+`--tag` = релиз в Play production, поэтому скрипт: отказывается при незакоммиченных правках (в Play уходит закоммиченное, а не то, что стоит на телефоне), перед пушем спрашивает «Проверил на устройстве? [y/N]», без локального NDK падает (CI-only сборка — только явно, `--tag --ci-only`).
+
+Перед тегом в `CHANGELOG.md` должна быть секция `## [Android X.Y.Z]` с тем же `versionName`: из неё берётся «Что нового» для Play, без неё (или если тег ≠ `vX.Y.Z` из `build.gradle.kts`) Android-джоба падает.
+
 Вручную (если ship-скрипт недоступен — например, с Windows-хоста):
 
 ```bash
@@ -281,23 +300,27 @@ adb install apps/android/app/build/outputs/apk/debug/app-debug.apk
 
 ### GitHub Actions
 
-В master два workflow: `.github/workflows/release.yml` и `.github/workflows/docker.yml`.
+В master три workflow: `ci.yml`, `release.yml` и `docker.yml`.
+
+`ci.yml` — на каждый push в master: `cargo test --locked` по `phantom-core`, `phantom-client-common`, `client-core-runtime`, `ghoststream-gui-ipc`, `phantom-relay`, `phantom-server` и `cargo audit` по `Cargo.lock`. Тег его не ждёт — смотреть, что master зелёный, до тега.
 
 `release.yml` — триггер тег `v*` или `workflow_dispatch`, собирает всё и делает GitHub Release.
 
 | Job | Runner | Артефакт |
 |-----|--------|---------|
 | `build-linux` | ubuntu-latest | `phantom-client-linux` (x86_64) |
-| `build-server` | ubuntu-latest | `phantom-server`, `phantom-keygen` |
-| `build-android` | ubuntu-latest | подписанные `.apk` + `.aab`; **по тегу AAB публикуется в Google Play, трек `production`, `status: completed`** |
+| `build-server` | ubuntu-latest | `phantom-server`, `phantom-keygen` (профиль `release-server`) |
+| `build-android` | ubuntu-latest | `testDebugUnitTest` + подписанные `.apk` + `.aab`; **по тегу AAB публикуется в Google Play, трек `production`, `status: completed`** |
 | `build-linux-gui` | ubuntu-24.04 | `ghoststream-linux-gui-x86_64` (tarball: GUI + helper) |
 | `build-macos` | macos-latest | `.dmg` (Developer ID + notarize .app и .dmg) |
-| `build-openwrt` | ubuntu-latest | matrix: mipsel / armv7 / aarch64 / x86_64 musl |
-| `release` | ubuntu-latest | GitHub Release со всеми артефактами |
+| `build-openwrt` | ubuntu-latest | matrix: `openwrt-{mipsel,armv7,aarch64,x86_64}` (musl) |
+| `release` | ubuntu-latest | GitHub Release со всем, что собралось, + установщик OpenWrt, netifd-скрипт и LuCI-файлы |
 
 ⚠️ Публикация в Play идёт **сразу в production** — тег `v*` = релиз для всех пользователей. `workflow_dispatch` ничего не публикует.
 
-`docker.yml` — по тегу `v*` собирает и пушит multi-arch образы `ghcr.io/<owner>/ghoststream-{server,relay}`.
+GitHub Release создаётся, даже если упала одна из платформ (`if: !cancelled()`): упавшую догонять через «Re-run failed jobs». Токен сборочных джоб — только на чтение (`contents: write` есть у одной `release`), сторонние actions закреплены по SHA — обновлять их сознательно, вместе с SHA.
+
+`docker.yml` — по тегу `v*` собирает и пушит multi-arch образы `ghcr.io/patrickredstar/ghoststream-{server,relay}`.
 
 Отдельного `openwrt.yml` нет — OpenWrt собирается job'ом внутри `release.yml`. `windows-ci.yml` существует пока только на ветке `feature/windows-client` (в master не влит).
 

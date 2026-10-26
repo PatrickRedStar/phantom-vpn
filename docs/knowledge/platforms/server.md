@@ -1,5 +1,5 @@
 ---
-updated: 2026-05-03
+updated: 2026-10-26
 ---
 
 # Server — phantom-server + phantom-relay
@@ -20,69 +20,76 @@ updated: 2026-05-03
 
 | Алиас | IP | Роль | DNS |
 |---|---|---|---|
-| `vdsina` | 89.110.109.128 | NL exit-нода (phantom-server + nginx frontend) | `tls.nl2.bikini-bottom.com` |
-| `vps_balancer` | 158.160.135.140 | RU relay-нода (phantom-relay за nginx) + 3x-ui панель + xray + headless phantom-client → SOCKS5 для 3x-ui outbound | `relay.bikini-bottom.com` (LE-cert), `tls.nl2.bikini-bottom.com` (passthrough SNI) |
-| — | 193.187.95.128 | Прежний RU relay (`hostkey.bikini-bottom.com`) — выводится из ротации после v0.22.x | — |
+| `vdsina` | 89.110.109.128 | NL exit-нода (phantom-server `:8443` + nginx frontend) | `tls.nl2.bikini-bottom.com` |
+| `vps_balancer` | 158.160.135.140 | **боевой RU relay** (phantom-relay `127.0.0.1:5443` за nginx) + 3x-ui панель + xray + headless phantom-client → SOCKS5 для 3x-ui outbound | `balancer.bikini-bottom.com`, `tls.nl2.bikini-bottom.com` (passthrough SNI) |
+| — | 89.169.175.55 | резервный RU relay (`0.0.0.0:443` без nginx), из тракта выведен | `relay.bikini-bottom.com` |
+| — | 193.187.95.128 | Прежний RU relay — выведен | — |
 
-SSH: алиасы в `~/.ssh/config`. Claude Code обычно запущен
-прямо на `vdsina` — сборка server/linux/android идёт локально.
+SSH: алиасы в `~/.ssh/config`. Claude Code работает на локальной машине,
+на серверы ходит по SSH; деплой — скриптами из `server/scripts/`.
 
 ## Файловая раскладка
 
 | Назначение | Путь |
 |---|---|
-| Исходники (git working tree на vdsina) | `/opt/github_projects/phantom-vpn/` |
 | Runtime | `/opt/phantom-vpn/` |
-| Бинарь | `/opt/phantom-vpn/phantom-server` |
+| Бинарь | `/opt/phantom-vpn/phantom-server` (прежний — `phantom-server.prev`) |
 | Keygen CLI | `/opt/phantom-vpn/phantom-keygen` |
 | Конфиг | `/opt/phantom-vpn/config/server.toml` |
 | Keyring (fingerprint → client) | `/opt/phantom-vpn/config/clients.json` |
 | CA cert + key | `/opt/phantom-vpn/config/ca.crt`, `ca.key` |
-| Per-client | `/opt/phantom-vpn/config/clients/<name>.crt`, `<name>.key` |
+| Per-client | `/opt/phantom-vpn/config/clients/<name>/client.crt`, `client.key` |
 | Admin mTLS server cert (auto-gen) | `/opt/phantom-vpn/config/admin-server.crt`, `.key` |
 | systemd unit | `/etc/systemd/system/phantom-server.service` |
 
 ## Сборка + деплой
 
-Сборка локально на vdsina, деплой — тем же `deploy.sh` или руками:
+С локальной машины, одной командой (на не-Linux хосте сборка идёт на сервере):
 
 ```bash
-cd /opt/github_projects/phantom-vpn
-cargo build --release -p phantom-server --bin phantom-server --bin phantom-keygen
-install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
-install -m 0755 target/release/phantom-keygen /opt/phantom-vpn/phantom-keygen
-systemctl restart phantom-server.service
+server/scripts/deploy.sh vdsina ~/.ssh/personal           # --dry-run третьим аргументом
 ```
 
-One-click deploy-скрипт — `server/scripts/deploy.sh` (умеет удалённо, через SSH,
-fallback на remote-build при не-Linux источнике).
+Что делает `deploy.sh`:
+- собирает `cargo build --locked --profile release-server` (`panic = "unwind"`) — локально на Linux
+  или на сервере из того же набора файлов, что `docker/server/Dockerfile`;
+- кладёт новые бинари рядом как `*.new`, сервис работает до последнего шага;
+- `systemctl restart` сразу после атомарного `mv`, прежние бинари остаются `.prev`;
+- ждёт до 15 с, пока сервис active и слушается порт `[h2].listen_addr`; если нет —
+  **откатывает** бинари и unit на `.prev` и выходит с ошибкой;
+- unit с sandboxing: `NoNewPrivileges`, `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+  CAP_NET_BIND_SERVICE`, `ProtectSystem=strict` (писать можно только в `config/` — keyring,
+  admin-server.*, clients/ — и `/run` под `xtables.lock`), `ProtectHome`, `PrivateTmp`.
+  Без `PrivateDevices`/`ProtectKernelTunables`: сервер сам открывает `/dev/net/tun` и
+  пишет `ip_forward`. Если сервер пишет keyring вне `config/` — расширить `ReadWritePaths`.
+
+Конфиг на хосте перезаписывается, только если локально есть `server/config/server.toml`;
+иначе на чистый хост кладётся `server.example.toml` как `server.toml` (существующий не трогается).
+
+Основной путь развёртывания нового exit — Docker ([ADR 0010](../decisions/0010-docker-deploy.md), `docker/server/`).
 
 ## Конфиг сервера
 
-Пример — `server/config/server.example.toml`. Ключевые поля:
+Пример — [server/config/server.example.toml](../../../server/config/server.example.toml). Ключевые поля:
 
 ```toml
 [network]
-listen_addr = "0.0.0.0:443"   # или :8443 если впереди nginx
+listen_addr = "0.0.0.0:8443"
 tun_name    = "tun1"          # не tun0 чтобы не конфликтовать с wg0
 tun_addr    = "10.7.0.1/24"
 tun_mtu     = 1350
 wan_iface   = "eth0"          # для NAT/iptables; закомментировать чтобы отключить
+public_addr = "<реле или exit>:<порт>"     # host:port в ghs:// ссылках
+server_name = "tls.nl2.bikini-bottom.com"  # SNI в ghs:// ссылках
 
-[keys]
-server_private_key = "..."    # генерится phantom-keygen
-server_public_key  = "..."
+[h2]
+listen_addr = "0.0.0.0:8443"  # транспорт; без [h2] сервер слушает :9443
 
-[timeouts]
-idle_timeout_secs = 300
-hard_timeout_secs = 86400
-
-[quic]                         # legacy name секции, транспорт теперь H2/TLS
-cert_subjects = ["tls.nl2.bikini-bottom.com"]
-# cert_path / key_path для LE
-# ca_cert_path = "/opt/phantom-vpn/config/ca.crt"
-# allowed_clients_path = "/opt/phantom-vpn/config/clients.json"
-idle_timeout_secs = 30
+[tls]                         # старое имя секции [quic] тоже понимается
+cert_path = "/etc/letsencrypt/live/tls.nl2.bikini-bottom.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/tls.nl2.bikini-bottom.com/privkey.pem"
+ca_cert_path         = "/opt/phantom-vpn/config/ca.crt"        # CA клиентских сертов (mTLS)
+allowed_clients_path = "/opt/phantom-vpn/config/clients.json"  # allowlist, SIGHUP — перечитать
 
 [admin]
 listen_addr     = "10.7.0.1:8080"     # mTLS listener, только через VPN
@@ -90,6 +97,17 @@ token           = "..."                # break-glass bearer-token для бот�
 bot_listen_addr = "127.0.0.1:8081"     # loopback HTTP для Telegram-бота
 # ca_cert_path / ca_key_path — для выпуска клиентских сертов через /api/clients
 ```
+
+`keys.py` после каждой записи `clients.json` пишет файл атомарно и сам шлёт
+`pkill -HUP -x phantom-server` — удаление/добавление клиента применяется сразу.
+
+## Сертификат exit
+
+Сервер читает LE-серт только при старте. На vdsina в
+`/etc/letsencrypt/renewal/tls.nl2.bikini-bottom.com.conf` (`[renewalparams]`) должен быть
+`renew_hook = systemctl restart phantom-server`, а с balancer раз в сутки по cron —
+[`server/scripts/check-cert.sh`](../../../server/scripts/check-cert.sh) (срок серта, который
+`:8443` реально отдаёт; ненулевой код за 14 дней до истечения). Подробно — [build.md](../build.md#сертификат-exit-продление-и-контроль-срока).
 
 Admin-server cert для mTLS listener'а — self-signed на `10.7.0.1`, генерится при
 первом старте. Клиенты пиннят SHA-256 (TOFU, см. `VpnProfile.cachedAdminServerCertFp`
@@ -119,7 +137,7 @@ Admin-server cert для mTLS listener'а — self-signed на `10.7.0.1`, ге�
 
 ## Relay — SNI Passthrough (RU, v0.17.0+)
 
-`phantom-relay` на RU-хопе (`relay.bikini-bottom.com`, `158.160.135.140` —
+`phantom-relay` на RU-хопе (`balancer.bikini-bottom.com`, `158.160.135.140` —
 vps_balancer) **не терминирует TLS**. Псевдокод логики:
 
 ```rust
@@ -165,13 +183,24 @@ stream {
 }
 ```
 
-Деплой: `bash server/scripts/deploy-relay.sh vps_balancer ~/.ssh/<key>` —
-remote-build (whitelist rsync только `server/relay/` + workspace root files,
-не workspace member, см. `--manifest-path` в скрипте). Конфиг:
-[server/relay/relay.example.toml](../../../server/relay/relay.example.toml).
+Деплой: `server/scripts/deploy-relay.sh vps_balancer ~/.ssh/<key>` — сборка
+`--locked --profile release-server` (на не-Linux хосте — на самом реле, из того же
+набора файлов, что `docker/relay/Dockerfile`), новый бинарь кладётся как `.new`,
+реле останавливается только на `mv` + restart.
+
+**`relay.toml` на хосте деплой не перезаписывает никогда**: у balancer
+`127.0.0.1:5443` за nginx, у .55 — `0.0.0.0:443`, общий файл уронил бы боевое реле.
+На чистый хост кладётся [server/relay/relay.example.toml](../../../server/relay/relay.example.toml)
+как `relay.toml` — отредактировать и `systemctl restart phantom-relay`.
+`server/relay/relay.toml` в репо — конфиг .55, на другие хосты не льётся.
 Cert/key в TOML опциональны — если nginx уже фильтрует SNI, fallback в relay
 никогда не сработает; оставляем для прямой доступности (`:443` бывших
 standalone-хостов).
+
+Unit реле — без `--verbose`, логи в своём journald-namespace (`LogNamespace=phantom-relay`,
+`/etc/systemd/journald@phantom-relay.conf` с `MaxRetentionSec=1day`): в них адреса
+клиентов, а общий журнал хоста (xray/3x-ui на balancer) не трогаем. Нужен systemd ≥ 245.
+Смотреть: `journalctl --namespace=phantom-relay -f`.
 
 ### Headless phantom-client + microsocks (для 3x-ui SOCKS5 outbound)
 
@@ -231,7 +260,7 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8081/api/status
 # RU relay (vps_balancer)
 ssh vps_balancer
 sudo systemctl status phantom-relay phantom-client phantom-proxy
-sudo journalctl -u phantom-relay -f                       # passthrough events
+sudo journalctl --namespace=phantom-relay -f              # passthrough events (хранятся 1 сутки)
 sudo ss -tnp | grep ':5443\|89.110.109.128:443'          # active tunnels
 
 # Sanity check that nginx SNI routing didn't break 3x-ui:
@@ -260,31 +289,22 @@ ssh vps_balancer "curl -s -x socks5h://127.0.0.1:10808 https://ifconfig.me"
 
 ## Релизный процесс
 
-Сервер не тегается отдельно — релизится вместе с клиентом через тег `v*`:
+Сервер не тегается отдельно — релизится вместе с клиентом через тег `v*`
+(бинари `phantom-server`/`phantom-keygen` в GitHub Release, образы в ghcr.io).
+На vdsina выкатывается `server/scripts/deploy.sh` (см. «Сборка + деплой» выше):
+health-check по порту `[h2]` и автоматический откат встроены.
 
 ```bash
-# Сборка + деплой на vdsina (локально на vdsina'е)
-cd /opt/github_projects/phantom-vpn
-cargo build --release -p phantom-server --bin phantom-server --bin phantom-keygen
-install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
-install -m 0755 target/release/phantom-keygen /opt/phantom-vpn/phantom-keygen
-systemctl restart phantom-server.service
-
-# Проверить что поднялось
+# Проверить что поднялось (на сервере)
 systemctl is-active phantom-server.service
 journalctl -u phantom-server.service -n 30 --no-pager
 ```
-
-Deploy-скрипт `server/scripts/deploy.sh` делает то же самое + рестарт + health-check.
-Конфиг синхронизируется только если локально есть `config/server.toml`, иначе
-заливается `server.example.toml` как шаблон (без перезаписи существующего
-`config/server.toml` на сервере).
 
 ## Sources
 
 - **Бинари:** [server/server/src/](../../../server/server/src/), [server/relay/src/](../../../server/relay/src/)
 - **Конфиг:** [server/config/server.example.toml](../../../server/config/server.example.toml), [server/relay/relay.example.toml](../../../server/relay/relay.example.toml)
-- **Deploy:** [server/scripts/deploy.sh](../../../server/scripts/deploy.sh) (server), [server/scripts/deploy-relay.sh](../../../server/scripts/deploy-relay.sh) (relay), [setup-server.sh](../../../server/scripts/setup-server.sh)
+- **Deploy:** [server/scripts/deploy.sh](../../../server/scripts/deploy.sh) (server), [server/scripts/deploy-relay.sh](../../../server/scripts/deploy-relay.sh) (relay), [server/scripts/check-cert.sh](../../../server/scripts/check-cert.sh) (срок серта), Docker — [docker/](../../../docker/) ([ADR 0010](../decisions/0010-docker-deploy.md))
 - **Admin API детали:** [architecture/admin-api.md](../architecture/admin-api.md)
 - **Transport / SNI relay:** [architecture/transport.md](../architecture/transport.md)
 - **Sessions / passive DNS:** [architecture/sessions.md](../architecture/sessions.md)
