@@ -1,6 +1,6 @@
 # phantom-relay (Docker)
 
-RU SNI-passthrough узел. Слушает :443, peek'ает SNI, форвардит к NL exit.
+RU SNI-passthrough узел. Слушает :443, читает SNI из ClientHello, форвардит к NL exit.
 
 ## Быстрый старт
 
@@ -9,6 +9,9 @@ cd ghoststream/docker/relay
 cp compose.example.yml compose.yml
 cp .env.example .env
 $EDITOR .env                           # UPSTREAM_ADDR + EXPECTED_SNI
+mkdir -p config && cp -L /etc/letsencrypt/live/<имя реле>/{fullchain,privkey}.pem config/
+sudo chown -R 10001 config                # контейнер работает от UID 10001
+docker login ghcr.io                      # пакеты приватные: логин GitHub + токен с read:packages
 docker compose up -d
 ```
 
@@ -16,13 +19,15 @@ docker compose up -d
 
 | Переменная | Что |
 |---|---|
-| `UPSTREAM_ADDR` | NL exit `host:port`, куда форвардить совпадающий SNI |
-| `EXPECTED_SNI` | Имя в ClientHello клиентов. Должно равняться SERVER_NAME у сервера |
-| `FALLBACK_CERT/KEY` | Опционально: LE cert для fallback-HTML, если кто-то постучится без правильного SNI |
+| `UPSTREAM_ADDR` | NL exit `host:port`, куда форвардить совпадающий SNI. Порт `:8443` — `:443` exit'а из РФ фильтруется |
+| `EXPECTED_SNI` | Имя в ClientHello клиентов. Должно равняться SERVER_NAME у сервера (имя exit'а, не реле) — иначе все клиенты падают с `BadCertificate` |
+| `FALLBACK_CERT/KEY` | Обязательно: LE cert собственного имени реле. Проб с чужим SNI получает ответ как от обычного nginx (404), а не мгновенный обрыв, похожий на блок |
 
 ## State
 
-Только `relay.toml` в `./config/`. Если есть LE cert — клади туда же (`/config/fullchain.pem`) и пропиши пути в .env как `/config/fullchain.pem`.
+`relay.toml` и LE cert/key в `./config/`. Серт перечитывается на каждом fallback-соединении: после продления достаточно скопировать свежие файлы в `./config/` (certbot deploy-hook), рестарт не нужен и живые стримы не рвутся.
+
+Режим без fallback-серта (drop) — только за nginx stream (`ssl_preread`), когда порт реле наружу не опубликован: положи в `./config/relay.toml` свой конфиг без `cert_path`/`key_path`, bootstrap его не тронет.
 
 ## Управление
 

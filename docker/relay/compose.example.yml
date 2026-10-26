@@ -1,6 +1,6 @@
 services:
   phantom-relay:
-    image: ghcr.io/${GHCR_OWNER:-ghoststream}/ghoststream-relay:${TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-patrickredstar}/ghoststream-relay:${TAG:-latest}
     # build:
     #   context: ../..
     #   dockerfile: docker/relay/Dockerfile
@@ -12,6 +12,13 @@ services:
     # host-порт :443 проброшен на :5443 внутри.
     ports:
       - "443:5443/tcp"
+
+    # Каждый passthrough держит 2 fd; реле само ограничивает себя 8192
+    # соединениями, дефолтные 1024 fd кончились бы уже на ~500.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
     volumes:
       - ./config:/config
