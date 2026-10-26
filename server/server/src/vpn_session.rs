@@ -71,9 +71,6 @@ pub struct VpnSession {
     /// Set by `close()`. RX loops check it per frame and exit, so a revoked
     /// or evicted client can't keep pushing uplink into the TUN.
     pub closed:        AtomicBool,
-    /// Peer IP of the most recent stream attach (one link on two devices shows
-    /// up as streams of one cert alternating between IPs).
-    pub last_peer:     std::sync::Mutex<Option<IpAddr>>,
     /// Last received frame (`mono_secs`).
     pub last_seen:     AtomicU64,
     pub bytes_rx:      AtomicU64,
@@ -120,7 +117,6 @@ impl VpnSession {
             tun_pkt_txs: std::sync::Mutex::new(tun_pkt_txs_wrapped),
             close_tx: std::sync::Mutex::new(Some(close_tx)),
             closed: AtomicBool::new(false),
-            last_peer: std::sync::Mutex::new(None),
             last_seen: AtomicU64::new(now),
             bytes_rx: AtomicU64::new(0),
             bytes_tx: AtomicU64::new(0),

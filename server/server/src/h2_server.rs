@@ -49,9 +49,11 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(150);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Per-stream heartbeat interval, drawn independently per stream (never in
 /// sync across streams — that would be a DPI tell). Must stay well below the
-/// client's 75 s "stale" threshold.
+/// client's 75 s "stale" threshold. Capped at 40 s while v0.24–v0.26 clients
+/// are around: they drop a stream after 45 s without a frame (raise to 60 s
+/// once they are gone).
 const HEARTBEAT_MIN_SECS: u64 = 30;
-const HEARTBEAT_MAX_SECS: u64 = 60;
+const HEARTBEAT_MAX_SECS: u64 = 40;
 /// The first frames of every stream are padded to a random size so the
 /// stream start doesn't mirror IP packet sizes. Receivers ignore everything
 /// after the batch terminator, so the wire format is unchanged.
@@ -319,8 +321,8 @@ pub async fn run_h2_accept_loop(
             if let Some(ref old) = stale_session {
                 let need_wider   = client_max != old.effective_n;
                 let idx_out      = stream_idx >= old.effective_n;
-                let dead_batches = old.all_streams_down()
-                    && old.tun_pkt_txs.lock().map(|g| g.iter().all(|s| s.is_none())).unwrap_or(true);
+                let dead_batches = old.is_closed() || (old.all_streams_down()
+                    && old.tun_pkt_txs.lock().map(|g| g.iter().all(|s| s.is_none())).unwrap_or(true));
                 if need_wider || idx_out || dead_batches {
                     tracing::warn!(
                         "Evicting stale session fp={}… (old_n={}, new_n={}, idx={}, dead={})",
@@ -389,17 +391,6 @@ pub async fn run_h2_accept_loop(
                     }
                 }
             };
-
-            // One ghs:// link on two devices: their streams keep evicting each
-            // other's slots. Worth a log line (a network switch also trips it once).
-            let had_streams = !session.all_streams_down();
-            let prev_peer = session.last_peer.lock().ok().and_then(|mut p| p.replace(remote.ip()));
-            if had_streams && prev_peer.is_some_and(|p| p != remote.ip()) {
-                tracing::warn!(
-                    "Streams of one cert from different IPs: {} and {} (fp={}…) — same link on two devices?",
-                    prev_peer.unwrap(), remote.ip(), &client_fp[..16]
-                );
-            }
 
             // ─── Per-stream frame channel, attach into slot[stream_idx] ─────
             //
@@ -495,6 +486,13 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
     remote: SocketAddr,
     stream_idx: usize,
 ) -> anyhow::Result<()> {
+    // Attached to a session that was closed (evicted, reaped) right after we
+    // looked it up: registering its IP would close the client's fresh
+    // replacement session. Drop this stream; the client reconnects into the
+    // new one.
+    if session.is_closed() {
+        return Ok(());
+    }
     if let Some(ip) = tun_ip {
         register_ip(&sessions, &session, ip, remote, stream_idx);
     }
@@ -659,7 +657,8 @@ fn pad_start(frame: Bytes, left: &mut u32) -> Bytes {
 
 /// TLS write loop: drain Bytes from channel → write to TLS stream.
 /// Emits a dummy heartbeat frame if no real traffic has flowed for a random
-/// 30–60 s — keeps NAT state and the client's liveness detector fed.
+/// HEARTBEAT_MIN_SECS..=HEARTBEAT_MAX_SECS — keeps NAT state and the client's
+/// liveness detector fed.
 async fn tls_write_loop<W: AsyncWriteExt + Unpin>(
     mut frame_rx: mpsc::Receiver<Bytes>,
     writer: &mut W,
