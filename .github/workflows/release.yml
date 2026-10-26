@@ -152,16 +152,15 @@ jobs:
           import os, re, pathlib, sys
           gradle = pathlib.Path("apps/android/app/build.gradle.kts").read_text(encoding="utf-8")
           version = re.search(r'versionName = "([^"]+)"', gradle).group(1)
-          if os.environ["GITHUB_REF"].startswith("refs/tags/"):
-              tag = os.environ["GITHUB_REF_NAME"]
-              if tag != "v" + version:
-                  sys.exit(f"tag {tag} != versionName v{version} в build.gradle.kts")
+          on_tag = os.environ["GITHUB_REF"].startswith("refs/tags/")
+          if on_tag and os.environ["GITHUB_REF_NAME"] != "v" + version:
+              sys.exit(f"tag {os.environ['GITHUB_REF_NAME']} != versionName v{version} в build.gradle.kts")
           text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
           m = re.search(r"^## \[Android " + re.escape(version) + r"\].*?\n(.*?)(?=^## \[|\Z)",
                         text, re.S | re.M)
-          if not m:
+          if not m and on_tag:
               sys.exit(f"в CHANGELOG.md нет секции '## [Android {version}]'")
-          body = m.group(1)
+          body = m.group(1) if m else ""
           lines = []
           for raw in body.splitlines():
               s = raw.strip()
