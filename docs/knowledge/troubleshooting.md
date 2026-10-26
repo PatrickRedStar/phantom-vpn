@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-02
+updated: 2026-10-26
 ---
 
 # Troubleshooting
@@ -17,8 +17,24 @@ updated: 2026-08-02
 | `adminUrl`/`adminToken` не сохраняются в профиле | Исправлено в v0.8.7: `ProfilesStore` теперь сериализует оба поля |
 | `adb install` fails signature mismatch | `adb uninstall com.ghoststream.vpn` перед install (нужно при смене подписи или очистке данных) |
 | Android: `versionCode` не совпадает | Обновить `apps/android/app/build.gradle.kts` перед тегом — таблица в [build.md](build.md) |
-| Подписка не отображается в UI | Требует `adminUrl` + `adminToken` в профиле (нужна строка подключения v0.7+) |
+| Срок подписки не отображается в UI | Берётся из `/api/me` после подключения (поля `expires_at`, `enabled`). Сервер старше v0.29.0 их не отдаёт — обновить сервер |
 | MCP `gitnexus_*` tools missing | См. `~/.claude/projects/.../memory/project_mcp_setup.md` — чаще всего `npx` вместо прямого биннаря → timeout. Установить глобально: `npm install -g gitnexus@latest` |
+
+---
+
+## Ошибки клиента
+
+Ядро переподключается само и бесконечно; ошибку (`state=error`) показывает
+только когда ретрай не поможет ([ADR 0018](decisions/0018-rust-owns-reconnect.md)).
+
+| Что видит пользователь | Причина | Что делать |
+|---|---|---|
+| **«Доступ отозван»** | Сервер отклонил клиентский серт в рукопожатии (алерт `certificate_revoked`): клиент выключен, удалён или его нет в `clients.json`. Клиент не переподключается | Проверить клиента в админке или боте (`enabled`, `expires_at`). Удалённому — выпустить новую строку подключения. После правки — нажать Connect |
+| **«Срок действия доступа истёк»** | Алерт `certificate_expired` | Продлить подписку в админке или боте, затем Connect |
+| **«Сертификат сервера недействителен на текущую дату — проверьте дату и время на устройстве»** | Серт exit'а «просрочен» или «ещё не действует» с точки зрения часов устройства. Почти всегда — сбитые часы | Включить автоматические дату и время. Если часы верные — истёк LE-серт exit'а: `server/scripts/check-cert.sh` с balancer, `renew_hook` на vdsina ([build.md](build.md#сертификат-exit-продление-и-контроль-срока)) |
+| **«Нет связи»** (Android, уведомление через 25 с) | Ядро не достучалось до сервера. TUN держится как kill switch — трафик заблокирован, ретраи идут сами | 1) «Отключить» и проверить, есть ли интернет без VPN. 2) Wi-Fi с входом — подсказка «Wi-Fi требует входа», войти и переподключиться. 3) Реле: `journalctl --namespace=phantom-relay -f` на balancer. 4) Exit: `check-cert.sh` и `nc -vz 89.110.109.128 8443` с balancer. Когда путь починится, туннель поднимется сам |
+| Подключено, но имена не резолвятся при строгом Private DNS (Android) | До v0.29.0 туннель объявлял `::/0` без IPv6-адреса, и DoT по IPv6 зависал | В v0.29.0 исправлено: IPv6 в туннеле не объявляется, DNS идёт по IPv4. На старой версии — обновить приложение |
+| «Деградация: k/n стримов» (Android), «Деградация: живы k из n потоков» (iOS) | Часть стримов умерла, ядро переоткрывает их по одному (1–10 с) | Ждать. Если висит минутами — в логах `stream.retry` / `stream.open_failed`, затем реле |
 
 ---
 
@@ -34,16 +50,20 @@ journalctl -u phantom-server -n 50 -f
 # Текущий keyring / клиенты
 cat /opt/phantom-vpn/config/clients.json
 
-# Admin API из VPN-туннеля (loopback listener, plain HTTP + Bearer token)
-curl -H "Authorization: Bearer <token>" http://10.7.0.1:8080/api/status
-curl -H "Authorization: Bearer <token>" http://10.7.0.1:8080/api/clients
+# Admin API на самом сервере: loopback-listener, plain HTTP + Bearer
+# (Bearer принимается только с 127.0.0.1; 10.7.0.1:8080 — только mTLS-серт клиента)
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8081/api/status
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8081/api/clients
 
 # Боевой RU relay — отдельный хост (SSH-алиас vps_balancer, порт 9083)
 ssh vps_balancer
 
 # На RU relay — состояние phantom-relay (тоже по SSH, не локально)
 systemctl status phantom-relay
-journalctl -u phantom-relay -n 50 -f
+journalctl --namespace=phantom-relay -n 50 -f   # свой namespace, хранится ≤2 суток
+
+# Срок серта, который exit реально отдаёт (с balancer)
+server/scripts/check-cert.sh
 ```
 
 Актуальные хосты/алиасы — таблица «Хосты» в [CLAUDE.md](../../CLAUDE.md).
@@ -60,9 +80,9 @@ journalctl -u phantom-relay -n 50 -f
 # Все логи GhostStream VpnService
 adb logcat -s GhostStreamVpn
 
-# Rust-логи идут через JNI в `nativeGetLogs(sinceSeq)` → LogsScreen.
+# Rust-логи приходят push'ем через PhantomListener.onLogFrame → LogsScreen.
 # Уровни: TRACE/DEBUG/INFO/WARN/ERROR, иерархические (показываем уровень и выше).
-# Buffer: Rust кольцевой, 10 MB, `nativeSetLogLevel("trace"|"debug"|"info")`.
+# Подробный уровень ядра — только пока открыт журнал; Log.d — только в DEBUG-сборке.
 ```
 
 Debug share в приложении (`SettingsViewModel.shareDebugReport`) собирает: версия + git tag, Android OS/модель, профиль без ключей, VPN state, конфиг, последние 500 строк Rust-логов. Файл в `cache/debug/ghoststream-debug.txt` через FileProvider + `ACTION_SEND`.
@@ -118,5 +138,5 @@ NSLog/os_log для Swift, Rust-логи пробрасываются через
 - **Регрессия производительности** → ищи похожий коммит в [history/timeline.md](history/timeline.md) (например, `5a72d6e` — revert pipeline collapse).
 - **Странное поведение handshake / TLS** → [architecture/handshake.md](architecture/handshake.md) + [architecture/crypto.md](architecture/crypto.md).
 - **Stream fell apart** → [architecture/sessions.md](architecture/sessions.md) (attach/detach logic).
-- **DPI блокировка** → [architecture/transport.md](architecture/transport.md) (SNI passthrough, mimicry warmup).
+- **DPI блокировка** → [architecture/dpi-tspu.md](architecture/dpi-tspu.md), [architecture/transport.md](architecture/transport.md) (SNI passthrough, паддинг первых кадров).
 - **Инцидент стоил >2ч** → завести запись в [incidents/YYYY-MM-DD-<slug>.md](incidents/).
