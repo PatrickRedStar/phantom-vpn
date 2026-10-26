@@ -116,12 +116,7 @@ public final class AdminViewModel {
 
             // TOFU persistence — only after a successful handshake.
             var updated = profilesStore.profiles.first(where: { $0.id == profile.id }) ?? profile
-            updated.cachedIsAdmin = selfInfo.isAdmin
-            if let match = fetchedClients.first(where: { AdminGateway.sameTunIP($0.tunAddr, profile.tunAddr) })
-                ?? fetchedClients.first(where: { $0.name == selfInfo.name }) {
-                updated.cachedExpiresAt = match.expiresAt
-                updated.cachedEnabled = match.enabled
-            }
+            selfInfo.apply(to: &updated)
             if let fp = client.lastServerCertFp {
                 updated.cachedAdminServerCertFp = fp
             }

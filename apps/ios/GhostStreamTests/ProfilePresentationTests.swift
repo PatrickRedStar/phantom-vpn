@@ -45,12 +45,6 @@ final class ProfilePresentationTests: XCTestCase {
     }
 
     @MainActor
-    func testTunMatchingIgnoresPrefixLength() {
-        XCTAssertTrue(ProfileEntitlementRefresher.sameTunIP("10.7.0.2/24", "10.7.0.2"))
-        XCTAssertFalse(ProfileEntitlementRefresher.sameTunIP("10.7.0.3/24", "10.7.0.2"))
-    }
-
-    @MainActor
     func testPerpetualSubscriptionTextRequiresFetchedProfileState() {
         XCTAssertNil(ProfileEntitlementRefresher.subscriptionText(for: VpnProfile()))
 
