@@ -1,9 +1,9 @@
 package com.ghoststream.vpn.data
 
-import android.util.Base64
 import java.io.File
 import java.net.URLDecoder
 import java.net.URLEncoder
+import java.util.Base64
 
 object ConnStringParser {
 
@@ -27,13 +27,9 @@ object ConnStringParser {
 
         val atIdx = rest.indexOf('@')
         require(atIdx > 0) { "Malformed ghs:// URL: missing '@'" }
-        // v0.27.0: Android `Base64.URL_SAFE` lenient — silently ignores embedded
-        // whitespace and realigns subsequent bytes, corrupting the inner PEM
-        // body without raising any error at the userinfo level. Surfaces later
-        // as `InvalidTrailingPadding` from rustls-pemfile when it tries to
-        // decode the cert-block base64. Strip everything that isn't valid
-        // base64url BEFORE the decode so a stray newline/space from a copy-paste
-        // mishap can't corrupt the cert.
+        // v0.27.0: strip everything that isn't base64url BEFORE the decode so a
+        // stray newline/space from a copy-paste mishap can't corrupt the cert.
+        // Same filter as the Rust parser (client-common::parse_conn_string).
         val userinfo = rest.substring(0, atIdx).filter { c ->
             c == '-' || c == '_' || c == '=' || c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9'
         }
@@ -54,8 +50,9 @@ object ConnStringParser {
             "conn_string userinfo too large (${userinfo.length} > 16384)"
         }
 
-        val padded = userinfo + "=".repeat((4 - userinfo.length % 4) % 4)
-        val pemBytes = Base64.decode(padded, Base64.URL_SAFE or Base64.NO_WRAP)
+        // Padding is optional, like the Rust side (DecodePaddingMode::Indifferent):
+        // trailing '=' are dropped, one in the middle is an error.
+        val pemBytes = Base64.getUrlDecoder().decode(userinfo.trimEnd('='))
         val pemStr = String(pemBytes, Charsets.UTF_8)
 
         val begins = Regex("-----BEGIN").findAll(pemStr).map { it.range.first }.toList()
@@ -103,10 +100,8 @@ object ConnStringParser {
         val cert = File(profile.certPath).readText().trimEnd()
         val key = File(profile.keyPath).readText().trim()
         val pem = "$cert\n$key"
-        val userinfo = Base64.encodeToString(
-            pem.toByteArray(Charsets.UTF_8),
-            Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING,
-        )
+        val userinfo = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(pem.toByteArray(Charsets.UTF_8))
         val sni = URLEncoder.encode(profile.serverName, "UTF-8")
         val tun = URLEncoder.encode(profile.tunAddr, "UTF-8")
         // Server TLS cert is always verified by the Rust core (webpki); there
