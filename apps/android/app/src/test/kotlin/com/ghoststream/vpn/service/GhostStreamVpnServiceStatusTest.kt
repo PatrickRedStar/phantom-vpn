@@ -1,5 +1,6 @@
 package com.ghoststream.vpn.service
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,5 +51,31 @@ class GhostStreamVpnServiceStatusTest {
         val frame = StatusFrameData(state = "reconnecting")
 
         assertFalse(shouldPromoteStatusFrameToConnected(VpnState.Connecting, frame))
+    }
+
+    @Test
+    fun staleReconnectCounterDoesNotHideError() {
+        val frame = StatusFrameData(state = "reconnecting", reconnectAttempt = 3)
+
+        assertEquals(VpnState.Error("доступ отозван"), deriveUiState(VpnState.Error("доступ отозван"), frame))
+    }
+
+    @Test
+    fun deadStreamsAloneAreNotThrottled() {
+        val connected = VpnState.Connected(serverName = "x")
+        val frame = StatusFrameData(state = "connected", health = TunnelHealth.DEGRADED, streamsUp = 5)
+
+        assertEquals(connected, deriveUiState(connected, frame))
+    }
+
+    @Test
+    fun throttledBandwidthIsThrottled() {
+        val frame = StatusFrameData(
+            state = "connected",
+            health = TunnelHealth.DEGRADED,
+            bandwidthClass = BandwidthClass.THROTTLED,
+        )
+
+        assertTrue(deriveUiState(VpnState.Connected(serverName = "x"), frame) is VpnState.Throttled)
     }
 }

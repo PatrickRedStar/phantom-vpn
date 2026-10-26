@@ -25,8 +25,8 @@ sealed class VpnState {
     ) : VpnState()
     /**
      * Tunnel reports `Connected` lifecycle but `health = Stale` from the
-     * runtime — no RX for > 18 s. About to reconnect via RX_IDLE_TIMEOUT (45 s).
-     * v0.24.0.
+     * runtime — nothing received from the server (heartbeats included) for
+     * longer than the runtime's stale threshold. v0.24.0.
      */
     data class Stale(
         val since: Instant = Instant.now(),
@@ -284,6 +284,10 @@ object VpnStateManager {
         StatusFrameData.fromJson(json)?.let { _statusFrame.value = it }
     }
 
+    fun pushStatusFrame(frame: StatusFrameData) {
+        _statusFrame.value = frame
+    }
+
     fun pushLogFrame(json: String) {
         LogFrameData.fromJson(json)?.let { _logFrames.tryEmit(it) }
     }
@@ -299,16 +303,19 @@ object VpnStateManager {
  * - Disconnected / Connecting / Disconnecting / Error: pass-through, no
  *   honesty applied — lifecycle is authoritative for these.
  * - Connected: consult `statusFrame.health` and downgrade if needed.
+ *   DEGRADED becomes Throttled only when the bandwidth really is throttled;
+ *   dead streams alone keep Connected (the k/n is in the frame).
  *
  * Reconnect signal: when the status frame ships a `reconnectAttempt`,
- * report `Reconnecting` regardless of lifecycle. The Rust supervisor
- * publishes this *before* sleeping between attempts, so we transition
- * the UI immediately instead of pretending we're still connected.
+ * report `Reconnecting` regardless of lifecycle — except over an Error, which
+ * must stay on screen. The Rust supervisor publishes this *before* sleeping
+ * between attempts, so we transition the UI immediately instead of
+ * pretending we're still connected.
  */
 internal fun deriveUiState(lifecycle: VpnState, frame: StatusFrameData): VpnState {
     // Reconnect from runtime always trumps lifecycle.
     if (frame.reconnectAttempt != null && lifecycle !is VpnState.Disconnected
-        && lifecycle !is VpnState.Disconnecting
+        && lifecycle !is VpnState.Disconnecting && lifecycle !is VpnState.Error
     ) {
         return VpnState.Reconnecting(
             attempt = frame.reconnectAttempt,
@@ -324,12 +331,14 @@ internal fun deriveUiState(lifecycle: VpnState, frame: StatusFrameData): VpnStat
                     serverName = lifecycle.serverName,
                     idleRxSecs = frame.idleRxSecs,
                 )
-                TunnelHealth.DEGRADED -> VpnState.Throttled(
-                    since = lifecycle.since,
-                    serverName = lifecycle.serverName,
-                    currentKbps = (frame.rateRxBps / 1000.0).toLong(),
-                    peakKbps = 0L, // peak isn't shipped in StatusFrame today; UI shows current only
-                )
+                TunnelHealth.DEGRADED -> if (frame.bandwidthClass == BandwidthClass.THROTTLED) {
+                    VpnState.Throttled(
+                        since = lifecycle.since,
+                        serverName = lifecycle.serverName,
+                        currentKbps = (frame.rateRxBps / 1000.0).toLong(),
+                        peakKbps = 0L, // peak isn't shipped in StatusFrame today; UI shows current only
+                    )
+                } else lifecycle
                 TunnelHealth.RECONNECTING -> VpnState.Reconnecting(
                     attempt = frame.reconnectAttempt ?: 0,
                     nextDelaySecs = frame.reconnectNextDelaySecs,
