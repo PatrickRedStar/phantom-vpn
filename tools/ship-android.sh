@@ -11,8 +11,9 @@
 #   tools/ship-android.sh --release       # signed release (needs keystore env)
 #   tools/ship-android.sh --bump          # auto-increment versionCode + patch
 #   tools/ship-android.sh --bump --tag    # also push tag and run CI (= Play production!):
-#                                         #   only from a clean tree, asks for device confirmation
-#   tools/ship-android.sh --ci-only       # skip local build, pull APK from latest tag
+#                                         #   only from a clean tree with a "## [Android X.Y.Z]"
+#                                         #   CHANGELOG section, asks for confirmation
+#   tools/ship-android.sh --tag --ci-only # skip local build, pull APK from the new tag
 #   tools/ship-android.sh --device <id>   # adb -s <id>; defaults to TARGET_DEVICE
 #
 # Memory rules baked in:
@@ -186,6 +187,8 @@ trap restore_local_properties EXIT
 build_rust() {
     say "building Rust JNI (cargo ndk -t $TARGET_ABI release)..."
     cd "$REPO_ROOT"
+    # gradle preBuild собирает .so и под armeabi-v7a — нужен и этот target.
+    rustup target add aarch64-linux-android armv7-linux-androideabi >/dev/null
     cargo ndk -t "$TARGET_ABI" -o "$NATIVE_OUT" --platform 26 \
         build --release -p "$RUST_CRATE"
     local so="${NATIVE_OUT}/${TARGET_ABI}/libphantom_android.so"
@@ -241,6 +244,7 @@ deploy_apk() {
 # ── CI route ─────────────────────────────────────────────────────────────
 deploy_from_ci() {
     [[ -n "${NEW_TAG:-}" ]] || die "--ci-only requires --bump --tag to know which tag to fetch"
+    confirm_push "Выкатить $NEW_TAG в Play production без проверки на устройстве?"
     say "pushing tag $NEW_TAG..."
     cd "$REPO_ROOT"
     git add "$BUILD_GRADLE"
@@ -276,18 +280,26 @@ require_clean_tree() {
     git diff --quiet HEAD || die "--tag: есть незакоммиченные правки — в Play уехала бы сборка без них. Закоммить или убери."
 }
 
-confirm_device_check() {
+# Release.yml без этой секции роняет Android-джобу, а тег уже был бы запушен.
+require_changelog() {
+    grep -q "^## \[Android ${NEW_TAG#v}\]" "$REPO_ROOT/CHANGELOG.md" && return 0
+    git -C "$REPO_ROOT" checkout -- "$BUILD_GRADLE"
+    die "--tag: в CHANGELOG.md нет секции '## [Android ${NEW_TAG#v}]' — добавь и закоммить; bump откачен"
+}
+
+confirm_push() {
     local ans
-    read -r -p "Проверил на устройстве? [y/N] " ans
+    read -r -p "$1 [y/N] " ans
     [[ "$ans" == [yY] ]] || die "тег не поставлен; bump остался в $BUILD_GRADLE (откат: git checkout -- $BUILD_GRADLE)"
 }
 
 # ── main ─────────────────────────────────────────────────────────────────
-[[ "$PUSH_TAG" == "1" && "$CI_ONLY" != "1" ]] && require_clean_tree
+[[ "$PUSH_TAG" == "1" ]] && require_clean_tree
 
 resolve_device
 
 if [[ "$BUMP" == "1" ]]; then bump_version; fi
+[[ "$PUSH_TAG" == "1" ]] && require_changelog
 
 if [[ "$CI_ONLY" == "1" ]]; then
     [[ "$PUSH_TAG" == "1" ]] || die "--ci-only requires --tag"
@@ -308,7 +320,7 @@ build_apk
 deploy_apk
 
 if [[ "$PUSH_TAG" == "1" ]]; then
-    confirm_device_check
+    confirm_push "Проверил на устройстве?"
     say "pushing tag $NEW_TAG (for CI release)..."
     cd "$REPO_ROOT"
     git add "$BUILD_GRADLE"
