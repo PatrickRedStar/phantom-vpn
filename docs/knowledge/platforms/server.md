@@ -1,5 +1,5 @@
 ---
-updated: 2026-05-03
+updated: 2026-10-26
 ---
 
 # Server — phantom-server + phantom-relay
@@ -7,7 +7,7 @@ updated: 2026-05-03
 ## Стек
 
 - **`phantom-server`** (`server/server/`) — TLS accept + VPN data plane + admin
-  HTTP API + passive DNS cache + fakeapp fallback + mimicry warmup. Всё в одном
+  HTTP API + passive DNS cache + fakeapp fallback. Всё в одном
   бинаре, один `tokio::runtime` (multi-threaded).
 - **`phantom-relay`** (`server/relay/`) — SNI passthrough на RU-хопе. **НЕ
   терминирует TLS** (v0.17.0+). Peek ClientHello → SNI → raw `copy_bidirectional`.
@@ -38,7 +38,7 @@ SSH: алиасы в `~/.ssh/config`. Claude Code обычно запущен
 | Конфиг | `/opt/phantom-vpn/config/server.toml` |
 | Keyring (fingerprint → client) | `/opt/phantom-vpn/config/clients.json` |
 | CA cert + key | `/opt/phantom-vpn/config/ca.crt`, `ca.key` |
-| Per-client | `/opt/phantom-vpn/config/clients/<name>.crt`, `<name>.key` |
+| Per-client | `/opt/phantom-vpn/config/clients/<name>/client.crt`, `client.key` (ключи 0600, каталоги 0700) |
 | Admin mTLS server cert (auto-gen) | `/opt/phantom-vpn/config/admin-server.crt`, `.key` |
 | systemd unit | `/etc/systemd/system/phantom-server.service` |
 
@@ -48,11 +48,14 @@ SSH: алиасы в `~/.ssh/config`. Claude Code обычно запущен
 
 ```bash
 cd /opt/github_projects/phantom-vpn
-cargo build --release -p phantom-server --bin phantom-server --bin phantom-keygen
-install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
-install -m 0755 target/release/phantom-keygen /opt/phantom-vpn/phantom-keygen
+cargo build --profile release-server -p phantom-server --bin phantom-server --bin phantom-keygen
+install -m 0755 target/release-server/phantom-server /opt/phantom-vpn/phantom-server
+install -m 0755 target/release-server/phantom-keygen /opt/phantom-vpn/phantom-keygen
 systemctl restart phantom-server.service
 ```
+
+Профиль `release-server` = `release` + `panic = "unwind"`: паника в одном
+соединении убивает только его задачу, а не весь процесс со всеми сессиями.
 
 One-click deploy-скрипт — `server/scripts/deploy.sh` (умеет удалённо, через SSH,
 fallback на remote-build при не-Linux источнике).
@@ -75,7 +78,7 @@ server_public_key  = "..."
 
 [timeouts]
 idle_timeout_secs = 300
-hard_timeout_secs = 86400
+hard_timeout_secs = 0          # 0 = без жёсткого лимита жизни сессии (по умолчанию)
 
 [quic]                         # legacy name секции, транспорт теперь H2/TLS
 cert_subjects = ["tls.nl2.bikini-bottom.com"]
@@ -102,10 +105,37 @@ Admin-server cert для mTLS listener'а — self-signed на `10.7.0.1`, ге�
 При каждом старте `phantom-server`:
 
 1. `teardown_nat()` — удаляет старые правила (если остались от прошлого запуска).
-2. `setup_nat()` — ставит MASQUERADE для `wan_iface` + FORWARD для tun-подсети.
+2. `setup_nat()` — проверяет, что `wan_iface` существует, включает
+   `ip_forward` и ставит правила (все с комментарием `phantom-vpn-<tun>`,
+   вставляются в начало цепочек):
+   - `nat POSTROUTING`: MASQUERADE (или SNAT на `exit_ip`) для tun-подсети;
+   - `FORWARD -i tun`: DROP в приватные диапазоны (10/8, 172.16/12, 192.168/16,
+     100.64/10, 169.254/16), REJECT на tcp/25, дальше ACCEPT tun ⇄ wan;
+   - `INPUT -i tun`: established, icmp, порт admin API (из `[admin].listen_addr`),
+     22, 53 — остальное DROP.
 
-Зачем: коммит `a55965c` (март 2026) — без teardown'а iptables копились дубликаты
-при каждом рестарте, и после нескольких циклов получалось 10+ идентичных правил.
+Любая ошибка iptables/sysctl фатальна: сервер не стартует (systemd покажет
+причину), а не поднимается «с подключением, но без интернета».
+
+Зачем teardown: коммит `a55965c` (март 2026) — без него iptables копились
+дубликаты при каждом рестарте. Список правил один и тот же для setup и teardown.
+
+## Соединения, таймауты, доступ
+
+- **Allowlist** (`allowed_clients_path`) проверяется прямо в TLS-рукопожатии:
+  отозванный или удалённый клиент получает alert `certificate_revoked`.
+  Путь задан → пускаем ровно включённых клиентов из keyring; пустой список или
+  нечитаемый файл на старте = никого. Путь не задан = любой серт нашего CA.
+- **Туннельный IP** берётся из keyring по отпечатку серта; пакеты с чужим
+  src отбрасываются. Отзыв/удаление вытесняют сессию по отпечатку (обе карты,
+  `close()` → RX-циклы перестают пускать uplink, writer'ы шлют FIN).
+- Таймауты: TLS-рукопожатие + 2-байтовый заголовок — 10 с; поток без единого
+  кадра от клиента — 150 с; close_notify+FIN после writer'а — 5 с; fakeapp — 45 с
+  на соединение. Heartbeat сервера — случайно 30–60 с на каждый стрим.
+- Первые 10–20 кадров каждого стрима дополняются нулями до случайного размера
+  (после терминатора батча — wire-формат прежний).
+- Таймауты сессий идут по монотонным часам; проверка подписок пропускает тик,
+  если системные часы прыгнули больше чем на час.
 
 ## nginx frontend (NL)
 
@@ -204,7 +234,7 @@ admin API: `POST /api/clients` + `GET /api/clients/<name>/conn_string`.
 | Listener | Bind | Транспорт | Auth | Для кого |
 |---|---|---|---|---|
 | mTLS | `[admin].listen_addr` = `10.7.0.1:8080` | HTTPS + mTLS | client cert → fingerprint → `is_admin` | Android/Linux admin panel через VPN |
-| loopback | `[admin].bot_listen_addr` = `127.0.0.1:8081` | plain HTTP | `Authorization: Bearer <token>` | Telegram-бот (same-host only) |
+| loopback | `[admin].bot_listen_addr` = `127.0.0.1:8081` | plain HTTP | `Authorization: Bearer <token>`, только с loopback-адреса | Telegram-бот (same-host only) |
 
 Role (`is_admin`) — per-client флаг в `clients.json`. Первый админ — через
 `phantom-keygen admin-grant --name <n> --enable`. Полный список endpoint'ов
@@ -265,9 +295,9 @@ ssh vps_balancer "curl -s -x socks5h://127.0.0.1:10808 https://ifconfig.me"
 ```bash
 # Сборка + деплой на vdsina (локально на vdsina'е)
 cd /opt/github_projects/phantom-vpn
-cargo build --release -p phantom-server --bin phantom-server --bin phantom-keygen
-install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
-install -m 0755 target/release/phantom-keygen /opt/phantom-vpn/phantom-keygen
+cargo build --profile release-server -p phantom-server --bin phantom-server --bin phantom-keygen
+install -m 0755 target/release-server/phantom-server /opt/phantom-vpn/phantom-server
+install -m 0755 target/release-server/phantom-keygen /opt/phantom-vpn/phantom-keygen
 systemctl restart phantom-server.service
 
 # Проверить что поднялось
