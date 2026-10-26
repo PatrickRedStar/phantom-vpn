@@ -52,6 +52,8 @@ class MyApplication : Application() {
         appScope.launch(Dispatchers.IO) {
             try {
                 val prefs = PreferencesStore(this@MyApplication)
+                // Older versions' start snapshot held a second copy of the key.
+                runCatching { prefs.clearLegacyTunnelParams() }
                 val wasRunning = runCatching { prefs.wasRunningBlocking() }.getOrDefault(false)
                 if (wasRunning) {
                     val autoStart = runCatching { prefs.autoStartOnBoot.first() }.getOrDefault(false)

@@ -189,6 +189,13 @@ class ProfilesStore private constructor(private val context: Context) {
         val newKey = File(profileDir, "client.key")
         newCert.writeText(certPem)
         newKey.writeText(keyPem)
+        // A legacy profile's key file lived elsewhere — don't leave a second copy.
+        val oldKey = profile.keyPath
+        if (oldKey.isNotBlank() && oldKey != newKey.absolutePath &&
+            _profiles.value.none { it.id != profile.id && it.keyPath == oldKey }
+        ) {
+            runCatching { File(oldKey).delete() }
+        }
 
         return profile.copy(
             certPath = newCert.absolutePath,
