@@ -75,10 +75,10 @@ scripts/
 
 | Target | Bundle ID | Type | Entitlements |
 |---|---|---|---|
-| `GhostStream.app` | `com.ghoststream.vpn` | Host app | NEAppGroup, NetworkExtension, app-groups, hardened runtime |
-| `PacketTunnel.systemextension` | `com.ghoststream.vpn.tunnel` | System extension | NEAppGroup, NetworkExtension, sandbox, hardened runtime |
+| `GhostStream.app` | `com.ghoststream.client` | Host app | NEAppGroup, NetworkExtension, app-groups, hardened runtime |
+| `PacketTunnel.systemextension` | `com.ghoststream.client.tunnel` | System extension | NEAppGroup, NetworkExtension, sandbox, hardened runtime |
 
-**App Group** (общий для host + extension): `group.com.ghoststream.vpn` — тот же что iOS, единый код в PhantomKit Storage.
+**App Group** (общий для host + extension): `group.com.ghoststream.client` — тот же что iOS, единый код в PhantomKit Storage.
 
 **Code signing**: Developer ID Application (один cert для обоих targets — system extension должна быть подписана тем же team как и host app, иначе `OSSystemExtensionErrorDomain` Code 4 при активации).
 
@@ -133,26 +133,8 @@ scripts/
 
 ## Состояния, ошибки, подписка
 
-Переподключением владеет ядро ([ADR 0018](../decisions/0018-rust-owns-reconnect.md)):
-при сетевых сбоях оно ретраит бесконечно и публикует `reconnecting`.
-
-- **У провайдера нет своих watchdog'ов** — ни «нет connected за N с», ни
-  «слишком долго в reconnecting»: они гасили или перезапускали туннель поверх
-  ретраев ядра. Провайдер реагирует только на `connected` (completion для NE),
-  `error` и события NE.
-- **`error` = фатальная причина** (отзыв доступа, истёкший доступ, неверные
-  часы, кривой профиль). Провайдер останавливает туннель, error-кадр остаётся в
-  снапшоте, и хост показывает `last_error` до следующего Connect. Неудачный
-  рестарт рантайма (смена сети, пробуждение) тоже останавливает туннель с
-  причиной, а не оставляет его без рантайма.
-- **Дашборд** при поднятом туннеле показывает плашку здоровья, как на Android:
-  все потоки упали (`dead`), живы k из n (`degraded`), тишина в канале
-  (`stale`), скорость ограничена (только по `bandwidth_class = throttled`).
-  `TunnelHealth` в PhantomKit знает `dead`; прежде такие кадры падали в
-  `unknown`.
-- **Подписка и флаг админа** берутся из `/api/me` (`expires_at`, `enabled`,
-  `is_admin`) и кладутся в кэш профиля до запросов админки — срок видят и
-  не-админы. Старый сервер без этих полей кэш не трогает.
+Как на iOS: см. [ios.md → Состояния, ошибки, подписка](ios.md#состояния-ошибки-подписка).
+Отличий у macOS нет.
 
 ## 7 поверхностей UI
 
@@ -195,7 +177,7 @@ RequestPending
     ↓ (system показывает prompt: "GhostStream wants to add a system extension")
 AwaitingUserApproval ── (user → System Settings → Privacy & Security → Allow)
     ↓
-Activated ── (systemextensionsctl list → com.ghoststream.vpn.tunnel: activated enabled)
+Activated ── (systemextensionsctl list → com.ghoststream.client.tunnel: activated enabled)
     ↓
 ManagerConfigured ── (NETunnelProviderManager.saveToPreferences())
     ↓
@@ -218,10 +200,9 @@ Ready ── (System Settings → VPN & Filters показывает GhostStream
 
 > Cert/key туннеля на macOS едут в `providerConfiguration`, а не через Keychain:
 > system extension под root не видит user Data Protection keychain — см.
-> [ADR 0009](../decisions/0009-cert-pem-providerConfiguration.md). Bundle id и App
-> Group с 2026-05 — `com.ghoststream.client*` / `group.com.ghoststream.client`.
+> [ADR 0009](../decisions/0009-cert-pem-providerConfiguration.md).
 
-Keychain через `PhantomKit/Storage/Keychain.swift` с access group **`group.com.ghoststream.vpn`** (тот же что iOS).
+Keychain через `PhantomKit/Storage/Keychain.swift` с access group **`group.com.ghoststream.client`** (тот же что iOS; старый `group.com.ghoststream.vpn` — только источник миграции в `LegacyMigration.swift`).
 
 На macOS App Groups требуют `com.apple.security.application-groups` entitlement в обоих targets (host app + system extension), плюс **`kSecUseDataProtectionKeychain = true`** для shared items (на iOS это default, на macOS — нет, нужно явно).
 
@@ -323,8 +304,8 @@ Components, переиспользуемые на macOS as-is: `GhostCard`, `Sco
 - **System extension code signing** — host app и system extension должны быть подписаны **одним и тем же Developer ID Team**, иначе `OSSystemExtensionErrorDomain` Code 4 (codeSignatureInvalid) при активации.
 - **Notarization обязательна для distribution** — без notarize Gatekeeper заблокирует первый запуск (`damaged and can't be opened`). Notarize даже для personal testing если приложение раздаётся вне локальной машины.
 - **`kSecUseDataProtectionKeychain = true`** на macOS обязательно для App-Group-shared Keychain items, иначе extension не увидит ключи (silent failure).
-- **App Group identifier** должен совпадать в entitlements host app и system extension (`group.com.ghoststream.vpn`) — иначе shared storage не работает (молчаливо, как на iOS).
-- **System extension не перезагружается при rebuild** — после изменения extension'а нужно `systemextensionsctl uninstall <team> com.ghoststream.vpn.tunnel` + reinstall. В debug builds можно использовать developer mode (`systemextensionsctl developer on`) — игнорирует подписи.
+- **App Group identifier** должен совпадать в entitlements host app и system extension (`group.com.ghoststream.client`) — иначе shared storage не работает (молчаливо, как на iOS).
+- **System extension не перезагружается при rebuild** — после изменения extension'а нужно `systemextensionsctl uninstall <team> com.ghoststream.client.tunnel` + reinstall. В debug builds можно использовать developer mode (`systemextensionsctl developer on`) — игнорирует подписи.
 - **Sparkle EdDSA private key — НЕ коммитить** — хранить в Keychain локально / 1Password / GitHub secrets. Compromise key → fork-update attack возможен.
 - **xcframework пересобирать после правок client-apple/runtime** — Xcode не детектит изменения в Rust автоматически, нужен `build-xcframework.sh`.
 - **`OSSystemExtensionRequest` requires entitlement `com.apple.developer.system-extension.install`** — не работает в Sandboxed app или без правильного provisioning profile.

@@ -97,7 +97,7 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
 
 ## Состояния, ошибки, подписка
 
-Переподключением владеет ядро ([ADR 0018](../decisions/0018-rust-owns-reconnect.md)):
+Одинаково для iOS и macOS. Переподключением владеет ядро ([ADR 0018](../decisions/0018-rust-owns-reconnect.md)):
 при сетевых сбоях оно ретраит бесконечно и публикует `reconnecting`.
 
 - **У провайдера нет своих watchdog'ов** — ни «нет connected за N с», ни
@@ -112,8 +112,7 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
 - **Дашборд** при поднятом туннеле показывает плашку здоровья, как на Android:
   все потоки упали (`dead`), живы k из n (`degraded`), тишина в канале
   (`stale`), скорость ограничена (только по `bandwidth_class = throttled`).
-  `TunnelHealth` в PhantomKit знает `dead`; прежде такие кадры падали в
-  `unknown`.
+  `TunnelHealth` в PhantomKit знает `dead`.
 - **Подписка и флаг админа** берутся из `/api/me` (`expires_at`, `enabled`,
   `is_admin`) и кладутся в кэш профиля до запросов админки — срок видят и
   не-админы. Старый сервер без этих полей кэш не трогает.
