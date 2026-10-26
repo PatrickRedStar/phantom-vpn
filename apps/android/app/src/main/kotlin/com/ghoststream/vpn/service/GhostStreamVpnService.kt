@@ -228,22 +228,15 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         const val EXTRA_SERVER_ADDR   = "server_addr"
         const val EXTRA_SERVER_NAME   = "server_name"
-        /** Unused: cert and key travel inside [EXTRA_CONN_STRING]. */
-        const val EXTRA_CERT_PATH     = "cert_path"
-        /** Unused: cert and key travel inside [EXTRA_CONN_STRING]. */
-        const val EXTRA_KEY_PATH      = "key_path"
         const val EXTRA_TUN_ADDR      = "tun_addr"
         const val EXTRA_DNS_SERVERS   = "dns_servers"
         const val EXTRA_SPLIT_ROUTING = "split_routing"
         const val EXTRA_DIRECT_CIDRS  = "direct_cidrs_path"
         const val EXTRA_PER_APP_MODE  = "per_app_mode"
         const val EXTRA_PER_APP_LIST  = "per_app_list"
-        /** Phase 4: full ghs:// connection string, used by new nativeStart. */
+        /** Full ghs:// connection string; cert and key travel inside it. */
         const val EXTRA_CONN_STRING   = "conn_string"
         const val EXTRA_RELAY_ADDR    = "relay_addr"
-        /** Ignored. The DPI recycle toggle left the UI, and a value saved back
-         *  then caused reconnect storms nobody could switch off. */
-        const val EXTRA_DPI_RECYCLE_BYTES = "dpi_recycle_bytes"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001

@@ -38,10 +38,6 @@ class PreferencesStore(private val context: Context) {
         private val SCOPE_WINDOW_SECS = androidx.datastore.preferences.core.intPreferencesKey("scope_window_secs")
         private val LANGUAGE_OVERRIDE  = stringPreferencesKey("language_override")
         private val APP_ICON           = stringPreferencesKey("app_icon")
-        // v0.27.0 (W11): null/0 = disabled, >0 = recycle threshold in bytes
-        // (total bytes_rx + bytes_tx). 100_000 = ~100 KB. The service ignores
-        // it now: the toggle left the UI, a saved value couldn't be switched off.
-        private val DPI_RECYCLE_BYTES  = androidx.datastore.preferences.core.longPreferencesKey("dpi_recycle_bytes")
     }
 
     /** "ru" | "en" | null (follow system) */
@@ -112,7 +108,6 @@ class PreferencesStore(private val context: Context) {
             perAppMode      = prefs[PER_APP_MODE] ?: "none",
             perAppList      = (prefs[PER_APP_LIST] ?: "")
                 .split(",").filter { it.isNotBlank() },
-            dpiRecycleBytes = prefs[DPI_RECYCLE_BYTES]?.takeIf { it > 0 },
         )
     }
 
@@ -128,7 +123,6 @@ class PreferencesStore(private val context: Context) {
             prefs[DIRECT_COUNTRIES] = config.directCountries.joinToString(",")
             prefs[PER_APP_MODE]     = config.perAppMode
             prefs[PER_APP_LIST]     = config.perAppList.joinToString(",")
-            prefs[DPI_RECYCLE_BYTES] = config.dpiRecycleBytes ?: 0
         }
     }
 
