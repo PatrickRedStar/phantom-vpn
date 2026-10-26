@@ -7,8 +7,10 @@ data class VpnProfile(
     val serverName: String = "",
     val certPath: String = "",
     val keyPath: String = "",
-    /** Inline PEM — survives app updates, reinstalls, cert file deletion. */
+    /** Inline PEM of the (public) client cert. */
     val certPem: String? = null,
+    /** Inline private key — transient: ProfilesStore writes it to [keyPath]
+     *  and drops it, so the key exists in one place only. */
     val keyPem: String? = null,
     val tunAddr: String = "10.7.0.2/24",
     // Per-profile overrides (null = use global defaults)
