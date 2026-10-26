@@ -4156,7 +4156,6 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "socket2",
  "tokio",
  "tokio-boring",
  "tokio-rustls",
@@ -4229,7 +4228,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap 4.5.60",
- "libc",
  "rustls",
  "rustls-pemfile",
  "serde",
