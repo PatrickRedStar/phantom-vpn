@@ -108,19 +108,22 @@ public final class AdminViewModel {
 
         do {
             let selfInfo = try await client.getMe()
-            async let statusTask = client.getStatus()
-            async let clientsTask = client.listClients()
-            let (fetchedStatus, fetchedClients) = try await (statusTask, clientsTask)
-            self.status = fetchedStatus
-            self.clients = fetchedClients
 
-            // TOFU persistence — only after a successful handshake.
+            // Persist /api/me (admin flag, subscription) and the TOFU pin as
+            // soon as the handshake succeeded — a demoted admin gets 403 from
+            // the calls below, and the flag must still drop.
             var updated = profilesStore.profiles.first(where: { $0.id == profile.id }) ?? profile
             selfInfo.apply(to: &updated)
             if let fp = client.lastServerCertFp {
                 updated.cachedAdminServerCertFp = fp
             }
             profilesStore.update(updated)
+
+            async let statusTask = client.getStatus()
+            async let clientsTask = client.listClients()
+            let (fetchedStatus, fetchedClients) = try await (statusTask, clientsTask)
+            self.status = fetchedStatus
+            self.clients = fetchedClients
         } catch let err as AdminHttpError {
             self.error = err.errorDescription
         } catch {
