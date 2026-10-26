@@ -25,27 +25,30 @@ import com.ghoststream.vpn.ui.theme.LocalIsDark
  * выглядит грязью, там аура выключена.
  */
 @Composable
-fun Modifier.phosphorAura(color: Color): Modifier {
+fun Modifier.phosphorAura(color: Color, animate: Boolean): Modifier {
     val isDark = LocalIsDark.current
     if (!isDark) return this
 
-    val transition = rememberInfiniteTransition(label = "aura")
-    val breathe by transition.animateFloat(
-        initialValue = 0.65f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(3500), RepeatMode.Reverse),
-        label = "breathe",
-    )
+    // Дышит только при живом туннеле: в покое вечный цикл гонял кадры впустую.
+    val breathe = if (animate) {
+        rememberInfiniteTransition(label = "aura").animateFloat(
+            initialValue = 0.65f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(3500), RepeatMode.Reverse),
+            label = "breathe",
+        )
+    } else null
     // Плавная смена цвета при смене состояния (Connected → Reconnecting и т.п.)
     val animatedColor by animateColorAsState(color, tween(900), label = "aura_color")
 
     return drawBehind {
         val radius = size.width * 0.85f
+        val b = breathe?.value ?: 1f
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    animatedColor.copy(alpha = 0.075f * breathe),
-                    animatedColor.copy(alpha = 0.028f * breathe),
+                    animatedColor.copy(alpha = 0.075f * b),
+                    animatedColor.copy(alpha = 0.028f * b),
                     Color.Transparent,
                 ),
                 center = Offset(size.width / 2f, -size.width * 0.25f),

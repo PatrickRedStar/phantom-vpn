@@ -37,7 +37,6 @@ class MicroToggleWidget : GlanceAppWidget() {
     override val stateDefinition = PreferencesGlanceStateDefinition
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val profileName = WidgetState.profileName(context)
         provideContent {
             val prefs = currentState<Preferences>()
             val connected = prefs[WidgetState.IS_CONNECTED] ?: false
@@ -53,7 +52,7 @@ class MicroToggleWidget : GlanceAppWidget() {
                     else -> R.string.widget_offline
                 },
             )
-            val server = profileName
+            val server = prefs[WidgetState.SERVER_NAME] ?: "GhostStream"
 
             Row(
                 modifier = GlanceModifier

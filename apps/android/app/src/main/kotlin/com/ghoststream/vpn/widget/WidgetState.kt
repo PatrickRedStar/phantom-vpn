@@ -21,17 +21,11 @@ object WidgetState {
     val STREAMS_TOTAL = intPreferencesKey("vpn_streams_total")
 
     /**
-     * Widgets show the active profile's name (the one the tunnel runs on),
-     * not the SNI the service knows.
-     */
-    fun profileName(context: Context): String =
-        com.ghoststream.vpn.data.ProfilesStore.getInstance(context).getActiveProfile()?.name
-            ?: "GhostStream"
-
-    /**
      * Call from VPN service whenever state changes. [reconnecting] — the core
      * is between attempts (StatusFrame state "reconnecting"): widgets show
      * «переподключение» and a stop button instead of «offline / connect».
+     * [serverName] is ignored: widgets show the active profile's name (the one
+     * the tunnel runs on), not the SNI the service knows.
      */
     suspend fun push(
         context: Context,
@@ -52,6 +46,8 @@ object WidgetState {
             FullDashboardWidget::class.java,
             PillWidget::class.java,
         )
+        val profileName = com.ghoststream.vpn.data.ProfilesStore.getInstance(context)
+            .getActiveProfile()?.name ?: "GhostStream"
         val manager = GlanceAppWidgetManager(context)
         for (cls in widgetClasses) {
             val ids = manager.getGlanceIds(cls)
@@ -61,7 +57,7 @@ object WidgetState {
                         this[IS_CONNECTED] = connected
                         this[IS_CONNECTING] = connecting
                         this[IS_RECONNECTING] = reconnecting
-                        this[SERVER_NAME] = serverName
+                        this[SERVER_NAME] = profileName
                         this[TIMER_TEXT] = timer
                         this[RX_SPEED] = rxSpeed
                         this[TX_SPEED] = txSpeed

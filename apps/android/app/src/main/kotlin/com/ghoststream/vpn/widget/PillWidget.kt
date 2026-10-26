@@ -34,7 +34,6 @@ class PillWidget : GlanceAppWidget() {
     override val stateDefinition = PreferencesGlanceStateDefinition
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val profileName = WidgetState.profileName(context)
         provideContent {
             val prefs = currentState<Preferences>()
             val connected = prefs[WidgetState.IS_CONNECTED] ?: false
@@ -52,7 +51,7 @@ class PillWidget : GlanceAppWidget() {
             )
             val rx = prefs[WidgetState.RX_SPEED] ?: "--"
             val tx = prefs[WidgetState.TX_SPEED] ?: "--"
-            val server = profileName
+            val server = prefs[WidgetState.SERVER_NAME] ?: "GhostStream"
             val timer = prefs[WidgetState.TIMER_TEXT] ?: "--:--:--"
 
             Row(

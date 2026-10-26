@@ -816,7 +816,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         else -> C.textDim
     }
     Column(
-        Modifier.fillMaxSize().background(C.bg).phosphorAura(auraColor),
+        Modifier.fillMaxSize().background(C.bg).phosphorAura(auraColor, animate = vpnState.isLive()),
     ) {
         // На expanded бренд живёт только в drawer'е (ADR 0015: дубль убран);
         // контент начинается сразу с hero.
