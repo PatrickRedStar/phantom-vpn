@@ -1,12 +1,13 @@
 # phantom-server (Docker)
 
-NL exit узел: H2/TLS listener :443 + TUN + NAT.
+NL exit узел: H2/TLS listener :8443 + TUN + NAT.
 
 ## Требования к хосту
 
 - Linux kernel ≥ 5.10 (io_uring для tun_uring)
 - Docker ≥ 20.10, docker-compose v2
-- Открытый порт 443/tcp на публичном интерфейсе
+- Открытый порт 8443/tcp на публичном интерфейсе (`LISTEN_ADDR`, дефолт `0.0.0.0:8443`;
+  RU-реле ходит на exit именно сюда)
 - Свободное имя интерфейса `tun1` (`wg0` от WireGuard не мешает)
 - **Let's Encrypt сертификат на `SERVER_NAME`** в `/etc/letsencrypt` хоста. Без него
   контейнер не стартует: клиент всегда проверяет серт сервера (ADR 0011), а
@@ -25,7 +26,7 @@ cp .env.example .env
 $EDITOR .env                          # выставить SERVER_NAME (и актуальный TAG)
 docker login ghcr.io
 docker compose up -d
-grep token config/server.toml         # ADMIN_TOKEN (в логи не печатается)
+sudo grep token config/server.toml    # ADMIN_TOKEN (в логи не печатается; файл root 0600)
 ```
 
 После старта в `./config/` лежит весь state: `ca.crt`, `ca.key`, `server.toml`, `clients.json` (права 0600).
@@ -51,7 +52,7 @@ docker exec -it phantom-server keys
 
 На старом сервере:
 ```sh
-tar czf phantom-state-$(date +%F).tar.gz -C /var/lib/phantom-vpn config/
+sudo tar czf phantom-state-$(date +%F).tar.gz -C /var/lib/phantom-vpn config/
 # или там где у тебя bind-mount: -C /path/to/docker/server config/
 scp phantom-state-*.tar.gz new-host:~
 ```
@@ -78,13 +79,13 @@ docker compose up -d
 | Обновить образ | `docker compose pull && docker compose up -d` |
 | Шелл внутрь | `docker exec -it phantom-server sh` |
 | keys меню | `docker exec -it phantom-server keys` |
-| Бэкап state | `tar czf phantom-state.tgz ./config` |
+| Бэкап state | `sudo tar czf phantom-state.tgz ./config` |
 
 ## Troubleshooting
 
 **`[bootstrap] FATAL: SERVER_NAME env var must be set`** — забыл прописать `SERVER_NAME=...` в `.env`, или забыл сделать `cp .env.example .env`.
 
-**`[bootstrap] FATAL: нет Let's Encrypt сертификата`** — выпусти серт на хосте (`certbot certonly --standalone -d <SERVER_NAME>`) или задай `CERT_PATH`/`KEY_PATH` на смонтированные файлы.
+**`[bootstrap] FATAL: нет Let's Encrypt сертификата`** — выпусти серт на хосте (`certbot certonly --standalone -d <SERVER_NAME>`) или задай `CERT_PATH`/`KEY_PATH` в `.env` на файлы внутри смонтированного `/etc/letsencrypt`.
 
 **`denied` / `unauthorized` при `docker compose pull`** — не сделан `docker login ghcr.io`.
 
@@ -92,4 +93,4 @@ docker compose up -d
 
 **Сервер стартует, но клиент не подключается** — проверь `WAN_IFACE`: имя интерфейса в `.env` должно совпадать с реальным `ip route show default`.
 
-**`Address already in use`** — на хосте уже что-то слушает :443. Останови (nginx, другой VPN) или меняй `LISTEN_ADDR=0.0.0.0:8443` + поставь nginx-stream впереди.
+**`Address already in use`** — на хосте уже что-то слушает `LISTEN_ADDR` (дефолт :8443). Освободи порт или задай другой `LISTEN_ADDR` в `.env` (только до первого старта — потом правится `[h2].listen_addr` в `config/server.toml`) и поправь upstream реле.

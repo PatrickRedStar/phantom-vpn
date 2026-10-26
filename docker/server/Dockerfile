@@ -70,6 +70,6 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # /config — bind-mount point для state
 VOLUME ["/config"]
 
-EXPOSE 443/tcp
+EXPOSE 8443/tcp
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]

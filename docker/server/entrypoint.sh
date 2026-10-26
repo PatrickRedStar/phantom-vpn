@@ -43,7 +43,7 @@ if [ ! -f "$SERVER_TOML" ]; then
     WAN_IFACE="${WAN_IFACE:-eth0}"
     TUN_NAME="${TUN_NAME:-tun1}"
     TUN_ADDR="${TUN_ADDR:-10.7.0.1/24}"
-    LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:443}"
+    LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:8443}"
     ADMIN_LISTEN="${ADMIN_LISTEN:-10.7.0.1:8080}"
 
     # Публичный адрес сервера для генерации ghs:// ссылок клиентам. listen_addr=0.0.0.0
