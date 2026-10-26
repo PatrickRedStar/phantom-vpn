@@ -216,7 +216,7 @@ object VpnStateManager {
      * System Always-on VPN for this app and its "block connections without
      * VPN", as (alwaysOn, lockdown). Only a service with an established
      * tunnel can ask (VpnService.isAlwaysOn, API 29+), so it publishes them;
-     * null — not known yet.
+     * null — no live tunnel to ask.
      */
     val systemAlwaysOn = MutableStateFlow<Pair<Boolean, Boolean>?>(null)
 

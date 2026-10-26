@@ -351,6 +351,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         ) return
         lastWidgetState = frame.state
         lastWidgetPushMs = now
+        // Toggled in system settings while the tunnel is up — Android doesn't
+        // re-establish a running VPN, so re-ask on the same throttle.
+        publishSystemAlwaysOn()
         serviceScope.launch {
             WidgetState.push(
                 context = applicationContext,
@@ -365,6 +368,13 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 streamsTotal = frame.nStreams,
             )
         }
+    }
+
+    /** System Always-on / lockdown for the settings row; only a service with a
+     *  live TUN can ask (API 29+). */
+    private fun publishSystemAlwaysOn() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || vpnInterface == null) return
+        VpnStateManager.systemAlwaysOn.value = isAlwaysOn to isLockdownEnabled
     }
 
     override fun onLogFrame(json: String) {
@@ -640,9 +650,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             }
             vpnInterface = iface
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            VpnStateManager.systemAlwaysOn.value = isAlwaysOn to isLockdownEnabled
-        }
+        publishSystemAlwaysOn()
         // The TUN is up from here on and blocks traffic until the core
         // connects — and keeps blocking it while the core reconnects. Only
         // Disconnect, onRevoke or a fatal error take it down.
@@ -804,6 +812,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // watchdog на nativeStop.
         val iface = synchronized(ifaceLock) { vpnInterface.also { vpnInterface = null } }
         runCatching { iface?.close() }
+        // Without a live tunnel nobody can re-ask — don't show a stale value.
+        VpnStateManager.systemAlwaysOn.value = null
 
         Thread {
             val nativeStopDone = Thread {
@@ -1036,6 +1046,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         DnsHealthMonitor.stop()
         val iface = synchronized(ifaceLock) { vpnInterface.also { vpnInterface = null } } ?: return
         runCatching { iface.close() }
+        VpnStateManager.systemAlwaysOn.value = null
         Thread { runCatching { synchronized(nativeLock) { nativeStop() } } }
             .apply { name = "vpn-native-stop"; isDaemon = true; start() }
         VpnStateManager.resetStatus()
