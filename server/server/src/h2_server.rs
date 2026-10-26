@@ -68,10 +68,11 @@ const FRAME_QUEUE: usize = 32;
 const NOTSENT_LOWAT: libc::c_int = 128 * 1024;
 
 /// Build the transport TLS config: optional mTLS against our CA (a client
-/// without a cert gets the fake app-face); the client cert is checked against the allowlist inside the handshake
-/// (revoked → alert, the client can tell "access revoked" from a network
-/// failure), and the CA name list is not sent in CertificateRequest (it would
-/// name our CA to any prober; rustls clients send their only cert anyway).
+/// without a cert gets the fake app-face); the client cert is checked against
+/// the allowlist inside the handshake (revoked → alert, the client can tell
+/// "access revoked" from a network failure), and the CA name list is not sent
+/// in CertificateRequest (it would name our CA to any prober; rustls clients
+/// send their only cert anyway).
 pub fn make_tls_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
