@@ -30,6 +30,7 @@ import androidx.glance.text.FontFamily
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import com.ghoststream.vpn.R
 
 /** Widget D — Full Dashboard (4×2). All stats + visual bar chart approximation. */
 class FullDashboardWidget : GlanceAppWidget() {
@@ -39,8 +40,19 @@ class FullDashboardWidget : GlanceAppWidget() {
         provideContent {
             val prefs = currentState<Preferences>()
             val connected = prefs[WidgetState.IS_CONNECTED] ?: false
-            val connecting = prefs[WidgetState.IS_CONNECTING] ?: false
-            val server = prefs[WidgetState.SERVER_NAME] ?: ""
+            val reconnecting = prefs[WidgetState.IS_RECONNECTING] ?: false
+            val connecting = (prefs[WidgetState.IS_CONNECTING] ?: false) || reconnecting
+            // Connecting / reconnecting count as running: the button stops.
+            val running = connected || connecting
+            val stateWord = context.getString(
+                when {
+                    connected -> R.string.widget_online
+                    reconnecting -> R.string.widget_reconnecting
+                    connecting -> R.string.widget_tuning
+                    else -> R.string.widget_offline
+                },
+            )
+            val server = prefs[WidgetState.SERVER_NAME] ?: "GhostStream"
             val timer = prefs[WidgetState.TIMER_TEXT] ?: "--:--:--"
             val rx = prefs[WidgetState.RX_SPEED] ?: "--"
             val tx = prefs[WidgetState.TX_SPEED] ?: "--"
@@ -186,7 +198,7 @@ class FullDashboardWidget : GlanceAppWidget() {
 
                         // Footer: server name + button
                         Text(
-                            text = server.ifBlank { "---" }.take(18),
+                            text = if (connecting) stateWord else server.take(18),
                             style = TextStyle(
                                 color = W.dim,
                                 fontSize = 9.sp,
@@ -201,15 +213,17 @@ class FullDashboardWidget : GlanceAppWidget() {
                             modifier = GlanceModifier
                                 .fillMaxWidth()
                                 .height(26.dp)
-                                .background(if (connected) W.hair else W.btnConnect)
+                                .background(if (running) W.hair else W.btnConnect)
                                 .cornerRadius(4.dp)
                                 .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                text = if (connected) "DISCONNECT" else "CONNECT",
+                                text = context.getString(
+                                    if (running) R.string.action_disconnect else R.string.action_connect,
+                                ).uppercase(),
                                 style = TextStyle(
-                                    color = if (connected) W.dim else W.btnConnectText,
+                                    color = if (running) W.dim else W.btnConnectText,
                                     fontSize = 8.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold,

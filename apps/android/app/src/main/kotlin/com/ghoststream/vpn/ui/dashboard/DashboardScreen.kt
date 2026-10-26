@@ -3,10 +3,8 @@ package com.ghoststream.vpn.ui.dashboard
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.net.VpnService
 import android.os.Build
-import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -85,10 +83,8 @@ import androidx.compose.runtime.LaunchedEffect as LE
 @Composable
 fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val vpnState by viewModel.vpnState.collectAsStateWithLifecycle()
-    val stats by viewModel.stats.collectAsStateWithLifecycle()
     val statusFrame by viewModel.statusFrame.collectAsStateWithLifecycle()
     val timerText by viewModel.timerText.collectAsStateWithLifecycle()
-    val subscriptionText by viewModel.subscriptionText.collectAsStateWithLifecycle()
     val preflightWarning by viewModel.preflightWarning.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -96,6 +92,9 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     val profiles by profilesStore.profiles.collectAsStateWithLifecycle()
     val activeId by profilesStore.activeId.collectAsStateWithLifecycle()
     val activeProfile = profiles.find { it.id == activeId } ?: profiles.firstOrNull()
+    val subscriptionText = activeProfile?.let {
+        com.ghoststream.vpn.util.FormatUtils.subscriptionText(context, it)
+    }
 
     val vpnPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -146,6 +145,16 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         this is VpnState.Stale ||
         this is VpnState.Throttled ||
         this is VpnState.Reconnecting
+
+    // Frames aren't collected while we're in the background, so the first delta
+    // after returning would cover the whole pause and draw one giant spike.
+    // Re-base on the latest counters when the screen comes back.
+    androidx.lifecycle.compose.LifecycleStartEffect(Unit) {
+        val f = viewModel.statusFrame.value
+        lastRx = f.bytesRx
+        lastTx = f.bytesTx
+        onStopOrDispose { }
+    }
 
     // Accumulate deltas from each StatusFrame push
     LE(statusFrame.bytesRx, statusFrame.bytesTx, vpnState) {
@@ -221,16 +230,16 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     }
 
     val headerMeta = when (vpnState) {
-        is VpnState.Connected   -> "${activeProfile?.serverName?.take(12) ?: ""} · ${timerText}"
-        is VpnState.Stale       -> "stale · ${(vpnState as VpnState.Stale).idleRxSecs}s idle"
-        is VpnState.Throttled   -> "throttled · ${(vpnState as VpnState.Throttled).currentKbps} kbps"
+        is VpnState.Connected   -> "${activeProfile?.name?.take(16) ?: ""} · ${timerText}"
+        is VpnState.Stale       -> stringResource(R.string.meta_stale, (vpnState as VpnState.Stale).idleRxSecs)
+        is VpnState.Throttled   -> stringResource(R.string.meta_throttled, (vpnState as VpnState.Throttled).currentKbps)
         is VpnState.Reconnecting -> {
             val rs = vpnState as VpnState.Reconnecting
-            "reconnecting · ${rs.attempt}/8" + (rs.nextDelaySecs?.let { " · ${it}s" } ?: "")
+            stringResource(R.string.meta_reconnecting) + (rs.nextDelaySecs?.let { " · ${it}s" } ?: "")
         }
-        is VpnState.Connecting  -> "connecting"
-        is VpnState.Error       -> "error"
-        else                    -> "standby"
+        is VpnState.Connecting  -> stringResource(R.string.meta_connecting)
+        is VpnState.Error       -> stringResource(R.string.meta_error)
+        else                    -> stringResource(R.string.meta_standby)
     }
     val metaPulse = vpnState is VpnState.Connected ||
         vpnState is VpnState.Connecting ||
@@ -243,17 +252,18 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
     // rapidly-changing values; this invisible Text triggers a polite
     // announcement only when the *state name* changes (Connected → Stale →
     // Reconnecting), avoiding TalkBack chatter every ~250 ms when bytes
-    // tick over. v0.25.1. Inline Russian literals — string resources
-    // a11y_state_* aren't shipped yet and adding them is out of scope.
-    val stateLabel = when (vpnState) {
-        is VpnState.Connected    -> "Подключено"
-        is VpnState.Stale        -> "Канал замолчал"
-        is VpnState.Throttled    -> "Скорость ограничена"
-        is VpnState.Reconnecting -> "Переподключаемся"
-        is VpnState.Connecting   -> "Подключение"
-        is VpnState.Error        -> "Ошибка соединения"
-        else                     -> "Ожидание"
-    }
+    // tick over. v0.25.1.
+    val stateLabel = stringResource(
+        when (vpnState) {
+            is VpnState.Connected    -> R.string.a11y_state_connected
+            is VpnState.Stale        -> R.string.a11y_state_stale
+            is VpnState.Throttled    -> R.string.a11y_state_throttled
+            is VpnState.Reconnecting -> R.string.a11y_state_reconnecting
+            is VpnState.Connecting   -> R.string.a11y_state_connecting
+            is VpnState.Error        -> R.string.a11y_state_error
+            else                     -> R.string.a11y_state_standby
+        },
+    )
 
     // ── Per-screen layout branching (v0.26.1) ────────────────────────────
     // All shared state is captured above (rxBuffer/txBuffer/lastRx/lastTx/
@@ -303,7 +313,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     state is VpnState.Connected    -> stringResource(R.string.state_transmitting_verb) to stringResource(R.string.state_period)
                     state is VpnState.Stale        -> stringResource(R.string.state_stale_verb) to " ${state.idleRxSecs}s${stringResource(R.string.state_period)}"
                     state is VpnState.Throttled    -> stringResource(R.string.state_throttled_verb) to " ${state.currentKbps} kbps${stringResource(R.string.state_period)}"
-                    state is VpnState.Reconnecting -> stringResource(R.string.state_reconnecting_verb) to " ${state.attempt}/8${stringResource(R.string.state_ellipsis)}"
+                    state is VpnState.Reconnecting -> stringResource(R.string.state_reconnecting_verb) to stringResource(R.string.state_ellipsis)
                     state is VpnState.Connecting   -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
                     state is VpnState.Error        -> stringResource(R.string.state_lost_verb) to " ${stringResource(R.string.state_signal_word)}${stringResource(R.string.state_period)}"
                     state is VpnState.Disconnecting -> stringResource(R.string.state_tuning_verb) to stringResource(R.string.state_ellipsis)
@@ -384,8 +394,12 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         }
     }
 
+    // The core goes to Error only for fatal causes (bad link, certificate,
+    // revoked access, wrong clock) — say which, or the user can't fix it.
+    val problem = preflightWarning
+        ?: (vpnState as? VpnState.Error)?.message?.takeIf { it.isNotBlank() }
     val preflightSection: @Composable () -> Unit = {
-        if (preflightWarning != null) {
+        if (problem != null) {
             Box(
                 Modifier.fillMaxWidth()
                     .padding(horizontal = 18.dp, vertical = 6.dp)
@@ -393,7 +407,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     .padding(10.dp),
             ) {
                 Text(
-                    preflightWarning!!,
+                    problem,
                     style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
                     color = C.danger,
                 )
@@ -567,9 +581,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 DashedHairline()
                 val subColour = when {
                     subscriptionText == null -> C.bone
-                    subscriptionText!!.contains("⚠") -> C.danger
-                    subscriptionText!!.contains("истек", true) -> C.danger
-                    subscriptionText!!.contains("expire", true) -> C.danger
+                    subscriptionText.contains("⚠") -> C.danger
                     else -> C.signal
                 }
                 KvRow(
@@ -749,6 +761,9 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 else -> stringResource(R.string.action_connect)
             }
             val fabEnabled = vpnState !is VpnState.Disconnecting
+            // A double tap used to become connect+cancel: swallow taps closer
+            // than 500 ms to the previous one.
+            var lastTapMs by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
             // ADR 0015: filled lime = призыв «Подключить» (standby), tonal =
             // спокойное «Отключить» пока туннель живёт. Инверсия старого маппинга.
             GhostFab(
@@ -756,21 +771,34 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                 outline = isConnectedOrBusy,
                 enabled = fabEnabled,
                 onClick = {
-                    when (vpnState) {
-                        is VpnState.Connected,
-                        is VpnState.Stale,
-                        is VpnState.Throttled,
-                        is VpnState.Reconnecting,
-                        is VpnState.Connecting -> viewModel.stopVpn()
-                        else -> {
-                            // v0.27.0 (B4/A3): proactively request the
-                            // battery-optimisation exemption (critical against
-                            // Doze) and POST_NOTIFICATIONS on first Connect —
-                            // once, gated by a prefs flag.
-                            runFirstConnectOnboarding(context, notifPermLauncher::launch)
-                            val perm = VpnService.prepare(context)
-                            if (perm != null) vpnPermLauncher.launch(perm)
-                            else viewModel.startVpn()
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastTapMs >= 500) {
+                        lastTapMs = now
+                        when (vpnState) {
+                            is VpnState.Connected,
+                            is VpnState.Stale,
+                            is VpnState.Throttled,
+                            is VpnState.Reconnecting,
+                            is VpnState.Connecting -> viewModel.stopVpn()
+                            else -> {
+                                // v0.27.0 (A3): POST_NOTIFICATIONS on first
+                                // Connect — once, gated by a prefs flag.
+                                runFirstConnectOnboarding(context, notifPermLauncher::launch)
+                                val perm = VpnService.prepare(context)
+                                if (perm == null) {
+                                    viewModel.startVpn()
+                                } else {
+                                    // Some Android TV builds ship without the
+                                    // system VPN consent dialog at all.
+                                    runCatching { vpnPermLauncher.launch(perm) }.onFailure {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            R.string.vpn_consent_missing,
+                                            android.widget.Toast.LENGTH_LONG,
+                                        ).show()
+                                    }
+                                }
+                            }
                         }
                     }
                 },
@@ -788,7 +816,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         else -> C.textDim
     }
     Column(
-        Modifier.fillMaxSize().background(C.bg).phosphorAura(auraColor),
+        Modifier.fillMaxSize().background(C.bg).phosphorAura(auraColor, animate = vpnState.isLive()),
     ) {
         // На expanded бренд живёт только в drawer'е (ADR 0015: дубль убран);
         // контент начинается сразу с hero.
@@ -1164,14 +1192,11 @@ private fun formatMbps(bytesPerSec: Float): String {
 }
 
 /**
- * v0.27.0 (B4/A3): one-shot first-connect onboarding. Runs at most once
- * (gated by PreferencesStore.onboardPromptsShown):
- *  - POST_NOTIFICATIONS (Android 13+) so the status + connection-loss alerts
- *    are actually visible.
- *  - REQUEST_IGNORE_BATTERY_OPTIMIZATIONS so Doze doesn't kill the tunnel
- *    when the phone is pocketed. Permission is already declared in the
- *    manifest; the system shows a yes/no dialog directly.
- * Neither prompt blocks the connection — it proceeds regardless of the answer.
+ * v0.27.0 (A3): one-shot first-connect onboarding. Runs at most once
+ * (gated by PreferencesStore.onboardPromptsShown): POST_NOTIFICATIONS
+ * (Android 13+) so the status + connection-loss alerts are actually visible.
+ * The prompt doesn't block the connection. Battery optimisation is not
+ * requested directly — Settings shows a hint with a link to the system list.
  */
 private fun runFirstConnectOnboarding(
     context: Context,
@@ -1180,35 +1205,12 @@ private fun runFirstConnectOnboarding(
     val prefs = com.ghoststream.vpn.data.PreferencesStore(context.applicationContext)
     if (prefs.onboardPromptsShownBlocking()) return
 
-    // 1) Notification permission (Android 13+).
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val granted = context.checkSelfPermission(
             android.Manifest.permission.POST_NOTIFICATIONS,
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (!granted) {
             runCatching { requestNotifPermission(android.Manifest.permission.POST_NOTIFICATIONS) }
-        }
-    }
-
-    // 2) Battery-optimisation exemption — critical against Doze.
-    val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-    val exempt = pm?.isIgnoringBatteryOptimizations(context.packageName) ?: true
-    if (!exempt) {
-        runCatching {
-            @Suppress("BatteryLife")
-            val intent = Intent(
-                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                Uri.parse("package:${context.packageName}"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
-        }.onFailure {
-            // Fallback to the full list if the per-package action is missing.
-            runCatching {
-                context.startActivity(
-                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
-            }
         }
     }
 

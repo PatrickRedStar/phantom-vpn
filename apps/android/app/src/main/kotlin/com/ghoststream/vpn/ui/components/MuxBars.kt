@@ -49,13 +49,15 @@ fun MuxBars(
     val signalDimColor = C.signalDim
 
     // Один бесконечный переход на всю группу; фаза каждой полосы — от индекса.
-    val transition = rememberInfiniteTransition(label = "mux_pulse")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Restart),
-        label = "phase",
-    )
+    // В standby перехода нет вовсе: незачем гонять кадры ради неподвижных полос.
+    val phaseState = if (animate) {
+        rememberInfiniteTransition(label = "mux_pulse").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(2600), RepeatMode.Restart),
+            label = "phase",
+        )
+    } else null
 
     Canvas(
         modifier
@@ -72,6 +74,7 @@ fun MuxBars(
         val x0 = (size.width - groupW) / 2f
         val rTop = CornerRadius(6.dp.toPx())
         val rBot = CornerRadius(3.dp.toPx())
+        val phase = phaseState?.value ?: 0f
 
         heights.forEachIndexed { i, hNorm ->
             val x = x0 + i * (barW + gap)

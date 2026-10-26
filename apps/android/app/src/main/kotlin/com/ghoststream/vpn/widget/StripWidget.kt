@@ -29,6 +29,7 @@ import androidx.glance.text.FontFamily
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import com.ghoststream.vpn.R
 
 /** Widget C — Dashboard Strip (4×1). Horizontal: dot + server + timer + speeds + toggle. */
 class StripWidget : GlanceAppWidget() {
@@ -38,8 +39,19 @@ class StripWidget : GlanceAppWidget() {
         provideContent {
             val prefs = currentState<Preferences>()
             val connected = prefs[WidgetState.IS_CONNECTED] ?: false
-            val connecting = prefs[WidgetState.IS_CONNECTING] ?: false
-            val server = prefs[WidgetState.SERVER_NAME] ?: ""
+            val reconnecting = prefs[WidgetState.IS_RECONNECTING] ?: false
+            val connecting = (prefs[WidgetState.IS_CONNECTING] ?: false) || reconnecting
+            // Connecting / reconnecting count as running: the button stops.
+            val running = connected || connecting
+            val stateWord = context.getString(
+                when {
+                    connected -> R.string.widget_online
+                    reconnecting -> R.string.widget_reconnecting
+                    connecting -> R.string.widget_tuning
+                    else -> R.string.widget_offline
+                },
+            )
+            val server = prefs[WidgetState.SERVER_NAME] ?: "GhostStream"
             val timer = prefs[WidgetState.TIMER_TEXT] ?: "--:--:--"
             val rx = prefs[WidgetState.RX_SPEED] ?: "--"
             val tx = prefs[WidgetState.TX_SPEED] ?: "--"
@@ -68,16 +80,13 @@ class StripWidget : GlanceAppWidget() {
                     ) {}
                     Spacer(GlanceModifier.height(4.dp))
                     Text(
-                        text = when {
-                            connected -> "ONLINE"
-                            connecting -> "TUNING"
-                            else -> "OFFLINE"
-                        },
+                        text = stateWord.uppercase(),
                         style = TextStyle(
                             color = W.dim,
                             fontSize = 7.sp,
                             fontFamily = FontFamily.Monospace,
                         ),
+                        maxLines = 1,
                     )
                 }
 
@@ -126,15 +135,6 @@ class StripWidget : GlanceAppWidget() {
                                 ),
                             )
                         }
-                        if (!connected && !connecting) {
-                            Text(
-                                text = "Last: --",
-                                style = TextStyle(
-                                    color = W.faint,
-                                    fontSize = 9.sp,
-                                ),
-                            )
-                        }
                     }
                 }
 
@@ -144,15 +144,15 @@ class StripWidget : GlanceAppWidget() {
                 Box(
                     modifier = GlanceModifier
                         .size(36.dp)
-                        .background(if (connected) W.bgElev else W.btnConnect)
+                        .background(if (running) W.bgElev else W.btnConnect)
                         .cornerRadius(18.dp)
                         .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = if (connected) "\u23FB" else "\u25B6",
+                        text = if (running) "\u23FB" else "\u25B6",
                         style = TextStyle(
-                            color = if (connected) W.danger else W.btnConnectText,
+                            color = if (running) W.danger else W.btnConnectText,
                             fontSize = 14.sp,
                         ),
                     )

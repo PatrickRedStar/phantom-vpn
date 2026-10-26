@@ -10,11 +10,10 @@
 -keep class com.ghoststream.vpn.service.PhantomListener { *; }
 
 # Methods called via JNI by name: onStatusFrame(String), onLogFrame(String),
-# onPairingPayload(String), protect(int)
+# protect(int)
 -keepclassmembers class * implements com.ghoststream.vpn.service.PhantomListener {
     public void onStatusFrame(java.lang.String);
     public void onLogFrame(java.lang.String);
-    public void onPairingPayload(java.lang.String);
     public boolean protect(int);
 }
 

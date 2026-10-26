@@ -10,50 +10,41 @@ import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.service.VpnStateManager
 
+/**
+ * Connect / disconnect from outside the app (home-screen widgets, Quick
+ * Settings tile). Returns false when the app has to be opened instead:
+ * VPN consent not granted yet, or the service couldn't be started.
+ */
+fun toggleVpn(context: Context): Boolean = runCatching {
+    when (VpnStateManager.state.value) {
+        // v0.27.0 (W5): already tearing down — a second tap must not race a
+        // fresh start past the Service's tunnelGeneration guard.
+        is VpnState.Disconnecting -> Unit
+        is VpnState.Disconnected,
+        is VpnState.Error -> {
+            if (VpnService.prepare(context) != null) return false
+            // Service restores the last-used config itself.
+            context.startForegroundService(
+                Intent(context, GhostStreamVpnService::class.java)
+                    .setAction(GhostStreamVpnService.ACTION_START),
+            )
+        }
+        // Connecting / reconnecting count as running: the tap cancels.
+        else -> context.startService(
+            Intent(context, GhostStreamVpnService::class.java)
+                .setAction(GhostStreamVpnService.ACTION_STOP),
+        )
+    }
+    true
+}.getOrDefault(false)
+
 class ToggleVpnAction : ActionCallback {
     override suspend fun onAction(
         context: Context,
         glanceId: GlanceId,
         parameters: ActionParameters,
     ) {
-        val state = VpnStateManager.state.value
-        // v0.27.0 (W5): no-op during transitional states so a rapid widget
-        // tap can't drive a start → stop → start race past the Service's
-        // tunnelGeneration guard. Matches the Dashboard FAB lock.
-        if (state is VpnState.Disconnecting || state is VpnState.Connecting) {
-            return
-        }
-        if (state is VpnState.Connected ||
-            state is VpnState.Stale ||
-            state is VpnState.Throttled ||
-            state is VpnState.Reconnecting
-        ) {
-            // Disconnect
-            try {
-                val intent = Intent(context, GhostStreamVpnService::class.java)
-                    .setAction(GhostStreamVpnService.ACTION_STOP)
-                context.startService(intent)
-            } catch (_: Exception) {
-                openApp(context)
-            }
-        } else {
-            // Connect: check if VPN permission is already granted
-            val prepare = VpnService.prepare(context)
-            if (prepare == null) {
-                // Permission granted — start service directly.
-                // Service restores last-used config from SharedPreferences.
-                try {
-                    val intent = Intent(context, GhostStreamVpnService::class.java)
-                        .setAction(GhostStreamVpnService.ACTION_START)
-                    context.startForegroundService(intent)
-                } catch (_: Exception) {
-                    openApp(context)
-                }
-            } else {
-                // Permission not granted (first time) — must open app
-                openApp(context)
-            }
-        }
+        if (!toggleVpn(context)) openApp(context)
     }
 }
 

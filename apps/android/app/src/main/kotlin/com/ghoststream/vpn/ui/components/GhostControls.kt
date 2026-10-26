@@ -19,9 +19,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,7 +34,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
@@ -104,18 +109,23 @@ fun GhostFab(
     // transitional state ("Отключение...") and not just visually identical to
     // the active form. Click is consumed by clickable(enabled=false) below.
     val alpha = if (enabled) 1f else 0.45f
-    // Медленная пульсация свечения tonal-кнопки (4.4 s)
-    val glowPulse = rememberInfiniteTransition(label = "fab_glow")
-    val glowElevPx by glowPulse.animateFloat(
-        initialValue = if (outline) 5f else 8f,
-        targetValue = if (outline) 12f else 16f,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-            tween(2200),
-            androidx.compose.animation.core.RepeatMode.Reverse,
-        ),
-        label = "glow",
-    )
-    val glowElev = glowElevPx.dp
+    // Медленная пульсация свечения (4.4 s) — только у живой tonal-кнопки;
+    // у остальных свечение статичное и бесконечный переход не крутится.
+    // Значение читается в graphicsLayer: кадр анимации перерисовывает слой,
+    // а не рекомпозирует кнопку.
+    val glowElevPx: State<Float> = if (enabled && glow && outline) {
+        rememberInfiniteTransition(label = "fab_glow").animateFloat(
+            initialValue = 5f,
+            targetValue = 12f,
+            animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                tween(2200),
+                androidx.compose.animation.core.RepeatMode.Reverse,
+            ),
+            label = "glow",
+        )
+    } else {
+        remember(enabled, glow) { mutableFloatStateOf(if (enabled && glow) 8f else 0f) }
+    }
     // M3E shape-morph: пружинное сжатие при нажатии
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -131,16 +141,16 @@ fun GhostFab(
             .height(56.dp)
             .scale(pressScale)
             .alpha(alpha)
-            // Свечение — Modifier.shadow с лаймовым spot/ambient: тень идёт строго
-            // по форме pill и не может «уехать». Ручной drawRoundRect давал
-            // полосы по краям (сдвиг -4dp / +4dp) — см. баг-репорт 2026-08-01.
-            .shadow(
-                elevation = if (enabled && glow) glowElev else 0.dp,
-                shape = shape,
-                clip = false,
-                ambientColor = signalColor,
-                spotColor = Color.Transparent, // spot направленная → ореол «уезжал»
-            )
+            // Свечение — тень слоя с лаймовым ambient: идёт строго по форме pill
+            // и не может «уехать». Ручной drawRoundRect давал полосы по краям
+            // (сдвиг -4dp / +4dp) — см. баг-репорт 2026-08-01.
+            .graphicsLayer {
+                shadowElevation = glowElevPx.value.dp.toPx()
+                this.shape = shape
+                clip = false
+                ambientShadowColor = signalColor
+                spotShadowColor = Color.Transparent // spot направленная → ореол «уезжал»
+            }
             .clip(shape)
             .clickable(
                 interactionSource = interaction,
@@ -190,11 +200,21 @@ fun GhostToggle(
         if (checked) signalC else textDimC,
         label = "toggle_knob",
     )
+    // TalkBack читает это как переключатель; зона касания — не меньше 48 dp,
+    // рисуется по-прежнему 44×24.
     Box(
         modifier
+            .minimumInteractiveComponentSize()
+            .toggleable(
+                value = checked,
+                interactionSource = null,
+                indication = null,
+                role = Role.Switch,
+                onValueChange = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onToggle() },
+            )
+            .wrapContentSize(Alignment.Center)
             .size(width = 44.dp, height = 24.dp)
             .clip(pill)
-            .clickable(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onToggle() })
             .border(1.dp, if (checked) signalC else hairBoldC, pill)
             .background(trackColor)
             .padding(3.dp),

@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsShapeCard
 import com.ghoststream.vpn.ui.theme.GsShapeField
@@ -39,8 +40,15 @@ fun GhostDialog(
     content: @Composable ColumnScope.() -> Unit,
     confirmButton: @Composable (() -> Unit)? = null,
     dismissButton: @Composable (() -> Unit)? = null,
+    /** FLAG_SECURE: keep secrets (keys, QR with a key) out of screenshots and recents. */
+    secure: Boolean = false,
 ) {
-    Dialog(onDismissRequest = onDismissRequest) {
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(
+            securePolicy = if (secure) SecureFlagPolicy.SecureOn else SecureFlagPolicy.Inherit,
+        ),
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()

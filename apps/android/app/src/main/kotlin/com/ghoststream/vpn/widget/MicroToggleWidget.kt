@@ -30,6 +30,7 @@ import androidx.glance.text.FontFamily
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import com.ghoststream.vpn.R
 
 /** Widget A — Micro Toggle (2×1). Status dot + server + toggle button. */
 class MicroToggleWidget : GlanceAppWidget() {
@@ -39,7 +40,18 @@ class MicroToggleWidget : GlanceAppWidget() {
         provideContent {
             val prefs = currentState<Preferences>()
             val connected = prefs[WidgetState.IS_CONNECTED] ?: false
-            val connecting = prefs[WidgetState.IS_CONNECTING] ?: false
+            val reconnecting = prefs[WidgetState.IS_RECONNECTING] ?: false
+            val connecting = (prefs[WidgetState.IS_CONNECTING] ?: false) || reconnecting
+            // Connecting / reconnecting count as running: the button stops.
+            val running = connected || connecting
+            val stateWord = context.getString(
+                when {
+                    connected -> R.string.widget_online
+                    reconnecting -> R.string.widget_reconnecting
+                    connecting -> R.string.widget_tuning
+                    else -> R.string.widget_offline
+                },
+            )
             val server = prefs[WidgetState.SERVER_NAME] ?: "GhostStream"
 
             Row(
@@ -81,16 +93,13 @@ class MicroToggleWidget : GlanceAppWidget() {
                 // Server info
                 Column(modifier = GlanceModifier.defaultWeight()) {
                     Text(
-                        text = when {
-                            connected -> "ONLINE"
-                            connecting -> "TUNING"
-                            else -> "OFFLINE"
-                        },
+                        text = stateWord.uppercase(),
                         style = TextStyle(
                             color = W.dim,
                             fontSize = 9.sp,
                             fontFamily = FontFamily.Monospace,
                         ),
+                        maxLines = 1,
                     )
                     Text(
                         text = server.take(14),
@@ -107,15 +116,15 @@ class MicroToggleWidget : GlanceAppWidget() {
                 Box(
                     modifier = GlanceModifier
                         .size(28.dp)
-                        .background(if (connected) W.bgElev else W.btnConnect)
+                        .background(if (running) W.bgElev else W.btnConnect)
                         .cornerRadius(14.dp)
                         .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = if (connected) "\u23FB" else "\u25B6",
+                        text = if (running) "\u23FB" else "\u25B6",
                         style = TextStyle(
-                            color = if (connected) W.danger else W.btnConnectText,
+                            color = if (running) W.danger else W.btnConnectText,
                             fontSize = 12.sp,
                         ),
                     )

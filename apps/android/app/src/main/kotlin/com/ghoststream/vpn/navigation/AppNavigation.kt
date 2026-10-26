@@ -16,7 +16,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -32,7 +35,6 @@ import com.ghoststream.vpn.ui.components.rememberAdaptiveNavType
 import com.ghoststream.vpn.ui.dashboard.DashboardScreen
 import com.ghoststream.vpn.ui.logs.LogsScreen
 import com.ghoststream.vpn.ui.logs.LogsViewModel
-import com.ghoststream.vpn.ui.pairing.TvPairingScreen
 import com.ghoststream.vpn.ui.settings.SettingsScreen
 import com.ghoststream.vpn.ui.settings.SettingsViewModel
 import com.ghoststream.vpn.ui.theme.C
@@ -60,19 +62,19 @@ fun AppNavigation() {
 
     val isOnTabRoute = currentRoute == null || currentRoute == "tabs"
 
-    // Forward QR/pairing results from NavHost savedStateHandle to settingsViewModel
+    // The core logs at the journal's level only while it is on screen.
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val logsVisible = isOnTabRoute && pagerState.currentPage == 1 &&
+        lifecycleState.isAtLeast(Lifecycle.State.STARTED)
+    LaunchedEffect(logsVisible) { logsViewModel.setVisible(logsVisible) }
+
+    // Forward QR results from NavHost savedStateHandle to settingsViewModel
     val tabsEntry = navBackStackEntry
     if (tabsEntry != null && currentRoute == "tabs") {
         val qrResult = tabsEntry.savedStateHandle.get<String>("qr_result")
         if (qrResult != null) {
             settingsViewModel.setPendingConnString(qrResult)
             tabsEntry.savedStateHandle.remove<String>("qr_result")
-        }
-        val pairResult = tabsEntry.savedStateHandle.get<String>("pair_qr_result")
-        if (pairResult != null) {
-            val parts = pairResult.split("|||", limit = 2)
-            if (parts.size == 2) settingsViewModel.sendToTv(parts[0], parts[1])
-            tabsEntry.savedStateHandle.remove<String>("pair_qr_result")
         }
     }
 
@@ -122,8 +124,6 @@ fun AppNavigation() {
                         viewModel = settingsViewModel,
                         onNavigateToQrScanner = { navController.navigate("qr_scanner") },
                         onAdminNavigate = { profileId -> navController.navigate("admin/$profileId") },
-                        onShareToTv = { profileId -> navController.navigate("qr_scanner_pair/$profileId") },
-                        onGetFromPhone = { navController.navigate("tv_pairing") },
                     )
                 }
             }
@@ -163,22 +163,6 @@ fun AppNavigation() {
                         },
                         onBack = { navController.popBackStack() },
                     )
-                }
-
-                composable("qr_scanner_pair/{profileId}") { backEntry ->
-                    val profileId = backEntry.arguments?.getString("profileId") ?: return@composable
-                    QrScannerScreen(
-                        onResult = { qrText ->
-                            navController.previousBackStackEntry
-                                ?.savedStateHandle?.set("pair_qr_result", "$profileId|||$qrText")
-                            navController.popBackStack()
-                        },
-                        onBack = { navController.popBackStack() },
-                    )
-                }
-
-                composable("tv_pairing") {
-                    TvPairingScreen(onDone = { navController.popBackStack() })
                 }
 
                 composable("admin/{profileId}") { backEntry ->

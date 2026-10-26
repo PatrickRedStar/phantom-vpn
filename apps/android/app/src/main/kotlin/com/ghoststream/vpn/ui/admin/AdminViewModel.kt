@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -77,7 +79,7 @@ class AdminViewModel : ViewModel() {
     fun init(profile: VpnProfile, store: ProfilesStore) {
         profilesStore = store
         profileId = profile.id
-        baseUrl = "https://${gatewayOf(profile.tunAddr)}:8080"
+        baseUrl = AdminHttpClient.baseUrl(profile.tunAddr)
         try {
             val outcome = AdminHttpClient.build(
                 certPemPath = profile.certPath,
@@ -92,11 +94,9 @@ class AdminViewModel : ViewModel() {
         }
     }
 
-    private fun gatewayOf(tunCidr: String): String {
-        val ip = tunCidr.substringBefore('/', tunCidr)
-        val parts = ip.split('.')
-        return if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.1" else "10.7.0.1"
-    }
+    /** Client names go in as path segments — escaped, never spliced into the path. */
+    private fun url(vararg segments: String): HttpUrl =
+        baseUrl.toHttpUrl().newBuilder().apply { segments.forEach { addPathSegment(it) } }.build()
 
     private fun persistFpIfNeeded() {
         val store = profilesStore ?: return
@@ -135,7 +135,7 @@ class AdminViewModel : ViewModel() {
             try {
                 val body = JSONObject().put("name", name).put("is_admin", isAdmin)
                 if (expiresDays != null) body.put("expires_days", expiresDays)
-                val result = apiPost("/api/clients", body.toString())
+                val result = apiPost(url("api", "clients"), body.toString())
                 _newConnString.value = result.optString("conn_string")
                 refresh()
             } catch (e: Exception) {
@@ -147,7 +147,7 @@ class AdminViewModel : ViewModel() {
 
     fun deleteClient(name: String) {
         viewModelScope.launch {
-            try { apiDelete("/api/clients/$name"); refresh() }
+            try { apiDelete(url("api", "clients", name)); refresh() }
             catch (e: Exception) { _error.value = e.message ?: "Ошибка удаления" }
         }
     }
@@ -155,8 +155,8 @@ class AdminViewModel : ViewModel() {
     fun toggleEnabled(name: String, currentlyEnabled: Boolean) {
         viewModelScope.launch {
             try {
-                val endpoint = if (currentlyEnabled) "/api/clients/$name/disable" else "/api/clients/$name/enable"
-                apiPost(endpoint, "{}"); refresh()
+                val action = if (currentlyEnabled) "disable" else "enable"
+                apiPost(url("api", "clients", name, action), "{}"); refresh()
             } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
         }
     }
@@ -164,7 +164,7 @@ class AdminViewModel : ViewModel() {
     fun toggleAdmin(name: String, makeAdmin: Boolean) {
         viewModelScope.launch {
             try {
-                apiPost("/api/clients/$name/admin", JSONObject().put("is_admin", makeAdmin).toString())
+                apiPost(url("api", "clients", name, "admin"), JSONObject().put("is_admin", makeAdmin).toString())
                 refresh()
             } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
         }
@@ -173,7 +173,7 @@ class AdminViewModel : ViewModel() {
     fun getConnString(name: String) {
         viewModelScope.launch {
             try {
-                val result = apiGet("/api/clients/$name/conn_string")
+                val result = apiGet(url("api", "clients", name, "conn_string"))
                 _newConnString.value = result.optString("conn_string")
             } catch (e: Exception) { _error.value = e.message ?: "Ошибка" }
         }
@@ -188,7 +188,7 @@ class AdminViewModel : ViewModel() {
             try {
                 val body = JSONObject().put("action", action)
                 if (days != null) body.put("days", days)
-                apiPost("/api/clients/$name/subscription", body.toString())
+                apiPost(url("api", "clients", name, "subscription"), body.toString())
                 refresh()
             } catch (e: Exception) {
                 _error.value = e.message ?: "Ошибка"
@@ -201,7 +201,7 @@ class AdminViewModel : ViewModel() {
         viewModelScope.launch {
             _selectedClient.value = name
             try {
-                val arr = apiGetArray("/api/clients/$name/stats")
+                val arr = apiGetArray(url("api", "clients", name, "stats"))
                 _clientStats.value = (0 until arr.length()).map { i ->
                     val o = arr.getJSONObject(i)
                     StatsSample(o.optLong("ts"), o.optLong("bytes_rx"), o.optLong("bytes_tx"))
@@ -213,7 +213,7 @@ class AdminViewModel : ViewModel() {
     fun loadClientLogs(name: String) {
         viewModelScope.launch {
             try {
-                val arr = apiGetArray("/api/clients/$name/logs")
+                val arr = apiGetArray(url("api", "clients", name, "logs"))
                 _clientLogs.value = (0 until arr.length()).map { i ->
                     val o = arr.getJSONObject(i)
                     DestEntry(o.optLong("ts"), o.optString("dst"), o.optInt("port"),
@@ -230,7 +230,7 @@ class AdminViewModel : ViewModel() {
     }
 
     private suspend fun fetchStatus(): ServerStatus = withContext(Dispatchers.IO) {
-        val obj = apiGet("/api/status")
+        val obj = apiGet(url("api", "status"))
         ServerStatus(
             uptimeSecs = obj.optLong("uptime_secs"),
             sessionsActive = obj.optInt("sessions_active"),
@@ -240,7 +240,7 @@ class AdminViewModel : ViewModel() {
     }
 
     private suspend fun fetchClients(): List<ClientInfo> = withContext(Dispatchers.IO) {
-        val arr = apiGetArray("/api/clients")
+        val arr = apiGetArray(url("api", "clients"))
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             ClientInfo(
@@ -259,27 +259,27 @@ class AdminViewModel : ViewModel() {
         }
     }
 
-    private suspend fun apiGet(path: String): JSONObject = withContext(Dispatchers.IO) {
-        val body = doRequest(Request.Builder().url("$baseUrl$path").get().build())
+    private suspend fun apiGet(url: HttpUrl): JSONObject = withContext(Dispatchers.IO) {
+        val body = doRequest(Request.Builder().url(url).get().build())
         JSONObject(body)
     }
 
-    private suspend fun apiGetArray(path: String): JSONArray = withContext(Dispatchers.IO) {
-        val body = doRequest(Request.Builder().url("$baseUrl$path").get().build())
+    private suspend fun apiGetArray(url: HttpUrl): JSONArray = withContext(Dispatchers.IO) {
+        val body = doRequest(Request.Builder().url(url).get().build())
         JSONArray(body)
     }
 
-    private suspend fun apiPost(path: String, body: String): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun apiPost(url: HttpUrl, body: String): JSONObject = withContext(Dispatchers.IO) {
         val req = Request.Builder()
-            .url("$baseUrl$path")
+            .url(url)
             .post(body.toRequestBody(JSON_MEDIA))
             .build()
         val resp = doRequest(req)
         if (resp.isBlank()) JSONObject() else JSONObject(resp)
     }
 
-    private suspend fun apiDelete(path: String) = withContext(Dispatchers.IO) {
-        doRequest(Request.Builder().url("$baseUrl$path").delete().build())
+    private suspend fun apiDelete(url: HttpUrl) = withContext(Dispatchers.IO) {
+        doRequest(Request.Builder().url(url).delete().build())
         Unit
     }
 

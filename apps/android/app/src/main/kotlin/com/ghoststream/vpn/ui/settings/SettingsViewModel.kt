@@ -8,9 +8,8 @@ import android.content.pm.PackageManager
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.ghoststream.vpn.data.AdminHttpClient
+import com.ghoststream.vpn.R
 import com.ghoststream.vpn.data.ConnStringParser
-import com.ghoststream.vpn.data.PairingClient
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
@@ -27,9 +26,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.Request
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.io.ByteArrayInputStream
 import java.net.InetSocketAddress
@@ -64,10 +60,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             directCountries = p?.directCountries ?: prefs.directCountries,
             perAppMode      = p?.perAppMode ?: prefs.perAppMode,
             perAppList      = p?.perAppList ?: prefs.perAppList,
-            // v0.27.0 (W11): DPI recycle byte cap is a global preference
-            // (carrier detection is per-IP/SNI, not per-profile), so we
-            // pull from preferences only.
-            dpiRecycleBytes = prefs.dpiRecycleBytes,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
@@ -187,29 +179,29 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    // ── v0.25.1 W3-13: battery-optimisation exemption prompt ──────────────
+    // ── v0.25.1 W3-13: battery optimisation ──────────────────────────────
     //
-    // Without REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, MIUI/EMUI/OxygenOS will
-    // happily kill the foreground service after ~30 min screen-off, despite
-    // the FGS contract. The platform Intent shows a yes/no dialog directly;
-    // we can call it without an Activity result because we just re-check
-    // status on the next Settings render.
-    @android.annotation.SuppressLint("BatteryLife")
-    fun requestIgnoreBatteryOptimisations(context: Context) {
-        try {
-            val intent = Intent(
-                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                android.net.Uri.parse("package:${context.packageName}"),
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
-        } catch (_: Exception) {
-            // Fallback — open the full list. Older OEM ROMs sometimes
-            // remove the per-package action.
-            val fallback = Intent(
-                android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            try { context.startActivity(fallback) } catch (_: Exception) {}
+    // MIUI/EMUI/OxygenOS kill the foreground service after ~30 min screen-off
+    // unless the app is exempt. A direct per-app request
+    // (REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) is a Play-policy risk, so we only
+    // open the system list and let the user flip it there.
+    fun openBatteryOptimisationSettings(context: Context) {
+        val intent = Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }.onFailure {
+            runCatching {
+                context.startActivity(
+                    Intent(android.provider.Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
         }
+    }
+
+    /** System VPN settings — the only place to turn on Always-on VPN / lockdown. */
+    fun openSystemVpnSettings(context: Context) {
+        val intent = Intent(android.provider.Settings.ACTION_VPN_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(intent) }
     }
 
     // ── Import dialog state ───────────────────────────────────────────────────
@@ -223,17 +215,21 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _importStatus = MutableStateFlow("")
     val importStatus: StateFlow<String> = _importStatus
 
-    fun setPendingConnString(value: String) { _pendingConnString.value = value }
+    fun setPendingConnString(value: String) {
+        _pendingConnString.value = value
+        _importStatus.value = ""
+    }
     fun setPendingName(value: String)       { _pendingName.value = value }
 
-    fun importConfig() {
+    /** Imports the pending string; false keeps the dialog open with [importStatus]. */
+    fun importConfig(): Boolean {
         val input = _pendingConnString.value.trim()
         if (input.isEmpty()) {
-            _importStatus.value = "Вставьте строку подключения"
-            return
+            _importStatus.value = getApplication<Application>().getString(R.string.import_empty)
+            return false
         }
 
-        ConnStringParser.parse(input).fold(
+        return ConnStringParser.parse(input).fold(
             onSuccess = { parsed ->
                 val ctx = getApplication<Application>()
                 val id = java.util.UUID.randomUUID().toString()
@@ -266,13 +262,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
                 _pendingConnString.value = ""
                 _pendingName.value = ""
-                _importStatus.value = "Добавлено: $name · ${parsed.addr}"
+                _importStatus.value = ""
+                true
             },
             onFailure = {
-                _importStatus.value = "Ошибка: ${it.message}"
+                _importStatus.value = getApplication<Application>()
+                    .getString(R.string.import_failed, it.message ?: "")
+                false
             },
         )
     }
+
+    fun clearImportStatus() { _importStatus.value = "" }
 
     fun deleteProfile(id: String) = profilesStore.deleteProfile(id)
 
@@ -288,21 +289,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         name: String,
         relayEnabled: Boolean,
         relayAddr: String?,
-        serverName: String? = null,
     ) {
         val profile = profilesStore.profiles.value.find { it.id == id } ?: return
+        // SNI is not editable: the server certificate is always verified
+        // against it, so any other value just breaks the connection.
         profilesStore.updateProfile(
             profile.copy(
                 name = name.trim().ifEmpty { profile.name },
                 relayEnabled = relayEnabled,
                 relayAddr = relayAddr,
-                // v0.27.0 (W12): allow editing the SNI override from the
-                // profile-edit dialog. Used for empirical DPI bypass testing —
-                // m.tinkoff was confirmed blocking traffic by the specific SNI
-                // string (not IP), so the user needs to swap in a whitelisted
-                // popular RU domain like www.yandex.cloud. The server TLS cert
-                // is always verified (webpki) regardless of the SNI override.
-                serverName = serverName?.trim()?.ifEmpty { null } ?: profile.serverName,
             ),
         )
     }
@@ -325,6 +320,29 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             profilesStore.updateProfile(profile.copy(dnsServers = servers))
         } else {
             viewModelScope.launch { preferencesStore.saveConfig(config.value.copy(dnsServers = servers)) }
+        }
+    }
+
+    /** Saves a typed DNS list; false (nothing saved) when it is empty or has a non-IPv4 entry. */
+    fun setDnsServersFromText(text: String): Boolean {
+        val servers = parseDnsList(text) ?: return false
+        setDnsServers(servers)
+        return true
+    }
+
+    companion object {
+        /** "1.1.1.1, 8.8.8.8; 9.9.9.9" → list; null when empty or any entry is not IPv4. */
+        fun parseDnsList(text: String): List<String>? {
+            val tokens = text.split(',', ';', ' ', '\n', '\t').filter { it.isNotBlank() }
+            if (tokens.isEmpty() || !tokens.all(::isIpv4)) return null
+            return tokens.distinct()
+        }
+
+        private fun isIpv4(s: String): Boolean {
+            val parts = s.split('.')
+            return parts.size == 4 && parts.all { p ->
+                p.length in 1..3 && p.all(Char::isDigit) && p.toInt() <= 255
+            }
         }
     }
 
@@ -356,7 +374,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         if (id in _pinging.value) return
         viewModelScope.launch {
             _pinging.value = _pinging.value + id
-            val latency = measureTcpLatency(profile.serverAddr)
+            // With the relay on, the client never dials the exit directly.
+            val target = profile.relayAddr?.takeIf { profile.relayEnabled && it.isNotBlank() }
+                ?: profile.serverAddr
+            val latency = measureTcpLatency(target)
             _pingResults.value = _pingResults.value + (id to latency)
             _pinging.value = _pinging.value - id
         }
@@ -374,114 +395,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             System.currentTimeMillis() - start
         } catch (_: Exception) { null }
     }
-
-    // ── Subscription info ─────────────────────────────────────────────────────
-
-    private val _profileSubscriptions = MutableStateFlow<Map<String, String>>(emptyMap())
-    val profileSubscriptions: StateFlow<Map<String, String>> = _profileSubscriptions
-
-    private fun fetchAllSubscriptions() {
-        profiles.value
-            .filter { it.certPath.isNotBlank() && it.keyPath.isNotBlank() }
-            .forEach { fetchProfileSubscription(it) }
-    }
-
-    private fun fetchProfileSubscription(profile: VpnProfile) {
-        val myTunIp = profile.tunAddr.substringBefore('/')
-        val parts = myTunIp.split('.')
-        val gateway = if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.1" else "10.7.0.1"
-        val baseUrl = "https://$gateway:8080"
-
-        viewModelScope.launch(Dispatchers.IO) {
-            android.util.Log.i("AdminProbe", "fetchProfile: name=${profile.name} tunIp=$myTunIp baseUrl=$baseUrl")
-            try {
-                val certFile = java.io.File(profile.certPath)
-                val keyFile = java.io.File(profile.keyPath)
-                if (!certFile.exists() || !keyFile.exists()) {
-                    android.util.Log.w("AdminProbe", "cert/key files missing: cert=${certFile.exists()} key=${keyFile.exists()}")
-                    return@launch
-                }
-                android.util.Log.i("AdminProbe", "building OkHttpClient (cert=${profile.certPath})")
-                val outcome = AdminHttpClient.build(
-                    certPemPath = profile.certPath,
-                    keyPemPath = profile.keyPath,
-                    pinnedFp = profile.cachedAdminServerCertFp,
-                )
-                android.util.Log.i("AdminProbe", "dialing $baseUrl/api/me (timeout=30s)")
-                val meReq = Request.Builder().url("$baseUrl/api/me").get().build()
-                val isAdmin = outcome.client.newCall(meReq).execute().use { resp ->
-                    android.util.Log.i("AdminProbe", "/api/me code=${resp.code}")
-                    if (!resp.isSuccessful) return@launch
-                    JSONObject(resp.body?.string().orEmpty()).optBoolean("is_admin", false)
-                }
-                android.util.Log.i("AdminProbe", "is_admin=$isAdmin for ${profile.name}")
-                val clReq = Request.Builder().url("$baseUrl/api/clients").get().build()
-                val body = outcome.client.newCall(clReq).execute().use {
-                    if (!it.isSuccessful) return@launch
-                    it.body?.string().orEmpty()
-                }
-                val arr = JSONArray(body)
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    if (o.optString("tun_addr").substringBefore('/') == myTunIp) {
-                        val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
-                        val enabled = o.optBoolean("enabled", true)
-                        val text = if (expiresAt == null) "бессрочно" else {
-                            val rem = expiresAt - (System.currentTimeMillis() / 1000)
-                            if (rem > 0) {
-                                val d = rem / 86400
-                                val h = (rem % 86400) / 3600
-                                when {
-                                    d > 0 -> "${d}д"
-                                    h > 0 -> "${h}ч"
-                                    else  -> "< 1ч ⚠"
-                                }
-                            } else "истекла ⚠"
-                        }
-                        _profileSubscriptions.value = _profileSubscriptions.value + (profile.id to text)
-                        profilesStore.updateProfile(
-                            profile.copy(
-                                cachedExpiresAt = expiresAt,
-                                cachedEnabled = enabled,
-                                cachedIsAdmin = isAdmin,
-                                cachedAdminServerCertFp = outcome.serverCertFpRef.value
-                                    ?: profile.cachedAdminServerCertFp,
-                            ),
-                        )
-                        break
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("AdminProbe", "fetch failed for ${profile.name}: ${e.javaClass.simpleName}: ${e.message}")
-            }
-        }
-    }
-
-    // ── Share to TV ──────────────────────────────────────────────────────────
-
-    private val _sendToTvStatus = MutableStateFlow<String?>(null)
-    val sendToTvStatus: StateFlow<String?> = _sendToTvStatus
-
-    fun sendToTv(profileId: String, pairingQrText: String) {
-        val profile = profiles.value.find { it.id == profileId } ?: return
-        val connString = ConnStringParser.build(profile) ?: run {
-            _sendToTvStatus.value = "Ошибка: не удалось собрать строку подключения"
-            return
-        }
-        val payload = PairingClient.parsePairingQr(pairingQrText) ?: run {
-            _sendToTvStatus.value = "Ошибка: не распознан QR-код TV"
-            return
-        }
-        viewModelScope.launch {
-            _sendToTvStatus.value = "Отправка..."
-            PairingClient.send(payload, connString).fold(
-                onSuccess = { _sendToTvStatus.value = "Отправлено на TV!" },
-                onFailure = { _sendToTvStatus.value = "Ошибка: ${it.message}" },
-            )
-        }
-    }
-
-    fun clearSendToTvStatus() { _sendToTvStatus.value = null }
 
     private fun extractClientNameFromCert(certPem: String): String? = runCatching {
         val certFactory = CertificateFactory.getInstance("X.509")
@@ -585,24 +498,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     init {
         refreshDownloadedRules()
         migrateLegacyIfNeeded()
-        // v0.27.0 (debug): fetchAllSubscriptions раньше вызывался один раз тут
-        // — но `profiles.value` могло быть пустым (ProfilesStore.load async),
-        // и для свежедобавленных профилей fetch никогда не происходил.
-        // Подпишемся на profiles.collect — каждый раз когда profile добавляется
-        // или меняется, дёргаем fetch для тех у кого cachedIsAdmin == null.
-        viewModelScope.launch {
-            val alreadyProbed = mutableSetOf<String>()  // by profile.id
-            profilesStore.profiles.collect { list ->
-                android.util.Log.i("AdminProbe", "profiles update: ${list.size} profiles")
-                list.filter {
-                    it.certPath.isNotBlank() && it.keyPath.isNotBlank()
-                            && it.id !in alreadyProbed
-                }.forEach {
-                    alreadyProbed.add(it.id)
-                    fetchProfileSubscription(it)
-                }
-            }
-        }
+        // Subscription / admin flag come from /api/me, asked by DashboardViewModel
+        // once per session through the live tunnel; here we only render the cache.
     }
 
     private fun migrateLegacyIfNeeded() {
@@ -643,19 +540,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
         if (addRu && !routingRulesManager.isDownloaded("ru")) {
             downloadCountryRules("ru")
-        }
-    }
-
-    /**
-     * v0.27.0 (W11): set experimental DPI recycle byte cap. null/0 = off.
-     * Persisted across app restarts via PreferencesStore. Applies on next
-     * tunnel start — does not retroactively change a live connection.
-     * Recommended: 100_000 (just under aggregate 8 streams × ~14 KB = 112 KB
-     * carrier per-connection freeze threshold).
-     */
-    fun setDpiRecycleBytes(bytes: Long?) {
-        viewModelScope.launch {
-            preferencesStore.saveConfig(config.value.copy(dpiRecycleBytes = bytes?.takeIf { it > 0 }))
         }
     }
 
