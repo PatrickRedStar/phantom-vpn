@@ -117,7 +117,6 @@ fun SettingsScreen(
     val pendingName by viewModel.pendingName.collectAsStateWithLifecycle()
     val pingResults by viewModel.pingResults.collectAsStateWithLifecycle()
     val pinging by viewModel.pinging.collectAsStateWithLifecycle()
-    val profileSubscriptions by viewModel.profileSubscriptions.collectAsStateWithLifecycle()
     val autoStart by viewModel.autoStartOnBoot.collectAsStateWithLifecycle()
     val languageOverride by viewModel.languageOverride.collectAsStateWithLifecycle()
     val theme by viewModel.theme.collectAsStateWithLifecycle()
@@ -125,6 +124,7 @@ fun SettingsScreen(
 
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
+    val logsViewModel: com.ghoststream.vpn.ui.logs.LogsViewModel = viewModel()
     var showAddDialog by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<VpnProfile?>(null) }
     var editName by remember { mutableStateOf("") }
@@ -162,7 +162,6 @@ fun SettingsScreen(
             activeProfileId = activeProfileId,
             pingResults = pingResults,
             pinging = pinging,
-            profileSubscriptions = profileSubscriptions,
             autoStart = autoStart,
             languageOverride = languageOverride,
             theme = theme,
@@ -230,7 +229,6 @@ fun SettingsScreen(
                             activeProfileId = activeProfileId,
                             pingResults = pingResults,
                             pinging = pinging,
-                            profileSubscriptions = profileSubscriptions,
                             autoStart = autoStart,
                             selectedDetail = selectedDetail,
                             showOemHints = !isWideExpanded,
@@ -412,6 +410,7 @@ fun SettingsScreen(
     // ── DNS Picker Dialog ────────────────────────────────────────────────
     if (showDnsPicker) {
         var customDns by remember { mutableStateOf(config.dnsServers.joinToString(", ")) }
+        var dnsInvalid by remember { mutableStateOf(false) }
         GhostDialog(
             onDismissRequest = { showDnsPicker = false },
             title = stringResource(R.string.row_dns),
@@ -451,22 +450,24 @@ fun SettingsScreen(
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = customDns,
-                    onValueChange = { customDns = it },
+                    onValueChange = { customDns = it; dnsInvalid = false },
                     label = { Text(stringResource(R.string.dns_custom_hint)) },
                     singleLine = true,
+                    isError = dnsInvalid,
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = TextStyle(fontFamily = com.ghoststream.vpn.ui.theme.JetBrainsMono, fontSize = 11.sp),
                     colors = ghostTextFieldColors(),
                     shape = GhostTextFieldShape,
                 )
+                if (dnsInvalid) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(stringResource(R.string.dns_invalid), style = GsText.host, color = C.danger)
+                }
             },
             confirmButton = {
                 GhostDialogButton(stringResource(R.string.action_save), onClick = {
-                    val servers = customDns.split(",", " ")
-                        .map { it.trim() }
-                        .filter { it.matches(Regex("\\d+\\.\\d+\\.\\d+\\.\\d+")) }
-                    viewModel.setDnsServers(servers)
-                    showDnsPicker = false
+                    if (viewModel.setDnsServersFromText(customDns)) showDnsPicker = false
+                    else dnsInvalid = true
                 })
             },
             dismissButton = {
@@ -579,11 +580,6 @@ fun SettingsScreen(
         var showDeleteConfirm by remember { mutableStateOf(false) }
         var relayEnabled by remember(editingProfile) { mutableStateOf(editingProfile!!.relayEnabled) }
         var relayAddr by remember(editingProfile) { mutableStateOf(editingProfile!!.relayAddr ?: "") }
-        // v0.27.0 (W12): SNI is now editable from the profile dialog so user
-        // can override the connection-string default to e.g.
-        // `www.yandex.cloud` when carrier DPI is blocking by specific SNI
-        // string. Default — value from the imported ghs:// connection string.
-        var sniOverride by remember(editingProfile) { mutableStateOf(editingProfile!!.serverName) }
         GhostDialog(
             onDismissRequest = { editingProfile = null },
             title = stringResource(R.string.edit_profile_title),
@@ -604,16 +600,12 @@ fun SettingsScreen(
                     color = C.textDim,
                 )
                 Spacer(Modifier.height(8.dp))
-                // SNI editable — used for DPI evasion (override).
-                OutlinedTextField(
-                    value = sniOverride,
-                    onValueChange = { sniOverride = it },
-                    label = { Text("SNI (override для обхода DPI)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(fontFamily = com.ghoststream.vpn.ui.theme.JetBrainsMono, fontSize = 11.sp),
-                    colors = ghostTextFieldColors(),
-                    shape = GhostTextFieldShape,
+                // SNI read-only: the server certificate is verified against it,
+                // so any other value guarantees a failed handshake.
+                Text(
+                    text = "SNI: ${editingProfile!!.serverName}",
+                    style = GsText.host,
+                    color = C.textFaint,
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -685,6 +677,7 @@ fun SettingsScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         GhostDialogButton(stringResource(R.string.action_delete), onClick = {
                             viewModel.deleteProfile(editingProfile!!.id)
+                            logsViewModel.clearLogs()
                             editingProfile = null
                         }, color = C.danger)
                         GhostDialogButton(stringResource(R.string.action_cancel), onClick = { showDeleteConfirm = false }, color = C.textDim)
@@ -700,7 +693,6 @@ fun SettingsScreen(
                         name = editName,
                         relayEnabled = relayEnabled,
                         relayAddr = relayAddr.trim().ifBlank { null },
-                        serverName = sniOverride,
                     )
                     editingProfile = null
                 })
@@ -712,9 +704,11 @@ fun SettingsScreen(
     }
 
     if (showAddDialog) {
+        val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
         AddProfileDialog(
             connString = pendingConnString,
             name = pendingName,
+            error = importStatus,
             onConnStringChange = { viewModel.setPendingConnString(it) },
             onNameChange = { viewModel.setPendingName(it) },
             onPasteFromClipboard = {
@@ -725,12 +719,12 @@ fun SettingsScreen(
                 onNavigateToQrScanner()
             },
             onConfirm = {
-                viewModel.importConfig()
-                showAddDialog = false
+                if (viewModel.importConfig()) showAddDialog = false
             },
             onDismiss = {
                 viewModel.setPendingConnString("")
                 viewModel.setPendingName("")
+                viewModel.clearImportStatus()
                 showAddDialog = false
             },
         )
@@ -748,7 +742,6 @@ private fun PhoneSettingsBody(
     activeProfileId: String?,
     pingResults: Map<String, Long?>,
     pinging: Set<String>,
-    profileSubscriptions: Map<String, String>,
     autoStart: Boolean,
     languageOverride: String?,
     theme: String,
@@ -799,7 +792,6 @@ private fun PhoneSettingsBody(
                     active = profile.id == activeProfileId,
                     latencyMs = pingResults[profile.id],
                     isPinging = profile.id in pinging,
-                    subscriptionText = profileSubscriptions[profile.id],
                     onTap = { viewModel.setActiveProfile(profile.id) },
                     onEdit = { onEditProfile(profile) },
                     vpnLive = vpnLive,
@@ -904,7 +896,6 @@ private fun MasterPane(
     activeProfileId: String?,
     pingResults: Map<String, Long?>,
     pinging: Set<String>,
-    profileSubscriptions: Map<String, String>,
     autoStart: Boolean,
     selectedDetail: SettingsDetailKind,
     showOemHints: Boolean,
@@ -960,7 +951,6 @@ private fun MasterPane(
                     vpnLive = vpnLive,
                     latencyMs = pingResults[profile.id],
                     isPinging = profile.id in pinging,
-                    subscriptionText = profileSubscriptions[profile.id],
                     onTap = { onSelectEndpoint(profile.id) },
                     onEdit = { onEditProfile(profile) },
                     onLongPressAdmin = if (profile.cachedIsAdmin == true) {
@@ -1357,7 +1347,7 @@ private fun TunnelRows(
                 R.string.sub_split_bypass,
                 config.directCountries.sumOf { downloadedRulesForSub[it]?.cidrCount ?: 0 },
             )
-        else "Off",
+        else stringResource(R.string.sub_off),
         right = {
             GhostToggle(
                 checked = config.splitRouting,
@@ -1371,8 +1361,8 @@ private fun TunnelRows(
         label = stringResource(R.string.row_per_app),
         sub = when (config.perAppMode) {
             "disallowed" -> stringResource(R.string.sub_per_app_excluded, config.perAppList.size)
-            "allowed" -> "${config.perAppList.size} apps selected"
-            else -> "All through VPN"
+            "allowed" -> stringResource(R.string.sub_per_app_only, config.perAppList.size)
+            else -> stringResource(R.string.sub_per_app_all)
         },
         right = {
             GhostToggle(
@@ -1397,6 +1387,30 @@ private fun TunnelRows(
         right = {
             GhostToggle(checked = autoStart, onToggle = { viewModel.setAutoStartOnBoot(!autoStart) })
         },
+        showDivider = true,
+    )
+    // Real always-on (and "block connections without VPN") is a system
+    // setting; we can only show its state and send the user there.
+    val context = LocalContext.current
+    var systemAlwaysOn by remember { mutableStateOf(systemAlwaysOnState(context)) }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        systemAlwaysOn = systemAlwaysOnState(context)
+        onPauseOrDispose { }
+    }
+    SettingRow(
+        label = stringResource(R.string.row_system_always_on),
+        sub = stringResource(
+            when (systemAlwaysOn) {
+                SystemAlwaysOn.LOCKDOWN -> R.string.sub_system_always_on_lockdown
+                SystemAlwaysOn.ON -> R.string.sub_system_always_on_on
+                SystemAlwaysOn.OFF -> R.string.sub_system_always_on_off
+                SystemAlwaysOn.UNKNOWN -> R.string.sub_system_always_on_unknown
+            },
+        ),
+        right = {
+            Text("→", style = GsText.labelMono, color = C.textDim)
+        },
+        onClick = { viewModel.openSystemVpnSettings(context) },
         showDivider = true,
     )
     // v0.26.19: "Эксперимент: обход DPI шейпинга" (W11 byte-recycle) removed —
@@ -1544,11 +1558,11 @@ private fun ProfileCard(
     vpnLive: Boolean = false,
     latencyMs: Long?,
     isPinging: Boolean,
-    subscriptionText: String?,
     onTap: () -> Unit,
     onEdit: () -> Unit = {},
     onLongPressAdmin: (() -> Unit)? = null,
 ) {
+    val subscriptionText = com.ghoststream.vpn.util.FormatUtils.subscriptionText(LocalContext.current, profile)
     GhostCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -1599,15 +1613,14 @@ private fun ProfileCard(
                 Spacer(Modifier.width(6.dp))
                 // «offline» висел всегда: TCP-ping на :443 режется DPI, хотя
                 // туннель жив. Для активного профиля источник истины — состояние
-                // туннеля, а не пинг; для остальных не врём «offline», а честно
-                // говорим «нет отклика».
+                // туннеля, а не пинг; остальные никто не пингует — прочерк.
                 val tunnelUp = isActiveProfile && vpnLive
                 Text(
                     text = when {
                         tunnelUp          -> stringResource(R.string.ping_tunnel_up)
                         isPinging         -> "…"
                         latencyMs != null -> "${latencyMs} ms"
-                        else              -> stringResource(R.string.ping_no_reply)
+                        else              -> stringResource(R.string.kv_value_dash)
                     },
                     style = GsText.valueMono,
                     color = if (tunnelUp) C.signal else pingColor(latencyMs),
@@ -1725,6 +1738,7 @@ private fun IconSwitch(
 private fun AddProfileDialog(
     connString: String,
     name: String,
+    error: String,
     onConnStringChange: (String) -> Unit,
     onNameChange: (String) -> Unit,
     onPasteFromClipboard: () -> Unit,
@@ -1762,6 +1776,10 @@ private fun AddProfileDialog(
                 GhostDialogButton(stringResource(R.string.action_paste), onClick = onPasteFromClipboard, color = C.textDim)
                 GhostDialogButton(stringResource(R.string.action_qr), onClick = onQrScanner, color = C.textDim)
             }
+            if (error.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(error, style = GsText.host, color = C.danger)
+            }
         },
         confirmButton = {
             GhostDialogButton(stringResource(R.string.action_add), onClick = onConfirm, enabled = connString.isNotBlank())
@@ -1786,6 +1804,24 @@ private fun AddProfileDialog(
 // the next composition (battery-opt) or stays as confirmation (autostart
 // — we can't actually detect it from app side, so we just stop nagging
 // once user clicks through).
+private enum class SystemAlwaysOn { OFF, ON, LOCKDOWN, UNKNOWN }
+
+/**
+ * State of the system Always-on VPN for this app. The keys are hidden
+ * settings; if a ROM refuses to expose them we say "unknown" and still
+ * offer the shortcut to the system screen.
+ */
+private fun systemAlwaysOnState(ctx: Context): SystemAlwaysOn = runCatching {
+    val cr = ctx.contentResolver
+    when {
+        android.provider.Settings.Secure.getString(cr, "always_on_vpn_app") != ctx.packageName ->
+            SystemAlwaysOn.OFF
+        android.provider.Settings.Secure.getInt(cr, "always_on_vpn_lockdown", 0) == 1 ->
+            SystemAlwaysOn.LOCKDOWN
+        else -> SystemAlwaysOn.ON
+    }
+}.getOrDefault(SystemAlwaysOn.UNKNOWN)
+
 private fun isOemAutostartProblematic(): Boolean {
     val m = android.os.Build.MANUFACTURER.lowercase()
     return m in setOf("xiaomi", "huawei", "honor", "vivo", "oppo", "realme", "redmi")
@@ -1803,6 +1839,11 @@ private fun OemLifecycleHints(
     var isIgnoringBatteryOpt by remember {
         mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
     }
+    // The user flips it in the system list and comes back — re-check then.
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
+        isIgnoringBatteryOpt = pm.isIgnoringBatteryOptimizations(context.packageName)
+        onPauseOrDispose { }
+    }
     val showBatteryHint = !isIgnoringBatteryOpt
 
     if (!showAutostartHint && !showBatteryHint) return
@@ -1815,19 +1856,19 @@ private fun OemLifecycleHints(
             GhostCard(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                     Text(
-                        text = "Запуск при загрузке",
+                        text = stringResource(R.string.hint_autostart_title),
                         style = GsText.profileName,
                         color = C.warn,
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "${android.os.Build.MANUFACTURER}: для автозапуска нужно вручную включить «Автозапуск» в настройках устройства — без этого VPN не стартует после перезагрузки.",
+                        text = stringResource(R.string.hint_autostart_text, android.os.Build.MANUFACTURER),
                         style = GsText.host,
                         color = C.textDim,
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "ОТКРЫТЬ НАСТРОЙКИ АВТОЗАПУСКА",
+                        text = stringResource(R.string.hint_autostart_open).uppercase(),
                         style = GsText.labelMono,
                         color = C.signal,
                         modifier = Modifier
@@ -1841,30 +1882,23 @@ private fun OemLifecycleHints(
             GhostCard(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                     Text(
-                        text = "Фоновая работа",
+                        text = stringResource(R.string.hint_battery_title),
                         style = GsText.profileName,
                         color = C.bone,
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Android может убивать VPN при экономии заряда. Разрешите неограниченную фоновую работу.",
+                        text = stringResource(R.string.hint_battery_text),
                         style = GsText.host,
                         color = C.textDim,
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "РАЗРЕШИТЬ",
+                        text = stringResource(R.string.hint_battery_open).uppercase(),
                         style = GsText.labelMono,
                         color = C.signal,
                         modifier = Modifier
-                            .clickable {
-                                viewModel.requestIgnoreBatteryOptimisations(context)
-                                // Re-check on next render — system dialog
-                                // is modal, control returns synchronously
-                                // after the user decides.
-                                isIgnoringBatteryOpt =
-                                    pm.isIgnoringBatteryOptimizations(context.packageName)
-                            }
+                            .clickable { viewModel.openBatteryOptimisationSettings(context) }
                             .padding(4.dp),
                     )
                 }

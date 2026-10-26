@@ -4,30 +4,33 @@ import android.app.Application
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ghoststream.vpn.R
 import com.ghoststream.vpn.data.AdminHttpClient
 import com.ghoststream.vpn.data.ConnStringParser
 import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.data.VpnConfig
-import com.ghoststream.vpn.data.VpnStats
-import okhttp3.Request
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.service.VpnStateManager
 import com.ghoststream.vpn.service.StatusFrameData
 import com.ghoststream.vpn.util.FormatUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Duration
 import java.time.Instant
 
@@ -63,9 +66,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             directCountries = p?.directCountries ?: prefs.directCountries,
             perAppMode      = p?.perAppMode ?: prefs.perAppMode,
             perAppList      = p?.perAppList ?: prefs.perAppList,
-            // v0.27.0 (W11): DPI recycle is a global preference, not profile-bound.
-            // Carries the user's experimental "recycle after N bytes" cap.
-            dpiRecycleBytes = prefs.dpiRecycleBytes,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
 
@@ -75,123 +75,64 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     /** Push-based status frame from Rust via VpnStateManager. */
     val statusFrame: StateFlow<StatusFrameData> = VpnStateManager.statusFrame
 
-    private val _stats = MutableStateFlow(VpnStats())
-    val stats: StateFlow<VpnStats> = _stats
-
-    private val _subscriptionText = MutableStateFlow<String?>(null)
-    val subscriptionText: StateFlow<String?> = _subscriptionText
-
     private val _preflightWarning = MutableStateFlow<String?>(null)
     val preflightWarning: StateFlow<String?> = _preflightWarning
 
+    /** Preflight of the current start, until the Intent is handed to the service. */
+    private var startJob: Job? = null
+
     init {
         viewModelScope.launch {
-            vpnState.collect { state ->
-                // v0.24.0: timer and subscription info stay live across every
-                // "tunnel up-ish" state (Connected/Stale/Throttled/Reconnecting)
-                // so the user keeps seeing session duration even when the
-                // tunnel goes silent — context is more useful than a reset.
-                val since: Instant? = when (state) {
-                    is VpnState.Connected -> state.since
-                    is VpnState.Stale -> state.since
-                    is VpnState.Throttled -> state.since
-                    else -> null
-                }
-                if (since != null) {
-                    startTimer(since)
-                    fetchSubscriptionInfo()
-                } else {
+            // Status frames arrive several times a second and Stale/Throttled
+            // carry changing counters, so react only to a new session start:
+            // collectLatest cancels the previous ticker by itself and /api/me
+            // is asked once per session. Timer stays live across Connected/
+            // Stale/Throttled — same session, context beats a reset.
+            vpnState.map { sinceOf(it) }.distinctUntilChanged().collectLatest { since ->
+                if (since == null) {
                     _timerText.value = "00:00:00"
-                    _stats.value = VpnStats()
-                    _subscriptionText.value = null
+                    return@collectLatest
+                }
+                launch(Dispatchers.IO) {
+                    val id = profilesStore.getActiveProfile()?.id ?: return@launch
+                    runCatching { AdminHttpClient.refreshMe(id, profilesStore) }
+                }
+                while (true) {
+                    _timerText.value = FormatUtils.formatDuration(
+                        Duration.between(since, Instant.now()).seconds,
+                    )
+                    delay(1000)
                 }
             }
         }
-    }
 
-    private fun startTimer(since: Instant) {
+        // Switching the active profile while the tunnel is up reconnects to the
+        // new one. If the running profile was deleted — just stop.
         viewModelScope.launch {
-            // Keep ticking across Connected/Stale/Throttled — same session.
-            while (vpnState.value is VpnState.Connected ||
-                vpnState.value is VpnState.Stale ||
-                vpnState.value is VpnState.Throttled
-            ) {
-                val elapsed = Duration.between(since, Instant.now()).seconds
-                _timerText.value = FormatUtils.formatDuration(elapsed)
-                delay(1000)
+            var prev = profilesStore.activeId.value
+            profilesStore.activeId.collect { id ->
+                val old = prev
+                prev = id
+                if (old == null || id == old || !isRunning(VpnStateManager.state.value)) return@collect
+                stopVpn()
+                if (id == null || profilesStore.profiles.value.none { it.id == old }) return@collect
+                withTimeoutOrNull(15_000) {
+                    VpnStateManager.state.first { it is VpnState.Disconnected || it is VpnState.Error }
+                } ?: return@collect
+                startVpn()
             }
         }
     }
 
-    // Stats are now push-based via VpnStateManager.statusFrame (Phase 4).
-    // The old nativeGetStats() polling was removed — it returned null after Phase 4.
-
-    private fun fetchSubscriptionInfo() {
-        val profile = profilesStore.getActiveProfile() ?: return
-        val tunIp = profile.tunAddr.substringBefore('/')
-        val parts = tunIp.split('.')
-        val gateway = if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.1" else "10.7.0.1"
-        val baseUrl = "https://$gateway:8080"
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val outcome = AdminHttpClient.build(
-                    certPemPath = profile.certPath,
-                    keyPemPath = profile.keyPath,
-                    pinnedFp = profile.cachedAdminServerCertFp,
-                )
-                val meReq = Request.Builder().url("$baseUrl/api/me").get().build()
-                val meBody = outcome.client.newCall(meReq).execute().use {
-                    if (!it.isSuccessful) return@launch
-                    it.body?.string().orEmpty()
-                }
-                val me = JSONObject(meBody)
-                val isAdmin = me.optBoolean("is_admin", false)
-
-                val clReq = Request.Builder().url("$baseUrl/api/clients").get().build()
-                val clBody = outcome.client.newCall(clReq).execute().use {
-                    if (!it.isSuccessful) return@launch
-                    it.body?.string().orEmpty()
-                }
-                val arr = JSONArray(clBody)
-                for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
-                    if (o.optString("tun_addr").substringBefore('/') == tunIp) {
-                        val expiresAt = o.optLong("expires_at", 0).takeIf { it > 0 }
-                        val enabled = o.optBoolean("enabled", true)
-                        _subscriptionText.value = formatExpiry(expiresAt)
-                        profilesStore.updateProfile(
-                            profile.copy(
-                                cachedExpiresAt = expiresAt,
-                                cachedEnabled = enabled,
-                                cachedIsAdmin = isAdmin,
-                                cachedAdminServerCertFp = outcome.serverCertFpRef.value
-                                    ?: profile.cachedAdminServerCertFp,
-                            ),
-                        )
-                        break
-                    }
-                }
-            } catch (_: Exception) {}
-        }
+    private fun sinceOf(state: VpnState): Instant? = when (state) {
+        is VpnState.Connected -> state.since
+        is VpnState.Stale -> state.since
+        is VpnState.Throttled -> state.since
+        else -> null
     }
 
-    private fun formatExpiry(expiresAt: Long?): String {
-        if (expiresAt == null) return "Подписка: бессрочно"
-        val remaining = expiresAt - (System.currentTimeMillis() / 1000)
-        return if (remaining > 0) {
-            val days = remaining / 86400
-            val hours = (remaining % 86400) / 3600
-            when {
-                days > 1  -> "Подписка: ${days}д ${hours}ч"
-                days == 1L -> "Подписка: 1д ${hours}ч"
-                hours > 0 -> "Подписка: ${hours}ч"
-                else      -> "Подписка: < 1ч ⚠"
-            }
-        } else {
-            "Подписка истекла ⚠"
-        }
-    }
+    private fun isRunning(state: VpnState): Boolean = state !is VpnState.Disconnected &&
+        state !is VpnState.Disconnecting && state !is VpnState.Error
 
     fun dismissPreflightWarning() { _preflightWarning.value = null }
 
@@ -199,19 +140,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         // v0.27.0 (W5): refuse a fresh start when we're mid-transition or
         // already up. The Dashboard FAB and widget are now disabled in
         // Disconnecting and route Connecting taps to stopVpn, but external
-        // entry points (BootReceiver, future TileService) could still drive
+        // entry points (BootReceiver, TileService) could still drive
         // a race. This guard is the floor.
-        when (VpnStateManager.state.value) {
-            is VpnState.Connecting,
-            is VpnState.Connected,
-            is VpnState.Stale,
-            is VpnState.Throttled,
-            is VpnState.Reconnecting,
-            is VpnState.Disconnecting -> return
-            else -> Unit
-        }
+        if (isRunning(VpnStateManager.state.value) ||
+            VpnStateManager.state.value is VpnState.Disconnecting
+        ) return
         var cfg = config.value
         if (cfg.serverAddr.isBlank()) return
+        val ctx = getApplication<Application>()
 
         var profile = profilesStore.getActiveProfile()
         if (profile != null) {
@@ -221,30 +157,20 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             if (!certExists || !keyExists) {
                 val restored = profilesStore.ensureCertFiles(profile)
                 if (restored == null) {
-                    _preflightWarning.value = "Сертификаты профиля утеряны. Импортируйте строку подключения заново."
-                    VpnStateManager.update(VpnState.Error("Сертификаты не найдены"))
+                    _preflightWarning.value = ctx.getString(R.string.preflight_certs_lost)
+                    VpnStateManager.update(VpnState.Error(ctx.getString(R.string.error_certs_missing)))
                     return
                 }
                 profile = restored
                 cfg = cfg.copy(certPath = restored.certPath, keyPath = restored.keyPath)
             }
-            val cachedExp = profile.cachedExpiresAt
-            if (cachedExp != null && cachedExp > 0) {
-                val remaining = cachedExp - (System.currentTimeMillis() / 1000)
-                if (remaining <= 0) {
-                    _preflightWarning.value = "Подписка истекла. Обновите подписку у администратора."
-                    VpnStateManager.update(VpnState.Error("Подписка истекла"))
-                    return
-                }
-            }
-            if (profile.cachedEnabled == false) {
-                _preflightWarning.value = "Клиент отключён администратором."
-                VpnStateManager.update(VpnState.Error("Клиент отключён"))
-                return
-            }
+            // Subscription and enabled flag are not checked here: the cache can
+            // only be refreshed through a working tunnel, so a stale "expired"
+            // would lock the user out after the admin extended it. The server
+            // refuses a revoked client itself and the core reports why.
         }
 
-        viewModelScope.launch {
+        startJob = viewModelScope.launch {
             _preflightWarning.value = null
             VpnStateManager.update(VpnState.Connecting)
             val directCidrsPath = if (cfg.splitRouting && cfg.directCountries.isNotEmpty()) {
@@ -260,8 +186,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 if (missing.isNotEmpty()) {
                     _preflightWarning.value =
-                        "Не удалось загрузить списки: ${missing.joinToString(", ")}. Проверьте сеть и попробуйте снова."
-                    VpnStateManager.update(VpnState.Error("Списки маршрутов не загружены"))
+                        ctx.getString(R.string.preflight_lists_failed, missing.joinToString(", "))
+                    VpnStateManager.update(VpnState.Error(ctx.getString(R.string.error_lists_missing)))
                     return@launch
                 } else {
                     // Протухшие обновляем в фоне: подключение ждать не должно,
@@ -285,7 +211,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 withContext(Dispatchers.IO) { ConnStringParser.build(profile!!) ?: "" }
             } else ""
 
-            val ctx = getApplication<Application>()
             val intent = Intent(ctx, GhostStreamVpnService::class.java).apply {
                 action = GhostStreamVpnService.ACTION_START
                 putExtra(GhostStreamVpnService.EXTRA_SERVER_ADDR, cfg.serverAddr)
@@ -303,16 +228,21 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (profile?.relayEnabled == true && !profile.relayAddr.isNullOrBlank()) {
                     putExtra(GhostStreamVpnService.EXTRA_RELAY_ADDR, profile.relayAddr)
                 }
-                // v0.27.0 (W11): DPI evasion recycle byte threshold (0 = off).
-                cfg.dpiRecycleBytes?.takeIf { it > 0 }?.let {
-                    putExtra(GhostStreamVpnService.EXTRA_DPI_RECYCLE_BYTES, it)
-                }
+                // DPI recycle (W11) is gone from the UI; a value saved back then
+                // must not keep driving reconnect storms, so it is not passed.
             }
             ctx.startForegroundService(intent)
         }
     }
 
     fun stopVpn() {
+        // Still in preflight (rule lists download etc.) — the service hasn't
+        // been asked to start yet, so cancelling the job is the whole stop.
+        if (startJob?.isActive == true) {
+            startJob?.cancel()
+            VpnStateManager.update(VpnState.Disconnected)
+            return
+        }
         // v0.27.0 (W5): no-op if we're already tearing down or off.
         // The user's only legit reason to tap "Disconnect" from these
         // states is impatience — Service.ACTION_STOP is idempotent but

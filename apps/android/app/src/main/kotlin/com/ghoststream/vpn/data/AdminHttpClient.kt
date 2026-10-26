@@ -1,6 +1,8 @@
 package com.ghoststream.vpn.data
 
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
 import java.io.File
 import java.security.KeyFactory
 import java.security.MessageDigest
@@ -65,12 +67,12 @@ object AdminHttpClient {
             override fun checkServerTrusted(chain: Array<out X509Certificate>, authType: String) {
                 if (chain.isEmpty()) throw CertificateException("empty server chain")
                 val fp = sha256Hex(chain[0].encoded)
-                seenRef.value = fp
                 if (pinnedFp != null && !fp.equals(pinnedFp, ignoreCase = true)) {
                     throw CertificateException(
                         "admin server cert pin mismatch: expected $pinnedFp, got $fp",
                     )
                 }
+                seenRef.value = fp
             }
 
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
@@ -92,6 +94,53 @@ object AdminHttpClient {
             .build()
 
         return HandshakeOutcome(client = client, serverCertFpRef = seenRef)
+    }
+
+    /** Admin API lives on the tunnel gateway: x.y.z.1 of the profile's TUN subnet. */
+    fun baseUrl(tunAddr: String): String {
+        val parts = tunAddr.substringBefore('/').split('.')
+        val gateway = if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}.1" else "10.7.0.1"
+        return "https://$gateway:8080"
+    }
+
+    /**
+     * GET /api/me and fold the answer into the stored profile. Blocking — call
+     * off the main thread, and only while this profile's tunnel is up (the
+     * gateway is reachable only through it).
+     *
+     * Re-reads the profile right before writing and touches only cached
+     * fields, so edits made meanwhile are not rolled back. The TOFU pin is
+     * stored only after a successful answer. Subscription fields are taken
+     * only when the server sends them — older servers don't. A 4xx answer
+     * means the server no longer treats this client as admin.
+     */
+    fun refreshMe(profileId: String, store: ProfilesStore) {
+        val profile = store.profiles.value.find { it.id == profileId } ?: return
+        val outcome = build(profile.certPath, profile.keyPath, profile.cachedAdminServerCertFp)
+        val req = Request.Builder().url("${baseUrl(profile.tunAddr)}/api/me").get().build()
+        outcome.client.newCall(req).execute().use { resp ->
+            val fresh = store.profiles.value.find { it.id == profileId } ?: return
+            if (!resp.isSuccessful) {
+                if (resp.code in 400..499 && fresh.cachedIsAdmin != false) {
+                    store.updateProfile(fresh.copy(cachedIsAdmin = false))
+                }
+                return
+            }
+            val me = JSONObject(resp.body?.string().orEmpty())
+            store.updateProfile(
+                fresh.copy(
+                    cachedIsAdmin = me.optBoolean("is_admin", false),
+                    cachedExpiresAt = if (me.has("expires_at")) {
+                        me.optLong("expires_at", 0).takeIf { it > 0 }
+                    } else fresh.cachedExpiresAt,
+                    cachedEnabled = if (me.has("enabled")) {
+                        me.optBoolean("enabled", true)
+                    } else fresh.cachedEnabled,
+                    cachedAdminServerCertFp = outcome.serverCertFpRef.value
+                        ?: fresh.cachedAdminServerCertFp,
+                ),
+            )
+        }
     }
 
     fun sha256Hex(data: ByteArray): String {
