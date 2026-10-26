@@ -108,7 +108,7 @@ HTTP/2, N стримов = ядрам, без UDP), wire-формат совме
 ## References
 
 - Аудит: [2026-10-22-full-scan.md](../audits/2026-10-22-full-scan.md) — А6, П9,
-  С10, П8/low «Warmup-мимикрия», Ф-low «LAN в полном туннеле», О7, О11.
+  С10, low «Warmup-мимикрия» (сервер), low «Полный туннель забирает LAN» (Ф), О7, О11.
 - Commits: `187bffa2` (TV), `15d5137a` (LAN, kill switch), `4e1b81a4` и
   `0bb959cf` (heartbeat), `4ffa6ecb` и `2404415a` (allowlist, Bearer, mimicry).
 - Связанные: [ADR 0018](0018-rust-owns-reconnect.md) (переподключение),

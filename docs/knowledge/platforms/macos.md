@@ -10,7 +10,7 @@ tags: [platform, macos, swiftui, network-extension]
 ## Стек
 
 - **SwiftUI** host app (`apps/macos/GhostStream/`) — `MenuBarExtra` + `WindowGroup` + `Settings`-сцены, **macOS 15 Sequoia** minimum (используются последние API: `@Observable`, `NavigationSplitView` с `.navigationSplitViewColumnWidth`, `MenuBarExtra` styles).
-- **`NEPacketTunnelProvider` system extension** (`apps/macos/PacketTunnel/`) — отдельный `.systemextension` bundle, активируется через `OSSystemExtensionRequest`.
+- **`NEPacketTunnelProvider` system extension** (`apps/macos/PacketTunnelExtension/`) — отдельный `.systemextension` bundle, активируется через `OSSystemExtensionRequest`.
 - **`PhantomKit` + `PhantomUI`** — Swift package в `apps/ios/Packages/PhantomKit/` (shared с iOS):
   - `PhantomKit` target — Models / Bridge / Storage / FFI (cross-platform).
   - `PhantomUI` target — Theme / Components / Fonts (cross-platform pure SwiftUI).
@@ -58,7 +58,7 @@ GhostStream/                     # Host app target (.app)
   Info.plist                     # LSMinimumSystemVersion 15.0, LSUIElement
   GhostStream.entitlements       # NEAppGroup, NetworkExtension, app-groups
 
-PacketTunnel/                    # System extension target (.systemextension)
+PacketTunnelExtension/           # System extension target (.systemextension)
   PacketTunnelProvider.swift     # entry point (port iOS)
   Info.plist                     # NSExtensionPointIdentifier=com.apple.networkextension.packet-tunnel
   PacketTunnel.entitlements      # NEAppGroup, NetworkExtension, sandbox
@@ -334,7 +334,7 @@ Components, переиспользуемые на macOS as-is: `GhostCard`, `Sco
 ## References / Sources
 
 - **Host app:** [apps/macos/GhostStream/](../../../apps/macos/GhostStream/)
-- **System extension:** [apps/macos/PacketTunnel/](../../../apps/macos/PacketTunnel/)
+- **System extension:** [apps/macos/PacketTunnelExtension/](../../../apps/macos/PacketTunnelExtension/)
 - **xcodegen spec:** [apps/macos/project.yml](../../../apps/macos/project.yml)
 - **README:** [apps/macos/README.md](../../../apps/macos/README.md)
 - **PhantomKit + PhantomUI package (shared с iOS):** [apps/ios/Packages/PhantomKit/](../../../apps/ios/Packages/PhantomKit/)
