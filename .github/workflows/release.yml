@@ -89,6 +89,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # «Что нового» для карточки в Play. Берём секцию "## [Android <versionName>]"
+      # из CHANGELOG.md, снимаем markdown и режем до 500 символов — столько
+      # разрешает Play. Нет секции или тег не совпадает с versionName — падаем:
+      # иначе в Play уедут чужие заметки или не та версия. Шаг — до сборки:
+      # при несовпадении тега APK не попадёт в артефакты и в GitHub Release.
+      - name: Release notes for Play
+        run: |
+          mkdir -p distribution/whatsnew
+          python3 - <<'PY'
+          import os, re, pathlib, sys
+          gradle = pathlib.Path("apps/android/app/build.gradle.kts").read_text(encoding="utf-8")
+          version = re.search(r'versionName = "([^"]+)"', gradle).group(1)
+          on_tag = os.environ["GITHUB_REF"].startswith("refs/tags/")
+          if on_tag and os.environ["GITHUB_REF_NAME"] != "v" + version:
+              sys.exit(f"tag {os.environ['GITHUB_REF_NAME']} != versionName v{version} в build.gradle.kts")
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(r"^## \[Android " + re.escape(version) + r"\].*?\n(.*?)(?=^## \[|\Z)",
+                        text, re.S | re.M)
+          if not m and on_tag:
+              sys.exit(f"в CHANGELOG.md нет секции '## [Android {version}]'")
+          body = m.group(1) if m else ""
+          lines = []
+          for raw in body.splitlines():
+              s = raw.strip()
+              if not s or s.startswith("###"):
+                  continue
+              s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)      # жирный
+              s = re.sub(r"`(.+?)`", r"\1", s)            # код
+              s = re.sub(r"^[-*]\s*", "• ", s)            # маркеры
+              lines.append(s)
+          full = "\n".join(lines)
+          out = (full if len(full) <= 500 else full[:500].rsplit("\n", 1)[0]) or "Обновление PhantomVPN."
+          pathlib.Path("distribution/whatsnew/whatsnew-ru-RU").write_text(out, encoding="utf-8")
+          print(out)
+          PY
+
       - name: Install Rust + Android targets
         uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
@@ -140,41 +176,6 @@ jobs:
         with:
           name: PhantomVPN-Android-AAB
           path: apps/android/app/build/outputs/bundle/release/app-release.aab
-
-      # «Что нового» для карточки в Play. Берём секцию "## [Android <versionName>]"
-      # из CHANGELOG.md, снимаем markdown и режем до 500 символов — столько
-      # разрешает Play. Нет секции или тег не совпадает с versionName — падаем:
-      # иначе в Play уедут чужие заметки или не та версия.
-      - name: Release notes for Play
-        run: |
-          mkdir -p distribution/whatsnew
-          python3 - <<'PY'
-          import os, re, pathlib, sys
-          gradle = pathlib.Path("apps/android/app/build.gradle.kts").read_text(encoding="utf-8")
-          version = re.search(r'versionName = "([^"]+)"', gradle).group(1)
-          on_tag = os.environ["GITHUB_REF"].startswith("refs/tags/")
-          if on_tag and os.environ["GITHUB_REF_NAME"] != "v" + version:
-              sys.exit(f"tag {os.environ['GITHUB_REF_NAME']} != versionName v{version} в build.gradle.kts")
-          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
-          m = re.search(r"^## \[Android " + re.escape(version) + r"\].*?\n(.*?)(?=^## \[|\Z)",
-                        text, re.S | re.M)
-          if not m and on_tag:
-              sys.exit(f"в CHANGELOG.md нет секции '## [Android {version}]'")
-          body = m.group(1) if m else ""
-          lines = []
-          for raw in body.splitlines():
-              s = raw.strip()
-              if not s or s.startswith("###"):
-                  continue
-              s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)      # жирный
-              s = re.sub(r"`(.+?)`", r"\1", s)            # код
-              s = re.sub(r"^[-*]\s*", "• ", s)            # маркеры
-              lines.append(s)
-          full = "\n".join(lines)
-          out = (full if len(full) <= 500 else full[:500].rsplit("\n", 1)[0]) or "Обновление PhantomVPN."
-          pathlib.Path("distribution/whatsnew/whatsnew-ru-RU").write_text(out, encoding="utf-8")
-          print(out)
-          PY
 
       # v0.28.4+: публикуем сразу в production. Раньше уезжало в internal, и
       # промоушен нужно было протыкивать руками в Console — что стабильно
