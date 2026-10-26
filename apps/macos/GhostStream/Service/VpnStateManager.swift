@@ -203,6 +203,10 @@ public final class VpnStateManager {
         guard isActiveNetworkExtensionStatus(manager.connection.status),
               let session = manager.connection as? NETunnelProviderSession
         else {
+            // The extension leaves a fatal error from the core (revoked
+            // access, certificate, clock) in the snapshot when it stops;
+            // keep showing it until the next connect.
+            if loadSnapshot(), statusFrame.state == .error { return false }
             applyNetworkExtensionFallback(manager: manager)
             return false
         }

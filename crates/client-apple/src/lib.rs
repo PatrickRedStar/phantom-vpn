@@ -23,17 +23,20 @@
 //!
 //! `phantom_runtime_stop` is a **synchronous barrier**: it
 //!   1. signals the supervisor to cancel,
-//!   2. waits (with a 5 s timeout) for the supervisor's `JoinHandle`,
+//!   2. waits (with a 5 s timeout) for the supervisor's `JoinHandle`; on
+//!      timeout it aborts the supervisor and waits for the abort to land,
 //!   3. drops the broadcast log senders so the log forwarder's `recv().await`
 //!      returns `None`,
-//!   4. aborts and joins the status + log forwarder tasks,
+//!   4. joins the status + log forwarder tasks (abort + join on timeout),
 //!   5. invokes the Swift-supplied `release_ctx` callback (registered via
 //!      [`phantom_runtime_set_release_cb`]) so Swift can `release` the
 //!      `Unmanaged` retain it took before calling `start`.
 //!
-//! Once `phantom_runtime_stop` returns, Rust guarantees that none of the C
-//! callbacks it was given (`status_cb`, `log_cb`, `outbound_cb`) will fire
-//! again — Swift may release any state those callbacks were closing over.
+//! Step 5 runs only when the supervisor exited on its own and both
+//! forwarders are joined. An aborted supervisor may leave detached child
+//! tasks that still hold `outbound_cb` + `ctx`, so in that case the release
+//! is skipped and the `BridgeContext` is leaked on purpose: a leak is
+//! better than a callback into freed memory.
 
 use std::ffi::{c_char, c_void, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -520,17 +523,36 @@ pub unsafe extern "C" fn phantom_runtime_submit_inbound(ptr: *const u8, len: usi
 
 // ─── phantom_runtime_stop ────────────────────────────────────────────────────
 
+/// Wait for `h` up to `wait`; on timeout abort it and give the cancellation
+/// one more second to land. Returns `Some(true)` if the task exited on its
+/// own, `Some(false)` if it had to be aborted, `None` if it is still running.
+async fn join_or_abort<T>(mut h: JoinHandle<T>, wait: Duration) -> Option<bool> {
+    if tokio::time::timeout(wait, &mut h).await.is_ok() {
+        return Some(true);
+    }
+    h.abort();
+    tokio::time::timeout(Duration::from_secs(1), h)
+        .await
+        .ok()
+        .map(|_| false)
+}
+
 /// Synchronously shut down the running tunnel.
 ///
 /// Blocks the caller until:
 ///   1. the supervisor task observes the cancel signal and exits, OR a 5 s
-///      timeout elapses (the timeout is a safety belt; under normal
-///      conditions the supervisor exits in <100 ms once cancel fires);
+///      timeout elapses — then the supervisor is aborted and joined (the
+///      timeout is a safety belt; under normal conditions the supervisor
+///      exits in <100 ms once cancel fires);
 ///   2. the status + log forwarder tasks have finished draining;
 ///   3. the Swift-registered release callback has been invoked, balancing
 ///      the `Unmanaged.passRetained` that Swift performed before `start`.
 ///
-/// After this returns, none of the C callbacks Swift passed to
+/// Step 3 is skipped if the supervisor had to be aborted or any task could
+/// not be joined: detached children may still fire callbacks with `ctx`, so
+/// the context is leaked instead of released.
+///
+/// After a clean return, none of the C callbacks Swift passed to
 /// `phantom_runtime_start` will be invoked again — Swift may release any
 /// state those callbacks were closing over.
 ///
@@ -574,25 +596,20 @@ pub unsafe extern "C" fn phantom_runtime_stop() -> i32 {
 
         // 3. Wait for the supervisor's JoinHandle (FFI-C2). Under normal
         // shutdown this completes in <100 ms after cancel. The 5 s timeout
-        // exists for pathological cases — handshake mid-syscall, kernel
-        // TCP cleanup, etc. — where we'd rather forcibly proceed than
-        // hang the Swift thread.
-        rt.block_on(async {
-            if let Err(_elapsed) =
-                tokio::time::timeout(Duration::from_secs(5), supervisor).await
-            {
-                tracing::error!(
-                    "phantom_runtime_stop: supervisor join timed out after 5 s"
-                );
-            }
-        });
+        // exists for pathological cases — resolver hung, handshake
+        // mid-syscall, etc. Then the supervisor is aborted and joined:
+        // left detached it would keep reconnecting and calling back into
+        // `ctx` after Swift dropped it.
+        let supervisor_clean =
+            rt.block_on(join_or_abort(supervisor, Duration::from_secs(5))) == Some(true);
+        if !supervisor_clean {
+            tracing::error!("phantom_runtime_stop: supervisor did not exit within 5 s, aborted");
+        }
 
         // 4. Drop our log sender so the log forwarder's `recv().await`
         // returns `None` and the task exits naturally. Without this the
         // forwarder would stay parked forever (no more frames will come
-        // because the supervisor exited), and `.abort()` on a task mid-
-        // unsafe-callback could land the Swift trampoline on an
-        // already-released context.
+        // because the supervisor exited).
         //
         // FFI-C3: `clear_senders` evicts ALL registered log subscribers —
         // there's only one per Apple session (the FFI's `log_tx`), so this
@@ -603,24 +620,31 @@ pub unsafe extern "C" fn phantom_runtime_stop() -> i32 {
         // runtime as the supervisor and should already be unwinding by
         // the time we get here (status: watch channel closed when its
         // sender dropped inside supervisor exit; log: clear_senders above).
+        // A forwarder that is still parked gets aborted; abort lands only
+        // at an `.await`, never mid-callback, and we join it afterwards.
+        let mut forwarders_joined = true;
         rt.block_on(async {
-            if let Some(h) = status_forwarder {
-                let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
-            }
-            if let Some(h) = log_forwarder {
-                let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+            for h in [status_forwarder, log_forwarder].into_iter().flatten() {
+                if join_or_abort(h, Duration::from_secs(2)).await.is_none() {
+                    forwarders_joined = false;
+                }
             }
         });
 
-        // 6. All callbacks are guaranteed quiescent — invoke Swift's
-        // `release_ctx` so it can decrement the `Unmanaged` retain count.
+        // 6. Invoke Swift's `release_ctx` only when every callback is
+        // guaranteed quiescent, so it can decrement the `Unmanaged` retain
+        // count.
         //
-        // FFI-C1: this is the missing release that used to leak one
-        // `BridgeContext` per Connect/Disconnect cycle. The retain Swift
-        // did with `passRetained.toOpaque` in `start()` is now precisely
-        // balanced here, after we've confirmed no callback can fire
-        // again on the released context.
-        if let Some(rcb) = RELEASE_CB.get() {
+        // FFI-C1: this balances the retain Swift did with
+        // `passRetained.toOpaque` in `start()`. If the supervisor had to be
+        // aborted, its detached children (stream tasks, the outbound
+        // forwarder) may still call `outbound_cb` with `ctx` — leak the
+        // context instead of handing Swift a use-after-free.
+        if !(supervisor_clean && forwarders_joined) {
+            tracing::error!(
+                "phantom_runtime_stop: runtime not fully joined — leaking ctx instead of releasing it"
+            );
+        } else if let Some(rcb) = RELEASE_CB.get() {
             let ctx = ctx_ptr as *mut c_void;
             // SAFETY: `rcb` was registered via
             // `phantom_runtime_set_release_cb` and is required to remain
@@ -928,6 +952,17 @@ mod tests {
         // SAFETY: the CString owns a NUL-terminated buffer of length 6.
         let res = unsafe { cstr_to_str_bounded(cstr.as_ptr(), 32) };
         assert_eq!(res, Some("hello"));
+    }
+
+    /// A task that exits on its own is "clean"; a hung one is aborted
+    /// and joined, never left detached.
+    #[tokio::test]
+    async fn join_or_abort_aborts_hung_task() {
+        let done = tokio::spawn(async {});
+        assert_eq!(join_or_abort(done, Duration::from_secs(1)).await, Some(true));
+
+        let hung = tokio::spawn(std::future::pending::<()>());
+        assert_eq!(join_or_abort(hung, Duration::from_millis(20)).await, Some(false));
     }
 
     /// Process-wide lock so tests that touch `GHOSTSTREAM_LOG` (read or

@@ -85,8 +85,9 @@ public struct DashboardView: View {
                     .tracking(0.20 * 11)
                     .foregroundStyle(C.textFaint)
                 stateHero
-                // A5: строка reconnect-прогресса под hero-заголовком.
-                if let progress = reconnectProgressText {
+                // A5: строка reconnect-прогресса под hero-заголовком; при
+                // поднятом туннеле на её месте — проблема канала (как на Android).
+                if let progress = reconnectProgressText ?? healthWarningText {
                     Text(progress)
                         .font(.custom("DepartureMono-Regular", size: 11))
                         .tracking(0.06 * 11)
@@ -156,6 +157,27 @@ public struct DashboardView: View {
         else { return nil }
         return String(format: L("state.reconnect_progress"),
                       Int64(attempt), Int64(delay))
+    }
+
+    /// Туннель поднят, но ядро видит мёртвые стримы, тишину или зажим скорости.
+    private var healthWarningText: String? {
+        let frame = stateMgr.statusFrame
+        guard frame.state == .connected else { return nil }
+        switch frame.health {
+        case .dead?:
+            return L("state.health_dead")
+        case .degraded?:
+            // The core reports throttling as `degraded` too.
+            if frame.bandwidthClass == .throttled {
+                return L("state.health_throttled")
+            }
+            return String(format: L("state.health_degraded"),
+                          Int64(frame.streamsUp), Int64(frame.nStreams))
+        case .stale?:
+            return String(format: L("state.health_stale"), Int64(frame.idleRxSecs ?? 0))
+        default:
+            return nil
+        }
     }
 
     private var pulseColor: Color {
@@ -343,6 +365,9 @@ public struct DashboardView: View {
 
     private var inlineConnectError: String? {
         if let msg = tunnel.lastError, !msg.isEmpty { return msg }
+        // Фатальная причина от ядра (отзыв, сертификат, часы).
+        if stateMgr.statusFrame.state == .error,
+           let msg = stateMgr.statusFrame.lastError, !msg.isEmpty { return msg }
         return nil
     }
 

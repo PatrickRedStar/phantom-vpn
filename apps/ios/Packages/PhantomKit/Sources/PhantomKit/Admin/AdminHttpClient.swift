@@ -77,10 +77,27 @@ public struct AdminStatus: Codable {
 public struct AdminSelfInfo: Codable {
     public let name: String
     public let isAdmin: Bool
+    /// Subscription end (unix seconds), `nil` = perpetual. Same format as
+    /// `AdminClient.expiresAt`.
+    public let expiresAt: Int64?
+    /// `nil` only from servers that predate subscription fields in `/api/me`.
+    public let enabled: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case name
         case isAdmin = "is_admin"
+        case expiresAt = "expires_at"
+        case enabled
+    }
+
+    /// Copies this identity's admin flag and subscription into the profile
+    /// cache. The subscription is taken only from `/api/me`, so it works for
+    /// non-admins too; an old server without `enabled` leaves the cache as is.
+    public func apply(to profile: inout VpnProfile) {
+        profile.cachedIsAdmin = isAdmin
+        guard let enabled else { return }
+        profile.cachedEnabled = enabled
+        profile.cachedExpiresAt = expiresAt
     }
 }
 
@@ -301,7 +318,7 @@ public final class AdminHttpClient {
         try await request("GET", "/api/status")
     }
 
-    /// `GET /api/me` — current-client name and admin flag.
+    /// `GET /api/me` — current-client name, admin flag and subscription.
     public func getMe() async throws -> AdminSelfInfo {
         try await request("GET", "/api/me")
     }

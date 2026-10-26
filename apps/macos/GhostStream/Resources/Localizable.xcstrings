@@ -2184,6 +2184,74 @@
         }
       }
     },
+    "state.health_dead": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "all streams down · reconnecting"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "все потоки упали · переподключение"
+          }
+        }
+      }
+    },
+    "state.health_degraded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "degraded · %lld of %lld streams up"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "деградация · живы %lld из %lld потоков"
+          }
+        }
+      }
+    },
+    "state.health_stale": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "no data from server for %lld s"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "тишина в канале %lld с"
+          }
+        }
+      }
+    },
+    "state.health_throttled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "speed throttled"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "скорость ограничена"
+          }
+        }
+      }
+    },
     "state.lost_signal": {
       "extractionState": "manual",
       "localizations": {

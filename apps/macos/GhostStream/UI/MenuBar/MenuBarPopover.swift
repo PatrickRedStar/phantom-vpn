@@ -346,6 +346,9 @@ public struct MenuBarPopover: View {
     /// still opens for setup, but the tap should never look like a no-op.
     private var inlineConnectError: String? {
         if let msg = tunnel.lastError, !msg.isEmpty { return msg }
+        // Фатальная причина от ядра (отзыв, сертификат, часы).
+        if stateMgr.statusFrame.state == .error,
+           let msg = stateMgr.statusFrame.lastError, !msg.isEmpty { return msg }
         return nil
     }
 

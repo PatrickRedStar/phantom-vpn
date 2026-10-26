@@ -9,6 +9,7 @@
 
 import Foundation
 import Observation
+import PhantomKit
 
 /// MainActor-bound VM for `ClientDetailView`. Holds the latest stats/logs for
 /// one client, plus the local "action in progress" flag used to grey out

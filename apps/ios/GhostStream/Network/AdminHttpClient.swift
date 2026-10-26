@@ -82,19 +82,9 @@ enum ProfileEntitlementRefresher {
             )
             let me = try await client.getMe()
             var updated = currentProfile(for: profile, in: profilesStore)
-            updated.cachedIsAdmin = me.isAdmin
+            me.apply(to: &updated)
             if let fp = client.lastServerCertFp {
                 updated.cachedAdminServerCertFp = fp
-            }
-
-            if me.isAdmin,
-               let match = try? await matchingClient(
-                    client: client,
-                    profile: profile,
-                    selfInfo: me
-               ) {
-                updated.cachedExpiresAt = match.expiresAt
-                updated.cachedEnabled = match.enabled
             }
 
             profilesStore.update(updated)
@@ -111,10 +101,6 @@ enum ProfileEntitlementRefresher {
 
     static func gatewayHost(forTunAddr tunAddr: String) -> String {
         AdminGateway.host(forTunAddr: tunAddr)
-    }
-
-    static func sameTunIP(_ lhs: String, _ rhs: String) -> Bool {
-        tunIP(lhs) == tunIP(rhs)
     }
 
     static func subscriptionText(for profile: VpnProfile) -> String? {
@@ -157,16 +143,6 @@ enum ProfileEntitlementRefresher {
         )
     }
 
-    private static func matchingClient(
-        client: AdminHttpClient,
-        profile: VpnProfile,
-        selfInfo: AdminSelfInfo
-    ) async throws -> AdminClient? {
-        let clients = try await client.listClients()
-        return clients.first { sameTunIP($0.tunAddr, profile.tunAddr) }
-            ?? clients.first { $0.name == selfInfo.name }
-    }
-
     private static func currentProfile(
         for profile: VpnProfile,
         in profilesStore: ProfilesStore
@@ -175,13 +151,5 @@ enum ProfileEntitlementRefresher {
         current.certPem = current.certPem ?? profile.certPem
         current.keyPem = current.keyPem ?? profile.keyPem
         return current
-    }
-
-    private static func tunIP(_ tunAddr: String) -> String {
-        tunAddr
-            .split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 }

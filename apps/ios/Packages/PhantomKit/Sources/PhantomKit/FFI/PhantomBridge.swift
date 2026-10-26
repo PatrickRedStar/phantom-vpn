@@ -226,13 +226,13 @@ public actor PhantomBridge {
                         guard let ctx, let buf, len > 0 else { return }
                         let data = Data(bytes: buf, count: len)
                         let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
-                        Task { await box.bridge.handleStatus(data: data) }
+                        Task { await box.bridge.handleStatus(data: data, from: box) }
                     },
                     { buf, len, ctx in
                         guard let ctx, let buf, len > 0 else { return }
                         let data = Data(bytes: buf, count: len)
                         let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
-                        Task { await box.bridge.handleLog(data: data) }
+                        Task { await box.bridge.handleLog(data: data, from: box) }
                     },
                     { buf, len, ctx in
                         guard let ctx, let buf, len > 0 else { return }
@@ -278,10 +278,12 @@ public actor PhantomBridge {
     ///
     /// FFI-C1/C2/C3: `c_phantom_runtime_stop` is now a synchronous barrier.
     /// It signals the supervisor, joins all forwarder tasks (with a 5 s
-    /// supervisor timeout + 2 s per-forwarder timeout), and finally invokes
-    /// the registered release trampoline to balance the `passRetained`
-    /// we did in `start()`. By the time it returns, Rust has guaranteed no
-    /// more callbacks will fire — we are free to drop our Swift-side state.
+    /// supervisor timeout + 2 s per-forwarder timeout, abort + join after
+    /// that), and finally invokes the registered release trampoline to
+    /// balance the `passRetained` we did in `start()`. If the runtime could
+    /// not be joined cleanly Rust skips the release: the box stays alive on
+    /// its Unmanaged retain (a deliberate leak), so late callbacks hit valid
+    /// memory and are dropped by the `contextBox` identity check.
     public func stop() {
         _ = c_phantom_runtime_stop()
         statusHandler  = nil
@@ -321,13 +323,18 @@ public actor PhantomBridge {
 
     // MARK: - Private callback dispatchers
 
-    private func handleStatus(data: Data) {
-        guard let frame = try? JSONDecoder().decode(StatusFrame.self, from: data) else { return }
+    // `box !== contextBox` — колбэк от прошлой сессии, контекст которой Rust
+    // не смог дожать на stop и оставил утечкой: в текущую сессию не пускаем.
+
+    private func handleStatus(data: Data, from box: BridgeContext) {
+        guard box === contextBox,
+              let frame = try? JSONDecoder().decode(StatusFrame.self, from: data) else { return }
         statusHandler?(frame)
     }
 
-    private func handleLog(data: Data) {
-        guard let frame = try? JSONDecoder().decode(LogFrame.self, from: data) else { return }
+    private func handleLog(data: Data, from box: BridgeContext) {
+        guard box === contextBox,
+              let frame = try? JSONDecoder().decode(LogFrame.self, from: data) else { return }
         logHandler?(frame)
     }
 }

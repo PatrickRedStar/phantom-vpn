@@ -91,13 +91,18 @@ int32_t phantom_runtime_start(const char *cfg_json,
  *
  * Blocks the caller until:
  *   1. the supervisor task observes the cancel signal and exits, OR a 5 s
- *      timeout elapses (the timeout is a safety belt; under normal
- *      conditions the supervisor exits in <100 ms once cancel fires);
+ *      timeout elapses — then the supervisor is aborted and joined (the
+ *      timeout is a safety belt; under normal conditions the supervisor
+ *      exits in <100 ms once cancel fires);
  *   2. the status + log forwarder tasks have finished draining;
  *   3. the Swift-registered release callback has been invoked, balancing
  *      the `Unmanaged.passRetained` that Swift performed before `start`.
  *
- * After this returns, none of the C callbacks Swift passed to
+ * Step 3 is skipped if the supervisor had to be aborted or any task could
+ * not be joined: detached children may still fire callbacks with `ctx`, so
+ * the context is leaked instead of released.
+ *
+ * After a clean return, none of the C callbacks Swift passed to
  * `phantom_runtime_start` will be invoked again — Swift may release any
  * state those callbacks were closing over.
  *

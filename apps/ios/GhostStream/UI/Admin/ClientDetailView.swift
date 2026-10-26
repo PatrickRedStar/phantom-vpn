@@ -6,6 +6,7 @@
 //  controls, destination logs, and destructive actions.
 //
 
+import PhantomKit
 import PhantomUI
 import SwiftUI
 #if canImport(Charts)

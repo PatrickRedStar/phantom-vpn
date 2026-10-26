@@ -51,8 +51,9 @@ final class EntitlementRefresher {
               let baseURL = AdminGateway.adminBaseURL(for: profile)
         else { return }
 
-        // Once per 5 minutes per profile is plenty: `is_admin` flips rarely,
-        // and the ADMIN tab refreshes the same cache on its own when open.
+        // Once per 5 minutes per profile is plenty: `is_admin` and the
+        // subscription change rarely, and the ADMIN tab refreshes the same
+        // cache on its own when open.
         // Failures share the same backoff so an unreachable gateway is not
         // hammered every 20s tick.
         if lastAttemptProfileId == profile.id,
@@ -75,17 +76,9 @@ final class EntitlementRefresher {
             var updated = store.profiles.first(where: { $0.id == profile.id }) ?? profile
             updated.certPem = updated.certPem ?? certPem
             updated.keyPem = updated.keyPem ?? keyPem
-            updated.cachedIsAdmin = me.isAdmin
+            me.apply(to: &updated)
             if let fp = client.lastServerCertFp {
                 updated.cachedAdminServerCertFp = fp
-            }
-
-            if me.isAdmin,
-               let clients = try? await client.listClients(),
-               let match = clients.first(where: { AdminGateway.sameTunIP($0.tunAddr, profile.tunAddr) })
-                   ?? clients.first(where: { $0.name == me.name }) {
-                updated.cachedExpiresAt = match.expiresAt
-                updated.cachedEnabled = match.enabled
             }
 
             store.update(updated)

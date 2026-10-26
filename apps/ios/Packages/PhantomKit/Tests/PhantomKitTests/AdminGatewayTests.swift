@@ -14,4 +14,26 @@ final class AdminGatewayTests: XCTestCase {
     func testInvalidTunnelAddressFallsBackToDefaultGateway() {
         XCTAssertEqual(AdminGateway.host(forTunAddr: "bad-profile"), AdminGateway.fallbackHost)
     }
+
+    /// `/api/me` is the only subscription source; an old server without
+    /// `enabled` must not wipe the cached subscription.
+    func testSelfInfoAppliesSubscriptionOnlyWhenServerSendsIt() throws {
+        let decoder = JSONDecoder()
+        var profile = VpnProfile(cachedExpiresAt: 42, cachedEnabled: true)
+
+        let old = try decoder.decode(AdminSelfInfo.self, from: Data(#"{"name":"a","is_admin":true}"#.utf8))
+        old.apply(to: &profile)
+        XCTAssertEqual(profile.cachedIsAdmin, true)
+        XCTAssertEqual(profile.cachedExpiresAt, 42)
+        XCTAssertEqual(profile.cachedEnabled, true)
+
+        let perpetual = try decoder.decode(
+            AdminSelfInfo.self,
+            from: Data(#"{"name":"a","is_admin":false,"expires_at":null,"enabled":false}"#.utf8)
+        )
+        perpetual.apply(to: &profile)
+        XCTAssertEqual(profile.cachedIsAdmin, false)
+        XCTAssertNil(profile.cachedExpiresAt)
+        XCTAssertEqual(profile.cachedEnabled, false)
+    }
 }

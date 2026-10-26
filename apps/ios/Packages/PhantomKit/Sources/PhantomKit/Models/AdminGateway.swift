@@ -20,11 +20,6 @@ public enum AdminGateway {
         URL(string: "https://\(host(forTunAddr: profile.tunAddr)):8080")
     }
 
-    /// Compares two tun addresses by their IP part, ignoring the /prefix.
-    public static func sameTunIP(_ lhs: String, _ rhs: String) -> Bool {
-        tunIP(lhs) == tunIP(rhs)
-    }
-
     private static func tunIP(_ tunAddr: String) -> String {
         (tunAddr
             .split(separator: "/", maxSplits: 1)

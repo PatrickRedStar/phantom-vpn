@@ -27,6 +27,7 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 14) {
                 connectionCard
                 reconnectBanner
+                healthBanner
                 emptyHint
                 preflightBanner
                 scopeCard
@@ -85,26 +86,64 @@ struct DashboardView: View {
         if stateMgr.statusFrame.state == .reconnecting {
             let attempt = stateMgr.statusFrame.reconnectAttempt.map { Int($0) } ?? 0
             let nextDelay = stateMgr.statusFrame.reconnectNextDelaySecs.map { Int($0) } ?? 0
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.callout.weight(.semibold))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L("native.dashboard.reconnecting"))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(C.warn)
-                    Text(String(format: L("native.dashboard.reconnect.detail.format"), attempt, nextDelay))
+            warnBanner(
+                icon: "arrow.clockwise",
+                title: L("native.dashboard.reconnecting"),
+                detail: String(format: L("native.dashboard.reconnect.detail.format"), attempt, nextDelay)
+            )
+        }
+    }
+
+    /// Health banner — the tunnel is up, but the core reports dead streams,
+    /// silence or throttling (same states the Android dashboard shows).
+    @ViewBuilder
+    private var healthBanner: some View {
+        if let text = healthWarningText {
+            warnBanner(icon: "exclamationmark.triangle", title: text, detail: nil)
+        }
+    }
+
+    private var healthWarningText: String? {
+        let sf = stateMgr.statusFrame
+        guard sf.state == .connected else { return nil }
+        switch sf.health {
+        case .dead?:
+            return L("native.dashboard.health.dead")
+        case .degraded?:
+            // The core reports throttling as `degraded` too.
+            if sf.bandwidthClass == .throttled {
+                return L("native.dashboard.health.throttled")
+            }
+            return String(format: L("native.dashboard.health.degraded.format"), Int(sf.streamsUp), Int(sf.nStreams))
+        case .stale?:
+            return String(format: L("native.dashboard.health.stale.format"), Int(sf.idleRxSecs ?? 0))
+        default:
+            return nil
+        }
+    }
+
+    private func warnBanner(icon: String, title: String, detail: String?) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.callout.weight(.semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(C.warn)
+                if let detail {
+                    Text(detail)
                         .font(.footnote)
                         .foregroundStyle(C.textDim)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(14)
-            .background(C.warn.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(C.warn.opacity(0.4), lineWidth: 1)
-            )
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(14)
+        .background(C.warn.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(C.warn.opacity(0.4), lineWidth: 1)
+        )
     }
 
     @ViewBuilder

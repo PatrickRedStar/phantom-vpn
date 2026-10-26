@@ -217,6 +217,10 @@
 "native.dashboard.streams.count.format" = "%d of %d";
 "native.dashboard.reconnecting" = "Reconnecting";
 "native.dashboard.reconnect.detail.format" = "Attempt %d · next in %ds";
+"native.dashboard.health.dead" = "All streams down — reconnecting";
+"native.dashboard.health.degraded.format" = "Degraded: %d of %d streams up";
+"native.dashboard.health.stale.format" = "No data from server for %ds";
+"native.dashboard.health.throttled" = "Speed throttled";
 "native.dashboard.subscription.remaining.format" = "Subscription: %lldd %lldh";
 "native.dashboard.subscription.hours.format" = "Subscription: %lldh";
 "native.dashboard.subscription.less_than_hour" = "Subscription: < 1h";
