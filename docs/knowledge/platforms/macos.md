@@ -1,6 +1,6 @@
 ---
 created: 2026-04-27
-updated: 2026-04-27
+updated: 2026-10-26
 status: in-progress
 tags: [platform, macos, swiftui, network-extension]
 ---
@@ -122,7 +122,7 @@ scripts/
 │   └── client-core-runtime (Rust)                                        │
 │        ├── TunIo::Callback(Arc<dyn PacketIo>)                           │
 │        ├── handshake (mTLS + H2)                                        │
-│        ├── supervise FSM (8 attempts, [3,6,12,24,48,60,60,60]s)        │
+│        ├── supervise FSM (бесконечный ретрай, пауза до 30 с)          │
 │        └── telemetry (250ms, EMA α=0.35) → StatusFrame                  │
 │                                                                          │
 │  packetFlow.readPackets ──► Rust runtime ──► TLS H2 ──► NL exit         │
@@ -130,6 +130,29 @@ scripts/
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Состояния, ошибки, подписка
+
+Переподключением владеет ядро ([ADR 0018](../decisions/0018-rust-owns-reconnect.md)):
+при сетевых сбоях оно ретраит бесконечно и публикует `reconnecting`.
+
+- **У провайдера нет своих watchdog'ов** — ни «нет connected за N с», ни
+  «слишком долго в reconnecting»: они гасили или перезапускали туннель поверх
+  ретраев ядра. Провайдер реагирует только на `connected` (completion для NE),
+  `error` и события NE.
+- **`error` = фатальная причина** (отзыв доступа, истёкший доступ, неверные
+  часы, кривой профиль). Провайдер останавливает туннель, error-кадр остаётся в
+  снапшоте, и хост показывает `last_error` до следующего Connect. Неудачный
+  рестарт рантайма (смена сети, пробуждение) тоже останавливает туннель с
+  причиной, а не оставляет его без рантайма.
+- **Дашборд** при поднятом туннеле показывает плашку здоровья, как на Android:
+  все потоки упали (`dead`), живы k из n (`degraded`), тишина в канале
+  (`stale`), скорость ограничена (только по `bandwidth_class = throttled`).
+  `TunnelHealth` в PhantomKit знает `dead`; прежде такие кадры падали в
+  `unknown`.
+- **Подписка и флаг админа** берутся из `/api/me` (`expires_at`, `enabled`,
+  `is_admin`) и кладутся в кэш профиля до запросов админки — срок видят и
+  не-админы. Старый сервер без этих полей кэш не трогает.
 
 ## 7 поверхностей UI
 
@@ -192,6 +215,11 @@ Ready ── (System Settings → VPN & Filters показывает GhostStream
 **Recovery**: `sudo systemextensionsctl reset` снимает все system extensions — app переходит в `LOST SIGNAL.` state, UI banner предлагает re-activate с тем же flow.
 
 ## mTLS storage и App Group
+
+> Cert/key туннеля на macOS едут в `providerConfiguration`, а не через Keychain:
+> system extension под root не видит user Data Protection keychain — см.
+> [ADR 0009](../decisions/0009-cert-pem-providerConfiguration.md). Bundle id и App
+> Group с 2026-05 — `com.ghoststream.client*` / `group.com.ghoststream.client`.
 
 Keychain через `PhantomKit/Storage/Keychain.swift` с access group **`group.com.ghoststream.vpn`** (тот же что iOS).
 

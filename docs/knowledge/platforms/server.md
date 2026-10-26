@@ -10,7 +10,7 @@ updated: 2026-10-26
   HTTP API + passive DNS cache + fakeapp fallback. Всё в одном
   бинаре, один `tokio::runtime` (multi-threaded).
 - **`phantom-relay`** (`server/relay/`) — SNI passthrough на RU-хопе. **НЕ
-  терминирует TLS** (v0.17.0+). Peek ClientHello → SNI → raw `copy_bidirectional`.
+  терминирует TLS** (v0.17.0+). Читает ClientHello → SNI → raw `copy_bidirectional`.
 - **`phantom-keygen`** — CLI для bootstrap: CA generation, client cert issue,
   `admin-grant`. Отдельный бинарь, живёт рядом с `phantom-server`.
 - Runtime: Tokio multi-threaded scheduler. TUN на сервере — `tun_uring` (io_uring,
@@ -160,6 +160,12 @@ Admin-server cert для mTLS listener'а — self-signed на `10.7.0.1`, ге�
   (после терминатора батча — wire-формат прежний).
 - Таймауты сессий идут по монотонным часам; проверка подписок пропускает тик,
   если системные часы прыгнули больше чем на час.
+- **Живучесть процесса.** Ошибка `accept()` (EMFILE и т.п.) не убивает листенер:
+  warn, пауза 100 мс, цикл дальше. Паника в одном соединении (профиль
+  `release-server`, `panic = "unwind"`) роняет только его. Паника в потоках
+  io_uring, выход accept-цикла или TUN-диспетчера роняют процесс целиком —
+  systemd его поднимает, полумёртвым сервер не висит. `IFF_TUN_EXCL`: второй
+  экземпляр (например, Docker рядом с systemd) к боевому `tun1` не цепляется.
 
 ## nginx frontend (NL)
 
@@ -170,6 +176,8 @@ Admin-server cert для mTLS listener'а — self-signed на `10.7.0.1`, ге�
 
 Это даёт двойную страховку: `phantom-server` может остаться на нестандартном
 порту, а внешний probe видит валидный TLS-сертификат, выданный Let's Encrypt.
+В боевом тракте этот nginx не участвует: `:443` vdsina из РФ фильтруется, реле
+ходит прямо на публичный `:8443`.
 
 ## Relay — SNI Passthrough (RU, v0.17.0+)
 
@@ -177,18 +185,42 @@ Admin-server cert для mTLS listener'а — self-signed на `10.7.0.1`, ге�
 vps_balancer) **не терминирует TLS**. Псевдокод логики:
 
 ```rust
-let client_hello = peek_up_to(socket, 1500).await?;
-let sni = parse_sni_from_client_hello(&client_hello)?;
+let hello = read_client_hello(socket).await?;   // до 16 КБ, склеивает TLS-записи
+let sni = extract_sni(&hello)?;
 
 if sni == expected_sni {
-    // raw forward — TLS handshake end-to-end между phone и NL phantom-server
-    copy_bidirectional(socket, upstream_to_nl).await?;
-} else if let Some(acc) = fallback_acceptor {
-    serve_fallback_html(socket, acc).await?;     // LE-cert HTML stub
+    // прочитанные байты отдаются exit'у как есть, дальше сырой поток —
+    // TLS handshake end-to-end между телефоном и NL phantom-server
+    upstream.write_all(&hello).await?;
+    copy_bidirectional(socket, upstream).await?;
+} else if let Some(acc) = build_fallback_acceptor()? {   // серт с диска — на каждое соединение
+    serve_fallback(socket, acc).await?;          // ответ как у стокового nginx
 } else {
-    /* drop — when running behind nginx, mismatch never reaches us */
+    /* drop — за nginx stream чужой SNI сюда не доходит */
 }
 ```
+
+Поведение и лимиты:
+
+- **Не больше 8192 соединений одновременно** (семафор; passthrough держит два fd
+  при `LimitNOFILE=65536` / docker `nofile 65536`). Упор в лимит пишется в лог.
+  Ошибка `accept()` логируется, цикл продолжается.
+- **Предварительная фаза — 10 с на всё**: чтение ClientHello, а для fallback —
+  TLS-рукопожатие и HTTP-обмен. Висящий коннект с одним байтом больше не держит
+  сокет вечно.
+- **Connect к exit** — резолв `upstream_addr` на каждом соединении, перебор всех
+  адресов, 5 с на попытку. Переезд exit — правка DNS. Кривой `upstream_addr`
+  (без порта) валит старт, а не каждое соединение.
+- **Passthrough закрывается целиком**, как только закрылась одна сторона —
+  молчащий клиент не держит соединение и слот лимита после ухода exit'а.
+- **Fallback отвечает как nginx** без сайта: ALPN только `http/1.1`, 404 на
+  HTTP-запрос, 400 на мусор, HEAD — только заголовки, `Server: nginx` и `Date`.
+- **Fallback-серт перечитывается на каждом fallback-соединении** (они редкие) —
+  продление certbot'ом подхватывается без рестарта. `renew_hook` с рестартом
+  реле, который рвал все живые стримы, больше не нужен (на хостах — после деплоя
+  нового бинаря). `fallback_host` в конфиге больше не нужен.
+- **Журнал** — IP клиентов только на DEBUG; обрыв с ошибкой пишется ошибкой, а не
+  `up=0B down=0B`.
 
 Почему:
 - До v0.17 был double-TLS (RU terminate → NL terminate) — RU был CPU-bound на
