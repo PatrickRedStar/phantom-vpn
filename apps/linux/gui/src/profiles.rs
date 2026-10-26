@@ -18,14 +18,14 @@ pub struct Profile {
     #[serde(default)]
     pub tun_addr: String,
 
-    // ─── Admin panel credentials (optional) ───
-    /// Base URL of admin API, e.g. "http://10.7.0.1:8080" (reached via tunnel).
+    // ─── Admin panel (mTLS with the profile's own cert) ───
+    /// Admin API URL override; default `https://<tunnel gateway>:8080`.
     #[serde(default)]
     pub admin_url: Option<String>,
-    /// Bearer token for /api/* endpoints.
+    /// Unused: the server takes a Bearer token only from its own loopback.
     #[serde(default)]
     pub admin_token: Option<String>,
-    /// SHA-256 fingerprint (hex, colon-separated) of admin listener cert — TOFU pin.
+    /// SHA-256 (hex) of the admin listener cert — pinned on first use.
     #[serde(default)]
     pub admin_server_cert_fp: Option<String>,
 }

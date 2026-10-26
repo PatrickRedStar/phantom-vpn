@@ -24,6 +24,8 @@ dirs = "5"
 phantom-client-common = { path = "../../../crates/client-common" }
 ksni = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
+# Admin API: client config with a pinning verifier (same rustls as reqwest's).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.10"
 arboard = { version = "3", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
