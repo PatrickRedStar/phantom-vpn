@@ -9,6 +9,7 @@ import com.ghoststream.vpn.widget.WidgetState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -18,10 +19,8 @@ import kotlinx.coroutines.launch
  * MainActivity starts rendering. v0.25.1 W3-11.
  *
  * Why: after the OS kills the app process (low memory, swipe-away), any
- * launcher widgets still render whatever state Glance has cached. If the
- * user had VPN on, the widget should immediately show "connecting/on"
- * until the service reports otherwise — not a blank/off pill that lies
- * about VPN state.
+ * launcher widgets still render whatever state Glance has cached — often a
+ * green "on" for a tunnel that died with the process.
  */
 class MyApplication : Application() {
 
@@ -45,25 +44,21 @@ class MyApplication : Application() {
         // once per process — appScope lives as long as the process does.
         LogPersister.start(this, appScope)
 
-        // Restore widget last-known state from persisted `was_running`
-        // so the home-screen widget shows accurate state immediately
-        // after device reboot or process restart, not stale.
-        // The supervisor / service will overwrite this with truth as
-        // soon as the tunnel comes back up (or to Disconnected if it
-        // can't).
+        // A fresh process has no tunnel in it, whatever the widget cached.
+        // If the user had VPN on, render "connecting" only when something will
+        // actually bring it back (auto-start); otherwise "off". The service
+        // overwrites this with the truth as soon as it runs — including the
+        // restart after a process kill and the one after an app update.
         appScope.launch(Dispatchers.IO) {
             try {
                 val prefs = PreferencesStore(this@MyApplication)
                 val wasRunning = runCatching { prefs.wasRunningBlocking() }.getOrDefault(false)
                 if (wasRunning) {
-                    // We honestly don't know yet whether the tunnel is
-                    // up — supervise hasn't re-attached. Render as
-                    // "connecting" so the widget doesn't claim a false
-                    // green check. Server name unknown at this point.
+                    val autoStart = runCatching { prefs.autoStartOnBoot.first() }.getOrDefault(false)
                     WidgetState.push(
                         context = this@MyApplication,
                         connected = false,
-                        connecting = true,
+                        connecting = autoStart,
                         serverName = "",
                     )
                 }
