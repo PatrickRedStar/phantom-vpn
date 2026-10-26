@@ -328,18 +328,17 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     /**
      * state=error from the core means a fatal error: broken connection string or
      * config, certificate problem, revoked client, wrong clock. Network errors
-     * are retried by the core itself and never surface as error. The one-second
-     * wait is insurance: an older core also set error between attempts, but
-     * immediately followed it with the delay until the next one.
+     * are retried by the core itself and never surface as error. Act at once:
+     * until the teardown starts the UI still says "Защищено".
      */
     private fun scheduleFatalCheck() {
         val generation = tunnelGeneration.get()
-        mainHandler.postDelayed({
+        mainHandler.post {
             val f = VpnStateManager.statusFrame.value
             if (f.state == "error" && f.reconnectNextDelaySecs == null) {
                 failTunnel(f.lastError?.takeIf { it.isNotBlank() } ?: "Ошибка туннеля", generation)
             }
-        }, 1_000L)
+        }
     }
 
     /** Home-screen widgets: a state change goes out at once; timer and speeds
@@ -800,9 +799,10 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         persistScope.launch { WidgetState.push(context = ctx, connected = false) }
         startupThread?.interrupt()
         startupThread = null
-        if (finalState !is VpnState.Error) {
-            mainHandler.post { VpnStateManager.update(VpnState.Disconnecting) }
-        }
+        // Also for an error: the TUN closes right below, and until the final
+        // state lands (after nativeStop + cooldown) the UI must not say
+        // "Защищено" while traffic already goes around the VPN.
+        mainHandler.post { VpnStateManager.update(VpnState.Disconnecting) }
 
         // КРИТИЧНО: закрываем tun fd ДО nativeStop. Это заставляет все native
         // read/write на tun получить EBADF и мгновенно разблокирует любой
@@ -1305,6 +1305,13 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     if (state is VpnState.Disconnected || state is VpnState.Disconnecting ||
                         state is VpnState.Error
                     ) {
+                        // Teardown started and the TUN is already closed: drop
+                        // "Защищено" from the ongoing notification until
+                        // stopForeground removes it.
+                        if (wasUp && state is VpnState.Disconnecting) {
+                            getSystemService(NotificationManager::class.java)
+                                ?.notify(NOTIFICATION_ID, buildNotification(notificationContentFor(state)))
+                        }
                         wasUp = false
                         return@collectLatest
                     }
