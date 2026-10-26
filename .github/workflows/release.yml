@@ -170,7 +170,8 @@ jobs:
               s = re.sub(r"`(.+?)`", r"\1", s)            # код
               s = re.sub(r"^[-*]\s*", "• ", s)            # маркеры
               lines.append(s)
-          out = "\n".join(lines)[:500].rsplit("\n", 1)[0] or "Обновление PhantomVPN."
+          full = "\n".join(lines)
+          out = (full if len(full) <= 500 else full[:500].rsplit("\n", 1)[0]) or "Обновление PhantomVPN."
           pathlib.Path("distribution/whatsnew/whatsnew-ru-RU").write_text(out, encoding="utf-8")
           print(out)
           PY
