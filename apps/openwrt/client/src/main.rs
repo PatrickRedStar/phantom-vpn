@@ -5,15 +5,17 @@
 //! - Uses tun_simple instead of tun_uring (no io_uring on OpenWrt kernels)
 //! - current_thread tokio runtime (saves RAM on routers)
 //! - IP addr/routes managed by netifd; we only bring up the interface
+//! - Each stream reconnects by itself with backoff (≤30 s + jitter), forever
 //! - Emits JSON to stdout on startup: {"tun_name":"gs0","tun_addr":"...","gateway":"..."}
 
 #[cfg(target_os = "linux")]
 mod linux {
     use std::fs::{File, OpenOptions};
     use std::io;
-    use std::net::SocketAddr;
     use std::os::unix::io::AsRawFd;
     use std::process::Command;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use anyhow::Context;
     use bytes::Bytes;
@@ -21,14 +23,20 @@ mod linux {
     use client_common::{tls_connect, tls_rx_loop, tls_tx_loop, with_default_port, write_handshake};
     use phantom_core::wire::{flow_stream_idx, n_data_streams};
     use tokio::signal;
-    use tokio::sync::watch;
+    use tokio::sync::{mpsc, watch};
 
     // MIPS uses different ioctl encoding: _IOC_WRITE=4, _IOC_DIRSHIFT=29
-    // vs generic _IOC_WRITE=1, _IOC_DIRSHIFT=30
-    #[cfg(any(target_arch = "mips", target_arch = "mipsel"))]
+    // vs generic _IOC_WRITE=1, _IOC_DIRSHIFT=30 (mipsel is target_arch "mips")
+    #[cfg(target_arch = "mips")]
     const TUNSETIFF: libc::c_ulong = 0x800454CA;
-    #[cfg(not(any(target_arch = "mips", target_arch = "mipsel")))]
+    #[cfg(not(target_arch = "mips"))]
     const TUNSETIFF: libc::c_ulong = 0x400454CA;
+
+    /// No frame at all (data or heartbeat) for this long → the stream is dead.
+    /// Same as client-core-runtime: server heartbeats come at most 60 s apart.
+    const RX_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+    /// A stream that stayed up this long starts its backoff from scratch.
+    const STABLE_AFTER: Duration = Duration::from_secs(30);
     const IFF_TUN: libc::c_short = 0x0001;
     const IFF_NO_PI: libc::c_short = 0x1000;
 
@@ -176,6 +184,62 @@ mod linux {
         let _ = rx.changed().await;
     }
 
+    /// Pause before reconnecting a stream: 1, 2, 5, 10, 20, then 30 s forever,
+    /// plus up to 25 % jitter so streams (and routers) dropped by one event
+    /// don't come back in lockstep. Same table as client-core-runtime.
+    fn reconnect_delay(fails: usize) -> Duration {
+        const BACKOFF_SECS: [u64; 6] = [1, 2, 5, 10, 20, 30];
+        let base_ms = BACKOFF_SECS[fails.min(BACKOFF_SECS.len() - 1)] * 1000;
+        let noise = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+        Duration::from_millis(base_ms + u64::from(noise) % (base_ms / 4 + 1))
+    }
+
+    /// One TLS stream for the life of the process: connect, run until the
+    /// server closes it (FIN), it fails or goes silent, pause, connect again —
+    /// never giving up. Only this stream reconnects; the others keep running,
+    /// and its uplink queue survives the gap.
+    async fn run_stream(
+        idx: usize,
+        n_streams: usize,
+        server: String,
+        server_name: String,
+        client_config: Arc<rustls::ClientConfig>,
+        mut uplink: mpsc::Receiver<Bytes>,
+        tun_tx: mpsc::Sender<Bytes>,
+    ) {
+        // Streams open one after another, not in one burst.
+        tokio::time::sleep(Duration::from_millis(idx as u64 * 100)).await;
+        let mut fails = 0;
+        loop {
+            let started = Instant::now();
+            let session = async {
+                let addr = tokio::net::lookup_host(&server)
+                    .await
+                    .context("DNS lookup failed")?
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", server))?;
+                let (r, mut w) = tls_connect(addr, server_name.clone(), client_config.clone()).await?;
+                write_handshake(&mut w, idx as u8, n_streams as u8).await?;
+                tracing::info!("Stream {}: connected to {}", idx, addr);
+                tokio::select! {
+                    res = tls_tx_loop(w, &mut uplink) => res.context("tx"),
+                    res = tls_rx_loop(r, tun_tx.clone(), Some(RX_IDLE_TIMEOUT)) => res.context("rx"),
+                }
+            };
+            let err = match session.await {
+                Ok(()) => anyhow::anyhow!("closed"),
+                Err(e) => e,
+            };
+            if started.elapsed() >= STABLE_AFTER {
+                fails = 0;
+            }
+            let delay = reconnect_delay(fails);
+            fails += 1;
+            tracing::warn!("Stream {}: {:#}; reconnecting in {:.1?}", idx, err, delay);
+            tokio::time::sleep(delay).await;
+        }
+    }
+
     // ─── Main ─────────────────────────────────────────────────────────────────
 
     /// Handle `ghoststream --print-tun-addr <conn-string>` — emit "10.7.0.x/24" to stdout.
@@ -249,19 +313,9 @@ mod linux {
         let cfg = parse_conn_string(&opts.conn_string)
             .context("Failed to parse --conn-string")?;
 
-        let raw_addr = cfg.network.server_addr.clone();
-        let raw_addr = with_default_port(&raw_addr, 443);
-        let server_addr: SocketAddr = if let Ok(addr) = raw_addr.parse() {
-            addr
-        } else {
-            tracing::info!("Resolving DNS for {}", raw_addr);
-            tokio::net::lookup_host(&raw_addr)
-                .await
-                .context("DNS lookup failed")?
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No DNS results for {}", raw_addr))?
-        };
-        tracing::info!("Server address: {}", server_addr);
+        // Resolved on every connect: at boot the WAN may not be up yet.
+        let server = with_default_port(&cfg.network.server_addr, 443);
+        tracing::info!("Server address: {}", server);
 
         let tun_addr = cfg.network.tun_addr.clone().unwrap_or_else(|| "10.7.0.2/24".to_string());
         let gateway  = cfg.network.default_gw.clone().unwrap_or_else(|| "10.7.0.1".to_string());
@@ -276,11 +330,9 @@ mod linux {
             })
         );
 
-        // Load TLS identity and CA
+        // Load TLS identity
         let client_identity =
             client_common::helpers::load_tls_identity(&cfg)?;
-        let server_ca =
-            client_common::helpers::load_server_ca(&cfg)?;
 
         // Server TLS cert is signed by Let's Encrypt (via nginx SNI passthrough),
         // not by the PhantomVPN CA in the conn string (that CA is for client mTLS
@@ -297,23 +349,9 @@ mod linux {
         let n_streams   = n_data_streams();
         let server_name = cfg.network.server_name.as_deref().unwrap_or("phantom").to_string();
 
-        // Open N parallel TLS streams
-        let mut tls_writers = Vec::with_capacity(n_streams);
-        let mut tls_readers = Vec::with_capacity(n_streams);
-        for idx in 0..n_streams {
-            let (r, mut w) = tls_connect(server_addr, server_name.clone(), client_config.clone())
-                .await
-                .with_context(|| format!("stream {}: TLS connect failed", idx))?;
-            write_handshake(&mut w, idx as u8, n_streams as u8)
-                .await
-                .with_context(|| format!("stream {}: write_handshake failed", idx))?;
-            tracing::info!("Stream {}: connected", idx);
-            tls_readers.push(r);
-            tls_writers.push(w);
-        }
-        tracing::info!("All {} TLS streams up", n_streams);
-
-        // Create TUN interface (netifd configures the IP address)
+        // Create TUN interface (netifd configures the IP address). It comes up
+        // before the streams: netifd waits for it, and the streams connect —
+        // and reconnect — behind it for as long as the process lives.
         let tun_file = create_tun(&opts.tun_name, opts.mtu)?;
         let tun_fd   = tun_file.as_raw_fd();
         std::mem::forget(tun_file); // keep fd open; owned by tun_simple threads
@@ -333,13 +371,10 @@ mod linux {
             tx_receivers.push(rx);
         }
 
-        // Single RX sink for all N rx loops → TUN writer
-        let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
-
         // Dispatcher: TUN reader → per-stream channel via flow hash
         let tx_senders_clone   = tx_senders.clone();
         let n_streams_dispatch = n_streams;
-        tokio::task::spawn_local(async move {
+        let mut dispatcher = tokio::task::spawn_local(async move {
             let mut drop_full:   u64 = 0;
             let mut drop_closed: u64 = 0;
             while let Some(pkt) = tun_pkt_rx.recv().await {
@@ -368,40 +403,19 @@ mod linux {
         });
         drop(tx_senders);
 
-        // RX forwarder: sink → TUN writer
-        let tun_write_tx = tun_pkt_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Some(pkt) = rx_sink_rx.recv().await {
-                if tun_write_tx.send(pkt).await.is_err() {
-                    return;
-                }
-            }
-        });
+        // N streams, each reconnecting on its own; RX goes straight to TUN.
+        for (idx, uplink) in tx_receivers.into_iter().enumerate() {
+            tokio::task::spawn_local(run_stream(
+                idx,
+                n_streams,
+                server.clone(),
+                server_name.clone(),
+                client_config.clone(),
+                uplink,
+                tun_pkt_tx.clone(),
+            ));
+        }
         drop(tun_pkt_tx);
-
-        // N TX + N RX tasks
-        let mut tx_handles = Vec::with_capacity(n_streams);
-        let mut rx_handles = Vec::with_capacity(n_streams);
-        for (idx, (w, rxc)) in tls_writers
-            .into_iter()
-            .zip(tx_receivers.into_iter())
-            .enumerate()
-        {
-            tx_handles.push(tokio::task::spawn_local(async move {
-                let res = tls_tx_loop(w, rxc).await;
-                tracing::warn!("stream {}: tx loop ended: {:?}", idx, res);
-                res
-            }));
-        }
-        for (idx, r) in tls_readers.into_iter().enumerate() {
-            let sink = rx_sink_tx.clone();
-            rx_handles.push(tokio::task::spawn_local(async move {
-                let res = tls_rx_loop(r, sink, None).await;
-                tracing::warn!("stream {}: rx loop ended: {:?}", idx, res);
-                res
-            }));
-        }
-        drop(rx_sink_tx);
 
         tracing::info!("Tunnel active. Send SIGTERM or SIGINT to stop.");
 
@@ -409,18 +423,10 @@ mod linux {
         tokio::select! {
             _ = wait_for_shutdown(&mut shutdown_rx_select) => {
                 tracing::info!("Shutdown signal received.");
-                for h in tx_handles { h.abort(); }
-                for h in rx_handles { h.abort(); }
             }
-            _ = async {
-                for h in &mut tx_handles { let _ = h.await; }
-            } => {
-                tracing::warn!("All TX loops exited.");
-            }
-            _ = async {
-                for h in &mut rx_handles { let _ = h.await; }
-            } => {
-                tracing::warn!("All RX loops exited.");
+            _ = &mut dispatcher => {
+                // The TUN reader is gone; no reconnect brings it back.
+                anyhow::bail!("TUN interface closed");
             }
         }
 
