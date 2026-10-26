@@ -59,13 +59,15 @@ class ProfilesStore private constructor(private val context: Context) {
         _profiles.value.find { it.id == _activeId.value } ?: _profiles.value.firstOrNull()
 
     fun addProfile(profile: VpnProfile) {
-        _profiles.value = _profiles.value + profile
-        if (_activeId.value == null) _activeId.value = profile.id
+        val p = withoutInlineKey(profile)
+        _profiles.value = _profiles.value + p
+        if (_activeId.value == null) _activeId.value = p.id
         save()
     }
 
     fun updateProfile(profile: VpnProfile) {
-        _profiles.value = _profiles.value.map { if (it.id == profile.id) profile else it }
+        val p = withoutInlineKey(profile)
+        _profiles.value = _profiles.value.map { if (it.id == p.id) p else it }
         save()
     }
 
@@ -143,20 +145,19 @@ class ProfilesStore private constructor(private val context: Context) {
             }
             _activeId.value = obj.optString("activeId").takeIf { it.isNotBlank() }
 
-            // Auto-migrate: read cert/key files into inline PEM if missing
+            // Auto-migrate: the (public) cert is kept inline as well; the private
+            // key the other way round — older versions kept it inline too, now
+            // it lives in its file only.
             var migrated = false
             _profiles.value = _profiles.value.map { profile ->
-                if (profile.certPem == null && profile.certPath.isNotBlank()) {
-                    val certFile = File(profile.certPath)
-                    val keyFile = File(profile.keyPath)
-                    if (certFile.exists() && keyFile.exists()) {
-                        migrated = true
-                        profile.copy(
-                            certPem = certFile.readText(),
-                            keyPem = keyFile.readText(),
-                        )
-                    } else profile
-                } else profile
+                var p = profile
+                if (p.certPem == null && p.certPath.isNotBlank()) {
+                    val certFile = File(p.certPath)
+                    if (certFile.exists()) p = p.copy(certPem = certFile.readText())
+                }
+                p = withoutInlineKey(p)
+                if (p != profile) migrated = true
+                p
             }
             if (migrated) save()
         }
@@ -172,6 +173,13 @@ class ProfilesStore private constructor(private val context: Context) {
         val keyFile = File(profile.keyPath)
         if (certFile.exists() && keyFile.exists()) return profile
 
+        val updated = writeCertFiles(profile) ?: return null
+        updateProfile(updated)
+        return updated.copy(keyPem = null)
+    }
+
+    /** Writes inline PEM to profiles/<id>/; null when there is nothing to write. */
+    private fun writeCertFiles(profile: VpnProfile): VpnProfile? {
         val certPem = profile.certPem ?: return null
         val keyPem = profile.keyPem ?: return null
 
@@ -181,13 +189,28 @@ class ProfilesStore private constructor(private val context: Context) {
         val newKey = File(profileDir, "client.key")
         newCert.writeText(certPem)
         newKey.writeText(keyPem)
+        // A legacy profile's key file lived elsewhere — don't leave a second copy.
+        val oldKey = profile.keyPath
+        if (oldKey.isNotBlank() && oldKey != newKey.absolutePath &&
+            _profiles.value.none { it.id != profile.id && it.keyPath == oldKey }
+        ) {
+            runCatching { File(oldKey).delete() }
+        }
 
-        val updated = profile.copy(
+        return profile.copy(
             certPath = newCert.absolutePath,
             keyPath = newKey.absolutePath,
         )
-        updateProfile(updated)
-        return updated
+    }
+
+    /**
+     * One copy of the private key: the file in profiles/<id>/. Inline keyPem
+     * (import, older profiles.json) is written there and dropped; if it can't
+     * be written the profile is kept as is rather than lose the key.
+     */
+    private fun withoutInlineKey(profile: VpnProfile): VpnProfile {
+        if (profile.keyPem == null) return profile
+        return runCatching { writeCertFiles(profile) }.getOrNull()?.copy(keyPem = null) ?: profile
     }
 
     private fun save() {
@@ -202,6 +225,8 @@ class ProfilesStore private constructor(private val context: Context) {
                     put("certPath", p.certPath)
                     put("keyPath", p.keyPath)
                     if (p.certPem != null) put("certPem", p.certPem)
+                    // The key is never written here — see withoutInlineKey(). A
+                    // profile whose key file couldn't be written keeps it inline.
                     if (p.keyPem != null) put("keyPem", p.keyPem)
                     put("tunAddr", p.tunAddr)
                     if (p.dnsServers != null) put("dnsServers", p.dnsServers.joinToString(","))

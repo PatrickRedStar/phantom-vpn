@@ -1,6 +1,6 @@
 //! phantom-client-android: Android VPN client via JNI.
 //!
-//! Phase 4: GhostStreamVpnService calls nativeStart(tunFd, cfgJson, settingsJson, listener).
+//! Phase 4: GhostStreamVpnService calls nativeStart(tunFd, cfgJson, listener).
 //! Rust runs the tunnel via client_core_runtime::run() with TunIo::BlockingThreads.
 //! Status and log updates are pushed to Kotlin via PhantomListener callbacks instead
 //! of polling.
@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::sys::{jint, jlong, jstring};
+use jni::sys::{jint, jstring};
 use jni::{JNIEnv, JavaVM};
 
-use client_core_runtime::{ConnectProfile, ProtectSocket, TunIo, TunnelSettings};
+use client_core_runtime::{ConnectProfile, ProtectSocket, TunIo};
 use ghoststream_gui_ipc::LogFrame;
 
 use tokio::sync::{mpsc, watch};
@@ -88,6 +88,42 @@ fn logcat(prio: libc::c_int, msg: &str) {
     }
 }
 
+// ─── Calls into Java from runtime threads ────────────────────────────────────
+//
+// Runtime workers are attached once, as daemons, and never return to Java — so
+// nothing ever frees their local references for them. Every call below runs in
+// its own local frame, and a thrown Java exception is cleared on the spot: a
+// pending exception makes the next JNI call on that thread fatal.
+
+fn clear_exception(env: &mut JNIEnv) {
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_describe();
+        let _ = env.exception_clear();
+    }
+}
+
+/// `listener.<method>(json)`. Returns false only when the thread can't be
+/// attached — the caller's loop has nothing left to do then.
+fn call_listener(vm: &JavaVM, listener: &GlobalRef, method: &str, json: &str) -> bool {
+    let mut env = match vm.attach_current_thread_as_daemon() {
+        Ok(e) => e,
+        Err(e) => {
+            logcat(6, &format!("{method}: attach failed: {e:?}"));
+            return false;
+        }
+    };
+    let res: jni::errors::Result<()> = env.with_local_frame(4, |env| {
+        let jstr = env.new_string(json)?;
+        env.call_method(listener, method, "(Ljava/lang/String;)V", &[JValue::Object(&jstr)])?;
+        Ok(())
+    });
+    if let Err(e) = res {
+        logcat(6, &format!("{method}: call failed: {e:?}"));
+        clear_exception(&mut env);
+    }
+    true
+}
+
 // ─── Global tunnel state ─────────────────────────────────────────────────────
 
 /// Tokio runtime — created once and reused across reconnects.
@@ -142,16 +178,17 @@ fn get_or_init_runtime() -> &'static tokio::runtime::Runtime {
 ///
 /// Kotlin signature:
 /// ```kotlin
-/// external fun nativeStart(tunFd: Int, cfgJson: String, settingsJson: String, listener: PhantomListener): Int
+/// external fun nativeStart(tunFd: Int, cfgJson: String, listener: PhantomListener): Int
 /// ```
-/// Returns 0 on success, -1 on config parse error, -10 on spawn failure.
+/// Tunnel settings travel inside `cfgJson` (`ConnectProfile.settings`).
+/// Returns 0 on success, -1 on config parse error, -2 when the server address
+/// is a hostname, -10 on spawn failure.
 #[no_mangle]
 pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeStart(
     mut env: JNIEnv,
     this: JObject,
     tun_fd: jint,
     cfg_json: JString,
-    settings_json: JString,
     listener: JObject,
 ) -> jint {
     // Serialize with other nativeStart/nativeStop calls to prevent zombies.
@@ -203,31 +240,19 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         }
     };
 
-    // ── 2. Parse TunnelSettings ──────────────────────────────────────────────
-    let _settings: TunnelSettings = match env.get_string(&settings_json) {
-        Ok(s) => {
-            let s = String::from(s);
-            match serde_json::from_str::<TunnelSettings>(&s) {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    // v0.25.0: don't silently downgrade to default — that
-                    // may turn killswitch off without the user knowing.
-                    // Logcat surfaces this so we can spot breaking-change
-                    // formats; default is still applied (fail-safe) so
-                    // the tunnel still comes up.
-                    logcat(6, &format!(
-                        "nativeStart: settings parse failed (category={}), using defaults",
-                        e.classify() as u8
-                    ));
-                    TunnelSettings::default()
-                }
-            }
+    // ── 2. The server address must already be an IP ──────────────────────────
+    // Kotlin resolves it through a physical network. A name resolved here would
+    // go through our own TUN — dead while we're connecting — and the blocking
+    // lookup would also keep the supervisor deaf to nativeStop.
+    // A string that doesn't parse at all is the supervisor's to report
+    // (state=error + reason), so only the parsed case is checked here.
+    if let Ok(c) = client_common::helpers::parse_conn_string(&cfg.conn_string) {
+        let addr = client_common::with_default_port(&c.network.server_addr, 443);
+        if addr.parse::<std::net::SocketAddr>().is_err() {
+            logcat(6, "nativeStart: server address is not an IP, refusing to resolve here");
+            return -2;
         }
-        Err(_) => {
-            logcat(6, "nativeStart: settings_json get_string failed, using defaults");
-            TunnelSettings::default()
-        }
-    };
+    }
 
     // Transport policy (ADR 0014). The real source is the server
     // (`ClientConfigResponse`). Reset to built-in defaults on every start so a
@@ -320,20 +345,22 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
     // re-attaches the thread to the JVM before releasing the inner ref.
     let jvm_protect = jvm.clone();
     let protect: ProtectSocket = Arc::new(move |tcp_fd: RawFd| {
-        let mut jni_env = match jvm_protect.attach_current_thread() {
+        let mut jni_env = match jvm_protect.attach_current_thread_as_daemon() {
             Ok(e) => e,
             Err(_) => return false,
         };
-        let result = jni_env
-            .call_method(
-                service_ref.as_obj(),
-                "protect",
-                "(I)Z",
-                &[JValue::Int(tcp_fd)],
-            )
-            .ok()
-            .and_then(|v| v.z().ok())
-            .unwrap_or(false);
+        let result = match jni_env.call_method(
+            service_ref.as_obj(),
+            "protect",
+            "(I)Z",
+            &[JValue::Int(tcp_fd)],
+        ) {
+            Ok(v) => v.z().unwrap_or(false),
+            Err(_) => {
+                clear_exception(&mut jni_env);
+                false
+            }
+        };
         if result {
             logcat(4, &format!("protect(fd={}) OK", tcp_fd));
         } else {
@@ -396,35 +423,8 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
                         continue;
                     }
                 };
-
-                let mut jni_env: jni::AttachGuard<'_> = match jvm_status.attach_current_thread() {
-                    Ok(e) => e,
-                    Err(e) => {
-                        logcat(6, &format!("status watcher: attach_current_thread failed: {:?}", e));
-                        break;
-                    }
-                };
-
-                match jni_env.new_string(&json) {
-                    Ok(jstr) => {
-                        let result = jni_env.call_method(
-                            listener_status.as_obj(),
-                            "onStatusFrame",
-                            "(Ljava/lang/String;)V",
-                            &[JValue::Object(&jstr)],
-                        );
-                        if let Err(e) = result {
-                            logcat(6, &format!("status watcher: call_method failed: {:?}", e));
-                            // Check for and clear JNI exception
-                            if jni_env.exception_check().unwrap_or(false) {
-                                jni_env.exception_describe().ok();
-                                jni_env.exception_clear().ok();
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        logcat(6, &format!("status watcher: new_string failed: {:?}", e));
-                    }
+                if !call_listener(&jvm_status, listener_status.as_obj(), "onStatusFrame", &json) {
+                    break;
                 }
             }
             logcat(4, "status watcher: task exiting");
@@ -446,19 +446,8 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
                     Ok(j) => j,
                     Err(_) => continue,
                 };
-
-                let mut jni_env: jni::AttachGuard<'_> = match jvm_log.attach_current_thread() {
-                    Ok(e) => e,
-                    Err(_) => break,
-                };
-
-                if let Ok(jstr) = jni_env.new_string(&json) {
-                    let _ = jni_env.call_method(
-                        listener_log.as_obj(),
-                        "onLogFrame",
-                        "(Ljava/lang/String;)V",
-                        &[JValue::Object(&jstr)],
-                    );
+                if !call_listener(&jvm_log, listener_log.as_obj(), "onLogFrame", &json) {
+                    break;
                 }
             }
             // GlobalRef drop is now safe — see status watcher comment.
@@ -497,7 +486,7 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
 pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeStop(
     _env: JNIEnv,
     _class: JClass,
-) -> jint {
+) {
     let _op_guard = START_STOP_LOCK.lock().unwrap();
     if let Some(TunnelState { cancel, join, status_watcher, log_watcher }) =
         TUNNEL.lock().unwrap().take()
@@ -529,28 +518,6 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         });
         logcat(4, "nativeStop: tunnel stopped");
     }
-    0
-}
-
-// ─── Legacy stubs (kept for Kotlin callers during migration) ─────────────────
-
-/// Stub — returns null. Stats are now push-based via onStatusFrame callback.
-#[no_mangle]
-pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeGetStats(
-    _env: JNIEnv,
-    _class: JClass,
-) -> jstring {
-    std::ptr::null_mut()
-}
-
-/// Stub — returns null. Logs are now push-based via onLogFrame callback.
-#[no_mangle]
-pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_nativeGetLogs(
-    _env: JNIEnv,
-    _class: JClass,
-    _since_seq: jlong,
-) -> jstring {
-    std::ptr::null_mut()
 }
 
 /// Change the tracing log level at runtime.
