@@ -6,8 +6,11 @@ on:
       - 'v*'
   workflow_dispatch: {}
 
+# Секреты (Play, keystore, Developer ID) есть в сборочных джобах — токен им
+# только на чтение; запись в репо нужна одной релизной джобе.
+# Сторонние actions закреплены по SHA.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
 
@@ -19,7 +22,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -48,7 +53,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -61,19 +68,19 @@ jobs:
           restore-keys: server-cargo-
 
       - name: Build phantom-server + phantom-keygen
-        run: cargo build --release -p phantom-server
+        run: cargo build --locked --profile release-server -p phantom-server
 
       - name: Upload phantom-server
         uses: actions/upload-artifact@v4
         with:
           name: phantom-server
-          path: target/release/phantom-server
+          path: target/release-server/phantom-server
 
       - name: Upload phantom-keygen
         uses: actions/upload-artifact@v4
         with:
           name: phantom-keygen
-          path: target/release/phantom-keygen
+          path: target/release-server/phantom-keygen
 
 # ─────────────────────────────────────────────────────────────────────────────
   build-android:
@@ -82,10 +89,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust + Android target
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust + Android targets
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
-          targets: aarch64-linux-android
+          toolchain: stable
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -106,29 +114,20 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Build Rust .so for arm64-v8a
-        run: |
-          export ANDROID_NDK_HOME="$ANDROID_NDK_ROOT"
-          cargo ndk -t arm64-v8a --platform 26 \
-            build --release -p phantom-client-android
-
-          mkdir -p apps/android/app/src/main/jniLibs/arm64-v8a
-          cp target/aarch64-linux-android/release/libphantom_android.so \
-            apps/android/app/src/main/jniLibs/arm64-v8a/
-
+      # Rust .so собирает сам gradle (preBuild → buildRustAndroid, cargo ndk в jniLibs/).
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
 
       - name: Decode release keystore
         run: |
           echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > /tmp/ghoststream-release.jks
 
-      - name: Build signed release APK + AAB
+      - name: Unit tests + signed release APK + AAB
         env:
           RELEASE_KEYSTORE_PATH: /tmp/ghoststream-release.jks
           RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-        run: cd apps/android && ./gradlew assembleRelease bundleRelease --no-daemon
+        run: cd apps/android && ./gradlew testDebugUnitTest assembleRelease bundleRelease --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -142,18 +141,27 @@ jobs:
           name: PhantomVPN-Android-AAB
           path: apps/android/app/build/outputs/bundle/release/app-release.aab
 
-      # «Что нового» для карточки в Play. Берём верхнюю секцию CHANGELOG.md,
-      # снимаем markdown и режем до 500 символов — столько разрешает Play.
-      # Без этого шага каждый релиз уезжал бы с пустым описанием.
+      # «Что нового» для карточки в Play. Берём секцию "## [Android <versionName>]"
+      # из CHANGELOG.md, снимаем markdown и режем до 500 символов — столько
+      # разрешает Play. Нет секции или тег не совпадает с versionName — падаем:
+      # иначе в Play уедут чужие заметки или не та версия.
       - name: Release notes for Play
         run: |
           mkdir -p distribution/whatsnew
           python3 - <<'PY'
-          import re, pathlib
+          import os, re, pathlib, sys
+          gradle = pathlib.Path("apps/android/app/build.gradle.kts").read_text(encoding="utf-8")
+          version = re.search(r'versionName = "([^"]+)"', gradle).group(1)
+          if os.environ["GITHUB_REF"].startswith("refs/tags/"):
+              tag = os.environ["GITHUB_REF_NAME"]
+              if tag != "v" + version:
+                  sys.exit(f"tag {tag} != versionName v{version} в build.gradle.kts")
           text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
-          # первая секция вида "## [...] - дата" до следующей такой же
-          m = re.search(r"^## \[.*?\n(.*?)(?=^## \[)", text, re.S | re.M)
-          body = m.group(1) if m else ""
+          m = re.search(r"^## \[Android " + re.escape(version) + r"\].*?\n(.*?)(?=^## \[|\Z)",
+                        text, re.S | re.M)
+          if not m:
+              sys.exit(f"в CHANGELOG.md нет секции '## [Android {version}]'")
+          body = m.group(1)
           lines = []
           for raw in body.splitlines():
               s = raw.strip()
@@ -184,7 +192,7 @@ jobs:
       # Play всё равно не примет.
       - name: Publish to Play Console (production)
         if: startsWith(github.ref, 'refs/tags/')
-        uses: r0adkll/upload-google-play@v1
+        uses: r0adkll/upload-google-play@e738b9dd8f2476ea806d921b64aacd24f34515a5 # v1.1.5
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           packageName: io.ghoststream.vpn
@@ -211,10 +219,12 @@ jobs:
             libssl-dev pkg-config libdbus-1-dev
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: linux-gui
 
@@ -250,12 +260,13 @@ jobs:
           rustc --version || true
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
+          toolchain: stable
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: macos-release
 
@@ -491,7 +502,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ !matrix.build_std && matrix.target || '' }}
@@ -509,11 +520,11 @@ jobs:
 
       - name: Install cargo-zigbuild
         if: matrix.use_zigbuild
-        run: pip3 install ziglang && cargo install cargo-zigbuild
+        run: pip3 install ziglang && cargo install cargo-zigbuild --locked
 
       - name: Install cross
         if: ${{ !matrix.use_zigbuild }}
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --rev 47a82bc8ee550bc19e4af633b34abcb6a4f3af9d --locked
 
       - name: Build with zigbuild
         if: matrix.use_zigbuild
@@ -540,15 +551,22 @@ jobs:
     name: Create GitHub Release
     needs: [build-linux, build-server, build-android, build-linux-gui, build-macos, build-openwrt]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # Релиз выходит с тем, что собралось: одна упавшая платформа не должна
+    # задерживать остальные. Упавшую догонять через «Re-run failed jobs».
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    permissions:
+      contents: write
     steps:
+      # Нужен ради установщика OpenWrt, netifd-скрипта и LuCI-файлов.
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: "PhantomVPN ${{ github.ref_name }}"
           body: |
@@ -560,18 +578,18 @@ jobs:
             | Linux client x86_64 | `phantom-client-linux` |
             | Server x86_64 | `phantom-server` |
             | Keygen x86_64 | `phantom-keygen` |
-            | Android (arm64) | `app-release.apk` |
+            | Android | `app-release.apk` |
             | Linux GUI x86_64 | `ghoststream-linux-gui-x86_64.tar.gz` |
             | macOS | `GhostStream-*-macOS.dmg` |
             | OpenWrt aarch64 | `openwrt-aarch64` |
             | OpenWrt armv7 | `openwrt-armv7` |
             | OpenWrt x86_64 | `openwrt-x86_64` |
             | OpenWrt mipsel | `openwrt-mipsel` |
+            | OpenWrt installer | `ghoststream-install.sh` (+ `ghoststream.sh`, `ghoststream.js`, `luci-proto-ghoststream.json`) |
 
-            ### OpenWrt install
+            ### OpenWrt install / update
             ```sh
-            wget -O /tmp/ghoststream https://github.com/${{ github.repository }}/releases/latest/download/openwrt-$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/aarch64/;s/armv7l/armv7/')
-            chmod +x /tmp/ghoststream && /tmp/ghoststream
+            wget -O /tmp/gs-install.sh https://github.com/${{ github.repository }}/releases/latest/download/ghoststream-install.sh && sh /tmp/gs-install.sh
             ```
 
             ### Android install
@@ -589,5 +607,9 @@ jobs:
             artifacts/openwrt-armv7/openwrt-armv7
             artifacts/openwrt-x86_64/openwrt-x86_64
             artifacts/openwrt-mipsel/openwrt-mipsel
+            apps/openwrt/ghoststream-install.sh
+            apps/openwrt/proto/ghoststream.sh
+            apps/openwrt/luci/htdocs/luci-static/resources/protocol/ghoststream.js
+            apps/openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json
           draft: false
           prerelease: false
