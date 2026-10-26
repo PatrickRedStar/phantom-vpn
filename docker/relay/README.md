@@ -9,6 +9,7 @@ cd ghoststream/docker/relay
 cp compose.example.yml compose.yml
 cp .env.example .env
 $EDITOR .env                           # UPSTREAM_ADDR + EXPECTED_SNI
+docker login ghcr.io                   # пакеты ghcr.io/patrickredstar/* приватные
 docker compose up -d
 ```
 

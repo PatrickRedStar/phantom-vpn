@@ -21,8 +21,9 @@ COPY server/ server/
 COPY apps/linux/ apps/linux/
 COPY apps/openwrt/ apps/openwrt/
 
-# Сборка только server crate, без всего workspace.
-RUN cargo build --release \
+# Сборка только server crate, без всего workspace. Профиль release-server —
+# panic=unwind: паника в одном соединении не роняет весь сервер.
+RUN cargo build --locked --profile release-server \
         -p phantom-server \
         --bin phantom-server \
         --bin phantom-keygen
@@ -50,8 +51,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка бинарей
-COPY --from=builder /src/target/release/phantom-server /usr/local/bin/phantom-server
-COPY --from=builder /src/target/release/phantom-keygen /usr/local/bin/phantom-keygen
+COPY --from=builder /src/target/release-server/phantom-server /usr/local/bin/phantom-server
+COPY --from=builder /src/target/release-server/phantom-keygen /usr/local/bin/phantom-keygen
 
 # keys.py + alias для docker exec
 COPY server/scripts/keys.py /opt/phantom-vpn/keys.py

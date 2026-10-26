@@ -13,8 +13,9 @@
 
 services:
   phantom-server:
-    # ghcr.io image by default; switch to build: ../.. when iterating locally.
-    image: ghcr.io/${GHCR_OWNER:-ghoststream}/ghoststream-server:${TAG:-latest}
+    # ghcr.io image by default (пакеты приватные — сначала docker login ghcr.io);
+    # switch to build: ../.. when iterating locally.
+    image: ghcr.io/${GHCR_OWNER:-patrickredstar}/ghoststream-server:${TAG:-latest}
     # build:
     #   context: ../..
     #   dockerfile: docker/server/Dockerfile
@@ -34,8 +35,10 @@ services:
       - /dev/net/tun:/dev/net/tun
 
     # State полностью в bind-mount. Бэкап: tar czf state.tgz ./config
+    # /etc/letsencrypt — LE-серт сервера (без него bootstrap не стартует).
     volumes:
       - ./config:/config
+      - /etc/letsencrypt:/etc/letsencrypt:ro
 
     environment:
       SERVER_NAME: ${SERVER_NAME}
