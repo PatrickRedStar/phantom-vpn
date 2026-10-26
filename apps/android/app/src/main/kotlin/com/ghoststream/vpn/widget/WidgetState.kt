@@ -12,6 +12,7 @@ import androidx.glance.state.PreferencesGlanceStateDefinition
 object WidgetState {
     val IS_CONNECTED  = booleanPreferencesKey("vpn_connected")
     val IS_CONNECTING = booleanPreferencesKey("vpn_connecting")
+    val IS_RECONNECTING = booleanPreferencesKey("vpn_reconnecting")
     val SERVER_NAME   = stringPreferencesKey("vpn_server")
     val TIMER_TEXT    = stringPreferencesKey("vpn_timer")
     val RX_SPEED      = stringPreferencesKey("vpn_rx")
@@ -19,11 +20,24 @@ object WidgetState {
     val STREAMS_UP    = intPreferencesKey("vpn_streams_up")
     val STREAMS_TOTAL = intPreferencesKey("vpn_streams_total")
 
-    /** Call from VPN service whenever state changes. */
+    /**
+     * Widgets show the active profile's name (the one the tunnel runs on),
+     * not the SNI the service knows.
+     */
+    fun profileName(context: Context): String =
+        com.ghoststream.vpn.data.ProfilesStore.getInstance(context).getActiveProfile()?.name
+            ?: "GhostStream"
+
+    /**
+     * Call from VPN service whenever state changes. [reconnecting] — the core
+     * is between attempts (StatusFrame state "reconnecting"): widgets show
+     * «переподключение» and a stop button instead of «offline / connect».
+     */
     suspend fun push(
         context: Context,
         connected: Boolean,
         connecting: Boolean = false,
+        reconnecting: Boolean = false,
         serverName: String = "",
         timer: String = "--:--:--",
         rxSpeed: String = "--",
@@ -46,6 +60,7 @@ object WidgetState {
                     prefs.toMutablePreferences().apply {
                         this[IS_CONNECTED] = connected
                         this[IS_CONNECTING] = connecting
+                        this[IS_RECONNECTING] = reconnecting
                         this[SERVER_NAME] = serverName
                         this[TIMER_TEXT] = timer
                         this[RX_SPEED] = rxSpeed

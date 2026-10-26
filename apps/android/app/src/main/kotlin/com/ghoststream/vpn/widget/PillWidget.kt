@@ -27,19 +27,32 @@ import androidx.glance.text.FontFamily
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import com.ghoststream.vpn.R
 
 /** Widget E — Compact Pill (4×1). Capsule shape, ultra-minimal: dot + label + speed. */
 class PillWidget : GlanceAppWidget() {
     override val stateDefinition = PreferencesGlanceStateDefinition
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
+        val profileName = WidgetState.profileName(context)
         provideContent {
             val prefs = currentState<Preferences>()
             val connected = prefs[WidgetState.IS_CONNECTED] ?: false
-            val connecting = prefs[WidgetState.IS_CONNECTING] ?: false
+            val reconnecting = prefs[WidgetState.IS_RECONNECTING] ?: false
+            val connecting = (prefs[WidgetState.IS_CONNECTING] ?: false) || reconnecting
+            // Connecting / reconnecting count as running: the button stops.
+            val running = connected || connecting
+            val stateWord = context.getString(
+                when {
+                    connected -> R.string.widget_online
+                    reconnecting -> R.string.widget_reconnecting
+                    connecting -> R.string.widget_tuning
+                    else -> R.string.widget_offline
+                },
+            )
             val rx = prefs[WidgetState.RX_SPEED] ?: "--"
             val tx = prefs[WidgetState.TX_SPEED] ?: "--"
-            val server = prefs[WidgetState.SERVER_NAME] ?: ""
+            val server = profileName
             val timer = prefs[WidgetState.TIMER_TEXT] ?: "--:--:--"
 
             Row(
@@ -68,11 +81,7 @@ class PillWidget : GlanceAppWidget() {
 
                     // Server name
                     Text(
-                        text = when {
-                            connected -> server.ifBlank { "GhostStream" }.take(12)
-                            connecting -> "Tuning..."
-                            else -> server.ifBlank { "GhostStream" }.take(12)
-                        },
+                        text = if (connecting) stateWord else server.take(12),
                         style = TextStyle(
                             color = if (connected) W.bone else W.dim,
                             fontSize = 13.sp,
@@ -114,7 +123,7 @@ class PillWidget : GlanceAppWidget() {
                     } else {
                         Spacer(GlanceModifier.width(8.dp))
                         Text(
-                            text = "Offline",
+                            text = stateWord,
                             style = TextStyle(
                                 color = W.faint,
                                 fontSize = 10.sp,
@@ -129,15 +138,15 @@ class PillWidget : GlanceAppWidget() {
                     Box(
                         modifier = GlanceModifier
                             .size(44.dp)
-                            .background(if (connected) W.bgElev else W.btnConnect)
+                            .background(if (running) W.bgElev else W.btnConnect)
                             .cornerRadius(22.dp)
                             .clickable(onClick = actionRunCallback<ToggleVpnAction>()),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            text = if (connected) "\u23FB" else "\u25B6",
+                            text = if (running) "\u23FB" else "\u25B6",
                             style = TextStyle(
-                                color = if (connected) W.danger else W.btnConnectText,
+                                color = if (running) W.danger else W.btnConnectText,
                                 fontSize = 16.sp,
                             ),
                         )

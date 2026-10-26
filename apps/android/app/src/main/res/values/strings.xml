@@ -279,4 +279,8 @@
     <string name="logs_failed">Failed: %1$s</string>
     <string name="logs_level">Level</string>
     <string name="logs_category">Category</string>
+    <string name="widget_online">Online</string>
+    <string name="widget_tuning">Connecting</string>
+    <string name="widget_reconnecting">Reconnecting</string>
+    <string name="widget_offline">Offline</string>
 </resources>

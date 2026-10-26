@@ -271,4 +271,8 @@
     <string name="logs_failed">Не удалось: %1$s</string>
     <string name="logs_level">Уровень</string>
     <string name="logs_category">Категория</string>
+    <string name="widget_online">В сети</string>
+    <string name="widget_tuning">Подключение</string>
+    <string name="widget_reconnecting">Переподключение</string>
+    <string name="widget_offline">Отключено</string>
 </resources>
