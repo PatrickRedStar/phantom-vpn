@@ -845,28 +845,22 @@ pub async fn run_subscription_checker(
             (names, fps)
         };
 
-        if expired_names.is_empty() {
-            continue;
-        }
-
         // Disable expired clients (mutable pass)
-        {
-            let clients = match keyring.get_mut("clients").and_then(|c| c.as_object_mut()) {
-                Some(c) => c,
-                None => continue,
-            };
-            for name in &expired_names {
-                if let Some(info) = clients.get_mut(name.as_str()) {
-                    if let Some(obj) = info.as_object_mut() {
+        if !expired_names.is_empty() {
+            if let Some(clients) = keyring.get_mut("clients").and_then(|c| c.as_object_mut()) {
+                for name in &expired_names {
+                    if let Some(obj) = clients.get_mut(name.as_str()).and_then(|i| i.as_object_mut()) {
                         obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
                         tracing::info!("Subscription expired for '{}', disabling", name);
                     }
                 }
             }
+            let _ = write_keyring(&clients_path, &keyring);
         }
 
-        let _ = write_keyring(&clients_path, &keyring);
-
+        // Reload every tick, not only after expiry: clients added or removed
+        // by editing clients.json directly (keys.py) take effect within a
+        // minute even without SIGHUP.
         match vpn_session::load_allow_list(&clients_path) {
             Ok(fps) => vpn_session::set_allow_list(&allow_list, fps),
             Err(e) => tracing::error!("Subscription checker: reload allow list failed: {}", e),

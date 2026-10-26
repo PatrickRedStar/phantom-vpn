@@ -42,6 +42,17 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Built with panic = "unwind" so a panic in one connection's tokio task
+    // ends only that task. A panic on any other thread (io_uring TUN workers,
+    // main) would leave a half-dead data plane — abort, systemd restarts us.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        default_hook(info);
+        if std::thread::current().name() != Some("tokio-runtime-worker") {
+            std::process::abort();
+        }
+    }));
+
     // Явно выбираем ring как TLS-провайдер — обязательно в rustls 0.23
     // когда в дереве зависимостей присутствуют оба провайдера (ring + aws-lc-rs).
     rustls::crypto::ring::default_provider()
@@ -118,18 +129,14 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|q| q.allowed_clients_path.clone());
 
     if let Some(ref path) = allow_list_path {
-        match vpn_session::load_allow_list(Path::new(path)) {
-            Ok(fps) => {
-                tracing::info!("Loaded {} allowed client fingerprints from {}", fps.len(), path);
-                vpn_session::set_allow_list(&allow_list, fps);
-            }
-            Err(e) => {
-                // Fail closed: an unreadable keyring must not let every cert
-                // of our CA (deleted and revoked ones included) back in.
-                tracing::error!("Failed to load client allowlist from {}: {} — no client is allowed until SIGHUP/fix", path, e);
-                vpn_session::set_allow_list(&allow_list, Default::default());
-            }
-        }
+        // Unreadable keyring → refuse to start. Accepting every cert of our CA
+        // would let revoked clients back in; serving an empty list would answer
+        // everyone `certificate_revoked`, which clients treat as final. A failed
+        // start looks like a network error: clients retry until it's fixed.
+        let fps = vpn_session::load_allow_list(Path::new(path))
+            .context("Failed to load client allowlist")?;
+        tracing::info!("Loaded {} allowed client fingerprints from {}", fps.len(), path);
+        vpn_session::set_allow_list(&allow_list, fps);
     } else {
         tracing::info!("No allowed_clients_path configured — all authenticated clients accepted");
     }
@@ -340,10 +347,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Tasks without which the server serves nothing: if one ends (error or
+    // panic), exit so systemd restarts us instead of idling half-dead.
+    let mut critical = tokio::task::JoinSet::new();
+
     // ─── TUN → per-session dispatch (lightweight routing) ──────────────────
     {
         let sess = sessions.clone();
-        tokio::spawn(async move {
+        critical.spawn(async move {
             if let Err(e) = vpn_session::tun_dispatch_loop(tun_read_rx, sess).await {
                 tracing::error!("tun_dispatch_loop exited: {}", e);
             }
@@ -370,7 +381,7 @@ async fn main() -> anyhow::Result<()> {
                 let sessions = sessions.clone();
                 let sessions_by_fp = sessions_by_fp.clone();
                 let allow_list = allow_list.clone();
-                tokio::spawn(async move {
+                critical.spawn(async move {
                     if let Err(e) = h2_server::run_h2_accept_loop(
                         h2_listener, h2_tls, tun_tx, sessions, sessions_by_fp, tun_network, tun_prefix, allow_list
                     ).await {
@@ -400,12 +411,20 @@ async fn main() -> anyhow::Result<()> {
     // ─── Wait for shutdown ────────────────────────────────────────────────────
     tracing::info!("Server ready (H2/TLS transport).");
 
-    let _ = shutdown_rx.await;
-    tracing::info!("Shutdown signal received");
+    let failed = tokio::select! {
+        _ = shutdown_rx => { tracing::info!("Shutdown signal received"); false }
+        Some(res) = critical.join_next() => {
+            tracing::error!("Critical task ended ({:?}) — exiting for restart", res.err());
+            true
+        }
+    };
 
     // ─── Cleanup ────────────────────────────────────────────────────────────
     if let Some((tun, wan, subnet, exit_ip)) = nat_info {
         tun_iface::teardown_nat(&tun, &wan, &subnet, exit_ip.as_deref(), admin_port);
+    }
+    if failed {
+        anyhow::bail!("critical task ended");
     }
     tracing::info!("Server stopped.");
 
