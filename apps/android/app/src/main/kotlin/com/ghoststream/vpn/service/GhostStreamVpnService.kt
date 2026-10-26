@@ -361,7 +361,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             WidgetState.push(
                 context = applicationContext,
                 connected = frame.state == "connected",
-                connecting = frame.state == "connecting" || frame.state == "reconnecting",
+                connecting = frame.state == "connecting",
+                reconnecting = frame.state == "reconnecting",
                 serverName = savedParams?.serverName ?: "",
                 timer = formatTimer(frame.sessionSecs),
                 rxSpeed = formatSpeed(frame.rateRxBps),
