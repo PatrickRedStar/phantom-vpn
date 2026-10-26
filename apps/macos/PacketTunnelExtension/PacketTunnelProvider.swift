@@ -230,7 +230,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
         // Audit PROV-R2-R01 — snapshot + clear task references under the
-        // state lock so a concurrent IPC `.disconnect` or `wake()` can't
+        // state lock so a concurrent IPC `.disconnect` or path-monitor reconnect can't
         // resurrect them after we've decided to tear down.
         let outbound = withStateLock { () -> Task<Void, Never>? in
             let captured = outboundTask
@@ -297,8 +297,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// macOS NE framework calls `sleep(completionHandler:)` before the
     /// system suspends. Apple guidance: return ASAP. We don't try to
-    /// preserve the runtime — sockets will be dead on wake anyway. The
-    /// reconnection happens in `wake()`.
+    /// preserve the runtime — the core notices the wake itself (wall-clock
+    /// jump in its death watcher) and reconnects.
     override func sleep(completionHandler: @escaping () -> Void) {
         log.info("sleep — system suspending")
         emitProviderEvent(
@@ -310,75 +310,25 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         super.sleep(completionHandler: completionHandler)
     }
 
-    /// On wake the TCP sockets the runtime owns are typically dead.
-    /// Restart the runtime end-to-end with the previously-loaded profile —
-    /// simplest reliable path.
-    ///
-    /// Audit PROV-R2-N05 — sleep tears down Wi-Fi/Ethernet drivers along
-    /// with the runtime sockets, and the kernel takes 1-2 s after the wake
-    /// signal to bring an interface back up. Kicking `forceRuntimeReconnect`
-    /// immediately means TLS handshake races a half-attached interface and
-    /// almost always times out.
-    ///
-    /// Audit PROV-R4-N10 — extended the delay from 2 s to 5 s so the
-    /// NWPathMonitor has a fair chance to settle on the post-wake network
-    /// configuration. If the path actually changed (status flap, new
-    /// interface), the path-monitor's debounced reconnect will already
-    /// have kicked by the time we get here; we skip the duplicate trigger
-    /// and let that path-driven reconnect win. If the path is unchanged
-    /// (e.g. Wi-Fi survived) we still need to refresh sockets — fall
-    /// through to `forceRuntimeReconnect` ourselves.
-    private static let wakeReconnectDelaySeconds: UInt64 = 5
-
+    /// ADR 0018: the core owns reconnects and detects sleep on its own
+    /// (wall-clock jump > 60 s). Restarting the runtime here too gave a
+    /// second burst of N handshakes on every wake — log only.
     override func wake() {
         super.wake()
-        log.info("wake — delaying reconnect \(Self.wakeReconnectDelaySeconds, privacy: .public)s for network readiness")
+        log.info("wake")
         emitProviderEvent(
             level: "INF",
             category: "tunnel",
             event: "wake",
             fields: nil
         )
-        // Capture path snapshot at wake time so the deferred Task can
-        // compare against the post-wake path. NWPathMonitor's own
-        // updates will have already mutated `previousPathStatus` /
-        // `previousPathInterfaces` by then; we want the pre-wake values.
-        let preWakeStatus = withStateLock { previousPathStatus }
-        let preWakeInterfaces = withStateLock { previousPathInterfaces }
-        Task { [weak self] in
-            let nanos = Self.wakeReconnectDelaySeconds * 1_000_000_000
-            try? await Task.sleep(nanoseconds: nanos)
-            guard !Task.isCancelled, let self else { return }
-            // If NWPathMonitor already saw a transition during the
-            // delay, it has scheduled (or executed) its own debounced
-            // reconnect. Skip the duplicate.
-            let pathHandling: Bool = self.withStateLock {
-                // pathDebounceTask is non-nil while a path-driven
-                // reconnect is queued; the monitor cleared its own
-                // state on completion.
-                self.pathDebounceTask != nil
-            }
-            if pathHandling {
-                self.log.info("wake: path monitor already handling reconnect — skipping")
-                return
-            }
-            // Determine whether the path actually changed in the
-            // intervening 5 s. If the status and interface set are the
-            // same as pre-wake, the sockets are probably alive — but
-            // sleep typically kills them anyway, so we still force a
-            // reconnect. The check is mostly diagnostic.
-            let nowStatus = self.withStateLock { self.previousPathStatus }
-            let nowIfaces = self.withStateLock { self.previousPathInterfaces }
-            let pathChanged = (preWakeStatus != nowStatus) || (preWakeInterfaces != nowIfaces)
-            self.log.info("wake: forcing reconnect (path_changed=\(pathChanged, privacy: .public))")
-            self.forceRuntimeReconnect(reason: pathChanged ? "wake_path_changed" : "wake")
-        }
     }
 
     /// Audit PROV-H1 — restart `PhantomBridge` while preserving the
-    /// already-loaded profile/settings. Used by both `wake()` and the
-    /// NWPathMonitor handler — OS events, never runtime states: the core
-    /// handles its own reconnects.
+    /// already-loaded profile/settings. Used only by the NWPathMonitor
+    /// handler, and only while the core is not connected: then it just cuts
+    /// the backoff pause short. A live session is never torn down here — the
+    /// core reopens dead streams itself (ADR 0018).
     ///
     /// Audit PROV-R2-N07 — also cancel any in-flight `outboundTask` before
     /// the reconnect so we don't keep streaming TUN packets into a dead
@@ -412,6 +362,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             if stopped != true {
                 self.log.warning("forceRuntimeReconnect bridge.stop exceeded 3s budget — starting fresh anyway")
+            }
+            // stopTunnel / IPC .disconnect / a fatal error may have taken the
+            // session down while we were stopping the old bridge: starting now
+            // would leave a runtime nobody stops in the system extension.
+            guard self.withStateLock({ self.activeProfile != nil }) else {
+                self.log.info("forceRuntimeReconnect: session gone — not restarting")
+                return
             }
             do {
                 try await PhantomBridge.shared.start(
@@ -554,6 +511,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let nanos = Self.pathDebounceSeconds * 1_000_000_000
             try? await Task.sleep(nanoseconds: nanos)
             guard !Task.isCancelled, let self else { return }
+            // A connected core keeps its streams (or reopens the dead ones
+            // itself) — restarting would only add a burst of N handshakes.
+            if self.withStateLock({ self.lastStatusFrame.state }) == .connected {
+                self.log.info("path change: core connected — no restart")
+                return
+            }
             self.forceRuntimeReconnect(reason: reason)
         }
         let previous = withStateLock { () -> Task<Void, Never>? in
@@ -936,7 +899,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let settings = loadSettings()
         let verbose = readVerboseLogPreference()
         // Audit PROV-R2-R01 — publish the loaded profile/settings/verbose
-        // flag under the state lock so a racing wake / path update doesn't
+        // flag under the state lock so a racing path update doesn't
         // observe a half-populated tuple.
         withStateLock {
             activeProfile = profile
@@ -1646,7 +1609,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// owns those numbers per ADR 0007.
     private func makeStateOnlyFrame(state: ConnState, profile: VpnProfile? = nil) -> StatusFrame {
         // Audit PROV-R2-R01 — `activeProfile` may be mutated from a
-        // background queue (e.g. `wake`'s reconnect Task or `.disconnect`
+        // background queue (e.g. the path-monitor reconnect Task or `.disconnect`
         // IPC). Take the snapshot under the state lock when the caller
         // didn't pass an explicit profile.
         let p = profile ?? withStateLock { activeProfile }
