@@ -21,6 +21,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import androidx.annotation.RequiresApi
 import com.ghoststream.vpn.BuildConfig
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.data.ConnStringParser
@@ -932,6 +933,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      *
      * Пустой результат — список непригоден, вызывающий включает полный туннель.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun loadExcludePrefixes(path: String, budget: Int): List<IpPrefix> {
         val nets = ArrayList<Pair<Long, Long>>()
         var tooWide = false
@@ -988,6 +990,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     }
 
     /** Склеивает диапазоны, проглатывая разрывы ≤ [gap], и режет результат на CIDR. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun collapseToPrefixes(nets: List<Pair<Long, Long>>, gap: Long): List<IpPrefix> {
         val out = ArrayList<IpPrefix>()
         var cs = nets[0].first
