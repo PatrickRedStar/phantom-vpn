@@ -1,39 +1,42 @@
-//! Tunnel supervisor FSM with exponential backoff reconnect.
+//! Tunnel supervisor FSM with backoff reconnect.
 //!
 //! `supervise()` runs one `drive_tunnel()` attempt at a time and, on failure,
-//! sleeps a backoff delay before retrying. An explicit `cancel`
-//! `watch::Receiver<bool>` interrupts any pending sleep (issued by the
-//! caller on explicit disconnect; survives missed signals because `watch`
-//! stores the latest value).
+//! sleeps a backoff delay before retrying. With `auto_reconnect` it never
+//! gives up on network errors; only fatal errors (bad profile, certificate
+//! problems, revoked access, wrong clock) end in `ConnState::Error`. An
+//! explicit `cancel` `watch::Receiver<bool>` interrupts any pending sleep
+//! (issued by the caller on explicit disconnect; survives missed signals
+//! because `watch` stores the latest value).
 
 use anyhow::Context;
 use bytes::Bytes;
 use std::net::SocketAddr;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use client_common::helpers;
+use client_common::tls_handshake::{TlsReadHalf, TlsWriteHalf, HANDSHAKE_TIMEOUT};
 use client_common::{
-    tls_connect, tls_connect_boring, tls_connect_with_tcp, tls_connect_with_tcp_boring,
-    tls_rx_loop, tls_tx_loop, write_handshake, ClientTls,
+    tls_connect_with_tcp, tls_connect_with_tcp_boring, tls_rx_loop_counted, tls_tx_loop,
+    write_handshake, ClientTls,
 };
-use ghoststream_gui_ipc::{ConnState, ConnectProfile, StatusFrame, TunnelSettings};
+use ghoststream_gui_ipc::{ConnState, ConnectProfile, StatusFrame, TunnelHealth, TunnelSettings};
 use phantom_core::wire::{flow_stream_idx, n_data_streams_with_override};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{watch, Mutex};
 
 use crate::log_bridge::{packet_rx_log_sample_should_emit, packet_tx_log_sample_should_emit};
 use crate::telemetry::{
-    classify_error, disconnect_kind_label, spawn_telem_task, tls_state_label, Telemetry,
-    KIND_RX_FORWARDER_DEAD, KIND_USER_DISCONNECT, TLS_CLOSED, TLS_CLOSING, TLS_ESTABLISHED,
-    TLS_HANDSHAKING,
+    classify_error, disconnect_kind_label, now_unix_ms, spawn_telem_task, tls_state_label,
+    Telemetry, KIND_RX_FORWARDER_DEAD, KIND_USER_DISCONNECT, TLS_CLOSED, TLS_CLOSING,
+    TLS_ESTABLISHED, TLS_HANDSHAKING,
 };
-use crate::{ProtectSocket, MAX_ATTEMPTS};
+use crate::ProtectSocket;
 
 /// Callback invoked by `supervise()` each attempt to create fresh TUN I/O
-/// channels. Returns `(packet_reader, packet_writer)` — the same pair that
-/// `phantom_core::tun_uring::spawn()` or `tun_simple::spawn()` returns.
+/// channels. Returns `(packet_reader, packet_writer)`.
 ///
 /// The factory is called again on each reconnect attempt so the supervisor
 /// does not need to know how TUN I/O is implemented.
@@ -45,6 +48,18 @@ pub type TunFactory = Arc<
     + Send
     + Sync,
 >;
+
+/// Bound on resolving the server name: a hung resolver must not pin the
+/// supervisor (cancellation is raced separately).
+const DNS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A connection that stayed up this long counts as healthy: the backoff
+/// starts over from the shortest delay after it drops.
+const STABLE_SESSION: Duration = Duration::from_secs(30);
+
+/// Wall-clock jump between two 1 s watcher ticks that means the device slept
+/// (monotonic timers stop during sleep, the wall clock does not).
+const SLEEP_JUMP: Duration = Duration::from_secs(60);
 
 /// Top-level supervisor. Spawned once per `connect()` call. Runs
 /// `drive_tunnel()`, decides whether to reconnect, publishes GUI state.
@@ -63,269 +78,228 @@ pub async fn supervise(
     shared_telem: Arc<Mutex<Option<Arc<Telemetry>>>>,
     protect_socket: Option<ProtectSocket>,
 ) {
-    let mut attempt: u32 = 0;
-    let mut last_error_str: Option<String> = None;
-    // v0.26.5: removed W3-7 peak_rate_rx_bps carry. The v0.25.1 throttle
-    // detector compared current RX vs lifetime peak; carrying peak across
-    // reconnect was the only way to keep classification stable. The new
-    // TSPU-128 signature detector is stateful in `telem_task` only (counter
-    // of in-band ticks) and intentionally re-earns Throttled after every
-    // reconnect — fresh tunnel, fresh evaluation.
+    publish_attempt_state(&status_tx, 0);
 
-    loop {
-        // Surface Connecting / Reconnecting to GUI.
-        {
-            let mut f = status_tx.borrow().clone();
-            if attempt == 0 {
-                f.state = ConnState::Connecting;
-                f.reconnect_attempt = None;
-                f.reconnect_next_delay_secs = None;
-            } else {
-                f.state = ConnState::Reconnecting;
-                f.reconnect_attempt = Some(attempt);
-            }
-            f.streams_up = 0;
-            f.stream_activity = [0.0; 16];
-            let _ = status_tx.send(f);
+    // Everything derived from the profile is built once per run: a profile
+    // problem is fatal (no retry can fix it), and one shared ClientTls lets
+    // rustls resume TLS sessions across reconnects instead of repeating the
+    // full mTLS handshake every time.
+    //
+    // SEC-R2-N06: only the top-level context — never the full chain.
+    // `format!("{:#}", e)` can leak raw bytes through `base64::DecodeError`
+    // and `FromUtf8Error` Display impls which surface offset/surrounding
+    // bytes from invalid PEM.
+    let cfg = match helpers::parse_conn_string(&profile.conn_string) {
+        Ok(c) => c,
+        Err(e) => {
+            fail(&status_tx, format!("Неверная строка подключения: {}", e), "parse_conn_string");
+            return;
         }
+    };
+    tracing::info!(
+        category = "settings",
+        name = %profile.name,
+        server = %cfg.network.server_addr,
+        sni = %cfg.network.server_name.as_deref().unwrap_or(""),
+        "profile.loaded"
+    );
+    let client_tls = match helpers::load_tls_identity(&cfg)
+        .and_then(|id| Ok((id, helpers::load_server_ca(&cfg)?)))
+        .and_then(|(id, ca)| build_client_tls(ca, id))
+    {
+        Ok(t) => t,
+        Err(e) => {
+            fail(&status_tx, format!("Сертификат профиля не читается: {}", e), "tls_identity");
+            return;
+        }
+    };
 
-        let cfg = match client_common::helpers::parse_conn_string(&profile.conn_string) {
-            Ok(c) => c,
-            Err(e) => {
-                // SEC-R2-N06: only the top-level context — never the full chain.
-                // `format!("{:#}", e)` can leak raw bytes through
-                // `base64::DecodeError` and `FromUtf8Error` Display impls
-                // which surface offset/surrounding bytes from invalid PEM.
-                fail(&status_tx, format!("parse conn_string: {}", e), "parse_conn_string");
+    let tun_addr = cfg.network.tun_addr.clone().unwrap_or_default();
+    let sni = cfg.network.server_name.clone().unwrap_or_default();
+    let server_name = cfg.network.server_name.clone().unwrap_or_else(|| "phantom".into());
+    let raw_addr = client_common::with_default_port(&cfg.network.server_addr, 443);
+    // Stream count resolution (ADR 0014): explicit user setting wins, else the
+    // transport policy, else automatic (CPU-derived).
+    let streams_override = settings.streams.or_else(|| phantom_core::policy::current().streams);
+    let n_streams = n_data_streams_with_override(streams_override);
+
+    let mut attempt: u32 = 0;
+    loop {
+        publish_attempt_state(&status_tx, attempt);
+
+        let resolved = tokio::select! {
+            biased;
+            _ = crate::wait_cancelled(&mut cancel) => None,
+            r = resolve_server(&raw_addr) => Some(r),
+        };
+        let server_addr = match resolved {
+            None => {
+                tracing::info!(category = "tunnel", reason = "user", phase = "dns", "disconnect");
+                publish_stopped(&status_tx);
                 break;
             }
+            Some(r) => r,
         };
-        // settings.profile.loaded — fired once per attempt (cheap, signals
-        // reload after a reconnect re-parsed conn_string).
-        tracing::info!(
-            category = "settings",
-            name = %profile.name,
-            server = %cfg.network.server_addr,
-            sni = %cfg.network.server_name.as_deref().unwrap_or(""),
-            "profile.loaded"
-        );
 
-        let raw_addr = client_common::with_default_port(&cfg.network.server_addr, 443);
-        let server_addr: SocketAddr = match raw_addr.parse() {
-            Ok(a) => a,
-            Err(_) => match tokio::net::lookup_host(&raw_addr).await {
-                Ok(it) => {
-                    // v0.25.0: prefer IPv4 — наши серверы v4-only, на IPv6-only
-                    // сетях (T-Mobile US, Иран) `it.next()` без фильтра может
-                    // выдать IPv6 → TCP connect timeout. Берём v4 если есть.
-                    // Bug #9.
-                    let all: Vec<SocketAddr> = it.collect();
-                    let v4 = all.iter().find(|a| a.is_ipv4()).copied();
-                    let v6 = all.iter().find(|a| a.is_ipv6()).copied();
-                    let chosen = v4.or(v6);
-                    if let Some(a) = chosen {
-                        let v4_count = all.iter().filter(|a| a.is_ipv4()).count() as u64;
-                        let v6_count = all.iter().filter(|a| a.is_ipv6()).count() as u64;
-                        tracing::info!(
-                            category = "network",
-                            event = "dns.resolved",
-                            host = %raw_addr,
-                            chosen = %a,
-                            v4_count = v4_count,
-                            v6_count = v6_count,
-                            stack = if a.is_ipv4() { "v4" } else { "v6" },
-                            "DNS resolved"
-                        );
-                        a
-                    } else {
-                        let msg = format!("no DNS results for {}", raw_addr);
-                        last_error_str = Some(msg.clone());
-                        fail(&status_tx, msg, "dns_lookup");
-                        if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, last_error_str.as_deref()).await {
-                            break;
-                        }
-                        attempt += 1;
-                        continue;
-                    }
+        let result = match server_addr {
+            Err(e) => Err(e),
+            Ok(server_addr) => {
+                let telemetry = Arc::new(Telemetry::new(
+                    n_streams,
+                    tun_addr.clone(),
+                    server_addr.to_string(),
+                    sni.clone(),
+                ));
+                *shared_telem.lock().await = Some(telemetry.clone());
+
+                if attempt == 0 {
+                    tracing::info!(
+                        category = "tunnel",
+                        profile_id = %profile.name,
+                        server = %server_addr,
+                        sni = %sni,
+                        streams = n_streams as u64,
+                        "start"
+                    );
+                } else {
+                    tracing::info!(category = "tunnel", attempt = attempt as u64, "reconnect.attempt");
                 }
-                Err(e) => {
-                    let msg = format!("DNS lookup: {}", e);
-                    last_error_str = Some(msg.clone());
-                    fail(&status_tx, msg, "dns_lookup");
-                    if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, last_error_str.as_deref()).await {
+
+                let tun_channels = match tun_factory() {
+                    Ok(ch) => ch,
+                    Err(e) => {
+                        fail(&status_tx, format!("Не удалось открыть TUN: {:#}", e), "tun_factory");
+                        *shared_telem.lock().await = None;
                         break;
                     }
-                    attempt += 1;
+                };
+
+                let dialer = StreamDialer {
+                    server_addr,
+                    server_name: server_name.clone(),
+                    client_tls: client_tls.clone(),
+                    protect_socket: protect_socket.clone(),
+                    n_streams,
+                };
+                let result = drive_tunnel(
+                    dialer,
+                    &tun_addr,
+                    status_tx.clone(),
+                    telemetry.clone(),
+                    tun_channels,
+                    cancel.clone(),
+                    settings.dpi_recycle_secs,
+                    settings.dpi_recycle_bytes,
+                )
+                .await;
+
+                let explicit_shutdown = telemetry.shutdown.load(Ordering::SeqCst);
+                let stable = telemetry
+                    .connected_at
+                    .get()
+                    .is_some_and(|t| t.elapsed() >= STABLE_SESSION);
+                *shared_telem.lock().await = None;
+
+                if explicit_shutdown {
+                    tracing::info!(category = "tunnel", reason = "user", "disconnect");
+                    publish_stopped(&status_tx);
+                    break;
+                }
+                // v0.27.0 (W10): DPI recycle — intentional, reconnect at once
+                // with no backoff and no error churn in the status frame.
+                if matches!(&result, Err(e) if e.to_string().starts_with("recycle requested")) {
+                    tracing::info!(
+                        category = "tunnel",
+                        reason = "recycle",
+                        "session refreshed — reconnecting immediately"
+                    );
+                    attempt = 0;
                     continue;
                 }
-            },
-        };
-
-        let client_identity = match helpers::load_tls_identity(&cfg) {
-            Ok(v) => v,
-            Err(e) => {
-                fail(&status_tx, format!("tls identity: {:#}", e), "tls_identity");
-                break;
-            }
-        };
-        let server_ca = match helpers::load_server_ca(&cfg) {
-            Ok(v) => v,
-            Err(e) => {
-                fail(&status_tx, format!("server CA: {:#}", e), "server_ca");
-                break;
+                if stable {
+                    attempt = 0;
+                }
+                result
             }
         };
 
-        let tun_addr = cfg.network.tun_addr.clone().unwrap_or_default();
-        let sni = cfg.network.server_name.clone().unwrap_or_default();
-        // Stream count resolution (ADR 0014): explicit user setting wins, else the
-        // server-pushed transport policy, else automatic (CPU-derived). `None`
-        // everywhere = legacy behavior.
-        let streams_override = settings.streams.or_else(|| phantom_core::policy::current().streams);
-        let n_streams = n_data_streams_with_override(streams_override);
-
-        let telemetry = Arc::new(Telemetry::new(
-            n_streams,
-            tun_addr.clone(),
-            server_addr.to_string(),
-            sni.clone(),
-        ));
-        *shared_telem.lock().await = Some(telemetry.clone());
-
-        if attempt == 0 {
-            // tunnel.start: lifecycle event for the very first attempt.
-            tracing::info!(
-                category = "tunnel",
-                profile_id = %profile.name,
-                server = %server_addr,
-                sni = %cfg.network.server_name.as_deref().unwrap_or(""),
-                streams = n_streams as u64,
-                "start"
-            );
-        } else {
-            // tunnel.reconnect.attempt — retrying after a previous drop.
-            tracing::info!(
-                category = "tunnel",
-                attempt = attempt as u64,
-                "reconnect.attempt"
-            );
-        }
-
-        // Instantiate TUN I/O for this attempt.
-        let tun_channels = match tun_factory() {
-            Ok(ch) => ch,
-            Err(e) => {
-                fail(&status_tx, format!("tun factory: {:#}", e), "tun_factory");
-                *shared_telem.lock().await = None;
-                break;
-            }
-        };
-
-        let result = drive_tunnel(
-            cfg,
-            server_addr,
-            server_ca,
-            client_identity,
-            status_tx.clone(),
-            telemetry.clone(),
-            tun_channels,
-            n_streams,
-            protect_socket.clone(),
-            cancel.clone(),
-            settings.dpi_recycle_secs,
-            settings.dpi_recycle_bytes,
-        )
-        .await;
-
-        let explicit_shutdown = telemetry.shutdown.load(Ordering::SeqCst);
-        *shared_telem.lock().await = None;
-
-        match &result {
-            Ok(()) => {
-                // v0.25.0: clear any residual error from prior failed attempts
-                // so the next failure starts fresh (and
-                // `should_reconnect`/`f.last_error` aren't polluted from
-                // earlier attempts). `drive_tunnel` Ok means we successfully
-                // ran the Connected loop until either explicit shutdown or a
-                // clean drop — either way, prior errors are no longer relevant.
-                last_error_str = None;
-                tracing::info!(
-                    category = "tunnel",
-                    reason = "clean",
-                    "disconnect"
-                );
-            }
-            Err(e) => {
-                // SEC-R2-N06: top-level context only — see parse_conn_string note.
-                let err_str = format!("{}", e);
-                last_error_str = Some(err_str.clone());
-                tracing::error!(
-                    category = "tunnel",
-                    phase = "drive",
-                    error = %err_str,
-                    err_kind = %disconnect_kind_label(classify_error(&err_str)),
-                    "error"
-                );
-            }
-        }
-
-        if explicit_shutdown {
-            tracing::info!(category = "tunnel", reason = "user", "disconnect");
-            let mut f = status_tx.borrow().clone();
-            f.state = ConnState::Disconnected;
-            f.streams_up = 0;
-            f.stream_activity = [0.0; 16];
-            f.reconnect_attempt = None;
-            f.reconnect_next_delay_secs = None;
-            let _ = status_tx.send(f);
+        // drive_tunnel returns Ok only on an explicit stop, handled above.
+        let err = result.err().unwrap_or_else(|| anyhow::anyhow!("tunnel closed"));
+        // Classify by the whole chain (the top line is often just "stream N
+        // handshake failed"); log and show only the top line + category.
+        let chain = format!("{:#}", err);
+        let top = format!("{}", err);
+        if let Some(reason) = crate::fatal_reason(&chain) {
+            tracing::error!(category = "tunnel", error = %top, "fatal");
+            fail(&status_tx, reason.to_string(), "fatal");
             break;
         }
+        let err_category = crate::classify_tunnel_error(&chain);
+        tracing::error!(
+            category = "tunnel",
+            phase = "drive",
+            error = %top,
+            err_kind = err_category.as_str(),
+            "error"
+        );
 
-        // v0.27.0 (W10): DPI recycle path. drive_tunnel returned the
-        // sentinel string when its periodic recycle timer fired. Skip the
-        // attempt counter, last_error_str, status frame Error churn, and
-        // backoff sleep — go straight to the next handshake. status_tx
-        // already shows Connected from the live session, so the UI sees
-        // no transitional flicker beyond the natural handshake latency.
-        if matches!(&result, Err(e) if e.to_string().starts_with("recycle requested")) {
-            tracing::info!(
-                category = "tunnel",
-                reason = "recycle",
-                "session refreshed — reconnecting immediately"
-            );
-            last_error_str = None;
-            attempt = 0;
-            continue;
-        }
-
-        if let Err(e) = &result {
-            let mut f = status_tx.borrow().clone();
-            // SEC-R2-N06: see parse_conn_string note — top-level only.
-            f.last_error = Some(format!("{}", e));
-            let _ = status_tx.send(f);
-        }
-
-        if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, last_error_str.as_deref()).await {
-            // tunnel.reconnect.giveup — all retries exhausted (or auto_reconnect off).
-            let last = last_error_str.clone().unwrap_or_default();
-            tracing::error!(
-                category = "tunnel",
-                attempts = (attempt + 1) as u64,
-                last_error = %last,
-                err_kind = %disconnect_kind_label(classify_error(&last)),
-                "reconnect.giveup"
-            );
-            let mut f = status_tx.borrow().clone();
-            f.state = ConnState::Error;
-            f.reconnect_attempt = None;
-            f.reconnect_next_delay_secs = None;
-            let _ = status_tx.send(f);
+        if !should_reconnect(&settings, &status_tx, &mut cancel, attempt, err_category, &top).await {
+            // A dropped sender means the owner is gone — also a stop.
+            if *cancel.borrow() || cancel.has_changed().is_err() {
+                // Stop pressed during the pause: a plain stop, not an error.
+                publish_stopped(&status_tx);
+            } else {
+                // auto_reconnect is off — the tunnel stays down with the reason.
+                tracing::error!(
+                    category = "tunnel",
+                    attempts = (attempt + 1) as u64,
+                    last_error = %top,
+                    err_kind = err_category.as_str(),
+                    "reconnect.giveup"
+                );
+                let mut f = status_tx.borrow().clone();
+                f.state = ConnState::Error;
+                f.last_error = Some(top);
+                f.reconnect_attempt = None;
+                f.reconnect_next_delay_secs = None;
+                let _ = status_tx.send(f);
+            }
             break;
         }
         attempt += 1;
     }
 }
 
+/// Connecting on the first attempt, Reconnecting afterwards.
+fn publish_attempt_state(status_tx: &watch::Sender<StatusFrame>, attempt: u32) {
+    let mut f = status_tx.borrow().clone();
+    if attempt == 0 {
+        f.state = ConnState::Connecting;
+        f.reconnect_attempt = None;
+        f.reconnect_next_delay_secs = None;
+    } else {
+        f.state = ConnState::Reconnecting;
+        f.reconnect_attempt = Some(attempt);
+    }
+    f.streams_up = 0;
+    f.stream_activity = [0.0; 16];
+    let _ = status_tx.send(f);
+}
+
+/// User stop: Disconnected, no error left behind.
+fn publish_stopped(status_tx: &watch::Sender<StatusFrame>) {
+    let mut f = status_tx.borrow().clone();
+    f.state = ConnState::Disconnected;
+    f.health = TunnelHealth::Healthy;
+    f.last_error = None;
+    f.streams_up = 0;
+    f.stream_activity = [0.0; 16];
+    f.reconnect_attempt = None;
+    f.reconnect_next_delay_secs = None;
+    let _ = status_tx.send(f);
+}
+
+/// Fatal stop: Error with a human-readable reason.
 fn fail(status_tx: &watch::Sender<StatusFrame>, msg: String, phase: &str) {
     tracing::error!(
         category = "tunnel",
@@ -344,60 +318,48 @@ fn fail(status_tx: &watch::Sender<StatusFrame>, msg: String, phase: &str) {
     let _ = status_tx.send(f);
 }
 
-/// Decide whether to keep retrying. Publishes countdown into `StatusFrame`
-/// before sleeping so the GUI can show "reconnecting in N s".
+/// Decide whether to keep retrying and sleep the backoff. Publishes
+/// Reconnecting (with the countdown) *before* sleeping, so the GUI never
+/// shows Connected during the pause.
 ///
-/// Returns `false` when auto_reconnect is off, attempt count is exhausted, or
-/// an explicit disconnect cancel arrived mid-sleep.
-///
-/// v0.25.1 (W3-2): `cancel` is a `watch::Receiver<bool>`. We use the
-/// `wait_cancelled` helper to survive the case where `true` was already
-/// stored before this function suspended on the channel — `Notify`'s
-/// old `notified()` future missed that signal.
+/// Returns `false` when auto_reconnect is off or an explicit disconnect
+/// cancel arrived mid-sleep. There is no attempt limit.
 async fn should_reconnect(
     settings: &TunnelSettings,
     status_tx: &watch::Sender<StatusFrame>,
     cancel: &mut watch::Receiver<bool>,
     attempt: u32,
-    last_error_str: Option<&str>,
+    err_category: crate::TunnelErrorCategory,
+    last_error: &str,
 ) -> bool {
     if !settings.auto_reconnect {
         return false;
     }
-    if attempt + 1 > MAX_ATTEMPTS {
-        return false;
-    }
-    // v0.24.0: classify the error so we can override the generic backoff
-    // table for common transient drops (hard reset, idle timeout, DNS) —
-    // useful under TSPU "shaky network" conditions where the default
-    // exponential backoff (1, 2, 5, 10, 20, 30 s) is still too slow on the
-    // first attempt for a clean RST.
-    let category = last_error_str
-        .map(crate::classify_tunnel_error)
-        .unwrap_or(crate::TunnelErrorCategory::Other);
-    let delay = crate::reconnect_delay_secs(category, attempt);
-    // tunnel.reconnect.scheduled — published *before* sleeping so the GUI
-    // sees the upcoming delay even if cancel arrives mid-sleep.
+    let delay = crate::reconnect_delay_secs(err_category, attempt);
+    // Up to +25 % jitter so many clients dropped by one event don't come back
+    // in lock-step.
+    let sleep_ms = u64::from(delay) * 1000 + jitter(attempt as usize, u64::from(delay) * 250);
     tracing::warn!(
         category = "tunnel",
         attempt = (attempt + 1) as u64,
         delay_secs = delay as u64,
-        error_category = category.as_str(),
+        error_category = err_category.as_str(),
         "reconnect.scheduled"
     );
-
-    // BUG FIX: publish the pending delay into StatusFrame *before* sleeping,
-    // so the GUI can display a countdown rather than a blank/stale field.
     {
         let mut f = status_tx.borrow().clone();
+        f.state = ConnState::Reconnecting;
+        f.health = TunnelHealth::Reconnecting;
+        f.streams_up = 0;
+        f.stream_activity = [0.0; 16];
+        f.reconnect_attempt = Some(attempt + 1);
         f.reconnect_next_delay_secs = Some(delay);
+        f.last_error = Some(last_error.to_string());
         let _ = status_tx.send(f);
     }
 
-    let sleep = tokio::time::sleep(std::time::Duration::from_secs(delay as u64));
-    tokio::pin!(sleep);
     tokio::select! {
-        _ = &mut sleep => true,
+        _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => true,
         _ = crate::wait_cancelled(cancel) => {
             tracing::info!(category = "tunnel", reason = "user", "reconnect.cancelled");
             false
@@ -405,59 +367,65 @@ async fn should_reconnect(
     }
 }
 
-/// Pseudo-random ~50..149 ms backoff between per-stream handshake retries.
-/// De-correlates concurrent re-dials (so a burst of simultaneous retries does
-/// not present one synchronised fingerprint) without pulling in the `rand`
-/// crate — `client-core-runtime` deliberately depends on tokio only. `idx` is
-/// mixed in (Knuth multiplicative hash) so streams retrying in the same clock
-/// tick — or on a coarse-resolution clock where `subsec_nanos` barely moves —
-/// still diverge instead of collapsing onto one value.
-fn stream_retry_jitter_ms(idx: usize) -> u64 {
-    let nanos = std::time::SystemTime::now()
+/// Cheap pseudo-random value in `0..range` without pulling the `rand` crate
+/// into this crate. `salt` is mixed in (Knuth multiplicative hash) so callers
+/// in the same clock tick — or on a coarse-resolution clock where
+/// `subsec_nanos` barely moves — still diverge.
+fn jitter(salt: usize, range: u64) -> u64 {
+    if range == 0 {
+        return 0;
+    }
+    let nanos = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    let mixed = nanos ^ (idx as u32).wrapping_mul(2_654_435_761);
-    50 + u64::from(mixed % 100)
+    let mixed = nanos ^ (salt as u32).wrapping_mul(2_654_435_761);
+    u64::from(mixed) % range
 }
 
-/// Connect TLS streams, spawn I/O tasks, and run until shutdown or error.
-///
-/// Does NOT manage Linux-specific guards (DnsGuard, Ipv6Guard, RouteGuard) —
-/// those remain in the linux-helper crate and are set up around this call.
-async fn drive_tunnel(
-    cfg: phantom_core::config::ClientConfig,
-    server_addr: SocketAddr,
+/// Resolve the server address (bounded by `DNS_TIMEOUT`).
+async fn resolve_server(raw_addr: &str) -> anyhow::Result<SocketAddr> {
+    if let Ok(a) = raw_addr.parse() {
+        return Ok(a);
+    }
+    let all: Vec<SocketAddr> = tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host(raw_addr))
+        .await
+        .map_err(|_| anyhow::anyhow!("DNS lookup timeout for {}", raw_addr))?
+        .map_err(|e| anyhow::anyhow!("DNS lookup: {}", e))?
+        .collect();
+    // v0.25.0: prefer IPv4 — наши серверы v4-only, на IPv6-only сетях
+    // (T-Mobile US, Иран) первый адрес без фильтра может оказаться IPv6 →
+    // TCP connect timeout. Bug #9.
+    let chosen = all
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| all.first())
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("no DNS results for {}", raw_addr))?;
+    tracing::info!(
+        category = "network",
+        event = "dns.resolved",
+        host = %raw_addr,
+        chosen = %chosen,
+        v4_count = all.iter().filter(|a| a.is_ipv4()).count() as u64,
+        v6_count = all.iter().filter(|a| a.is_ipv6()).count() as u64,
+        stack = if chosen.is_ipv4() { "v4" } else { "v6" },
+        "DNS resolved"
+    );
+    Ok(chosen)
+}
+
+/// Build the TLS client once per run. Fingerprint dispatch (ADR 0014
+/// Phase 2): rustls by default; boring (uTLS, browser-family ClientHello)
+/// when the transport policy selects a fingerprint.
+fn build_client_tls(
     server_ca: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
     client_identity: Option<(
         Vec<rustls::pki_types::CertificateDer<'static>>,
         rustls::pki_types::PrivateKeyDer<'static>,
     )>,
-    status_tx: watch::Sender<StatusFrame>,
-    telemetry: Arc<Telemetry>,
-    tun_channels: (
-        tokio::sync::mpsc::Receiver<Bytes>,
-        tokio::sync::mpsc::Sender<Bytes>,
-    ),
-    n_streams: usize,
-    protect_socket: Option<ProtectSocket>,
-    mut cancel: watch::Receiver<bool>,
-    // v0.27.0 (W10/W11): periodic session recycle to defeat net4people #490
-    // silent-freeze. Two flavours:
-    //  - `dpi_recycle_secs` (W10): time-based, fires every N seconds even
-    //    when idle. Kept for debugging.
-    //  - `dpi_recycle_bytes` (W11): byte-based, fires when bytes_rx +
-    //    bytes_tx crosses N. Preferred — idle sessions don't get
-    //    pointlessly recycled. Recommended value ≈ 100 KB (8 streams × ~14
-    //    KB, just under the carrier's per-connection freeze threshold).
-    // If both are set, whichever trips first wins. `None` / 0 = disabled.
-    dpi_recycle_secs: Option<u32>,
-    dpi_recycle_bytes: Option<u64>,
-) -> anyhow::Result<()> {
-    // Fingerprint dispatch (ADR 0014 Phase 2): rustls by default; boring (uTLS,
-    // browser-family ClientHello) when the transport policy selects a fingerprint.
+) -> anyhow::Result<ClientTls> {
     let pol = phantom_core::policy::current();
-    let fingerprint = pol.fingerprint.clone();
     // mTLS toggle (hypothesis test): when disabled, drop the client certificate
     // from the TLS handshake entirely (auth then must move in-stream, server-side).
     let client_identity = if pol.mtls {
@@ -466,7 +434,7 @@ async fn drive_tunnel(
         tracing::warn!(category = "handshake", "mTLS DISABLED by policy — no client cert in handshake");
         None
     };
-    let client_tls = match &fingerprint {
+    Ok(match &pol.fingerprint {
         phantom_core::policy::ResolvedFingerprint::Default => ClientTls::Rustls(
             phantom_core::h2_transport::make_h2_client_tls(server_ca, client_identity)
                 .context("build TLS client config")?,
@@ -480,10 +448,8 @@ async fn drive_tunnel(
             // the ADR 0014 Phase 2 boring experiments (to avoid solving Android
             // root-store loading first); shipping that silently disables cert
             // verification for every non-default fingerprint — an ADR 0011
-            // violation, and it makes the tunnel MITM-able. Fail closed instead:
-            // if a server-pushed policy selects a fingerprint and the root store
-            // isn't wired up yet, the handshake fails loudly rather than trusting
-            // anything. Opt in only for the lab harness.
+            // violation, and it makes the tunnel MITM-able. Fail closed instead.
+            // Opt in only for the lab harness.
             let insecure = cfg!(feature = "lab-overrides");
             tracing::warn!(category = "handshake", fp = %profile, insecure,
                 "boring uTLS fingerprint path selected");
@@ -492,253 +458,321 @@ async fn drive_tunnel(
                     .context("build boring TLS client config")?,
             )
         }
-    };
-    let server_name = cfg
-        .network
-        .server_name
-        .as_deref()
-        .unwrap_or("phantom")
-        .to_string();
+    })
+}
 
-    // ── Cancellable handshake loop (CONC-C1) ──────────────────────────────
-    //
-    // The whole per-stream connect/TLS/H2-handshake sequence is wrapped in a
-    // single `tokio::select!` against the supervisor's `cancel` watch. Without
-    // this, a Disconnect issued while we were inside `TcpStream::connect`
-    // could not be observed until the kernel's SYN_RETRIES (~75 s on macOS)
-    // unblocked the call — the audit's bug‑bash #7 "Disconnect hangs 75 s".
-    //
-    // `tls_connect` / `tls_connect_with_tcp` are also bounded by the
-    // `HANDSHAKE_TIMEOUT` from `client_common::tls_handshake`, giving us a
-    // hard ceiling even when cancel never arrives.
-    telemetry.tls_state.store(TLS_HANDSHAKING, Ordering::Relaxed);
-    let handshake_fut = async {
-        // CONC-A1/A2 (2026-06-13 TSPU fix): open streams CONCURRENTLY with
-        // PER-STREAM RETRY instead of one sequential all-or-nothing loop.
-        //
-        // Under TSPU the handshake of *some* parallel streams is silently
-        // blackholed and times out at HANDSHAKE_TIMEOUT (15 s). The old loop
-        // opened streams one-by-one and propagated the first such failure with
-        // `?`, discarding the streams that had already succeeded and forcing a
-        // full reconnect — one dropped stream cost the whole attempt plus a
-        // 15 s sequential stall. Now a failed stream is retried on a fresh
-        // socket (the probabilistic drop almost always clears in 1-2 tries)
-        // while the other streams handshake in parallel.
-        //
-        // INVARIANT PRESERVED — all N still required (no partial-quorum). The
-        // data plane (`flow_stream_idx % n_streams` → `tx_senders[idx]`, and the
-        // server's `effective_n`) assumes a full, contiguous `0..n_streams` set;
-        // coming up partial would blackhole every flow hashing to a missing
-        // index. If any stream is still down after its retries we return Err →
-        // normal reconnect (no worse than before, just faster and far rarer).
-        //
-        // `open_one` opens ONE stream at a fixed `idx`, retrying on a fresh
-        // socket with jitter. ADR 0008 §2: low-level handshake events
-        // (`tcp.connect`, `tls.client_hello`, `tls.alpn_negotiated`) are emitted
-        // by `client-common::tls_handshake::do_connect`; here we emit only the
-        // per-stream events that need a `stream_id` correlator.
-        let open_one = |idx: usize| {
-            // Owned clones so the per-stream open future is Send + 'static and
-            // self-contained (re-created per attempt). `server_addr` (SocketAddr)
-            // and `n_streams` (usize) are Copy — the `async move` block captures
-            // them by copy directly, no rebind needed.
-            let server_name = server_name.clone();
-            let client_tls = client_tls.clone();
-            let protect_socket = protect_socket.clone();
-            async move {
-                // 1 initial attempt + 2 retries. (Retry fires only on a failed
-                // dial — it's quieter on the wire than v0.22.4's full all-N
-                // reconnect-on-any-stream-failure, and invisible on the happy
-                // path. The streams themselves are opened SEQUENTIALLY by the
-                // caller, so there is no synchronized SYN-burst — see below.)
-                const STREAM_OPEN_RETRIES: u32 = 2;
-                let mut last_err: Option<anyhow::Error> = None;
-                for attempt in 0..=STREAM_OPEN_RETRIES {
-                    if attempt > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            stream_retry_jitter_ms(idx),
-                        ))
-                        .await;
-                        tracing::debug!(
-                            category = "handshake",
-                            stream_id = idx as u64,
-                            attempt = attempt as u64,
-                            "stream.retry"
-                        );
+/// Kill a stream whose sent data stays unacknowledged for 30 s instead of
+/// waiting out the 90 s RX timeout on a half-open socket under load. A local
+/// timer only — it puts nothing extra on the wire (unlike keepalive).
+fn set_tcp_user_timeout(fd: RawFd) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let (opt, val): (libc::c_int, libc::c_int) = (libc::TCP_USER_TIMEOUT, 30_000); // ms
+    // TCP_RXT_CONNDROPTIME from <netinet/tcp.h>, in seconds.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    let (opt, val): (libc::c_int, libc::c_int) = (0x80, 30);
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos", target_os = "ios"))]
+    {
+        let rc = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_TCP,
+                opt,
+                &val as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            tracing::debug!(category = "handshake", error = %std::io::Error::last_os_error(),
+                "tcp user timeout not set");
+        }
+    }
+}
+
+/// Everything needed to (re)open one stream. Cloned into each stream task so
+/// a dead stream is re-dialled on its own, without touching the others.
+#[derive(Clone)]
+struct StreamDialer {
+    server_addr: SocketAddr,
+    server_name: String,
+    client_tls: ClientTls,
+    protect_socket: Option<ProtectSocket>,
+    n_streams: usize,
+}
+
+impl StreamDialer {
+    /// Open ONE stream at a fixed `idx`: 1 attempt + 2 retries on a fresh
+    /// socket with jitter (CONC-A1/A2, 2026-06-13 TSPU fix — the handshake of
+    /// some parallel streams is silently blackholed, and a fresh socket almost
+    /// always clears it). Fatal errors are not retried.
+    async fn open(&self, idx: usize) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
+        const STREAM_OPEN_RETRIES: u32 = 2;
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..=STREAM_OPEN_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(50 + jitter(idx, 100))).await;
+                tracing::debug!(
+                    category = "handshake",
+                    stream_id = idx as u64,
+                    attempt = attempt as u64,
+                    "stream.retry"
+                );
+            }
+            match self.dial(idx).await {
+                Ok(rw) => {
+                    // stream.open — per ADR 0008 §2.
+                    tracing::debug!(
+                        category = "stream",
+                        stream_id = idx as u64,
+                        priority = %if idx == 0 { "high" } else { "normal" },
+                        "open"
+                    );
+                    return Ok(rw);
+                }
+                Err(e) => {
+                    let chain = format!("{:#}", e);
+                    tracing::warn!(
+                        category = "handshake",
+                        stream_id = idx as u64,
+                        attempt = attempt as u64,
+                        error = %chain,
+                        "stream.open_failed"
+                    );
+                    if crate::fatal_reason(&chain).is_some() {
+                        return Err(e);
                     }
-                    let attempt_res = async {
-                        let (r, mut w) = if let Some(ref protect) = protect_socket {
-                            // Android: create socket, protect it from VPN routing,
-                            // then connect. protect(fd) MUST run for every socket
-                            // including retries, else traffic loops back via tun.
-                            let socket = if server_addr.is_ipv4() {
-                                tokio::net::TcpSocket::new_v4()
-                            } else {
-                                tokio::net::TcpSocket::new_v6()
-                            }
-                            .with_context(|| format!("stream {} socket create", idx))?;
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("stream {} open failed", idx)))
+    }
 
-                            let fd = socket.as_raw_fd();
-                            if !protect(fd) {
-                                anyhow::bail!("stream {} VpnService.protect() failed", idx);
-                            }
+    /// One TCP + TLS + stream-handshake attempt. The socket is created here on
+    /// every platform: Android must `VpnService.protect()` it before any I/O
+    /// (including retries, else traffic loops back via tun), and every
+    /// platform gets a bounded connect and the TCP user timeout.
+    async fn dial(&self, idx: usize) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
+        let socket = if self.server_addr.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()
+        } else {
+            tokio::net::TcpSocket::new_v6()
+        }
+        .with_context(|| format!("stream {} socket create", idx))?;
+        let fd = socket.as_raw_fd();
+        if let Some(protect) = &self.protect_socket {
+            if !protect(fd) {
+                anyhow::bail!("stream {} VpnService.protect() failed", idx);
+            }
+        }
+        set_tcp_user_timeout(fd);
+        // Bounded like the TLS phase: under a TSPU SYN-blackhole an unbounded
+        // connect() blocks on kernel SYN_RETRIES (~75-130 s) and starves the
+        // per-stream retry.
+        let tcp = tokio::time::timeout(HANDSHAKE_TIMEOUT, socket.connect(self.server_addr))
+            .await
+            .with_context(|| format!("stream {} tcp connect timeout", idx))?
+            .with_context(|| format!("stream {} tcp connect", idx))?;
+        tracing::debug!(category = "handshake", peer = %self.server_addr, stream_id = idx as u64,
+            "tcp.connected");
 
-                            // Bound the raw TCP connect like the TLS phase does
-                            // (tls_handshake::HANDSHAKE_TIMEOUT). Under the TSPU
-                            // SYN-blackhole this fix targets, an unbounded connect()
-                            // would block on kernel SYN_RETRIES (~75-130 s) and
-                            // starve the per-stream retry below; the 15 s cap lets a
-                            // dead SYN error out fast so the retry actually engages.
-                            let tcp = tokio::time::timeout(
-                                client_common::tls_handshake::HANDSHAKE_TIMEOUT,
-                                socket.connect(server_addr),
-                            )
-                            .await
-                            .with_context(|| format!("stream {} tcp connect timeout", idx))?
-                            .with_context(|| format!("stream {} tcp connect", idx))?;
+        let (r, mut w) = match &self.client_tls {
+            ClientTls::Rustls(c) => tls_connect_with_tcp(tcp, self.server_name.clone(), c.clone()).await,
+            ClientTls::Boring(c) => {
+                tls_connect_with_tcp_boring(tcp, self.server_name.clone(), c.clone()).await
+            }
+        }
+        .with_context(|| format!("stream {} tls connect", idx))?;
+        tracing::debug!(
+            category = "handshake",
+            result = "ok",
+            subject = %self.server_name,
+            stream_id = idx as u64,
+            "mtls.cert_verify"
+        );
+        // Wire contract: the 2nd handshake byte is ALWAYS the full n_streams
+        // (never a live count). The server pins effective_n from it and evicts
+        // the session on mismatch.
+        write_handshake(&mut w, idx as u8, self.n_streams as u8)
+            .await
+            .with_context(|| format!("stream {} handshake", idx))?;
+        tracing::debug!(
+            category = "handshake",
+            max_concurrent = self.n_streams as u64,
+            initial_window = 0u64,
+            stream_id = idx as u64,
+            "h2.settings_sent"
+        );
+        Ok((r, w))
+    }
+}
 
-                            match &client_tls {
-                                ClientTls::Rustls(c) =>
-                                    tls_connect_with_tcp(tcp, server_name.clone(), c.clone()).await,
-                                ClientTls::Boring(c) =>
-                                    tls_connect_with_tcp_boring(tcp, server_name.clone(), c.clone()).await,
-                            }
-                            .with_context(|| format!("stream {} tls connect", idx))?
-                        } else {
-                            // Linux/iOS/macOS: no socket protection needed.
-                            match &client_tls {
-                                ClientTls::Rustls(c) =>
-                                    tls_connect(server_addr, server_name.clone(), c.clone()).await,
-                                ClientTls::Boring(c) =>
-                                    tls_connect_boring(server_addr, server_name.clone(), c.clone()).await,
-                            }
-                            .with_context(|| format!("stream {} tls connect", idx))?
-                        };
-                        tracing::debug!(
-                            category = "handshake",
-                            result = "ok",
-                            subject = %server_name,
-                            stream_id = idx as u64,
-                            "mtls.cert_verify"
-                        );
-                        // Wire contract: the 2nd handshake byte is ALWAYS the full
-                        // n_streams (never a live count). The server pins
-                        // effective_n from it and evicts the session on mismatch.
-                        write_handshake(&mut w, idx as u8, n_streams as u8)
-                            .await
-                            .with_context(|| format!("stream {} handshake", idx))?;
-                        tracing::debug!(
-                            category = "handshake",
-                            max_concurrent = n_streams as u64,
-                            initial_window = 0u64,
-                            stream_id = idx as u64,
-                            "h2.settings_sent"
-                        );
-                        anyhow::Ok((r, w))
-                    }
-                    .await;
+/// One stream's lifetime inside a session: run RX and TX until either side
+/// ends, then reopen just this stream after a random 1–10 s pause. Peers are
+/// untouched, so a single frozen connection (TSPU "streams die one by one")
+/// heals without a synchronized all-N reconnect burst — the server attaches
+/// the new connection to the existing session. A stream that keeps failing
+/// (or dies right after reopening) backs off along `BACKOFF_SECS`, so a
+/// server that refuses us is not hammered. Returns on tunnel teardown
+/// (channels closed) or on a fatal error, which it records in
+/// `tele.fatal` for the death watcher.
+async fn run_stream(
+    idx: usize,
+    mut rw: (TlsReadHalf, TlsWriteHalf),
+    mut tx_queue: tokio::sync::mpsc::Receiver<Bytes>,
+    sink: tokio::sync::mpsc::Sender<Bytes>,
+    tele: Arc<Telemetry>,
+    dialer: StreamDialer,
+) {
+    let mut fails: usize = 0;
+    loop {
+        tele.streams_alive[idx].store(true, Ordering::Relaxed);
+        let started_at = Instant::now();
+        let (r, w) = rw;
+        let res = tokio::select! {
+            res = tls_rx_loop_counted(
+                r,
+                sink.clone(),
+                Some(Duration::from_secs(crate::RX_IDLE_TIMEOUT_SECS as u64)),
+                &tele.rx_frames,
+            ) => res,
+            res = tls_tx_loop(w, &mut tx_queue) => res,
+        };
+        tele.streams_alive[idx].store(false, Ordering::Relaxed);
+        let lifetime_ms = started_at.elapsed().as_millis() as u64;
+        let e = match res {
+            Ok(()) => {
+                tracing::debug!(category = "stream", stream_id = idx as u64, lifetime_ms, "close");
+                return;
+            }
+            Err(e) => e,
+        };
+        // v0.27.0 W4-3: classify + record so tunnel teardown can surface
+        // "tcp_reset", "timeout" etc. as the cause.
+        let chain = format!("{:#}", e);
+        let kind = classify_error(&chain);
+        tele.disconnect_kind.store(kind, Ordering::Relaxed);
+        tele.last_failed_stream.store(idx as i8, Ordering::Relaxed);
+        tracing::warn!(
+            category = "stream",
+            stream_id = idx as u64,
+            error = %e,
+            err_kind = %disconnect_kind_label(kind),
+            lifetime_ms,
+            "kill"
+        );
+        if crate::fatal_reason(&chain).is_some() {
+            let _ = tele.fatal.set(chain);
+            return;
+        }
+        fails = if started_at.elapsed() >= STABLE_SESSION { 0 } else { fails + 1 };
 
-                    match attempt_res {
-                        Ok((r, w)) => {
-                            let stream_priority = if idx == 0 { "high" } else { "normal" };
-                            // stream.open — per ADR 0008 §2.
-                            tracing::debug!(
-                                category = "stream",
-                                stream_id = idx as u64,
-                                priority = %stream_priority,
-                                "open"
-                            );
-                            return anyhow::Ok((idx, r, w));
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                category = "handshake",
-                                stream_id = idx as u64,
-                                attempt = attempt as u64,
-                                error = %format!("{:#}", e),
-                                "stream.open_failed"
-                            );
-                            last_err = Some(e);
-                        }
+        rw = loop {
+            let floor_ms = u64::from(crate::BACKOFF_SECS[fails.min(crate::BACKOFF_SECS.len() - 1)]) * 1000;
+            let pause_ms = (1_000 + jitter(idx, 9_000)).max(floor_ms + jitter(idx, floor_ms / 4));
+            tokio::time::sleep(Duration::from_millis(pause_ms)).await;
+            match dialer.open(idx).await {
+                Ok(rw) => break rw,
+                Err(e) => {
+                    fails += 1;
+                    let chain = format!("{:#}", e);
+                    if crate::fatal_reason(&chain).is_some() {
+                        let _ = tele.fatal.set(chain);
+                        return;
                     }
                 }
-                Err(last_err
-                    .unwrap_or_else(|| anyhow::anyhow!("stream {} open failed", idx)))
             }
         };
+        tracing::info!(category = "stream", stream_id = idx as u64, "reopened");
+    }
+}
 
-        // v0.27.1 (DPI regression fix — restores v0.22.4): open streams STRICTLY
-        // SEQUENTIALLY. Each stream's TCP+TLS+handshake fully completes before the
-        // next is dialed, so the N ClientHellos are spread over their natural
-        // RTT+handshake spacing — exactly like a browser progressively opening
-        // connections. This replaces the concurrent JoinSet fan-out, which fired
-        // 7 SYNs to one IP:port within ~25 ms — a synchronized SYN-burst that
-        // carrier-DPI fingerprints as a VPN (the proven regression vs v0.22.4,
-        // confirmed by pcap A/B: v0.22.4 spread 8 opens over ~6 s and was not
-        // throttled). Stream 0 first also preserves the server coordinator /
-        // mimicry-warmup ordering (warmup runs on stream_idx==0 && is_new).
-        // Trade-off: full-Connected is a few RTTs slower than a burst, but this is
-        // the proven DPI-evading behaviour. Per-stream retry inside `open_one`
-        // still fires only on a failed dial (quieter than v0.22.4's
-        // reconnect-all-N), invisible on the happy path.
+/// Connect TLS streams, spawn I/O tasks, and run until shutdown or error.
+/// Returns `Ok` only on an explicit stop; every other exit is an `Err`
+/// carrying the cause.
+///
+/// Does NOT manage Linux-specific guards (DnsGuard, Ipv6Guard, RouteGuard) —
+/// those remain in the linux-helper crate and are set up around this call.
+#[allow(clippy::too_many_arguments)]
+async fn drive_tunnel(
+    dialer: StreamDialer,
+    tun_addr: &str,
+    status_tx: watch::Sender<StatusFrame>,
+    telemetry: Arc<Telemetry>,
+    tun_channels: (
+        tokio::sync::mpsc::Receiver<Bytes>,
+        tokio::sync::mpsc::Sender<Bytes>,
+    ),
+    mut cancel: watch::Receiver<bool>,
+    // v0.27.0 (W10/W11): periodic session recycle to defeat net4people #490
+    // silent-freeze. Two flavours:
+    //  - `dpi_recycle_secs` (W10): time-based, fires every N seconds even
+    //    when idle. Kept for debugging.
+    //  - `dpi_recycle_bytes` (W11): byte-based, fires when bytes_rx +
+    //    bytes_tx crosses N. Preferred — idle sessions don't get
+    //    pointlessly recycled.
+    // If both are set, whichever trips first wins. `None` / 0 = disabled.
+    dpi_recycle_secs: Option<u32>,
+    dpi_recycle_bytes: Option<u64>,
+) -> anyhow::Result<()> {
+    let n_streams = dialer.n_streams;
+    let server_addr = dialer.server_addr;
+
+    // ── Cancellable handshake (CONC-C1) ───────────────────────────────────
+    //
+    // The whole per-stream connect/TLS/handshake sequence races the
+    // supervisor's `cancel` watch, so a Disconnect issued mid-connect is seen
+    // at once (bug-bash #7 "Disconnect hangs 75 s").
+    //
+    // v0.27.1 (DPI regression fix — restores v0.22.4): streams are opened
+    // STRICTLY SEQUENTIALLY, each TCP+TLS+handshake completing before the next
+    // is dialed, so the N ClientHellos are spread over their natural RTT —
+    // like a browser progressively opening connections. A concurrent fan-out
+    // fired N SYNs to one IP:port within ~25 ms, a synchronized SYN-burst
+    // carrier-DPI fingerprints as a VPN (pcap A/B vs v0.22.4). Stream 0 first
+    // also preserves the server coordinator / mimicry-warmup ordering.
+    //
+    // All N are required (no partial quorum): the data plane routes
+    // `flow_stream_idx % n_streams` and the server pins `effective_n`; a
+    // missing index would blackhole every flow hashing to it. Position in
+    // `opened` equals stream_idx by construction.
+    telemetry.tls_state.store(TLS_HANDSHAKING, Ordering::Relaxed);
+    let handshake_fut = async {
         let mut opened = Vec::with_capacity(n_streams);
         for idx in 0..n_streams {
             opened.push(
-                open_one(idx)
+                dialer
+                    .open(idx)
                     .await
                     .with_context(|| format!("stream {} handshake failed", idx))?,
             );
         }
-        // Load-bearing invariant for the data plane: the dispatcher routes
-        // `flow_stream_idx(pkt, n_streams) -> tx_senders[idx]` and the I/O spawn
-        // loop binds idx by Vec position, so position MUST equal stream_idx. The
-        // sequential open pushes in ascending idx order, so this already holds by
-        // construction (no sort needed) — assert it so a future change (gapped or
-        // short set) can't silently mis-route.
-        debug_assert!(
-            opened.len() == n_streams
-                && opened.iter().enumerate().all(|(pos, (idx, _, _))| pos == *idx),
-            "sequential open must yield a contiguous, sorted 0..n_streams stream set"
-        );
-
-        let mut tls_writers = Vec::with_capacity(n_streams);
-        let mut tls_readers = Vec::with_capacity(n_streams);
-        for (idx, r, w) in opened {
-            // streams_alive set ONLY here, on final success of all N — never
-            // mid-handshake — so the death-watcher / derive_health never observe
-            // a transient or about-to-fail stream as alive.
-            telemetry.streams_alive[idx].store(true, Ordering::Relaxed);
-            tls_readers.push(r);
-            tls_writers.push(w);
-        }
-        anyhow::Ok((tls_writers, tls_readers))
+        anyhow::Ok(opened)
     };
-
-    let (tls_writers, tls_readers) = tokio::select! {
+    let opened = tokio::select! {
         biased;
         _ = crate::wait_cancelled(&mut cancel) => {
-            tracing::info!(
-                category = "tunnel",
-                phase = "handshake",
-                "cancelled during handshake"
-            );
-            // Mark this as explicit shutdown so the supervisor exits cleanly
-            // without retry. `telemetry.shutdown` is checked by the outer
-            // `supervise` loop right after `drive_tunnel` returns.
+            tracing::info!(category = "tunnel", phase = "handshake", "cancelled during handshake");
+            // Explicit shutdown: the supervisor exits cleanly without retry.
             telemetry.shutdown.store(true, Ordering::SeqCst);
             anyhow::bail!("cancelled");
         }
         result = handshake_fut => result?,
     };
+    // streams_alive set ONLY here, on success of all N — never mid-handshake —
+    // so the death-watcher / derive_health never see a transient stream alive.
+    for idx in 0..n_streams {
+        telemetry.streams_alive[idx].store(true, Ordering::Relaxed);
+    }
+    let _ = telemetry.connected_at.set(Instant::now());
+    // The handshake itself was the last thing received; Stale counts from here.
+    telemetry.last_rx_unix_ms.store(now_unix_ms(), Ordering::Relaxed);
     telemetry.tls_state.store(TLS_ESTABLISHED, Ordering::Relaxed);
-    // handshake.h2.ready — all streams complete the H2-equivalent setup.
     tracing::info!(
         category = "handshake",
         n_streams_open = n_streams as u64,
         tls_state = %tls_state_label(TLS_ESTABLISHED),
         "h2.ready"
     );
-    // tunnel.connected — top-level lifecycle.
     tracing::info!(
         category = "tunnel",
         session_id = %format!("{:x}", telemetry.started_at.elapsed().as_nanos() as u64),
@@ -746,135 +780,102 @@ async fn drive_tunnel(
         "connected"
     );
 
-    let tun_addr = cfg.network.tun_addr.as_deref().unwrap_or("10.7.0.2/24");
     let (mut tun_pkt_rx, tun_pkt_tx) = tun_channels;
 
-    // Transition to Connected state.
+    // Transition to Connected state, clearing all residue of earlier attempts
+    // (stale last_rx_ms flagged Stale for a tick; a prior attempt's last_error
+    // showed "DNS lookup failed" while actually Connected).
     {
         let mut f = status_tx.borrow().clone();
         f.state = ConnState::Connected;
         f.n_streams = n_streams as u8;
         f.streams_up = n_streams as u8;
-        f.tun_addr = Some(tun_addr.to_string());
+        f.tun_addr = Some(if tun_addr.is_empty() { "10.7.0.2/24" } else { tun_addr }.to_string());
         f.server_addr = Some(server_addr.to_string());
-        f.sni = Some(server_name.clone());
-        // v0.25.0: clear all per-attempt residue carried over from the previous
-        // failed `drive_tunnel` iteration. Without this, the first frame after a
-        // successful reconnect shows stale `last_rx_ms` (from previous session,
-        // 60+ seconds ago) → derive_health flags Stale for 250-500 ms until
-        // telem_task overwrites with fresh values. Also `last_error` from a
-        // prior failed attempt stays in the frame until next failure — false
-        // "DNS lookup failed" while we're actually Connected.
+        f.sni = Some(dialer.server_name.clone());
         f.last_rx_ms = 0;
         f.last_tx_ms = 0;
         f.idle_rx_secs = 0;
         f.last_error = None;
         f.reconnect_attempt = None;
         f.reconnect_next_delay_secs = None;
-        f.health = ghoststream_gui_ipc::TunnelHealth::Healthy;
+        f.health = TunnelHealth::Healthy;
         f.bandwidth_class = ghoststream_gui_ipc::BandwidthClass::Normal;
         let _ = status_tx.send(f);
     }
 
-    // Per-stream TX channels.
+    // Per-stream TX queues; receivers live in the stream tasks across reopens.
     let mut tx_senders: Vec<tokio::sync::mpsc::Sender<Bytes>> = Vec::with_capacity(n_streams);
-    let mut tx_receivers: Vec<tokio::sync::mpsc::Receiver<Bytes>> =
-        Vec::with_capacity(n_streams);
+    let mut tx_receivers: Vec<tokio::sync::mpsc::Receiver<Bytes>> = Vec::with_capacity(n_streams);
     for _ in 0..n_streams {
-        let (t, r) = tokio::sync::mpsc::channel::<Bytes>(2048);
+        let (t, r) = tokio::sync::mpsc::channel::<Bytes>(crate::STREAM_TX_QUEUE);
         tx_senders.push(t);
         tx_receivers.push(r);
     }
+    let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(crate::PACKET_QUEUE);
 
-    let (rx_sink_tx, mut rx_sink_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
-
-    // Dispatcher: TUN → per-stream channel.
+    // Dispatcher: TUN → per-stream queue.
     //
-    // v0.27.1 (DPI regression fix — restores v0.22.4 semantics): NON-BLOCKING
-    // `try_send` with drop-and-continue. A later "backpressure" rewrite to a
-    // blocking `send().await` let ONE dead/full stream wedge ALL TX, which forced
-    // the death-watcher to tear down + reconnect all N streams. Those repeated
-    // synchronized N-stream reconnect bursts are a carrier-DPI VPN fingerprint
-    // (proven by pcap A/B: v0.22.4 stayed quiet, HEAD got throttled). With
-    // `try_send`, a dead/slow stream's flow simply drops its packets (TCP inside
-    // the tunnel retransmits) while the other streams keep flowing — quiet on the
-    // wire, exactly as v0.22.4 did. The dispatcher now only ends when the TUN
-    // reader closes (`tun_pkt_rx` drained = shutdown/teardown).
-    let tx_senders_clone = tx_senders.clone();
+    // A dead (reopening) stream drops its flow's packets at once — TCP inside
+    // the tunnel retransmits. A live but momentarily full queue gets a short
+    // grace before the drop: dropping on the first full slot (2026-05-06 RC1)
+    // cost ×13 throughput, while an unbounded wait let one stuck stream wedge
+    // ALL TX (v0.27.1 DPI regression). The dispatcher only ends when the TUN
+    // reader closes.
     let tele = telemetry.clone();
     let mut dispatcher = tokio::spawn(async move {
-        // packet.tx.batch is sampled 1/N (default 100) to keep verbose logs
-        // tractable. Counter is per-process inside `log_bridge`.
         let mut first_tx_logged: [bool; 16] = [false; 16];
         while let Some(pkt) = tun_pkt_rx.recv().await {
             let idx = flow_stream_idx(&pkt, n_streams);
             let len = pkt.len() as u64;
             // stream.first_packet_tx — once per stream lifetime.
-            if idx < first_tx_logged.len() && !first_tx_logged[idx] {
+            if !first_tx_logged[idx] {
                 first_tx_logged[idx] = true;
-                tracing::trace!(
-                    category = "stream",
-                    stream_id = idx as u64,
-                    bytes = len,
-                    "first_packet_tx"
-                );
+                tracing::trace!(category = "stream", stream_id = idx as u64, bytes = len, "first_packet_tx");
             }
-            // Full or closed channel (slow/dead stream) → drop this flow's
-            // packet and keep dispatching the rest. NEVER wedge all TX on one
-            // bad stream (that was the root cause of the death-watcher churn).
-            if tx_senders_clone[idx].try_send(pkt).is_ok() {
+            let sent = tele.streams_alive[idx].load(Ordering::Relaxed)
+                && match tx_senders[idx].try_send(pkt) {
+                    Ok(()) => true,
+                    Err(TrySendError::Full(pkt)) => tx_senders[idx]
+                        .send_timeout(pkt, Duration::from_millis(50))
+                        .await
+                        .is_ok(),
+                    Err(TrySendError::Closed(_)) => false,
+                };
+            if sent {
                 tele.bytes_tx.fetch_add(len, Ordering::Relaxed);
                 tele.stream_tx_bytes[idx].fetch_add(len, Ordering::Relaxed);
-                // packet.tx.batch — sampled (default 1/100).
                 if packet_tx_log_sample_should_emit() {
-                    tracing::trace!(
-                        category = "packet",
-                        n_pkts = 1u64,
-                        bytes = len,
-                        stream_id = idx as u64,
-                        "tx.batch"
-                    );
+                    tracing::trace!(category = "packet", n_pkts = 1u64, bytes = len,
+                        stream_id = idx as u64, "tx.batch");
+                }
+            } else {
+                let dropped = tele.tx_dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                if dropped.is_power_of_two() {
+                    tracing::warn!(category = "packet", stream_id = idx as u64, dropped, "tx.drop");
                 }
             }
         }
     });
-    drop(tx_senders);
 
     // RX sink forwarder: count bytes then push into TUN writer.
     //
     // v0.25.1 (W3-1): a TUN writer that stops accepting (fd closed, OS hung,
-    // VpnService teardown half-way) used to make `tun_write_tx.send().await`
-    // block forever — and because the forwarder also held the rx_sink_rx
-    // receiver, the per-stream RX loops could not drain either. The whole
-    // tunnel froze with no visible signal. We now timeout the TUN write at
-    // 5 s and, on expiry, signal `forwarder_dead_tx` so the supervisor
-    // tears down and reconnects. 5 s is generous: TUN buffer-full normally
-    // clears in ms; anything longer is structurally broken.
-    let (forwarder_dead_tx, mut forwarder_dead_rx) =
-        tokio::sync::oneshot::channel::<()>();
-    // v0.26.21: death watcher → drive_tunnel teardown channel.
-    // Отдельный от forwarder_dead_tx (тот владеется rx_forwarder'ом).
-    let (dead_watcher_tx, mut dead_watcher_rx) =
-        tokio::sync::oneshot::channel::<()>();
-    let tun_write_tx = tun_pkt_tx.clone();
+    // VpnService teardown half-way) used to block forever and freeze every
+    // stream's RX behind it. The TUN write is timed out at 5 s and, on
+    // expiry, the supervisor tears down and reconnects.
+    let (forwarder_dead_tx, mut forwarder_dead_rx) = tokio::sync::oneshot::channel::<()>();
+    let tun_write_tx = tun_pkt_tx;
     let tele_rx = telemetry.clone();
     let rx_forwarder = tokio::spawn(async move {
         while let Some(pkt) = rx_sink_rx.recv().await {
             let len = pkt.len() as u64;
             tele_rx.bytes_rx.fetch_add(len, Ordering::Relaxed);
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                tun_write_tx.send(pkt),
-            )
-            .await
-            {
+            match tokio::time::timeout(Duration::from_secs(5), tun_write_tx.send(pkt)).await {
                 Ok(Ok(())) => {}
-                Ok(Err(_send_err)) => {
-                    // TUN writer dropped — clean teardown path, not deadlock.
-                    return;
-                }
+                // TUN writer dropped — clean teardown path, not deadlock.
+                Ok(Err(_send_err)) => return,
                 Err(_elapsed) => {
-                    // TUN writer hung for 5 s → forwarder is unresponsive.
                     tracing::error!(
                         category = "tunnel",
                         event = "rx_forwarder.tun_write_timeout",
@@ -885,154 +886,89 @@ async fn drive_tunnel(
                 }
             }
             if packet_rx_log_sample_should_emit() {
-                tracing::trace!(
-                    category = "packet",
-                    n_pkts = 1u64,
-                    bytes = len,
-                    "rx.batch"
-                );
+                tracing::trace!(category = "packet", n_pkts = 1u64, bytes = len, "rx.batch");
             }
         }
     });
-    drop(tun_pkt_tx);
 
-    // Per-stream TX + RX tasks.
-    let mut tx_handles = Vec::with_capacity(n_streams);
-    let mut rx_handles = Vec::with_capacity(n_streams);
-    let stream_started_at = Instant::now();
-    for (idx, (w, rxc)) in tls_writers
+    // Per-stream tasks (RX + TX + reopen).
+    let stream_tasks: Vec<_> = opened
         .into_iter()
-        .zip(tx_receivers.into_iter())
+        .zip(tx_receivers)
         .enumerate()
-    {
-        let tele = telemetry.clone();
-        let started_at = stream_started_at;
-        tx_handles.push(tokio::spawn(async move {
-            let res = tls_tx_loop(w, rxc).await;
-            tele.streams_alive[idx].store(false, Ordering::Relaxed);
-            let lifetime_ms = started_at.elapsed().as_millis() as u64;
-            match &res {
-                Ok(()) => tracing::debug!(
-                    category = "stream",
-                    stream_id = idx as u64,
-                    reason = "tx_ended",
-                    lifetime_ms,
-                    "close"
-                ),
-                Err(e) => {
-                    // v0.27.0 W4-3: classify + record so tunnel teardown can
-                    // surface "h2_goaway", "tcp_reset" etc. as the cause.
-                    let err_str = format!("{}", e);
-                    let kind = classify_error(&err_str);
-                    tele.disconnect_kind.store(kind, Ordering::Relaxed);
-                    tele.last_failed_stream.store(idx as i8, Ordering::Relaxed);
-                    tracing::warn!(
-                        category = "stream",
-                        stream_id = idx as u64,
-                        error = %err_str,
-                        err_kind = %disconnect_kind_label(kind),
-                        "kill"
-                    );
-                }
-            }
-            res
-        }));
-    }
-    for (idx, r) in tls_readers.into_iter().enumerate() {
-        let sink = rx_sink_tx.clone();
-        let tele = telemetry.clone();
-        let started_at = stream_started_at;
-        rx_handles.push(tokio::spawn(async move {
-            let res = tls_rx_loop(
-                r,
-                sink,
-                Some(std::time::Duration::from_secs(
-                    crate::RX_IDLE_TIMEOUT_SECS as u64,
-                )),
-            )
-            .await;
-            tele.streams_alive[idx].store(false, Ordering::Relaxed);
-            let lifetime_ms = started_at.elapsed().as_millis() as u64;
-            match &res {
-                Ok(()) => tracing::debug!(
-                    category = "stream",
-                    stream_id = idx as u64,
-                    reason = "rx_ended",
-                    lifetime_ms,
-                    "close"
-                ),
-                Err(e) => {
-                    // v0.27.0 W4-3: classify + record so tunnel teardown can
-                    // surface "h2_goaway", "tcp_reset" etc. as the cause.
-                    let err_str = format!("{}", e);
-                    let kind = classify_error(&err_str);
-                    tele.disconnect_kind.store(kind, Ordering::Relaxed);
-                    tele.last_failed_stream.store(idx as i8, Ordering::Relaxed);
-                    tracing::warn!(
-                        category = "stream",
-                        stream_id = idx as u64,
-                        error = %err_str,
-                        err_kind = %disconnect_kind_label(kind),
-                        "kill"
-                    );
-                }
-            }
-            res
-        }));
-    }
+        .map(|(idx, (rw, tx_queue))| {
+            tokio::spawn(run_stream(
+                idx,
+                rw,
+                tx_queue,
+                rx_sink_tx.clone(),
+                telemetry.clone(),
+                dialer.clone(),
+            ))
+        })
+        .collect();
     drop(rx_sink_tx);
 
-    // Telemetry task.
     let telem_task = spawn_telem_task(telemetry.clone(), status_tx.clone());
 
-    // Death watcher (v0.26.21; B2 degraded-teardown REVERTED in v0.27.1 DPI fix):
-    // reconnect ONLY when ALL streams are dead (alive == 0) for
-    // ALL_STREAMS_DEAD_TIMEOUT_SECS. A single dead/degraded stream is NOT torn
-    // down — its flow simply drops (dispatcher uses try_send drop-and-continue),
-    // exactly like v0.22.4. Tearing the whole session down + reconnecting all N
-    // on ANY single stream death (the B2 behaviour) produced repeated
-    // synchronized N-stream reconnect bursts, which carrier-DPI fingerprints as a
-    // VPN (proven by pcap A/B vs v0.22.4). honest-state is preserved:
-    // derive_health still renders Degraded/Dead from streams_alive; we just don't
-    // churn the wire on transient single-stream drops. NOTE: nothing ACTS on
-    // Degraded anymore — a partially-dead tunnel keeps running (flows hashed to
-    // dead streams drop, TCP-in-tunnel retransmits) until alive hits 0, when this
-    // watcher reconnects all N. That is the accepted v0.22.4 behaviour.
-    //
-    // I1 fix (v0.26.22): watcher does NOT publish StatusFrame health — telem_task's
-    // derive_health() is the single source of truth.
+    // Death watcher (ticks 1 s). Tears the session down when:
+    //  - ALL streams are dead for ALL_STREAMS_DEAD_TIMEOUT_SECS. A single dead
+    //    stream is NOT a reason — its task reopens it alone; tearing down all
+    //    N on any single death produced synchronized N-stream reconnect bursts
+    //    that carrier-DPI fingerprints (pcap A/B vs v0.22.4);
+    //  - the device just woke up (P6): the wall clock jumped while monotonic
+    //    timers were stopped, and the server has likely dropped the session —
+    //    reconnect now instead of sitting on a dead tunnel for 90 s;
+    //  - a stream hit a fatal error (revoked access, certificate, clock).
+    // The watcher does NOT publish health — telem_task's derive_health() is
+    // the single source of truth (I1 fix, v0.26.22).
+    let (dead_watcher_tx, mut dead_watcher_rx) = tokio::sync::oneshot::channel::<anyhow::Error>();
     let dead_watcher = {
         let tele = telemetry.clone();
         let status_tx_w = status_tx.clone();
-        let n_streams = n_streams;
-        let dead_tx = dead_watcher_tx; // moved into task
         tokio::spawn(async move {
             let mut dead_streak_secs: u32 = 0;
+            let mut last_wall = SystemTime::now();
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let now_wall = SystemTime::now();
+                let slept = now_wall
+                    .duration_since(last_wall)
+                    .is_ok_and(|d| d > SLEEP_JUMP);
+                last_wall = now_wall;
+                if slept {
+                    tracing::warn!(category = "tunnel", event = "wake", "device woke from sleep — reconnecting");
+                    let _ = dead_watcher_tx.send(anyhow::anyhow!("device woke from sleep"));
+                    return;
+                }
+                if let Some(chain) = tele.fatal.get() {
+                    let _ = dead_watcher_tx.send(anyhow::anyhow!("{}", chain));
+                    return;
+                }
                 let alive = (0..n_streams)
                     .filter(|i| tele.streams_alive[*i].load(Ordering::Relaxed))
                     .count();
-
-                if alive == 0 {
-                    dead_streak_secs += 1;
-                    if dead_streak_secs >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS {
-                        tracing::warn!(
-                            category = "tunnel",
-                            event = "all_streams_dead",
-                            streak_secs = dead_streak_secs as u64,
-                            n_streams = n_streams as u64,
-                            "death watcher: 0/{} streams alive — triggering reconnect",
-                            n_streams,
-                        );
-                        let mut f = status_tx_w.borrow().clone();
-                        f.last_error = Some(format!("all streams dead ({}s)", dead_streak_secs));
-                        let _ = status_tx_w.send(f);
-                        let _ = dead_tx.send(()); // signal supervisor select!
-                        return;
-                    }
-                } else {
+                if alive > 0 {
                     dead_streak_secs = 0;
+                    continue;
+                }
+                dead_streak_secs += 1;
+                if dead_streak_secs >= crate::ALL_STREAMS_DEAD_TIMEOUT_SECS {
+                    let kind = disconnect_kind_label(tele.disconnect_kind.load(Ordering::Relaxed));
+                    tracing::warn!(
+                        category = "tunnel",
+                        event = "all_streams_dead",
+                        streak_secs = dead_streak_secs as u64,
+                        n_streams = n_streams as u64,
+                        err_kind = %kind,
+                        "death watcher: 0/{} streams alive — triggering reconnect",
+                        n_streams,
+                    );
+                    let mut f = status_tx_w.borrow().clone();
+                    f.last_error = Some(format!("all streams dead ({}s)", dead_streak_secs));
+                    let _ = status_tx_w.send(f);
+                    let _ = dead_watcher_tx.send(anyhow::anyhow!("all streams dead ({})", kind));
+                    return;
                 }
             }
         })
@@ -1043,54 +979,27 @@ async fn drive_tunnel(
         let tele = telemetry.clone();
         async move {
             loop {
-                // v0.25.1 (W3-8): Acquire matches the SeqCst Release used by
-                // the writers (Manager::disconnect, supervisor cancel arm).
-                // Relaxed could let this poll observe a stale `false` after
-                // a writer has committed `true` — Acquire makes the cross-
-                // task signal trivially correct.
+                // v0.25.1 (W3-8): Acquire matches the SeqCst writers.
                 if tele.shutdown.load(Ordering::Acquire) {
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
     };
 
-    // v0.25.1 (W3-1): track whether the forwarder timed out so we can
-    // return Err *after* teardown completes — otherwise the supervisor sees
-    // Ok(()) and the user-facing "everything is fine" path runs even though
-    // the TUN side froze and we triggered an internal reconnect.
-    let mut forwarder_dead = false;
-    // v0.26.21: death watcher detected all streams dead — surface as Err so
-    // the supervisor reconnects (analogous to `forwarder_dead`).
-    let mut all_streams_dead = false;
-    // v0.27.0 (B3): dispatcher (TUN→stream) ended mid-session — the TX path is
-    // gone. Since v0.27.1 the dispatcher's `try_send` never breaks on a stream,
-    // so this only fires when the TUN reader closes `tun_pkt_tx` (genuine uplink
-    // loss). Surface as Err so the supervisor reconnects instead of sitting
-    // "connected" with a wedged uplink. On a clean stop the shutdown/cancel arm
-    // wins first and the outer loop breaks on `explicit_shutdown` regardless.
-    let mut dispatcher_died = false;
-    // v0.27.0 (W10): track whether the periodic DPI-recycle timer fired so
-    // we can return a sentinel Err that the supervisor recognises as
-    // "intentional, reconnect immediately, don't bump the attempt counter".
-    let mut recycle_fired = false;
-
-    // Recycle trigger future. Pinned so the select! arm can be `&mut`-borrowed
-    // alongside the other arms. Three modes:
-    //   - both `dpi_recycle_secs` and `dpi_recycle_bytes` disabled → park on
-    //     `pending()` forever (zero overhead, future is never polled)
-    //   - `dpi_recycle_secs > 0` → fire at fixed wall-clock interval
+    // Recycle trigger future. Pinned so the select! arm can be `&mut`-borrowed.
+    //   - both disabled → park on `pending()` forever
+    //   - `dpi_recycle_secs > 0` → fire at fixed interval
     //   - `dpi_recycle_bytes > 0` → poll telemetry every 500 ms, fire when
     //     bytes_rx + bytes_tx crosses the threshold
-    //   - both set → whichever trips first wins (select_either-style race
-    //     baked into the closure with `tokio::select!{ ... }`)
+    //   - both set → whichever trips first wins
     let recycle_tele = telemetry.clone();
     let recycle_trigger = async move {
         let time_arm = async {
             match dpi_recycle_secs {
                 Some(s) if s > 0 => {
-                    tokio::time::sleep(std::time::Duration::from_secs(s as u64)).await;
+                    tokio::time::sleep(Duration::from_secs(s as u64)).await;
                     "time"
                 }
                 _ => std::future::pending::<&'static str>().await,
@@ -1099,7 +1008,7 @@ async fn drive_tunnel(
         let bytes_arm = async {
             match dpi_recycle_bytes {
                 Some(cap) if cap > 0 => loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                     let rx = recycle_tele.bytes_rx.load(Ordering::Relaxed);
                     let tx = recycle_tele.bytes_tx.load(Ordering::Relaxed);
                     if rx.saturating_add(tx) >= cap {
@@ -1116,7 +1025,8 @@ async fn drive_tunnel(
     };
     tokio::pin!(recycle_trigger);
 
-    tokio::select! {
+    // `None` = explicit stop; otherwise the cause handed back to the supervisor.
+    let exit_err: Option<anyhow::Error> = tokio::select! {
         _ = crate::wait_cancelled(&mut cancel) => {
             telemetry.disconnect_kind.store(KIND_USER_DISCONNECT, Ordering::Relaxed);
             tracing::info!(
@@ -1126,6 +1036,7 @@ async fn drive_tunnel(
                 "disconnect"
             );
             telemetry.shutdown.store(true, Ordering::SeqCst);
+            None
         }
         _ = shutdown_poll => {
             tracing::info!(
@@ -1134,10 +1045,9 @@ async fn drive_tunnel(
                 tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
                 "disconnect"
             );
+            None
         }
         _ = &mut forwarder_dead_rx => {
-            // v0.25.1 (W3-1): rx_forwarder timed out on TUN write — the
-            // packet-IO side is structurally hung. Force reconnect.
             telemetry.disconnect_kind.store(KIND_RX_FORWARDER_DEAD, Ordering::Relaxed);
             tracing::error!(
                 category = "tunnel",
@@ -1145,98 +1055,49 @@ async fn drive_tunnel(
                 tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
                 "RX forwarder timed out on TUN write — disconnecting"
             );
-            forwarder_dead = true;
+            Some(anyhow::anyhow!("rx_forwarder dead — TUN write blocked"))
         }
-        _ = &mut dead_watcher_rx => {
-            // v0.26.21: death watcher детектил streams_up==0.
-            // last_error выставлен watcher'ом; health придёт от derive_health
-            // через telem_task (single source of truth). Возвращаем Err чтобы
-            // supervisor вышел из drive_tunnel и запустил reconnect.
-            tracing::warn!(
-                category = "tunnel",
-                event = "death_watcher.teardown",
-                "drive_tunnel exiting — all streams dead"
-            );
-            all_streams_dead = true;
+        res = &mut dead_watcher_rx => {
+            tracing::warn!(category = "tunnel", event = "death_watcher.teardown", "drive_tunnel exiting");
+            Some(res.unwrap_or_else(|_| anyhow::anyhow!("death watcher gone")))
         }
-        res = &mut dispatcher => {
-            // v0.27.0 (B3): dispatcher task ended — the TUN reader closed
-            // `tun_pkt_tx` (try_send never breaks the dispatcher on a stream).
-            // The uplink is gone. Reconnect instead of zombie-ing.
-            let _ = res;
+        _ = &mut dispatcher => {
+            // The TUN reader closed: the uplink is gone. Reconnect instead of
+            // zombie-ing. On a clean stop the cancel/shutdown arm wins first.
             tracing::error!(
                 category = "tunnel",
                 reason = "dispatcher_ended",
                 tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
                 "TUN→stream dispatcher ended — TX path gone, disconnecting"
             );
-            dispatcher_died = true;
+            Some(anyhow::anyhow!("dispatcher ended — TX path gone"))
         }
         kind = &mut recycle_trigger => {
-            // v0.27.0 (W10/W11): periodic recycle fired. `kind` is "time"
-            // or "bytes" depending on which arm of the trigger won. The
-            // supervisor sees the sentinel Err and reconnects with
-            // attempt counter reset.
-            let cur_rx = telemetry.bytes_rx.load(Ordering::Relaxed);
-            let cur_tx = telemetry.bytes_tx.load(Ordering::Relaxed);
             tracing::warn!(
                 category = "tunnel",
                 reason = "recycle.deadline",
                 trigger = kind,
                 recycle_secs = dpi_recycle_secs.unwrap_or(0) as u64,
                 recycle_bytes_cap = dpi_recycle_bytes.unwrap_or(0),
-                bytes_rx = cur_rx,
-                bytes_tx = cur_tx,
+                bytes_rx = telemetry.bytes_rx.load(Ordering::Relaxed),
+                bytes_tx = telemetry.bytes_tx.load(Ordering::Relaxed),
                 tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
                 "DPI recycle — session refresh"
             );
-            recycle_fired = true;
+            // Sentinel prefix recognised by the supervisor: reconnect at once.
+            Some(anyhow::anyhow!("recycle requested — DPI session refresh"))
         }
-        _ = async {
-            for h in &mut tx_handles { let _ = h.await; }
-        } => {
-            let kind = telemetry.disconnect_kind.load(Ordering::Relaxed);
-            let failed_stream = telemetry.last_failed_stream.load(Ordering::Relaxed);
-            let bytes_rx_since_start = telemetry.bytes_rx.load(Ordering::Relaxed);
-            tracing::warn!(
-                category = "tunnel",
-                reason = "tx_drained",
-                err_kind = %disconnect_kind_label(kind),
-                failed_stream,
-                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
-                bytes_rx_since_start,
-                "disconnect"
-            );
-        }
-        _ = async {
-            for h in &mut rx_handles { let _ = h.await; }
-        } => {
-            let kind = telemetry.disconnect_kind.load(Ordering::Relaxed);
-            let failed_stream = telemetry.last_failed_stream.load(Ordering::Relaxed);
-            let bytes_rx_since_start = telemetry.bytes_rx.load(Ordering::Relaxed);
-            tracing::warn!(
-                category = "tunnel",
-                reason = "rx_drained",
-                err_kind = %disconnect_kind_label(kind),
-                failed_stream,
-                tls_state = %tls_state_label(telemetry.tls_state.load(Ordering::Relaxed)),
-                bytes_rx_since_start,
-                "disconnect"
-            );
-        }
-    }
+    };
 
     telemetry.tls_state.store(TLS_CLOSING, Ordering::Relaxed);
     tracing::debug!(
         category = "tunnel",
         tls_state = %tls_state_label(TLS_CLOSING),
+        tx_dropped = telemetry.tx_dropped.load(Ordering::Relaxed),
         "teardown.start"
     );
 
-    for h in tx_handles {
-        h.abort();
-    }
-    for h in rx_handles {
+    for h in stream_tasks {
         h.abort();
     }
     telem_task.abort();
@@ -1244,44 +1105,14 @@ async fn drive_tunnel(
     dispatcher.abort();
     rx_forwarder.abort();
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     telemetry.tls_state.store(TLS_CLOSED, Ordering::Relaxed);
-    tracing::debug!(
-        category = "tunnel",
-        tls_state = %tls_state_label(TLS_CLOSED),
-        "teardown.complete"
-    );
+    tracing::debug!(category = "tunnel", tls_state = %tls_state_label(TLS_CLOSED), "teardown.complete");
 
-    if forwarder_dead {
-        // Surface as error so the supervisor classifies this as a drop and
-        // triggers reconnect (`should_reconnect` uses the error string for
-        // category — "rx_forwarder dead" doesn't match any specific
-        // pattern, so it falls into `Other` which uses the standard
-        // backoff table).
-        return Err(anyhow::anyhow!("rx_forwarder dead — TUN write blocked"));
+    match exit_err {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
-    if all_streams_dead {
-        // v0.26.21: death watcher signalled — all streams dead ≥ 3 s.
-        // Surface as error so the supervisor classifies this as a drop and
-        // triggers reconnect.
-        return Err(anyhow::anyhow!("all streams dead"));
-    }
-    if dispatcher_died {
-        // v0.27.0 (B3): TUN→stream dispatcher ended → reconnect. Classified as
-        // `Other` by should_reconnect (standard backoff table). On user stop the
-        // outer loop already broke on `explicit_shutdown`, so this only fires for
-        // genuine mid-session uplink loss.
-        return Err(anyhow::anyhow!("dispatcher ended — TX path gone"));
-    }
-    if recycle_fired {
-        // v0.27.0 (W10): sentinel — the supervisor recognises this exact
-        // prefix and treats it as "intentional recycle, reconnect now,
-        // don't increment attempt counter, no backoff". Any other Err
-        // string would route through should_reconnect's exponential
-        // backoff table.
-        return Err(anyhow::anyhow!("recycle requested — DPI session refresh"));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1322,9 +1153,7 @@ mod death_watcher_tests {
     }
 
     /// v0.27.1 (DPI fix): PARTIAL death (one stream down, others alive) must NOT
-    /// tear down — the dead stream's flow just drops (dispatcher try_send), like
-    /// v0.22.4. Tearing down all N on a single drop caused the DPI-detected
-    /// reconnect-burst churn.
+    /// tear down — the dead stream is reopened on its own.
     #[tokio::test]
     async fn partial_death_does_not_tear_down() {
         let alive: Vec<Arc<AtomicBool>> =

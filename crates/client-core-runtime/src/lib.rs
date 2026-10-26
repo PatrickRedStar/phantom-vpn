@@ -63,41 +63,43 @@ pub type ProtectSocket = Arc<dyn Fn(RawFd) -> bool + Send + Sync>;
 
 // ── Public constants ─────────────────────────────────────────────────────────
 
-/// Default reconnect backoff schedule in seconds. Index = attempt-1 (after
-/// the first drop). Tuned for "shaky network" conditions (mobile + TSPU):
-/// fast initial recovery (1, 2, 5 s) so brief DPI shakes don't manifest as
-/// long stalls, then back off to a 30 s ceiling. Step 5 (error categorisation)
-/// supplies a category-specific override that may bypass this table entirely.
-pub const BACKOFF_SECS: &[u32] = &[1, 2, 5, 10, 20, 30, 30, 30];
+/// Reconnect backoff in seconds, indexed by consecutive failed attempts
+/// (0-based). Fast initial recovery (1, 2, 5 s) so brief DPI shakes don't
+/// become long stalls, then a 30 s ceiling — forever: with `auto_reconnect`
+/// the runtime never gives up on network errors. The table is a floor under
+/// the per-category delay (`reconnect_delay_secs`), so a fast category can't
+/// turn a persistent failure into a reconnect storm. The counter resets after
+/// a session that stayed up 30 s.
+pub const BACKOFF_SECS: &[u32] = &[1, 2, 5, 10, 20, 30];
 
-/// Maximum number of reconnect attempts before transitioning to Error.
-pub const MAX_ATTEMPTS: u32 = 8;
+/// RX idle timeout in seconds — the dead-stream detector. When a stream goes
+/// this long without any inbound frame (data OR heartbeat), its read loop
+/// returns an error and the stream is reopened.
+///
+/// MUST stay well above `HEARTBEAT_INTERVAL_MAX_SECS` (60 s — the server's
+/// maximum heartbeat gap, see `phantom_core::wire`) plus RTT and scheduling
+/// slack: at zero margin a heartbeat landing a hair late killed perfectly live
+/// but quiet streams (2026-06-13 TSPU incident, "streams dying one-by-one").
+/// 90 s = 60 s heartbeat max + 30 s slack.
+pub const RX_IDLE_TIMEOUT_SECS: u32 = 90;
 
-/// RX idle timeout in seconds. When a tunnel stream goes this long without
-/// any inbound bytes (data frame OR heartbeat), the read loop returns an
-/// error and the supervisor triggers a reconnect.
-///
-/// MUST stay strictly greater than `HEARTBEAT_INTERVAL_MAX_SECS` (45 s — the
-/// server's maximum heartbeat gap, see `phantom_core::wire`) plus RTT and
-/// scheduling slack. At 45 s it *equalled* the heartbeat max, leaving zero
-/// margin: a heartbeat landing near the top of its [15, 45] s window could
-/// arrive a hair late and trip a false "rx idle timeout" kill of a perfectly
-/// live but quiet stream — observed in the 2026-06-13 TSPU incident as streams
-/// dying one-by-one on an otherwise healthy idle tunnel. 75 s = 45 s heartbeat
-/// max + ~30 s of slack for RTT and scheduling jitter; a genuinely dead stream
-/// is still reaped long before a half-open TCP socket can zombie for minutes
-/// under TSPU silent-drop.
-///
-/// Used by `tls_rx_loop` in `client_common` when invoked from runtime.
-pub const RX_IDLE_TIMEOUT_SECS: u32 = 75;
+/// Per-stream uplink queue and packet queue (TUN <-> runtime) capacities. The
+/// iOS Network Extension is killed above ~50 MB, so its queues are shallower;
+/// the stream count is not touched.
+#[cfg(target_os = "ios")]
+pub(crate) const STREAM_TX_QUEUE: usize = 256;
+#[cfg(not(target_os = "ios"))]
+pub(crate) const STREAM_TX_QUEUE: usize = 2048;
+#[cfg(target_os = "ios")]
+pub(crate) const PACKET_QUEUE: usize = 1024;
+#[cfg(not(target_os = "ios"))]
+pub(crate) const PACKET_QUEUE: usize = 4096;
 
 /// Если ВСЕ стримы мертвы (alive == 0) на этот срок — teardown + reconnect.
 /// v0.27.1: death-watcher реагирует ТОЛЬКО на alive==0 (B2 degraded-teardown
 /// откатан — он генерировал synchronized N-stream reconnect-burst'ы, которые
 /// carrier-DPI палит как VPN; см. pcap A/B vs v0.22.4). Единичный мёртвый стрим
-/// НЕ рвёт сессию — его флоу просто дропается (dispatcher try_send
-/// drop-and-continue), как в v0.22.4. 3s — grace против короткого окна между
-/// kill старого и spawn нового стрима при реконнекте.
+/// НЕ рвёт сессию — его задача переоткрывает только его, со случайной паузой.
 pub const ALL_STREAMS_DEAD_TIMEOUT_SECS: u32 = 3;
 
 /// Coarse classification of a tunnel drop, used to pick the right reconnect
@@ -111,8 +113,7 @@ pub enum TunnelErrorCategory {
     HardReset,
     /// `tls_rx_loop` fired `rx.idle_timeout` — silent half-open. Fast retry.
     IdleTimeout,
-    /// `ENETUNREACH` / `EHOSTUNREACH` / no usable network at all. Long wait
-    /// (we'll be woken by Android `NetworkCallback` anyway).
+    /// `ENETUNREACH` / `EHOSTUNREACH` / no usable network at all.
     NetworkUnreachable,
     /// TLS alert / handshake failure. Server may be under load — short wait.
     TlsAlert,
@@ -135,9 +136,10 @@ impl TunnelErrorCategory {
     }
 }
 
-/// Best-effort error classifier. Walks the error string (already flattened
-/// by `format!("{:#}", err)`) for known substrings. Order matters: more
-/// specific first.
+/// Best-effort error classifier. Walks the error string — pass the whole
+/// chain, `format!("{:#}", err)`; the top line alone is usually just "stream N
+/// handshake failed" — for known substrings. Order matters: more specific
+/// first.
 pub fn classify_tunnel_error(err_str: &str) -> TunnelErrorCategory {
     let s = err_str.to_ascii_lowercase();
     if s.contains("rx idle timeout") || s.contains("rx body timeout") {
@@ -146,6 +148,8 @@ pub fn classify_tunnel_error(err_str: &str) -> TunnelErrorCategory {
         || s.contains("broken pipe")
         || s.contains("connection aborted")
         || s.contains("unexpected eof")
+        || s.contains("early eof")
+        || s.contains("woke from sleep")
     {
         TunnelErrorCategory::HardReset
     } else if s.contains("network is unreachable")
@@ -164,20 +168,55 @@ pub fn classify_tunnel_error(err_str: &str) -> TunnelErrorCategory {
 }
 
 /// Compute reconnect delay seconds for a given error category + attempt
-/// number. Per-category overrides keep recovery fast on TSPU shakes; the
-/// catch-all branch falls back to the standard exponential schedule.
+/// number (consecutive failures, 0-based). The category sets how fast the
+/// first retry is (ADR 0009: 1–2 s after a reset or a silent stream); the
+/// `BACKOFF_SECS` table is the floor that grows to 30 s on repeated failure.
 pub fn reconnect_delay_secs(cat: TunnelErrorCategory, attempt: u32) -> u32 {
-    match cat {
+    let first = match cat {
         TunnelErrorCategory::HardReset => 1,
         TunnelErrorCategory::IdleTimeout => 2,
         TunnelErrorCategory::DnsFailed => 3,
         TunnelErrorCategory::TlsAlert => 5,
-        // No active network — wait long; the `NetworkCallback` wake will
-        // cut sleep short via `cancel.notified()`.
-        TunnelErrorCategory::NetworkUnreachable => 60,
-        TunnelErrorCategory::Other => {
-            BACKOFF_SECS.get(attempt as usize).copied().unwrap_or(30)
-        }
+        // No network: nothing tells the runtime it is back, so poll often.
+        TunnelErrorCategory::NetworkUnreachable => 5,
+        TunnelErrorCategory::Other => 1,
+    };
+    let floor = BACKOFF_SECS[(attempt as usize).min(BACKOFF_SECS.len() - 1)];
+    first.max(floor)
+}
+
+/// Errors no retry can fix — the user has to act. Returns the human-readable
+/// reason for `StatusFrame.last_error` (state `Error`); `None` = transient,
+/// keep reconnecting. Pass the whole chain, `format!("{:#}", err)`.
+///
+/// A server rejecting our certificate answers with a TLS alert; under TLS 1.3
+/// it arrives on the first read after the handshake, so stream errors are
+/// checked too, not only the connect result.
+pub fn fatal_reason(err_chain: &str) -> Option<&'static str> {
+    let s = err_chain.to_ascii_lowercase();
+    // rustls prints alerts as "received fatal alert: CertificateRevoked".
+    if s.contains("certificaterevoked") || s.contains("accessdenied") || s.contains("certificate revoked") {
+        Some("Доступ отозван")
+    } else if s.contains("certificateexpired") {
+        Some("Срок действия доступа истёк")
+    } else if s.contains("certificate expired")
+        || s.contains("certificate not valid yet")
+        || s.contains("certificate: expired")
+        || s.contains("certificate: notvalidyet")
+        || s.contains("certificate has expired")
+        || s.contains("certificate is not yet valid")
+    {
+        Some("Сертификат сервера недействителен на текущую дату — проверьте дату и время на устройстве")
+    } else if s.contains("invalid peer certificate") || s.contains("certificate verify failed") {
+        Some("Сертификат сервера не прошёл проверку")
+    } else if s.contains("badcertificate")
+        || s.contains("unknownca")
+        || s.contains("certificateunknown")
+        || s.contains("unsupportedcertificate")
+    {
+        Some("Сервер отклонил сертификат клиента")
+    } else {
+        None
     }
 }
 
@@ -196,9 +235,8 @@ pub struct RuntimeHandles {
     /// stores the latest value so a late observer still sees the signal.
     pub cancel: watch::Sender<bool>,
     /// For `TunIo::Callback` only: push inbound packets (from
-    /// `NEPacketTunnelFlow` / Android `VpnService`) into the tunnel here.
-    /// The channel is bounded (4096) — callers should `try_send` and drop
-    /// on overflow.
+    /// `NEPacketTunnelFlow`) into the tunnel here. The channel is bounded
+    /// (`PACKET_QUEUE`) — callers should `try_send` and drop on overflow.
     pub inbound_tx: tokio::sync::mpsc::Sender<Bytes>,
 }
 
@@ -232,8 +270,8 @@ pub async fn wait_cancelled(cancel: &mut watch::Receiver<bool>) {
 ///   this function will install it for you).
 /// * Spawns the supervisor task and returns `(RuntimeHandles, JoinHandle)`.
 ///
-/// The `JoinHandle` resolves when the supervisor exits (either after explicit
-/// cancel or after exhausting all reconnect attempts).
+/// The `JoinHandle` resolves when the supervisor exits: after an explicit
+/// cancel, a fatal error, or a drop with `auto_reconnect` off.
 pub async fn run(
     cfg: ConnectProfile,
     tun: TunIo,
@@ -248,300 +286,42 @@ pub async fn run(
     // Register the caller's log sink.
     logsink::add_sender(log_tx);
 
-    // Build TUN factory: called once per reconnect attempt.
-    // For Callback mode we also build an inbound mpsc channel.
-    // fd to close when supervisor exits (BlockingThreads only).
-    let mut tun_fd_to_close: Option<RawFd> = None;
-
+    // TUN I/O is set up ONCE per run() for every variant and bridged to each
+    // reconnect attempt by `per_attempt_factory`. A fresh reader per attempt
+    // left the previous one blocked on the same fd: each packet woke only one
+    // of them, so packets were sprayed across the live and the dead channel
+    // (CRIT-2, v0.25.2 — and the same bug in the io_uring path).
+    let mut blocking_threads: Option<BlockingTun> = None;
     let (tun_factory, inbound_tx): (supervise::TunFactory, tokio::sync::mpsc::Sender<Bytes>) =
         match tun {
             #[cfg(target_os = "linux")]
             TunIo::Uring(fd) => {
                 // io_uring-based TUN — Linux helper / CLI.
-                let factory: supervise::TunFactory = Arc::new(move || {
-                    phantom_core::tun_uring::spawn(fd, 4096)
-                });
+                let (read_rx, write_tx) = phantom_core::tun_uring::spawn(fd, PACKET_QUEUE)?;
                 let (dummy_tx, _) = tokio::sync::mpsc::channel::<Bytes>(1);
-                (factory, dummy_tx)
+                (per_attempt_factory(read_rx, write_tx), dummy_tx)
             }
             TunIo::BlockingThreads(fd) => {
-                // Inline blocking-thread TUN I/O — works on Android and Linux.
-                // We dup() the fd so it's owned independently of the JNI layer.
-                let raw_fd = unsafe { libc::dup(fd) };
-                anyhow::ensure!(raw_fd >= 0, "dup(tun_fd) failed: {}", std::io::Error::last_os_error());
-                // Clear O_NONBLOCK — Android's ParcelFileDescriptor sets it,
-                // but our reader thread needs blocking reads.
-                unsafe {
-                    let flags = libc::fcntl(raw_fd, libc::F_GETFL);
-                    if flags >= 0 {
-                        libc::fcntl(raw_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
-                    }
-                }
-                tun_fd_to_close = Some(raw_fd);
-                tracing::info!(category = "tun", name = "blocking", mtu = 0, addr = "", tun_fd = raw_fd, "created");
-                // Fresh tunnel, fresh observations — never show the previous
-                // session's resolver next to a new tunnel.
-                phantom_core::dns_observer::reset();
-
-                // ── Persistent reader/writer threads (CRIT-2, v0.25.2) ──────
-                //
-                // We spawn the two OS-blocking I/O threads ONCE per `run()`
-                // call and reuse their channels across every reconnect.
-                // The previous implementation spawned a fresh reader+writer
-                // pair inside the factory closure (called on every reconnect
-                // attempt), and the old threads stayed blocked on
-                // `libc::read(tun_fd)`. Two threads racing on the same TUN
-                // fd is a kernel-level data race: each packet wakes only
-                // one of them, so packets get sprayed across both the live
-                // and the dead channel — the dead one's send fails and
-                // drops the packet. Symptom: long stalls / "packet went to
-                // wrong stream" after a reconnect.
-                //
-                // The fix: one reader, one writer, persistent for the
-                // entire tunnel lifetime. Per-attempt isolation is provided
-                // by ephemeral forwarder *tasks* (tokio, async) that bridge
-                // the persistent OS channels to attempt-local channels.
-                // Shutdown is driven by closing the dup'd fd (TUN read
-                // returns EBADF → reader exits) and dropping the persistent
-                // write_tx (writer drains then exits).
-                let (persist_read_tx, persist_read_rx) =
-                    tokio::sync::mpsc::channel::<Bytes>(4096);
-                let (persist_write_tx, mut persist_write_rx) =
-                    tokio::sync::mpsc::channel::<Bytes>(4096);
-
-                // FFI-H4 (v0.25.3): both blocking-thread spawns are now
-                // fallible — under PID / thread cap exhaustion (or a
-                // hardened sandbox), `Builder::spawn` returns
-                // `io::Error`. The previous `.expect(...)` paniced inside
-                // `client_core_runtime::run`, which on Apple maps to an
-                // abort because `panic = "abort"` is set workspace-wide.
-                // Propagating the error lets the FFI return a clean
-                // negative code so Swift can surface a real error UI.
-                let tun_fd_reader = raw_fd;
-                std::thread::Builder::new()
-                    .name("phantom-tun-rd".into())
-                    .spawn(move || {
-                        tracing::debug!(category = "tun", tun_fd = tun_fd_reader, "reader thread started (persistent)");
-                        let mut buf = vec![0u8; 4096];
-                        loop {
-                            let n = unsafe {
-                                libc::read(
-                                    tun_fd_reader,
-                                    buf.as_mut_ptr() as *mut libc::c_void,
-                                    buf.len(),
-                                )
-                            };
-                            if n <= 0 {
-                                let err = std::io::Error::last_os_error();
-                                // EBADF / closed fd is the expected shutdown
-                                // path (we close raw_fd when supervise exits);
-                                // EINTR can spuriously fire — retry.
-                                if err.raw_os_error() == Some(libc::EINTR) {
-                                    continue;
-                                }
-                                tracing::info!(
-                                    category = "tun",
-                                    tun_fd = tun_fd_reader,
-                                    n,
-                                    %err,
-                                    "reader thread exiting"
-                                );
-                                break;
-                            }
-                            // Note where DNS is actually going. Header-only, no
-                            // allocation — see dns_observer for why configuration
-                            // is not a trustworthy answer to that question.
-                            phantom_core::dns_observer::observe(&buf[..n as usize]);
-                            let pkt = Bytes::copy_from_slice(&buf[..n as usize]);
-                            if persist_read_tx.blocking_send(pkt).is_err() {
-                                tracing::debug!(category = "tun", tun_fd = tun_fd_reader, "reader: channel closed");
-                                break;
-                            }
-                        }
-                    })
-                    .map_err(|e| anyhow::anyhow!("spawn tun reader thread: {}", e))?;
-
-                // Writer thread: persistent. Same rationale as reader, plus
-                // the original blocking-on-tokio-worker concern (incident
-                // 2026-05-06) — keep on a dedicated OS thread, NEVER move
-                // to `tokio::spawn`. Partial-write loop + EINTR retry.
-                let tun_fd_writer = raw_fd;
-                std::thread::Builder::new()
-                    .name("phantom-tun-wr".into())
-                    .spawn(move || {
-                        tracing::debug!(category = "tun", tun_fd = tun_fd_writer, "writer thread started (persistent)");
-                        while let Some(pkt) = persist_write_rx.blocking_recv() {
-                            let mut written = 0usize;
-                            let len = pkt.len();
-                            while written < len {
-                                let n = unsafe {
-                                    libc::write(
-                                        tun_fd_writer,
-                                        pkt.as_ptr().add(written) as *const libc::c_void,
-                                        len - written,
-                                    )
-                                };
-                                if n > 0 {
-                                    written += n as usize;
-                                    continue;
-                                }
-                                let err = std::io::Error::last_os_error();
-                                if err.raw_os_error() == Some(libc::EINTR) {
-                                    continue;
-                                }
-                                tracing::error!(category = "tun", tun_fd = tun_fd_writer, n, %err, "write failed");
-                                // Don't `return` — keep draining `persist_write_rx`
-                                // so we don't deadlock the upstream forwarder. A
-                                // single failed write doesn't mean every future
-                                // write will fail; if the fd is genuinely dead
-                                // we'll hit EBADF on every iteration and the
-                                // channel will eventually close on shutdown.
-                                break;
-                            }
-                        }
-                        tracing::debug!(category = "tun", tun_fd = tun_fd_writer, "writer: channel closed");
-                    })
-                    .map_err(|e| anyhow::anyhow!("spawn tun writer thread: {}", e))?;
-
-                // Wrap the single persistent read receiver behind an async
-                // mutex so the per-attempt forwarder task can take exclusive
-                // access of it. Only one forwarder ever holds the lock at a
-                // time; on reconnect we abort the previous one (releasing
-                // its guard) before spawning the next.
-                let shared_read_rx = Arc::new(tokio::sync::Mutex::new(persist_read_rx));
-
-                // Track the previous attempt's forwarder handles so we can
-                // abort them on the next factory call. `parking_lot::Mutex`
-                // is fine — held only for a few microseconds inside the
-                // factory closure to swap handles.
-                let prev_handles: Arc<parking_lot::Mutex<Option<(
-                    tokio::task::JoinHandle<()>,
-                    tokio::task::JoinHandle<()>,
-                )>>> = Arc::new(parking_lot::Mutex::new(None));
-
-                let factory: supervise::TunFactory = Arc::new(move || {
-                    // Abort the previous attempt's forwarders (if any) BEFORE
-                    // spawning new ones. Without this, the previous inbound
-                    // forwarder would still be holding `shared_read_rx`'s
-                    // lock while suspended in `.recv().await`, and the new
-                    // forwarder would block on `.lock().await` until the next
-                    // TUN packet arrived (potentially forever on an idle
-                    // network) — defeating the whole reconnect.
-                    //
-                    // Aborting a tokio task that holds a `tokio::sync::Mutex`
-                    // guard releases the lock automatically (the guard is
-                    // dropped as part of the task's stack unwind).
-                    if let Some((in_h, out_h)) = prev_handles.lock().take() {
-                        in_h.abort();
-                        out_h.abort();
-                    }
-
-                    // Per-attempt ephemeral channels. The supervisor consumes
-                    // these for the duration of one `drive_tunnel()` run, and
-                    // they get dropped on attempt teardown. The persistent OS
-                    // threads above keep running across reconnects untouched.
-                    let (attempt_read_tx, attempt_read_rx) =
-                        tokio::sync::mpsc::channel::<Bytes>(4096);
-                    let (attempt_write_tx, mut attempt_write_rx) =
-                        tokio::sync::mpsc::channel::<Bytes>(4096);
-
-                    // Inbound forwarder: persist_read_rx → attempt_read_tx.
-                    // Holds the shared mutex for the entire attempt; aborted
-                    // explicitly by the next factory call.
-                    let shared_for_in = shared_read_rx.clone();
-                    let in_handle = tokio::spawn(async move {
-                        let mut guard = shared_for_in.lock().await;
-                        while let Some(pkt) = guard.recv().await {
-                            if attempt_read_tx.send(pkt).await.is_err() {
-                                // Supervisor's receiver dropped — attempt is
-                                // tearing down. The next factory call will
-                                // abort us if we don't exit ourselves first.
-                                break;
-                            }
-                        }
-                    });
-
-                    // Outbound forwarder: attempt_write_rx → persist_write_tx.
-                    // No shared lock needed — write_tx is cheap to clone and
-                    // every forwarder owns its own clone.
-                    let write_tx_for_out = persist_write_tx.clone();
-                    let out_handle = tokio::spawn(async move {
-                        while let Some(pkt) = attempt_write_rx.recv().await {
-                            if write_tx_for_out.send(pkt).await.is_err() {
-                                // Persistent writer thread exited (fd closed).
-                                break;
-                            }
-                        }
-                    });
-
-                    *prev_handles.lock() = Some((in_handle, out_handle));
-
-                    tracing::debug!(category = "tun", tun_fd = raw_fd, "factory: per-attempt forwarders spawned");
-                    Ok((attempt_read_rx, attempt_write_tx))
-                });
+                // Blocking-thread TUN I/O — Android (and Linux without io_uring).
+                let (read_rx, write_tx, threads) = BlockingTun::spawn(fd)?;
+                blocking_threads = Some(threads);
                 let (dummy_tx, _) = tokio::sync::mpsc::channel::<Bytes>(1);
-                (factory, dummy_tx)
+                (per_attempt_factory(read_rx, write_tx), dummy_tx)
             }
             TunIo::Callback(io) => {
-                // Callback mode — iOS NEPacketTunnelProvider.
-                // Inbound: caller pushes into inbound_tx; we expose it via RuntimeHandles.
-                // Outbound: packets from TLS are forwarded via io.submit_outbound_batch().
-                let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
-                let inbound_rx = Arc::new(tokio::sync::Mutex::new(inbound_rx));
-                let io = io.clone();
-
-                // FFI-C4 (v0.25.3): retain the previous attempt's forwarder
-                // handles so the next factory call aborts them BEFORE
-                // spawning new ones.
-                //
-                // Without this, the previous inbound forwarder was still
-                // parked on `inbound_rx.lock().await.recv()` and would only
-                // release the shared mutex when the next packet arrived. On
-                // an idle network — exactly when reconnect typically fires
-                // — that wait was unbounded. The new forwarder would block
-                // on `lock().await` until a TUN packet showed up, freezing
-                // the freshly-handshaked tunnel. Mirrors the pattern used
-                // for `BlockingThreads` above.
-                let prev_handles: Arc<parking_lot::Mutex<Option<(
-                    tokio::task::JoinHandle<()>,
-                    tokio::task::JoinHandle<()>,
-                )>>> = Arc::new(parking_lot::Mutex::new(None));
-
-                let factory: supervise::TunFactory = Arc::new(move || {
-                    if let Some((in_h, out_h)) = prev_handles.lock().take() {
-                        in_h.abort();
-                        out_h.abort();
+                // Callback mode — iOS / macOS NEPacketTunnelProvider. Inbound:
+                // the caller pushes into `inbound_tx` (RuntimeHandles).
+                // Outbound: one persistent task hands packets to the callback;
+                // it ends once the supervisor's senders are gone.
+                let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel::<Bytes>(PACKET_QUEUE);
+                let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Bytes>(PACKET_QUEUE);
+                tokio::spawn(async move {
+                    let mut batch = Vec::with_capacity(32);
+                    while write_rx.recv_many(&mut batch, 32).await > 0 {
+                        io.submit_outbound_batch(std::mem::take(&mut batch));
                     }
-
-                    let (write_tx, mut write_rx) =
-                        tokio::sync::mpsc::channel::<Bytes>(4096);
-                    let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Bytes>(4096);
-
-                    // Forward outbound packets to the callback.
-                    let io_clone = io.clone();
-                    let out_handle = tokio::spawn(async move {
-                        let mut batch = Vec::with_capacity(32);
-                        while write_rx.recv_many(&mut batch, 32).await > 0 {
-                            io_clone.submit_outbound_batch(std::mem::take(&mut batch));
-                        }
-                    });
-
-                    // Forward inbound packets from the caller's push channel into read_rx.
-                    let inbound_rx = inbound_rx.clone();
-                    let in_handle = tokio::spawn(async move {
-                        let mut rx = inbound_rx.lock().await;
-                        while let Some(pkt) = rx.recv().await {
-                            if read_tx.send(pkt).await.is_err() {
-                                break;
-                            }
-                        }
-                    });
-
-                    *prev_handles.lock() = Some((in_handle, out_handle));
-
-                    Ok((read_rx, write_tx))
                 });
-                (factory, inbound_tx)
+                (per_attempt_factory(inbound_rx, write_tx), inbound_tx)
             }
         };
 
@@ -569,12 +349,10 @@ pub async fn run(
         )
         .await;
         tracing::info!(category = "runtime", "shutdown.start");
-        // Close the dup'd TUN fd so Android can tear down the VPN interface.
-        // Without this, the dup'd fd keeps the TUN device alive even after
-        // VpnService closes its ParcelFileDescriptor.
-        if let Some(fd) = tun_fd_to_close {
-            tracing::info!(category = "tun", name = "blocking", tun_fd = fd, "torn_down");
-            unsafe { libc::close(fd); }
+        // The dup'd TUN fd must be closed before Android can tear the VPN
+        // interface down — and only after both threads stopped using it.
+        if let Some(threads) = blocking_threads {
+            threads.stop().await;
         }
         let duration_ms = shutdown_started_at.elapsed().as_millis() as u64;
         tracing::info!(category = "runtime", duration_ms, "shutdown.complete");
@@ -586,4 +364,263 @@ pub async fn run(
         inbound_tx,
     };
     Ok((handles, join))
+}
+
+/// Bridge persistent TUN I/O to per-attempt channels. Only the inbound side
+/// needs a forwarder — a receiver can't be shared between attempts — while
+/// outbound packets go straight into the persistent writer (no extra hop).
+fn per_attempt_factory(
+    read_rx: tokio::sync::mpsc::Receiver<Bytes>,
+    write_tx: tokio::sync::mpsc::Sender<Bytes>,
+) -> supervise::TunFactory {
+    let shared_read_rx = Arc::new(tokio::sync::Mutex::new(read_rx));
+    let prev: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    Arc::new(move || {
+        // Abort the previous attempt's forwarder BEFORE spawning a new one:
+        // parked in `.recv().await`, it holds the shared receiver's lock and
+        // would release it only on the next TUN packet — on an idle network,
+        // exactly when reconnects happen, that could be never (FFI-C4).
+        // Aborting releases the lock with the task.
+        if let Some(h) = prev.lock().take() {
+            h.abort();
+        }
+        let (attempt_read_tx, attempt_read_rx) = tokio::sync::mpsc::channel::<Bytes>(PACKET_QUEUE);
+        let shared = shared_read_rx.clone();
+        *prev.lock() = Some(tokio::spawn(async move {
+            let mut guard = shared.lock().await;
+            while let Some(pkt) = guard.recv().await {
+                if attempt_read_tx.send(pkt).await.is_err() {
+                    // Supervisor's receiver dropped — attempt is tearing down.
+                    break;
+                }
+            }
+        }));
+        Ok((attempt_read_rx, write_tx.clone()))
+    })
+}
+
+/// The two persistent OS threads behind `TunIo::BlockingThreads`.
+///
+/// Both share ownership of a dup of the caller's fd; it is closed when the
+/// last of them exits — never while one of them may still read or write it
+/// (a closed fd number can be reused by an unrelated open). The reader polls
+/// with a timeout so it notices `stop` without needing the fd closed under it.
+struct BlockingTun {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl BlockingTun {
+    fn spawn(
+        fd: RawFd,
+    ) -> anyhow::Result<(
+        tokio::sync::mpsc::Receiver<Bytes>,
+        tokio::sync::mpsc::Sender<Bytes>,
+        BlockingTun,
+    )> {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // dup() so the fd is owned independently of the JNI layer.
+        let raw_fd = unsafe { libc::dup(fd) };
+        anyhow::ensure!(raw_fd >= 0, "dup(tun_fd) failed: {}", std::io::Error::last_os_error());
+        // Clear O_NONBLOCK — Android's ParcelFileDescriptor sets it, but the
+        // threads use blocking reads/writes.
+        unsafe {
+            let flags = libc::fcntl(raw_fd, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(raw_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+            }
+        }
+        let tun_fd = Arc::new(unsafe { OwnedFd::from_raw_fd(raw_fd) });
+        tracing::info!(category = "tun", name = "blocking", mtu = 0, addr = "", tun_fd = raw_fd, "created");
+        // Fresh tunnel, fresh observations — never show the previous
+        // session's resolver next to a new tunnel.
+        phantom_core::dns_observer::reset();
+
+        let (read_tx, read_rx) = tokio::sync::mpsc::channel::<Bytes>(PACKET_QUEUE);
+        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Bytes>(PACKET_QUEUE);
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // FFI-H4 (v0.25.3): both spawns are fallible — under PID / thread cap
+        // exhaustion `Builder::spawn` returns `io::Error`; a panic here would
+        // abort the Apple/Android process (`panic = "abort"`).
+        let reader_fd = tun_fd.clone();
+        let reader_stop = stop.clone();
+        let reader = std::thread::Builder::new()
+            .name("phantom-tun-rd".into())
+            .spawn(move || {
+                let fd = reader_fd.as_raw_fd();
+                tracing::debug!(category = "tun", tun_fd = fd, "reader thread started (persistent)");
+                let mut buf = vec![0u8; 4096];
+                while !reader_stop.load(Ordering::Relaxed) {
+                    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                    let ready = unsafe { libc::poll(&mut pfd, 1, 500) };
+                    if ready == 0 {
+                        continue; // timeout — re-check `stop`
+                    }
+                    let n = if ready > 0 {
+                        unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) }
+                    } else {
+                        -1
+                    };
+                    if n <= 0 {
+                        let err = std::io::Error::last_os_error();
+                        if n < 0 && err.raw_os_error() == Some(libc::EINTR) {
+                            continue;
+                        }
+                        tracing::info!(category = "tun", tun_fd = fd, n, %err, "reader thread exiting");
+                        break;
+                    }
+                    let pkt = &buf[..n as usize];
+                    // Note where DNS is actually going. Header-only, no
+                    // allocation — see dns_observer for why configuration
+                    // is not a trustworthy answer to that question.
+                    phantom_core::dns_observer::observe(pkt);
+                    if read_tx.blocking_send(Bytes::copy_from_slice(pkt)).is_err() {
+                        tracing::debug!(category = "tun", tun_fd = fd, "reader: channel closed");
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("spawn tun reader thread: {}", e))?;
+
+        // Writer: dedicated OS thread, NEVER `tokio::spawn` (blocking-on-tokio-
+        // worker, incident 2026-05-06). Exits once every sender is dropped,
+        // i.e. after the supervisor. Partial-write loop + EINTR retry.
+        let writer_fd = tun_fd;
+        let writer = std::thread::Builder::new()
+            .name("phantom-tun-wr".into())
+            .spawn(move || {
+                let fd = writer_fd.as_raw_fd();
+                tracing::debug!(category = "tun", tun_fd = fd, "writer thread started (persistent)");
+                while let Some(pkt) = write_rx.blocking_recv() {
+                    let mut written = 0usize;
+                    while written < pkt.len() {
+                        let n = unsafe {
+                            libc::write(
+                                fd,
+                                pkt.as_ptr().add(written) as *const libc::c_void,
+                                pkt.len() - written,
+                            )
+                        };
+                        if n > 0 {
+                            written += n as usize;
+                            continue;
+                        }
+                        let err = std::io::Error::last_os_error();
+                        if err.raw_os_error() == Some(libc::EINTR) {
+                            continue;
+                        }
+                        // Keep draining — a single failed write doesn't mean
+                        // every future one will fail, and stopping would
+                        // back-pressure the forwarder.
+                        tracing::error!(category = "tun", tun_fd = fd, n, %err, "write failed");
+                        break;
+                    }
+                }
+                tracing::debug!(category = "tun", tun_fd = fd, "writer: channel closed");
+            });
+        let writer = match writer {
+            Ok(w) => w,
+            Err(e) => {
+                stop.store(true, Ordering::Relaxed);
+                anyhow::bail!("spawn tun writer thread: {}", e);
+            }
+        };
+
+        Ok((read_rx, write_tx, BlockingTun { stop, threads: vec![reader, writer] }))
+    }
+
+    /// Stop the reader (it re-checks `stop` at least every 500 ms) and wait for
+    /// both threads; the writer exits once the supervisor's senders are gone.
+    /// The fd is closed when the last thread drops it.
+    async fn stop(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let threads = self.threads;
+        let _ = tokio::task::spawn_blocking(move || {
+            for t in threads {
+                let _ = t.join();
+            }
+        })
+        .await;
+        tracing::info!(category = "tun", name = "blocking", "torn_down");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls::pki_types::UnixTime;
+    use rustls::{AlertDescription, CertificateError, Error as TlsError};
+    use std::time::Duration;
+
+    /// The chain as the supervisor sees it: our context on top, the rustls
+    /// error at the bottom (tokio-rustls wraps it in an io::Error).
+    fn chain(e: TlsError) -> String {
+        let io = std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+        format!("{:#}", anyhow::Error::new(io).context("stream 0 tls connect"))
+    }
+
+    #[test]
+    fn fatal_reasons_match_real_rustls_errors() {
+        let revoked = chain(TlsError::AlertReceived(AlertDescription::CertificateRevoked));
+        assert_eq!(fatal_reason(&revoked), Some("Доступ отозван"));
+        let denied = chain(TlsError::AlertReceived(AlertDescription::AccessDenied));
+        assert_eq!(fatal_reason(&denied), Some("Доступ отозван"));
+
+        let t = |s| UnixTime::since_unix_epoch(Duration::from_secs(s));
+        for e in [
+            CertificateError::Expired,
+            CertificateError::NotValidYet,
+            CertificateError::ExpiredContext { time: t(2_000), not_after: t(1_000) },
+            CertificateError::NotValidYetContext { time: t(1_000), not_before: t(2_000) },
+        ] {
+            let reason = fatal_reason(&chain(TlsError::InvalidCertificate(e))).unwrap();
+            assert!(reason.contains("дату и время"), "{reason}");
+        }
+        let unknown_issuer = TlsError::InvalidCertificate(CertificateError::UnknownIssuer);
+        assert!(fatal_reason(&chain(unknown_issuer)).is_some());
+        let bad_cert = TlsError::AlertReceived(AlertDescription::BadCertificate);
+        assert!(fatal_reason(&chain(bad_cert)).is_some());
+
+        // Network trouble is never fatal.
+        for transient in [
+            "stream 0 tcp connect: Connection refused (os error 61)",
+            "TLS read header: connection reset by peer",
+            "rx idle timeout: no data for 90s",
+            "DNS lookup timeout for relay.example:443",
+            "all streams dead (tcp_reset)",
+            "device woke from sleep",
+        ] {
+            assert_eq!(fatal_reason(transient), None, "{transient}");
+        }
+        let hs_failure = chain(TlsError::AlertReceived(AlertDescription::HandshakeFailure));
+        assert_eq!(fatal_reason(&hs_failure), None);
+    }
+
+    /// Fast first retry per category, growing to the 30 s ceiling, never
+    /// beyond — and there is no attempt after which it stops.
+    #[test]
+    fn reconnect_delay_escalates_to_30s_and_stays() {
+        use TunnelErrorCategory::*;
+        assert_eq!(reconnect_delay_secs(HardReset, 0), 1);
+        assert_eq!(reconnect_delay_secs(IdleTimeout, 0), 2);
+        assert_eq!(reconnect_delay_secs(NetworkUnreachable, 0), 5);
+        for cat in [HardReset, IdleTimeout, NetworkUnreachable, TlsAlert, DnsFailed, Other] {
+            let mut prev = 0;
+            for attempt in 0..1_000 {
+                let d = reconnect_delay_secs(cat, attempt);
+                assert!(d >= prev && d <= 30);
+                prev = d;
+            }
+            assert_eq!(prev, 30);
+        }
+        assert_eq!(classify_tunnel_error("x: device woke from sleep"), HardReset);
+        assert_eq!(
+            classify_tunnel_error("stream 3 handshake failed: TLS read header: early eof"),
+            HardReset
+        );
+    }
 }
