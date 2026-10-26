@@ -10,7 +10,8 @@
 #   tools/ship-android.sh                 # debug, no version bump
 #   tools/ship-android.sh --release       # signed release (needs keystore env)
 #   tools/ship-android.sh --bump          # auto-increment versionCode + patch
-#   tools/ship-android.sh --bump --tag    # also push tag and run CI
+#   tools/ship-android.sh --bump --tag    # also push tag and run CI (= Play production!):
+#                                         #   only from a clean tree, asks for device confirmation
 #   tools/ship-android.sh --ci-only       # skip local build, pull APK from latest tag
 #   tools/ship-android.sh --device <id>   # adb -s <id>; defaults to TARGET_DEVICE
 #
@@ -269,7 +270,21 @@ deploy_from_ci() {
     deploy_apk
 }
 
+# ── tag guard: в Play уходит то, что закоммичено, а не то, что на телефоне ──
+require_clean_tree() {
+    cd "$REPO_ROOT"
+    git diff --quiet HEAD || die "--tag: есть незакоммиченные правки — в Play уехала бы сборка без них. Закоммить или убери."
+}
+
+confirm_device_check() {
+    local ans
+    read -r -p "Проверил на устройстве? [y/N] " ans
+    [[ "$ans" == [yY] ]] || die "тег не поставлен; bump остался в $BUILD_GRADLE (откат: git checkout -- $BUILD_GRADLE)"
+}
+
 # ── main ─────────────────────────────────────────────────────────────────
+[[ "$PUSH_TAG" == "1" && "$CI_ONLY" != "1" ]] && require_clean_tree
+
 resolve_device
 
 if [[ "$BUMP" == "1" ]]; then bump_version; fi
@@ -283,13 +298,8 @@ fi
 # Local build path
 ensure_sdk || warn "no SDK auto-detected; relying on env"
 if ! ensure_ndk; then
-    warn "NDK not found locally — falling back to CI route"
-    warn "(install via sdkmanager 'ndk;26.3.11579264' or set ANDROID_NDK_HOME to build locally)"
-    if [[ "$PUSH_TAG" != "1" ]]; then
-        die "--bump --tag required for CI fallback"
-    fi
-    deploy_from_ci
-    exit 0
+    # Без NDK нечего проверить на устройстве до тега — молча уходить в CI нельзя.
+    die "NDK not found (install via sdkmanager 'ndk;26.3.11579264' or set ANDROID_NDK_HOME); for a CI-only build use --tag --ci-only explicitly"
 fi
 ensure_local_properties
 
@@ -298,6 +308,7 @@ build_apk
 deploy_apk
 
 if [[ "$PUSH_TAG" == "1" ]]; then
+    confirm_device_check
     say "pushing tag $NEW_TAG (for CI release)..."
     cd "$REPO_ROOT"
     git add "$BUILD_GRADLE"
