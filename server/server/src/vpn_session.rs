@@ -315,17 +315,25 @@ pub fn load_allow_list(path: &Path) -> anyhow::Result<AllowMap> {
     let val: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))?;
 
+    // A file of the wrong shape must not read as "nobody is allowed": that
+    // answers every client `certificate_revoked`, which clients treat as final.
+    // An error keeps the previous list on reload and refuses a start.
+    let clients = val.get("clients").and_then(|c| c.as_object())
+        .ok_or_else(|| anyhow::anyhow!("{}: no \"clients\" object", path.display()))?;
+    let fp_of = |info: &serde_json::Value| info.get("fingerprint").and_then(|f| f.as_str()).map(str::to_owned);
+    if !clients.is_empty() && clients.values().all(|info| fp_of(info).is_none()) {
+        anyhow::bail!("{}: no client has a \"fingerprint\" (legacy keyring format?)", path.display());
+    }
+
     let mut fps = AllowMap::new();
-    if let Some(clients) = val.get("clients").and_then(|c| c.as_object()) {
-        for (name, info) in clients {
-            if info.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true) {
-                if let Some(fp) = info.get("fingerprint").and_then(|f| f.as_str()) {
-                    let tun_ip = info.get("tun_addr").and_then(|t| t.as_str())
-                        .and_then(|t| t.split('/').next())
-                        .and_then(|t| t.parse().ok());
-                    fps.insert(fp.to_lowercase(), tun_ip);
-                    tracing::debug!("Allowed client: {} (fp={}…)", name, &fp[..8.min(fp.len())]);
-                }
+    for (name, info) in clients {
+        if info.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true) {
+            if let Some(fp) = fp_of(info) {
+                let tun_ip = info.get("tun_addr").and_then(|t| t.as_str())
+                    .and_then(|t| t.split('/').next())
+                    .and_then(|t| t.parse().ok());
+                tracing::debug!("Allowed client: {} (fp={}…)", name, &fp[..8.min(fp.len())]);
+                fps.insert(fp.to_lowercase(), tun_ip);
             }
         }
     }
@@ -770,6 +778,24 @@ mod allow_tests {
         set_allow_list(&list, AllowMap::from([("aa".to_string(), Some(ip))]));
         assert_eq!(client_access(&list, "aa"), Some(Some(ip)));
         assert_eq!(client_access(&list, "bb"), None);
+    }
+
+    #[test]
+    fn load_allow_list_rejects_wrong_shape() {
+        let path = std::env::temp_dir().join(format!("allow-{}.json", std::process::id()));
+        let load = |json: &str| {
+            std::fs::write(&path, json).unwrap();
+            load_allow_list(&path)
+        };
+        assert!(load(r#"{"clients": []}"#).is_err());
+        assert!(load(r#"{}"#).is_err());
+        assert!(load(r#"{"clients": {"a": {"client_public_key": "x"}}}"#).is_err());
+        assert!(load(r#"{"clients": {}}"#).unwrap().is_empty());
+        let m = load(r#"{"clients": {
+            "a": {"fingerprint": "AB", "tun_addr": "10.7.0.5/24"},
+            "b": {"fingerprint": "cd", "enabled": false}}}"#).unwrap();
+        assert_eq!(m, AllowMap::from([("ab".to_string(), Some(Ipv4Addr::new(10, 7, 0, 5)))]));
+        let _ = std::fs::remove_file(&path);
     }
 }
 
