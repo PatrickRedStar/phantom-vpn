@@ -275,4 +275,5 @@
     <string name="widget_tuning">Подключение</string>
     <string name="widget_reconnecting">Переподключение</string>
     <string name="widget_offline">Отключено</string>
+    <string name="qr_not_conn_string">Это не QR-код подключения GhostStream</string>
 </resources>

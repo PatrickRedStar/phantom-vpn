@@ -82,6 +82,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.ghoststream.vpn.BuildConfig
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.ui.theme.C
 import com.ghoststream.vpn.ui.theme.GsText
@@ -164,6 +165,16 @@ fun QrScannerScreen(
         mutableStateOf<LockState>(LockState.Scanning)
     }
 
+    // Only a ghs:// connection string locks the scanner. Anything else
+    // (a URL, Wi-Fi QR, clipboard junk) keeps scanning with a hint.
+    var rejected by remember { mutableStateOf(false) }
+    val onDetected: (String) -> Unit = { value ->
+        if (lockState is LockState.Scanning) {
+            if (isConnString(value)) lockState = LockState.Detected(value.trim())
+            else rejected = true
+        }
+    }
+
     // Single-shot lock arming: fire haptic, then schedule onResult after
     // the full lock-on choreography (LOCK_TOTAL_MS).
     LaunchedEffect(lockState) {
@@ -220,13 +231,7 @@ fun QrScannerScreen(
                         .height(previewHeight)
                         .align(Alignment.Center),
                 ) {
-                    CameraPreviewView(
-                        onBarcodeDetected = { value ->
-                            if (lockState is LockState.Scanning) {
-                                lockState = LockState.Detected(value)
-                            }
-                        },
-                    )
+                    CameraPreviewView(onBarcodeDetected = onDetected)
                 }
                 // Side letterbox dim wash. Only draws when there's actual
                 // letterbox to fill — on Medium portrait (sw≥600, w<840)
@@ -250,17 +255,10 @@ fun QrScannerScreen(
                     )
                 }
             } else {
-                CameraPreviewView(
-                    onBarcodeDetected = { value ->
-                        // Latch on the first detection. The CameraX analyzer
-                        // keeps running but lockState=Detected suppresses
-                        // further onResult calls and starts the dismissal
-                        // timer above.
-                        if (lockState is LockState.Scanning) {
-                            lockState = LockState.Detected(value)
-                        }
-                    },
-                )
+                // Latch on the first ghs:// detection. The CameraX analyzer
+                // keeps running but lockState=Detected suppresses further
+                // onResult calls and starts the dismissal timer above.
+                CameraPreviewView(onBarcodeDetected = onDetected)
             }
         } else {
             Column(
@@ -442,9 +440,10 @@ fun QrScannerScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = stringResource(R.string.qr_hint_sub).uppercase(),
+                    text = stringResource(if (rejected) R.string.qr_not_conn_string else R.string.qr_hint_sub)
+                        .uppercase(),
                     style = GsText.labelMono,
-                    color = C.textFaint.copy(alpha = hintAlpha),
+                    color = (if (rejected) C.danger else C.textFaint).copy(alpha = hintAlpha),
                 )
             }
         }
@@ -465,13 +464,7 @@ fun QrScannerScreen(
                         .fillMaxWidth()
                         .let { if (isWide) it.widthIn(max = 480.dp) else it }
                         .background(C.bg.copy(alpha = 0.75f * hintAlpha))
-                        .clickable {
-                            clipboard.getText()?.text?.let { value ->
-                                if (lockState is LockState.Scanning) {
-                                    lockState = LockState.Detected(value)
-                                }
-                            }
-                        },
+                        .clickable { clipboard.getText()?.text?.let(onDetected) },
                 ) {
                     Row(
                         modifier = Modifier
@@ -558,6 +551,8 @@ fun QrScannerScreen(
     }
 }
 
+private fun isConnString(value: String): Boolean = value.trim().startsWith("ghs://")
+
 /**
  * Compact identity readout shown above the dismissal progress bar after
  * lock-on. Pulls the profile name from a `ghs://` conn-string when
@@ -634,9 +629,9 @@ private fun rememberProfileName(rawValue: String): String = remember(rawValue) {
         if (!nameKey.isNullOrBlank()) {
             return@runCatching java.net.URLDecoder.decode(nameKey, "UTF-8")
         }
-        // Fallback: host segment.
-        val host = Regex("ghs://([^/?#]+)").find(rawValue)?.groupValues?.getOrNull(1)
-        host?.takeIf { it.isNotBlank() } ?: "PROFILE"
+        // Fallback: host:port after the userinfo (which is the key blob —
+        // never put that on screen).
+        rawValue.substringAfter('@', "").substringBefore('?').takeIf { it.isNotBlank() } ?: "PROFILE"
     }.getOrDefault("PROFILE")
 }
 
@@ -783,7 +778,7 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
                     // Log frame metadata once every 30 frames (~1s at 30fps)
                     // so we can verify resolution / rotation in logcat
                     // without spamming the log.
-                    if (frameNum % 30L == 1L) {
+                    if (BuildConfig.DEBUG && frameNum % 30L == 1L) {
                         Log.d(
                             "QrScanner",
                             "frame=$frameNum size=${mediaImage.width}x${mediaImage.height}" +
@@ -804,7 +799,9 @@ private fun CameraPreviewView(onBarcodeDetected: (String) -> Unit) {
                             }
                             if (!detected.value) {
                                 barcodes.firstOrNull()?.rawValue?.let { value ->
-                                    detected.value = true
+                                    // Latch only on a connection string; other
+                                    // QRs just raise the "not ours" hint.
+                                    if (isConnString(value)) detected.value = true
                                     currentOnDetected(value)
                                 }
                             }

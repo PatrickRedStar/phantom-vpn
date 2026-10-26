@@ -651,6 +651,8 @@ private fun ConnStringDialog(connString: String, onDismiss: () -> Unit) {
     GhostDialog(
         onDismissRequest = onDismiss,
         title = stringResource(R.string.admin_conn_title),
+        // The string and its QR carry the client's private key.
+        secure = true,
         content = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -672,7 +674,13 @@ private fun ConnStringDialog(connString: String, onDismiss: () -> Unit) {
                 stringResource(R.string.admin_action_copy),
                 onClick = {
                     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("conn_string", connString))
+                    val clip = ClipData.newPlainText("conn_string", connString)
+                    // Private key inside: no clipboard preview / history
+                    // (ClipDescription.EXTRA_IS_SENSITIVE, honoured on 13+).
+                    clip.description.extras = android.os.PersistableBundle().apply {
+                        putBoolean("android.content.extra.IS_SENSITIVE", true)
+                    }
+                    cm.setPrimaryClip(clip)
                     onDismiss()
                 },
             )
