@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 status: accepted
 ---
 
@@ -89,7 +89,7 @@ pub async fn run(
   [../architecture/wire-format.md](../architecture/wire-format.md)).
 - **Одна FSM `supervise`** — BACKOFF=[3,6,12,24,48,60,60,60], 8 attempts,
   одинаковый exit policy (manual disconnect → не reconnect, crash →
-  reconnect).
+  reconnect). Backoff и лимит попыток заменены [ADR 0018](0018-rust-owns-reconnect.md).
 - **Push-based listener pattern** — Android через JNI
   `PhantomListener.onStatusFrame` / iOS через FFI callbacks. Нет poll
   loop'а в UI, нет polling overhead.

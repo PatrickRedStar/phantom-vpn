@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-02
+updated: 2026-10-26
 ---
 
 # GhostStream Knowledge Vault
@@ -17,12 +17,13 @@ updated: 2026-08-02
 | Трогаешь | Читай |
 |---|---|
 | `crates/core/src/wire.rs`, batch/frame/padding | [architecture/wire-format.md](architecture/wire-format.md) |
-| `crates/core/src/tls.rs`, mTLS, handshake, mimicry warmup | [architecture/handshake.md](architecture/handshake.md), [architecture/crypto.md](architecture/crypto.md) |
+| `crates/core/src/tls.rs`, mTLS, handshake, отказ в доступе | [architecture/handshake.md](architecture/handshake.md), [architecture/crypto.md](architecture/crypto.md) |
 | DPI/ТСПУ, обход детекта, ClientHello fingerprint, SNI, relay-камуфляж | [architecture/dpi-tspu.md](architecture/dpi-tspu.md) |
 | `server/server/src/vpn_session.rs`, SessionCoordinator, attach/detach | [architecture/sessions.md](architecture/sessions.md) |
 | `server/server/src/main.rs`, TLS accept, nginx passthrough | [architecture/transport.md](architecture/transport.md), [platforms/server.md](platforms/server.md) |
 | `server/relay/` или RU-хоп (`balancer.bikini-bottom.com`) | [platforms/server.md](platforms/server.md) (секция "Relay SNI passthrough") |
 | `crates/client-common/`, `client-core-runtime/` | [architecture/transport.md](architecture/transport.md) |
+| Переподключение, Stale/Degraded, фатальные ошибки, kill switch | [decisions/0018-rust-owns-reconnect.md](decisions/0018-rust-owns-reconnect.md) |
 | `crates/client-android/` + `apps/android/` | [platforms/android.md](platforms/android.md) |
 | `crates/client-apple/` + `apps/ios/` | [platforms/ios.md](platforms/ios.md) |
 | `crates/client-apple/` + `apps/macos/` | [platforms/macos.md](platforms/macos.md) |
@@ -126,9 +127,10 @@ tags: [optional]        # для Obsidian search
 
 ## Status
 
-Vault заведён 2026-04-17, с тех пор наполняется по ходу работы. На 2026-08-02:
-17 ADR в `decisions/`, 6 постмортемов в `incidents/`, два bug-hunt отчёта в
-`audits/`, страницы по всем платформам кроме Windows (`platforms/windows.md`
+Vault заведён 2026-04-17, с тех пор наполняется по ходу работы. На 2026-10-26:
+ADR 0001–0019 в `decisions/`, 6 постмортемов в `incidents/`, три отчёта в
+`audits/` (последний — [полный аудит 2026-10-22](audits/2026-10-22-full-scan.md)
+со статусом исправлений), страницы по всем платформам (`platforms/windows.md`
 описывает клиент, код которого пока живёт на ветке `feature/windows-client`).
 
 Принцип прежний: страница появляется, когда есть содержание — не заранее.

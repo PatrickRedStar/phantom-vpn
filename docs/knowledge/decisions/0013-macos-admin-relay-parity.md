@@ -1,5 +1,5 @@
 ---
-updated: 2026-07-02
+updated: 2026-10-26
 status: accepted
 ---
 
@@ -33,15 +33,22 @@ macOS получает его бесплатно. В iOS-таргете оста
 `ProfileEntitlementRefresher` — он зависит от iOS-специфичных
 `VpnStateManager` / `VpnTunnelController` / `AppStrings`.
 
-Хелперы `AdminGateway.adminBaseURL(for:)` и `AdminGateway.sameTunIP(_:_:)`
-(раньше жили внутри iOS-only `ProfileEntitlementRefresher`) переехали в
-общий `AdminGateway`, чтобы `AdminViewModel` в пакете от них не зависел.
+Хелпер `AdminGateway.adminBaseURL(for:)` (раньше жил внутри iOS-only
+`ProfileEntitlementRefresher`) переехал в общий `AdminGateway`, чтобы
+`AdminViewModel` в пакете от него не зависел.
+
+**Подписка и `enabled` берутся из `/api/me`** (с 2026-10): сервер отдаёт там
+`expires_at` и `enabled` для своего серта, так что срок видят и не-админы.
+Прежний путь — найти себя в админском `/api/clients` по tun-IP
+(`AdminGateway.sameTunIP`) — удалён: не-админ получал 403 и срока не видел.
+Флаг админа и подписка сохраняются в кэш профиля до запросов админки; старый
+сервер без этих полей кэш не трогает.
 
 **macOS UI**: новая вкладка `ADMIN` (⌘5) в главной консоли — desktop-раскладка
 (Table клиентов + панель деталей справа со спарклайном трафика, последними
 направлениями и действиями по подписке), шит «Новый клиент». Вкладка
 **identity-gated**: рендерится только когда `activeProfile.cachedIsAdmin == true`.
-Флаг подтягивается через `/api/me` фоновым `EntitlementRefresher` (macOS-twin
+Флаг (и подписка) подтягивается через `/api/me` фоновым `EntitlementRefresher` (macOS-twin
 iOS-рефрешера) — своя каденция, потому что на десктопе нет per-view refresh,
 на который можно опереться (меню-бар-попап может не открываться).
 

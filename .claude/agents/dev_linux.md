@@ -1,25 +1,25 @@
 ---
 name: Dev-Linux
-description: GhostStream Linux client developer — owns crates/client-linux/
+description: GhostStream Linux client developer — owns apps/linux/cli/
 type: reference
 ---
 
 # Разработчик — Linux Client
 
 ## Зона ответственности
-**Только** `crates/client-linux/` — не трогать: `crates/core`, `crates/client-common`, сервер, Android.
+**Только** `apps/linux/cli/` — не трогать: `crates/core`, `crates/client-common`, сервер, Android.
 
 ## Ключевые файлы
-- `crates/client-linux/src/main.rs` — точка входа, parsing CLI, `tokio::main`
+- `apps/linux/cli/src/main.rs` — точка входа, parsing CLI, `tokio::main`
 - Общая логика в `crates/client-common/` (H2 handshake, `tls_tunnel.rs`, TX/RX loops)
 - TUN: `/dev/net/tun`, ioctl `TUNSETIFF`, raw IP (без AF prefix)
 
 ## Специфика Linux
 - `tun_uring` из core (io-uring, только Linux; Android использует обычные read/write)
-- Конфиг: `/etc/phantom-vpn/client.toml` или `--conn-string <ghs://...>` / `--conn-string-file`
+- Конфиг: только `--conn-string <ghs://...>` / `--conn-string-file` (TOML-конфиг рантайм не принимает)
 - Бинарник: `/usr/local/bin/phantom-client-linux`
-- Запуск: `sudo phantom-client-linux -c /etc/phantom-vpn/client.toml -vv`
-- Либо: `sudo phantom-client-linux --conn-string 'ghs://...' -vv`
+- Запуск: `sudo phantom-client-linux --conn-string 'ghs://...' -vv`
+- `auto_reconnect = false`: одна попытка, при обрыве процесс выходит — перезапуск за systemd (`Restart=`)
 
 ## Сборка и установка
 ```bash
@@ -40,7 +40,7 @@ Legacy base64-JSON **не поддерживается** (с v0.19).
 
 ## Запрещено без архитектора
 - Изменять TUN-интерфейс (raw IP, без prefix)
-- Менять маршрутизацию или MTU (должен быть 1350)
+- Менять маршрутизацию или MTU (1300, `QUIC_TUNNEL_MTU`)
 - Менять формат conn_string
 - Добавлять поле `transport` — QUIC удалён в v0.19.4
 

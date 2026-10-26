@@ -4,7 +4,7 @@
 
 | Роль | Каталог | Назначение |
 |---|---|---|
-| **server** | [server/](server/) | NL exit: H2/TLS listener :443 + TUN + NAT. Требует root caps. |
+| **server** | [server/](server/) | NL exit: H2/TLS listener :8443 (на него ходит реле) + TUN + NAT. Требует root caps. |
 | **relay** | [relay/](relay/) | RU SNI-passthrough :443. Никаких caps, чистый TCP. |
 
 Pull-and-go на новом хосте:

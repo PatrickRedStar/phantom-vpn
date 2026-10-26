@@ -16,12 +16,12 @@ type: reference
 | Architect | agents/architect.md | cross-crate API, wire format, JNI контракт (только чтение) |
 | Secretary | agents/secretary.md | memory, tasks, CHANGELOG |
 | Validator | agents/validator.md | cargo check, JNI сигнатуры, сборка |
-| Dev-Server | agents/dev_server.md | crates/server/ |
-| Dev-Linux | agents/dev_linux.md | crates/client-linux/ (CLI) |
-| Dev-Linux-GUI | agents/dev_linux_gui.md | apps/linux-gui/ (Slint/GTK4) |
-| Dev-Android | agents/dev_android.md | android/ + crates/client-android/ |
-| Dev-macOS-GUI | agents/dev_macos_gui.md | apps/macos/ + crates/client-macos/ (SwiftUI + NEPacketTunnelProvider) |
-| Dev-Windows-GUI | agents/dev_windows_gui.md | apps/windows/ + crates/client-windows/ (Slint/WinUI3 + Wintun) |
+| Dev-Server | agents/dev_server.md | server/server/ + server/relay/ |
+| Dev-Linux | agents/dev_linux.md | apps/linux/cli/ (CLI) |
+| Dev-Linux-GUI | agents/dev_linux_gui.md | apps/linux/gui/ + apps/linux/helper/ (Slint) |
+| Dev-Android | agents/dev_android.md | apps/android/ + crates/client-android/ |
+| Dev-macOS-GUI | agents/dev_macos_gui.md | apps/macos/ + crates/client-apple/ (SwiftUI + NEPacketTunnelProvider) |
+| Dev-Windows-GUI | agents/dev_windows_gui.md | apps/windows/ + crates/client-windows-core/ (ветка feature/windows-client) |
 
 ## Как запускать параллельно
 
@@ -33,9 +33,9 @@ merge conflicts).
 
 Один tool-call с 4 параллельными блоками:
 ```
-Agent(subagent_type="Dev-Server",       prompt="...crates/server/...")
+Agent(subagent_type="Dev-Server",       prompt="...server/server/...")
 Agent(subagent_type="general-purpose",  prompt="...crates/core/ + client-common/...")
-Agent(subagent_type="Dev-Android",      prompt="...android/ + client-android/...")
+Agent(subagent_type="Dev-Android",      prompt="...apps/android/ + client-android/...")
 Agent(subagent_type="general-purpose",  prompt="...docs + config + scripts...")
 ```
 

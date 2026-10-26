@@ -1,5 +1,5 @@
 ---
-updated: 2026-08-02
+updated: 2026-10-26
 ---
 
 # Platforms — Index
@@ -10,7 +10,7 @@ updated: 2026-08-02
 | Страница | Покрывает | Крейт + приложение |
 |---|---|---|
 | [server.md](server.md) | phantom-server (NL exit) + phantom-relay (RU SNI passthrough) + nginx frontend, файловая раскладка `/opt/phantom-vpn/`, systemd, NAT/iptables, admin API reference | `server/server/`, `server/relay/` |
-| [android.md](android.md) | Compose UI + JNI + `VpnService` + watchdog FSM, JNI methods, theme palette, debug share, release process с таблицей versionCode | `crates/client-android/` + `apps/android/` |
+| [android.md](android.md) | Compose UI + JNI + `VpnService` + FSM (переподключение в Rust), JNI methods, theme palette, debug share, release process с таблицей versionCode | `crates/client-android/` + `apps/android/` |
 | [ios.md](ios.md) | SwiftUI host + `NEPacketTunnelProvider` + PhantomKit Swift package + Apple FFI, App Group shared storage, IPv6 killswitch | `crates/client-apple/` + `apps/ios/` |
 | [macos.md](macos.md) | SwiftUI host + system extension `NEPacketTunnelProvider` + shared PhantomKit/PhantomUI с iOS, MenuBar primary + Console secondary, Sparkle 2 auto-update, Direct distribution (DMG + Developer ID notarize) | `crates/client-apple/` + `apps/macos/` |
 | [linux.md](linux.md) | Три независимых приложения — CLI + GUI (Slint) + privileged helper, io_uring TUN с fallback на blocking, gui-ipc wire protocol | `apps/linux/cli/`, `apps/linux/gui/`, `apps/linux/helper/` |

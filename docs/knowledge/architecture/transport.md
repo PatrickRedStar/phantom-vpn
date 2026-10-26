@@ -14,32 +14,31 @@ updated: 2026-10-26
 [ADR 0003](../decisions/0003-h2-multistream-transport.md).
 
 С точки зрения user-observable поведения это выглядит как N параллельных
-HTTPS-соединений к одному хосту (`tls.nl2.bikini-bottom.com:443`), проходящих
-через стандартный nginx stream с `ssl_preread`. Никаких UDP, никаких
+HTTPS-соединений к одному адресу (реле, `:443`, SNI `tls.nl2.bikini-bottom.com`),
+проходящих через стандартный nginx stream с `ssl_preread`. Никаких UDP, никаких
 нестандартных ALPN (клиент предлагает `h2, http/1.1`, как браузер), никаких
 pre-amble байтов до TLS ClientHello.
 
 ## Три слоя топологии
 
 ```
-Android / iOS / Linux client
-  │
-  │ [опциональный хоп для RU-абонентов]
+Android / iOS / macOS / Linux / OpenWrt client
+  │  TCP :443, SNI = tls.nl2.bikini-bottom.com
+  ▼
+RU relay (balancer.bikini-bottom.com, 158.160.135.140:443)
+  nginx stream ssl_preread → phantom-relay (127.0.0.1:5443)
+  SNI == tls.nl2 → сырой passthrough (НЕ терминирует TLS)
+  SNI другой    → ответ как у nginx на fallback-серте
   │
   ▼
-RU relay (hostkey.bikini-bottom.com:443, phantom-relay)
-  SNI peek → raw TCP copy_bidirectional (НЕ терминирует TLS)
-  │
-  ▼
-NL frontend (89.110.109.128:443, nginx stream ssl_preread)
-  SNI == tls.nl2 → passthrough 127.0.0.1:8443
-  SNI другой    → LE cert + fallback HTML
-  │
-  ▼
-phantom-server (127.0.0.1:8443, TLS 1.3 terminate + mTLS)
-  valid client cert → VpnSession
-  нет/невалидный    → fakeapp::handle
+phantom-server (NL exit 89.110.109.128:8443, TLS 1.3 terminate + mTLS)
+  серт из allowlist     → VpnSession
+  серт не из allowlist  → TLS-алерт certificate_revoked
+  без серта             → fakeapp::handle
 ```
+
+Без реле клиент ходит прямо на `89.110.109.128:8443` — из РФ этот путь режется
+(см. [dpi-tspu](./dpi-tspu.md)), поэтому боевые профили идут через реле.
 
 Полная картина handshake-а на каждом хопе — в [handshake](./handshake.md).
 
@@ -112,41 +111,35 @@ frame'а один раз (там же MSS-clamp). На отправке всё, 
   очередь снова не примет пакет. Диспетчер общий, так что замёрзший или
   задушенный стрим не клинит uplink остальных.
 
-## NL frontend (nginx stream)
+## NL exit: `:8443`
 
-Вся публичная поверхность — port 443 TCP на NL exit'е (vdsina,
-`89.110.109.128`). Nginx настроен в `stream { ... }` режиме с `ssl_preread`:
-peek'ит первый ClientHello, извлекает SNI, маршрутизирует.
+phantom-server слушает `0.0.0.0:8443` на vdsina (`89.110.109.128`). Порт
+публичен: на него ходит реле, потому что `:443` этого IP из РФ фильтруется.
+Перед `:443` vdsina стоит nginx stream (`ssl_preread`, SNI `tls.nl2` →
+`127.0.0.1:8443`, остальное — LE-сайт), но в боевом тракте он не участвует.
+Скан `:8443` без нашего клиентского серта видит только fakeapp (H2-«сайт»),
+с отозванным сертом — алерт `certificate_revoked`.
 
-| SNI | Upstream | Что получает клиент |
-|---|---|---|
-| `tls.nl2.bikini-bottom.com` | `127.0.0.1:8443` (phantom-server) | Our TLS 1.3 + mTLS |
-| Anything else | Local fallback: LE cert + HTML | "Честный" сайт |
+## SNI passthrough relay
 
-Port 8443 на phantom-server **не публичен** — доступен только через nginx,
-что исключает прямое прощупывание VPN-listener'а извне.
+RU-нода (`phantom-relay` на `balancer.bikini-bottom.com`, за nginx stream)
+выполняет **SNI passthrough без терминации TLS**. Алгоритм:
 
-## RU relay (SNI Passthrough, v0.17+)
-
-RU-нода (`phantom-relay`, `193.187.95.128:443`) выполняет **SNI passthrough
-без терминации TLS**. Алгоритм:
-
-1. Accept TCP, peek ~1.5 KB (достаточно для ClientHello record).
-2. Парсинг TLS record header (ContentType=0x16), handshake header
-   (HandshakeType=0x01), SNI extension (type=0x0000, name_type=0x00). Ручной
-   парсер в [server/relay/src/main.rs::extract_sni](../../../server/relay/src/main.rs).
-3. Если `SNI == expected_sni` (config: `tls.nl2.bikini-bottom.com`) →
-   `tokio::io::copy_bidirectional` к `upstream_addr` (NL:443). TLS handshake
-   идёт end-to-end между клиентом и phantom-server, relay не видит plaintext.
-4. Иначе → fallback `TlsAcceptor` с LE cert (`hostkey.bikini-bottom.com`) →
-   HTML-заглушка, выглядит как обычный HTTPS-сайт на этом имени.
+1. Accept TCP, прочитать ClientHello целиком (до 16 КБ, склеивая несколько
+   TLS-записей). Ручной парсер SNI в
+   [server/relay/src/main.rs](../../../server/relay/src/main.rs) (`extract_sni`).
+2. Если `SNI == expected_sni` (`tls.nl2.bikini-bottom.com`) → connect к
+   `upstream_addr` (exit `:8443`), прочитанные байты отдаются как есть, дальше
+   `copy_bidirectional`. TLS handshake идёт end-to-end между клиентом и
+   phantom-server, relay не видит plaintext.
+3. Иначе → fallback: TLS на LE-серте реле и ответ как у стокового nginx
+   (404 на HTTP, 400 на мусор, HEAD без тела). Без fallback-серта (режим за
+   nginx) соединение просто закрывается.
 
 Эта схема убирает **двойное шифрование** RU-хопа. До v0.17 relay
 re-encrypted каждый байт своими rustls-сессиями — это было CPU-bound узкое
 место. Теперь relay I/O-bound, пропускная способность растёт ~линейно с ядром.
-
-С точки зрения RU DPI трафик выглядит как обычное HTTPS к российскому сайту
-`hostkey.bikini-bottom.com` (обслуживаемому LE cert'ом).
+Лимиты, таймауты и деплой реле — в [platforms/server.md](../platforms/server.md).
 
 ## Шейпинг трафика
 
@@ -157,10 +150,11 @@ re-encrypted каждый байт своими rustls-сессиями — эт
 
 - **H2 multiplexing** — N стримов ⇒ размер и тайминг записей размазывается;
 - **nginx SNI-passthrough** — сервер виден как стандартный HTTPS-хост;
-- **Mimicry warmup** (см. [handshake](./handshake.md)) — H.264-like I-frame
-  pattern в начале сессии;
-- **Heartbeat'ы** (см. [wire format](./wire-format.md)) — раз в 30–60 с на
-  idle-стриме, несинхронно между стримами.
+- **Паддинг первых 10–20 кадров** каждого стрима (обе стороны) — первые
+  записи не повторяют размеры внутренних пакетов (warmup удалён —
+  [ADR 0019](../decisions/0019-owner-decisions-audit-2026-10.md));
+- **Heartbeat'ы** (см. [wire format](./wire-format.md)) — на idle-стриме
+  клиент раз в 30–60 с, сервер раз в 30–40 с, несинхронно между стримами.
 
 ## Invariants
 
@@ -174,9 +168,9 @@ re-encrypted каждый байт своими rustls-сессиями — эт
   transport (wire) = TCP only. Новый UDP-режим невозможен без нового ADR.
 - **VPN-путь всегда на ALPN `h2`.** Клиент предлагает `h2, http/1.1` (как
   браузер), сервер согласует только `h2`. Нет h1.1 fallback'а для VPN-пути.
-- **Port на phantom-server (`8443`) — loopback-only.** Внешний доступ только
-  через nginx:443 с SNI-filter'ом. Direct connection к `:8443` с любого
-  external IP невозможен.
+- **VPN-путь на `:8443` — только с сертом из allowlist.** Порт публичен (на
+  него ходит реле); без серта — fakeapp, с отозванным — алерт
+  `certificate_revoked`.
 - **`flow_stream_idx` симметричен** (hash от `src + dst + proto + (sp XOR dp)`,
   затем перемешивание). Нарушение симметрии ⇒ A→B и B→A попадут в разные
   стримы: flow зависит от двух соединений вместо одного.

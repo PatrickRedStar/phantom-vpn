@@ -343,4 +343,4 @@ computerscot (SelfSteal). Эмпирика: натурные adb-тесты 2026
 
 Связано: [transport.md](transport.md), [handshake.md](handshake.md),
 [ADR 0002 (Noise→mTLS)](../decisions/0002-noise-to-mtls.md),
-[ADR 0003 (H2/TLS/TCP)](../decisions/0003-h2-tls-tcp.md).
+[ADR 0003 (H2/TLS/TCP)](../decisions/0003-h2-multistream-transport.md).

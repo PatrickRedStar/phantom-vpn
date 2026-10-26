@@ -1,6 +1,7 @@
 ---
 title: Docker как первичный путь развёртывания server + relay
 date: 2026-06-04
+updated: 2026-10-26
 status: accepted
 ---
 
@@ -12,7 +13,8 @@ status: accepted
 Восстановить сервис не получилось быстро потому что текущая схема деплоя — это
 **bare-metal cargo build на хосте + ручной systemd + ручные iptables + ручной nginx**:
 
-- `server/scripts/install.py` — устаревший QUIC-bootstrap (legacy v0.18).
+- `server/scripts/install.py` — устаревший QUIC-bootstrap (legacy v0.18; удалён в 2026-10
+  вместе с `setup-server.sh` — оба ставили сервер на `:9443` без mTLS).
 - `server/scripts/deploy.sh` / `deploy-relay.sh` — remote rsync + remote `cargo build`.
 - `clients.json` + CA-ключ — лежат только на боевом хосте, без бэкапа.
 - Каждый новый хост = час ручной работы (apt update → install build-essential →
@@ -39,8 +41,12 @@ status: accepted
 
 | Каталог | Образ | Назначение |
 |---|---|---|
-| `docker/server/` | `ghcr.io/<owner>/ghoststream-server` | NL exit, H2/TLS :443 + TUN + NAT |
-| `docker/relay/` | `ghcr.io/<owner>/ghoststream-relay` | RU SNI passthrough :443 |
+| `docker/server/` | `ghcr.io/patrickredstar/ghoststream-server` | NL exit, H2/TLS :8443 + TUN + NAT |
+| `docker/relay/` | `ghcr.io/patrickredstar/ghoststream-relay` | RU SNI passthrough :443 |
+
+Exit слушает `:8443` (`LISTEN_ADDR`): реле ходит на exit только туда — `:443` vdsina
+из РФ фильтруется и занят nginx. Пакеты в ghcr приватные — на хосте нужен
+`docker login ghcr.io`.
 
 **Ключевые инварианты:**
 
@@ -52,10 +58,14 @@ status: accepted
 
 2. **Self-bootstrap entrypoint.** При первом старте, если `/config/server.toml`
    нет:
-   - Требует `SERVER_NAME` env (TLS SNI / cert CN).
+   - Требует `SERVER_NAME` env (TLS SNI / cert CN) и Let's Encrypt-серт на это
+     имя (`/etc/letsencrypt` хоста монтируется read-only). Без него bootstrap
+     падает с понятной причиной: клиент всегда проверяет серт сервера
+     ([ADR 0011](0011-remove-insecure-always-verify.md)) и самоподписанный не примет.
    - Вызывает `phantom-keygen --out /config --server-name $SERVER_NAME`
      (генерит CA + server cert).
-   - Авто-генерирует `ADMIN_TOKEN` если не задан (`head /dev/urandom | od | tr`).
+   - Авто-генерирует `ADMIN_TOKEN` если не задан; токен лежит только в
+     `server.toml` (0600) и в `docker logs` не печатается.
    - Рендерит `server.toml` из heredoc с подстановкой env.
    - Пишет пустой `clients.json`.
 
@@ -79,7 +89,8 @@ status: accepted
    ничего не NAT-ит, чистый TCP proxy. Поэтому никаких caps не нужно. Но
    non-root UID не может биндить порты <1024 без `CAP_NET_BIND_SERVICE`. Решено:
    контейнер слушает `:5443` (внутри), compose делает `ports: "443:5443/tcp"`.
-   Снаружи это всё ещё `:443`.
+   Снаружи это всё ещё `:443`, поэтому `FALLBACK_CERT/KEY` обязательны: без них
+   чужой SNI получает мгновенный обрыв, похожий на блок. `nofile` поднят до 65536.
 
 6. **User management через `keys.py` в образе.** Гибрид-решение: keys.py
    осталась в server image (~30MB python3-minimal), запускается через
@@ -90,8 +101,9 @@ status: accepted
 
 7. **CI multi-arch.** `.github/workflows/docker.yml` собирает оба образа для
    `linux/amd64,linux/arm64` через QEMU buildx на push тега `v*`. Pushed в
-   `ghcr.io/<repo-owner>/ghoststream-{server,relay}` с тегами `vX.Y.Z`, `X.Y`,
-   `latest`.
+   `ghcr.io/<repo-owner>/ghoststream-{server,relay}` с тегами `X.Y.Z`, `X.Y` (без `v`);
+   `latest` ставит metadata-action только на релизные теги. Бинари собираются
+   `--locked --profile release-server` (`panic = "unwind"`).
 
 ## Trade-off
 
@@ -100,7 +112,7 @@ status: accepted
 | `network_mode: host` (нет network isolation на server'е) | Работает iptables NAT, не надо переписывать data plane |
 | `privileged: true` на server'е | Простота; io_uring/tun_uring требуют SYS_ADMIN всё равно |
 | Python3 в server-образе (~30MB) | keys.py работает as-is, без двух-этапной миграции |
-| `latest` тег на pre-release (`v*-rc1`) | Простота CI; фикс — `enable=...!contains(github.ref,'-')` когда понадобится |
+| В `.env.example` — конкретный `TAG`, а не `latest` | Обновление образа — осознанная правка `.env` |
 | QEMU arm64 на amd64 runner (медленно ~40min) | Один workflow, один matrix, никаких native arm64 runners |
 
 ## Что НЕ автоматизируем
@@ -127,8 +139,9 @@ status: accepted
 - `docker/relay/README.md`.
 - `.github/workflows/docker.yml` — multi-arch CI на тэги `v*`.
 
-Старая схема (cargo + systemd + install.py + deploy.sh) **остаётся для
-bare-metal случаев** и legacy серверов, не выкидывается.
+Bare-metal путь — `server/scripts/deploy.sh` (сборка `--profile release-server`,
+systemd unit с sandboxing, автооткат при неудаче) — **остаётся** для боевого
+vdsina и других не-Docker хостов. `install.py` и `setup-server.sh` удалены.
 
 ## Когда не нужен Docker
 

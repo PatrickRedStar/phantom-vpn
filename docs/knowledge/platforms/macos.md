@@ -1,6 +1,6 @@
 ---
 created: 2026-04-27
-updated: 2026-04-27
+updated: 2026-10-26
 status: in-progress
 tags: [platform, macos, swiftui, network-extension]
 ---
@@ -10,7 +10,7 @@ tags: [platform, macos, swiftui, network-extension]
 ## Стек
 
 - **SwiftUI** host app (`apps/macos/GhostStream/`) — `MenuBarExtra` + `WindowGroup` + `Settings`-сцены, **macOS 15 Sequoia** minimum (используются последние API: `@Observable`, `NavigationSplitView` с `.navigationSplitViewColumnWidth`, `MenuBarExtra` styles).
-- **`NEPacketTunnelProvider` system extension** (`apps/macos/PacketTunnel/`) — отдельный `.systemextension` bundle, активируется через `OSSystemExtensionRequest`.
+- **`NEPacketTunnelProvider` system extension** (`apps/macos/PacketTunnelExtension/`) — отдельный `.systemextension` bundle, активируется через `OSSystemExtensionRequest`.
 - **`PhantomKit` + `PhantomUI`** — Swift package в `apps/ios/Packages/PhantomKit/` (shared с iOS):
   - `PhantomKit` target — Models / Bridge / Storage / FFI (cross-platform).
   - `PhantomUI` target — Theme / Components / Fonts (cross-platform pure SwiftUI).
@@ -58,7 +58,7 @@ GhostStream/                     # Host app target (.app)
   Info.plist                     # LSMinimumSystemVersion 15.0, LSUIElement
   GhostStream.entitlements       # NEAppGroup, NetworkExtension, app-groups
 
-PacketTunnel/                    # System extension target (.systemextension)
+PacketTunnelExtension/           # System extension target (.systemextension)
   PacketTunnelProvider.swift     # entry point (port iOS)
   Info.plist                     # NSExtensionPointIdentifier=com.apple.networkextension.packet-tunnel
   PacketTunnel.entitlements      # NEAppGroup, NetworkExtension, sandbox
@@ -75,10 +75,10 @@ scripts/
 
 | Target | Bundle ID | Type | Entitlements |
 |---|---|---|---|
-| `GhostStream.app` | `com.ghoststream.vpn` | Host app | NEAppGroup, NetworkExtension, app-groups, hardened runtime |
-| `PacketTunnel.systemextension` | `com.ghoststream.vpn.tunnel` | System extension | NEAppGroup, NetworkExtension, sandbox, hardened runtime |
+| `GhostStream.app` | `com.ghoststream.client` | Host app | NEAppGroup, NetworkExtension, app-groups, hardened runtime |
+| `PacketTunnel.systemextension` | `com.ghoststream.client.tunnel` | System extension | NEAppGroup, NetworkExtension, sandbox, hardened runtime |
 
-**App Group** (общий для host + extension): `group.com.ghoststream.vpn` — тот же что iOS, единый код в PhantomKit Storage.
+**App Group** (общий для host + extension): `group.com.ghoststream.client` — тот же что iOS, единый код в PhantomKit Storage.
 
 **Code signing**: Developer ID Application (один cert для обоих targets — system extension должна быть подписана тем же team как и host app, иначе `OSSystemExtensionErrorDomain` Code 4 при активации).
 
@@ -122,7 +122,7 @@ scripts/
 │   └── client-core-runtime (Rust)                                        │
 │        ├── TunIo::Callback(Arc<dyn PacketIo>)                           │
 │        ├── handshake (mTLS + H2)                                        │
-│        ├── supervise FSM (8 attempts, [3,6,12,24,48,60,60,60]s)        │
+│        ├── supervise FSM (бесконечный ретрай, пауза до 30 с)          │
 │        └── telemetry (250ms, EMA α=0.35) → StatusFrame                  │
 │                                                                          │
 │  packetFlow.readPackets ──► Rust runtime ──► TLS H2 ──► NL exit         │
@@ -130,6 +130,11 @@ scripts/
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Состояния, ошибки, подписка
+
+Как на iOS: см. [ios.md → Состояния, ошибки, подписка](ios.md#состояния-ошибки-подписка).
+Отличий у macOS нет.
 
 ## 7 поверхностей UI
 
@@ -172,7 +177,7 @@ RequestPending
     ↓ (system показывает prompt: "GhostStream wants to add a system extension")
 AwaitingUserApproval ── (user → System Settings → Privacy & Security → Allow)
     ↓
-Activated ── (systemextensionsctl list → com.ghoststream.vpn.tunnel: activated enabled)
+Activated ── (systemextensionsctl list → com.ghoststream.client.tunnel: activated enabled)
     ↓
 ManagerConfigured ── (NETunnelProviderManager.saveToPreferences())
     ↓
@@ -193,7 +198,11 @@ Ready ── (System Settings → VPN & Filters показывает GhostStream
 
 ## mTLS storage и App Group
 
-Keychain через `PhantomKit/Storage/Keychain.swift` с access group **`group.com.ghoststream.vpn`** (тот же что iOS).
+> Cert/key туннеля на macOS едут в `providerConfiguration`, а не через Keychain:
+> system extension под root не видит user Data Protection keychain — см.
+> [ADR 0009](../decisions/0009-cert-pem-providerConfiguration.md).
+
+Keychain через `PhantomKit/Storage/Keychain.swift` с access group **`group.com.ghoststream.client`** (тот же что iOS; старый `group.com.ghoststream.vpn` — только источник миграции в `LegacyMigration.swift`).
 
 На macOS App Groups требуют `com.apple.security.application-groups` entitlement в обоих targets (host app + system extension), плюс **`kSecUseDataProtectionKeychain = true`** для shared items (на iOS это default, на macOS — нет, нужно явно).
 
@@ -295,8 +304,8 @@ Components, переиспользуемые на macOS as-is: `GhostCard`, `Sco
 - **System extension code signing** — host app и system extension должны быть подписаны **одним и тем же Developer ID Team**, иначе `OSSystemExtensionErrorDomain` Code 4 (codeSignatureInvalid) при активации.
 - **Notarization обязательна для distribution** — без notarize Gatekeeper заблокирует первый запуск (`damaged and can't be opened`). Notarize даже для personal testing если приложение раздаётся вне локальной машины.
 - **`kSecUseDataProtectionKeychain = true`** на macOS обязательно для App-Group-shared Keychain items, иначе extension не увидит ключи (silent failure).
-- **App Group identifier** должен совпадать в entitlements host app и system extension (`group.com.ghoststream.vpn`) — иначе shared storage не работает (молчаливо, как на iOS).
-- **System extension не перезагружается при rebuild** — после изменения extension'а нужно `systemextensionsctl uninstall <team> com.ghoststream.vpn.tunnel` + reinstall. В debug builds можно использовать developer mode (`systemextensionsctl developer on`) — игнорирует подписи.
+- **App Group identifier** должен совпадать в entitlements host app и system extension (`group.com.ghoststream.client`) — иначе shared storage не работает (молчаливо, как на iOS).
+- **System extension не перезагружается при rebuild** — после изменения extension'а нужно `systemextensionsctl uninstall <team> com.ghoststream.client.tunnel` + reinstall. В debug builds можно использовать developer mode (`systemextensionsctl developer on`) — игнорирует подписи.
 - **Sparkle EdDSA private key — НЕ коммитить** — хранить в Keychain локально / 1Password / GitHub secrets. Compromise key → fork-update attack возможен.
 - **xcframework пересобирать после правок client-apple/runtime** — Xcode не детектит изменения в Rust автоматически, нужен `build-xcframework.sh`.
 - **`OSSystemExtensionRequest` requires entitlement `com.apple.developer.system-extension.install`** — не работает в Sandboxed app или без правильного provisioning profile.
@@ -306,7 +315,7 @@ Components, переиспользуемые на macOS as-is: `GhostCard`, `Sco
 ## References / Sources
 
 - **Host app:** [apps/macos/GhostStream/](../../../apps/macos/GhostStream/)
-- **System extension:** [apps/macos/PacketTunnel/](../../../apps/macos/PacketTunnel/)
+- **System extension:** [apps/macos/PacketTunnelExtension/](../../../apps/macos/PacketTunnelExtension/)
 - **xcodegen spec:** [apps/macos/project.yml](../../../apps/macos/project.yml)
 - **README:** [apps/macos/README.md](../../../apps/macos/README.md)
 - **PhantomKit + PhantomUI package (shared с iOS):** [apps/ios/Packages/PhantomKit/](../../../apps/ios/Packages/PhantomKit/)

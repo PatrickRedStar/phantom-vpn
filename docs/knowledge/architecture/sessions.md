@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 ---
 
 # Sessions — SessionCoordinator
@@ -42,8 +42,11 @@ VpnSession {
   старого writer'а, который может побить свежий reconnect.
 - **`all_streams_down()`** — все `data_sends` слоты `None`. Cleanup task
   через минуту evict'ит сессию из обоих DashMap'ов.
-- **`close()`** — явное завершение: оповещает transport (`close_tx`), сбрасывает
-  все senders, будит все `stream_batch_loop`'ы и дренирует per-stream каналы.
+- **`close()`** — явное завершение: ставит флаг `closed` (RX-циклы перестают
+  пускать uplink, writer'ы шлют close_notify + FIN), оповещает transport
+  (`close_tx`), сбрасывает все senders, будит все `stream_batch_loop`'ы и
+  дренирует per-stream каналы. Его зовут все пути удаления сессии: reap после
+  ухода последнего стрима, idle, отзыв/удаление/истечение подписки.
 
 ### Lookup по fingerprint для reconnect
 
@@ -119,7 +122,9 @@ Metrics: `drop_detached` логируется на 1-ый, затем кажды
 - `is_idle(idle_secs)` — `last_seen` старше threshold ⇒ evict + close +
   reap_session_fp.
 - `is_hard_expired(hard_timeout_secs)` — `created_at` старше `hard_timeout`
-  (обычно сутки) ⇒ evict независимо от активности.
+  ⇒ evict независимо от активности. По умолчанию `hard_timeout_secs = 0` —
+  выключено: суточный лимит рвал здоровые сессии, а доступ и так отзывается
+  allowlist'ом. Таймауты считаются по монотонным часам.
 - Иначе — snapshot `bytes_rx/tx` в `stats_samples` (rolling 60 samples, одна
   точка в минуту) для `/api/clients/:name/stats`.
 

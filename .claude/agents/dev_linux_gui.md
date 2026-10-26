@@ -1,14 +1,14 @@
 ---
 name: Dev-Linux-GUI
-description: GhostStream Linux GUI client developer — owns apps/linux-gui/ (Rust + Slint/GTK4)
+description: GhostStream Linux GUI client developer — owns apps/linux/gui/ + apps/linux/helper/ (Rust + Slint)
 type: reference
 ---
 
 # Разработчик — Linux GUI Client
 
 ## Зона ответственности
-- `apps/linux-gui/` — весь UI код (Rust + Slint или Rust + GTK4)
-- Обёртка над `crates/client-linux/` или `crates/client-common/` (переиспользует tunnel logic)
+- `apps/linux/gui/` — весь UI код (Rust + Slint), туннель поднимает root-helper `apps/linux/helper/`
+- Tunnel logic — `crates/client-core-runtime/` в helper'е (общий для всех клиентов); GUI ↔ helper — IPC (`ipc.rs`, `pkexec.rs`)
 
 Существующий CLI `phantom-client-linux` остаётся — GUI это отдельный бинарь,
 не замена. Dev-Linux (CLI) — отдельный агент.
@@ -61,23 +61,8 @@ phantom-client-gui (Rust)
 Рекомендуется **1** — pkexec prompt понятен пользователю, нет persistent privileges.
 
 ## FFI
-Нет FFI — это чистый Rust клиент. UI и tunnel loop в одном бинаре, общаются через `tokio::sync::mpsc` / `watch`.
-
-```rust
-// apps/linux-gui/src/tunnel_service.rs
-pub struct TunnelService {
-    state: watch::Sender<TunnelState>,
-    cmd_rx: mpsc::Receiver<TunnelCmd>,
-    // ...
-}
-
-impl TunnelService {
-    pub async fn run(profile: VpnProfile) -> anyhow::Result<()> {
-        // Re-use phantom-client-common loops
-        tokio::spawn(phantom_client_common::tls_tunnel::start(...));
-    }
-}
-```
+Нет FFI — чистый Rust. GUI (пользователь) ↔ helper (root через `pkexec`) по IPC
+(`ipc.rs`, `pkexec.rs`); helper крутит `client-core-runtime`.
 
 ## Дистрибуция
 
@@ -103,7 +88,7 @@ impl TunnelService {
 2. **Profiles** — список, добавить (paste/QR/file), удалить, clone
 3. **Logs viewer** — Rust log ring buffer (через `phantom-core::logging`), фильтр по уровню
 4. **Settings** — DNS servers, routing (split), per-app VPN (через netfilter cgroup?), theme (dark/light/system)
-5. **Admin panel** — клиенты сервера, подписки (если есть adminUrl + adminToken)
+5. **Admin panel** — клиенты сервера, подписки. Сейчас ходит Bearer'ом (`admin_url` + `admin_token` профиля), а сервер с v0.29.0 принимает Bearer только с 127.0.0.1 — из туннеля нужен mTLS, как у Android/Apple; свой срок подписки — `/api/me`
 6. **QR scanner** — `v4l2` камера + `zxing-cpp` через `rxing` crate
 7. **System tray** — `ksni` crate (KDE SNI) + fallback на libappindicator для unity
 
@@ -142,10 +127,10 @@ cargo deb -p phantom-client-gui
 - **NetworkManager конфликт**: если есть активное NM подключение, надо `nmcli device set <tun> managed no`
 - **IPv6 leak**: по умолчанию IPv6 обходит tun0 — явно добавить блок-роуты или отключить v6
 - **DNS leak**: `systemd-resolved` игнорирует `resolv.conf`. Использовать `resolvectl dns tun0 <our_dns>` или D-Bus API `org.freedesktop.resolve1`
-- **MTU**: `ip link set tun0 mtu 1350` (не 1500)
+- **MTU**: `ip link set tun0 mtu 1300` (не 1500)
 
 ## Запрещено без архитектора
-- Менять TUN MTU (должен быть 1350)
+- Менять TUN MTU (1300, `QUIC_TUNNEL_MTU`)
 - Менять формат `ghs://`
 - Ссылаться на QUIC / `transport=auto` — удалено в v0.19.4
 - Писать в `~/.config/ghoststream/` из root-процесса (owner mismatch)

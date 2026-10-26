@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 status: accepted
 ---
 
@@ -91,11 +91,12 @@ v0.19.4 (ADR [0001](0001-remove-quic.md)).
 **Что открывает:**
 - **RU relay SNI passthrough** — `phantom-relay` просто copy_bidirectional
   после `ssl_preread`, не знает про TLS внутри.
-- **Fakeapp fallback** — если client cert невалиден, сервер проксирует в
-  реальный upstream (e.g., `google.com`), DPI видит честный HTTPS.
-- **Mimicry warmup** — 4 placeholder batches в начале соединения
-  имитирующие H.264 I-frame size distribution, выглядит как начало видео
-  stream'а.
+- **Fakeapp fallback** — если клиент не предъявил cert, сервер отвечает как
+  обычный H2-сайт (`fakeapp.rs`), DPI видит честный HTTPS.
+- ~~**Mimicry warmup**~~ — 4 placeholder batches в начале соединения.
+  **Удалён в v0.29.0**: подпись всплесков была одинаковой у каждой сессии, то
+  есть сама стала отпечатком; его место занял паддинг первых кадров стрима — см.
+  [ADR 0019](0019-owner-decisions-audit-2026-10.md).
 
 **Что закрывает:**
 - QUIC как транспорт формально удалён (см. ADR

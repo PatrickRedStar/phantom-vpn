@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 ---
 
 # iOS
@@ -51,16 +51,16 @@ C-интерфейс, экспортируется через `PhantomCore.xcfra
 
 | Функция | Назначение |
 |---|---|
-| `phantom_start(config_json) -> i32` | Запуск runtime'а. `config_json` — `ConnectProfile` |
-| `phantom_stop()` | Graceful shutdown runtime'а |
-| `phantom_submit_outbound(ptr, len) -> i32` | Outbound IP-пакет от `packetFlow` в Rust |
-| `phantom_set_inbound_callback(cb, ctx)` | Регистрация Swift-коллбэка для inbound IP-пакетов |
-| `phantom_get_stats() -> *mut c_char` | JSON `{bytes_rx,bytes_tx,pkts_rx,pkts_tx,connected}` |
-| `phantom_get_logs(since_seq) -> *mut c_char` | JSON-массив `LogFrame` |
-| `phantom_set_log_level(level)` | "trace"/"debug"/"info"/"warn"/"error" |
+| `phantom_runtime_set_release_cb(cb)` | Один раз при старте: Swift-колбэк, который освобождает `ctx` |
+| `phantom_runtime_start(cfg_json, settings_json, verbose_log, status_cb, log_cb, outbound_cb, ctx) -> i32` | Запуск runtime'а. `cfg_json` — `ConnectProfile`; статус, логи и пакеты к устройству приходят колбэками |
+| `phantom_runtime_submit_inbound(ptr, len) -> i32` | IP-пакет от `packetFlow` в туннель; -10 = очередь полна (drop) |
+| `phantom_runtime_stop() -> i32` | Синхронный стоп: ждёт супервизор до 5 с, потом abort + join; `ctx` освобождается, только если всё дожато, иначе намеренно утекает |
 | `phantom_parse_conn_string(input) -> *mut c_char` | Парсинг `ghs://...` → JSON с полями для iOS |
 | `phantom_compute_vpn_routes(direct_cidrs) -> *mut c_char` | Инверсия CIDR-списка для split-routing |
 | `phantom_free_string(ptr)` | **Обязательно** вызывать после использования строки из FFI |
+
+`PhantomBridge` сверяет `BridgeContext` каждого колбэка с текущим: запоздалые
+статусы и логи прошлой (утёкшей) сессии отбрасываются.
 
 Все строки — null-terminated C strings. Ownership любого `*mut c_char`,
 возвращённого FFI-функцией, принадлежит caller'у (Swift); освобождается через
@@ -75,7 +75,7 @@ xcframework собирается скриптом [crates/client-apple/build-xcf
 |---|---|
 | `PhantomBridge` | Actor-isolated FFI wrapper; хранит runtime handle + callbacks |
 | `StatusFrame` / `ConnState` / `LogFrame` / `TunnelSettings` / `ConnectProfile` | Codable mirrors of `crates/gui-ipc/` canonical wire types |
-| `VpnProfile` | Storage model (id, name, serverAddr, serverName, tunAddr, cert/key, adminUrl, adminToken, cachedAdminServerCertFp, ...) |
+| `VpnProfile` | Storage model (id, name, serverAddr, serverName, tunAddr, cert/key PEM, relay, кэш из `/api/me`: cachedExpiresAt/cachedEnabled/cachedIsAdmin, cachedAdminServerCertFp, ...) |
 | `ProfilesStore` | Список профилей + activeId, persisted в App Group shared container |
 | `PreferencesStore` | DNS, routing mode, per-app, тема — App Group |
 | `Keychain` | Сертификаты / ключи клиента + pinned server FP |
@@ -94,6 +94,28 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
 `profileId` передаётся из host app в extension через IPC — extension сам
 читает профиль из `ProfilesStore` (App Group shared) и запускает Rust runtime.
 Секреты (cert/key) живут в Keychain с shared access group.
+
+## Состояния, ошибки, подписка
+
+Одинаково для iOS и macOS. Переподключением владеет ядро ([ADR 0018](../decisions/0018-rust-owns-reconnect.md)):
+при сетевых сбоях оно ретраит бесконечно и публикует `reconnecting`.
+
+- **У провайдера нет своих watchdog'ов** — ни «нет connected за N с», ни
+  «слишком долго в reconnecting»: они гасили или перезапускали туннель поверх
+  ретраев ядра. Провайдер реагирует только на `connected` (completion для NE),
+  `error` и события NE.
+- **`error` = фатальная причина** (отзыв доступа, истёкший доступ, неверные
+  часы, кривой профиль). Провайдер останавливает туннель, error-кадр остаётся в
+  снапшоте, и хост показывает `last_error` до следующего Connect. Неудачный
+  рестарт рантайма (смена сети, пробуждение) тоже останавливает туннель с
+  причиной, а не оставляет его без рантайма.
+- **Дашборд** при поднятом туннеле показывает плашку здоровья, как на Android:
+  все потоки упали (`dead`), живы k из n (`degraded`), тишина в канале
+  (`stale`), скорость ограничена (только по `bandwidth_class = throttled`).
+  `TunnelHealth` в PhantomKit знает `dead`.
+- **Подписка и флаг админа** берутся из `/api/me` (`expires_at`, `enabled`,
+  `is_admin`) и кладутся в кэш профиля до запросов админки — срок видят и
+  не-админы. Старый сервер без этих полей кэш не трогает.
 
 ## IPv6 killswitch
 
@@ -118,8 +140,12 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   storages: Keychain + `UserDefaults` в App Group container. `ProfilesStore` и
   `PreferencesStore` читают оттуда оба процесса.
 - **Host↔extension IPC** — через `sendProviderMessage` (обёрнуто в `TunnelIpcBridge`).
-- **Background limits** — NE extension лимитирован по CPU и памяти. Heavy compute
-  (TLS, batching) держать в Rust runtime, I/O — async.
+- **Background limits** — NE extension лимитирован по CPU и памяти (~50 МБ).
+  Heavy compute (TLS, batching) держать в Rust runtime, I/O — async; очереди
+  ядра под iOS меньше (256 / 1024), число стримов не трогается.
+- **Потокобезопасность провайдера** — буферы статуса/логов, gate снапшотов и
+  флаг completion `startTunnel` под `stateLock`, как на macOS (двойной
+  completion ронял бы экстеншен).
 
 ## Критичные pitfalls
 
