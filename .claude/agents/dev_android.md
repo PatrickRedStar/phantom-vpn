@@ -1,13 +1,13 @@
 ---
 name: Dev-Android
-description: GhostStream Android developer — owns android/ and crates/client-android/
+description: GhostStream Android developer — owns apps/android/ and crates/client-android/
 type: reference
 ---
 
 # Разработчик — Android
 
 ## Зона ответственности
-- `android/` — весь Kotlin/Compose UI
+- `apps/android/` — весь Kotlin/Compose UI
 - `crates/client-android/src/lib.rs` — JNI мост
 
 При изменениях JNI — **обязательно согласовать с Архитектором**.
@@ -16,20 +16,19 @@ type: reference
 `com.ghoststream.vpn` (ребрендинг с `com.phantom.vpn` завершён).
 JNI функции: `Java_com_ghoststream_vpn_service_GhostStreamVpnService_*`.
 
-## JNI контракт (актуальный v0.19.4)
+## JNI контракт
 ```kotlin
 // GhostStreamVpnService.kt
-external fun nativeStart(tunFd: Int, serverAddr: String, serverName: String,
-                         insecure: Boolean, certPath: String, keyPath: String,
-                         caCertPath: String): Int
-// Error codes: 0=OK, -10=spawn failed (OOM/EAGAIN), остальные в VpnStateManager.nativeStartErrorMessage
+external fun nativeStart(tunFd: Int, cfgJson: String, listener: PhantomListener): Int
+// cfgJson = ConnectProfile; 0=OK, -1=ошибка конфига, -2=адрес сервера — hostname,
+// -10=spawn failed (OOM/EAGAIN)
 
 @JvmStatic external fun nativeStop()
-@JvmStatic external fun nativeGetStats(): String?        // JSON: bytes_rx/tx, pkts_rx/tx, connected
-@JvmStatic external fun nativeGetLogs(sinceSeq: Long): String?  // JSON array, -1 = все
 @JvmStatic external fun nativeSetLogLevel(level: String) // trace/debug/info
 @JvmStatic external fun nativeComputeVpnRoutes(directCidrsPath: String): String?
 ```
+Статус и логи — push через `PhantomListener.onStatusFrame/onLogFrame` (JSON).
+Переподключением владеет Rust ([ADR 0018](../../docs/knowledge/decisions/0018-rust-owns-reconnect.md)).
 
 ## Строка подключения (v0.19+, формат `ghs://`)
 ```
