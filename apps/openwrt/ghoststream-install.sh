@@ -22,13 +22,13 @@ echo "Target          : ${DISTRIB_TARGET}"
 echo "Arch            : ${DISTRIB_ARCH}"
 echo ""
 
-# 3. Определяем архитектуру
+# 3. Определяем архитектуру (имена бинарей — как в GitHub Release: openwrt-<arch>)
 ARCH="$(uname -m)"
 case "${ARCH}" in
-    mips|mipsel)    BIN="ghoststream-mipsel" ;;
-    aarch64)        BIN="ghoststream-aarch64" ;;
-    armv7l|armv7)   BIN="ghoststream-armv7" ;;
-    x86_64)         BIN="ghoststream-x86_64" ;;
+    mips|mipsel)    BIN="openwrt-mipsel" ;;
+    aarch64)        BIN="openwrt-aarch64" ;;
+    armv7l|armv7)   BIN="openwrt-armv7" ;;
+    x86_64)         BIN="openwrt-x86_64" ;;
     *)
         echo "ERROR: Unsupported architecture: ${ARCH}" >&2
         echo "Supported: mips/mipsel, aarch64, armv7l, x86_64" >&2
