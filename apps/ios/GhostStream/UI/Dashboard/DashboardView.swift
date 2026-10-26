@@ -110,11 +110,15 @@ struct DashboardView: View {
         case .dead?:
             return L("native.dashboard.health.dead")
         case .degraded?:
+            // The core reports throttling as `degraded` too.
+            if sf.bandwidthClass == .throttled {
+                return L("native.dashboard.health.throttled")
+            }
             return String(format: L("native.dashboard.health.degraded.format"), Int(sf.streamsUp), Int(sf.nStreams))
         case .stale?:
             return String(format: L("native.dashboard.health.stale.format"), Int(sf.idleRxSecs ?? 0))
         default:
-            return sf.bandwidthClass == .throttled ? L("native.dashboard.health.throttled") : nil
+            return nil
         }
     }
 

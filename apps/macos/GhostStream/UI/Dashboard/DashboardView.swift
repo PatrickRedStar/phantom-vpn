@@ -167,12 +167,16 @@ public struct DashboardView: View {
         case .dead?:
             return L("state.health_dead")
         case .degraded?:
+            // The core reports throttling as `degraded` too.
+            if frame.bandwidthClass == .throttled {
+                return L("state.health_throttled")
+            }
             return String(format: L("state.health_degraded"),
                           Int64(frame.streamsUp), Int64(frame.nStreams))
         case .stale?:
             return String(format: L("state.health_stale"), Int64(frame.idleRxSecs ?? 0))
         default:
-            return frame.bandwidthClass == .throttled ? L("state.health_throttled") : nil
+            return nil
         }
     }
 
