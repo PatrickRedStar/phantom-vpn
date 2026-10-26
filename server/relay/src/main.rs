@@ -126,6 +126,12 @@ impl EffectiveConfig {
 
         let upstream_addr = args.upstream.clone().or(cfg.upstream_addr)
             .ok_or_else(|| anyhow::anyhow!("upstream_addr is required (config or --upstream)"))?;
+        // Resolved per connection, so only the shape is checked here: a typo
+        // must fail the start, not silently drop every client later.
+        if !matches!(upstream_addr.rsplit_once(':'),
+                     Some((host, port)) if !host.is_empty() && port.parse::<u16>().is_ok()) {
+            anyhow::bail!("Invalid upstream_addr (want host:port): {}", upstream_addr);
+        }
 
         let expected_sni = args.expected_sni.clone().or(cfg.expected_sni)
             .ok_or_else(|| anyhow::anyhow!("expected_sni is required (config or --expected-sni)"))?
@@ -398,10 +404,16 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = Arc::new(cfg);
     let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let mut at_limit = false;
 
     loop {
         // At the limit we simply stop accepting; the kernel backlog holds
-        // the rest until a slot frees up.
+        // the rest until a slot frees up. Say so once per episode.
+        let full = slots.available_permits() == 0;
+        if full && !at_limit {
+            tracing::warn!("{} connections open — accept paused until one closes", MAX_CONNECTIONS);
+        }
+        at_limit = full;
         let permit = slots.clone().acquire_owned().await.expect("semaphore is never closed");
         let (tcp, remote) = match listener.accept().await {
             Ok(conn) => conn,
@@ -436,7 +448,7 @@ async fn handle_connection(
     // wait on the socket, and the bytes are replayed to whoever handles it.
     let mut buf = vec![0u8; MAX_HELLO];
     let mut have = 0;
-    let hello = loop {
+    let sni = loop {
         let n = timeout_at(deadline, tcp.read(&mut buf[have..])).await
             .map_err(|_| anyhow::anyhow!("ClientHello timeout ({} bytes)", have))??;
         if n == 0 {
@@ -444,13 +456,14 @@ async fn handle_connection(
         }
         have += n;
         match client_hello(&buf[..have]) {
-            Ok(Some(msg)) => break Some(msg),
+            Ok(Some(msg)) => break extract_sni(&msg),
             Ok(None) if have < buf.len() => continue,
             _ => break None, // not TLS, or a hello too big to be real
         }
     };
+    // The buffer lives as long as the connection — don't hold 16 KB for it.
     buf.truncate(have);
-    let sni = hello.as_deref().and_then(extract_sni);
+    buf.shrink_to_fit();
 
     if sni.as_deref() == Some(cfg.expected_sni.as_str()) {
         tracing::debug!("Passthrough {} → {}", remote, cfg.upstream_addr);
@@ -472,6 +485,10 @@ async fn handle_connection(
 /// Raw TCP passthrough: the already-read ClientHello goes first, then a plain
 /// bidirectional copy. No TLS inspection, no re-encryption, no mTLS — the
 /// client and the upstream do a full TLS 1.3 handshake directly through us.
+///
+/// Both sockets close as soon as either side does: TLS doesn't use TCP
+/// half-close, and waiting for the other side's EOF would let a silent peer
+/// pin the connection forever after the exit has timed it out.
 async fn passthrough(
     mut client: TcpStream,
     remote: SocketAddr,
@@ -488,12 +505,15 @@ async fn passthrough(
     let _ = upstream.set_nodelay(true);
 
     upstream.write_all(hello).await.context("replaying ClientHello upstream")?;
-    let (up, down) = io::copy_bidirectional(&mut client, &mut upstream).await?;
-
-    tracing::debug!(
-        "Passthrough {} closed: up={}B down={}B",
-        remote, up + hello.len() as u64, down
-    );
+    let (mut cr, mut cw) = client.split();
+    let (mut ur, mut uw) = upstream.split();
+    let ended = tokio::select! {
+        r = io::copy(&mut cr, &mut uw) =>
+            format!("client closed, up={}B", r.context("client → upstream")? + hello.len() as u64),
+        r = io::copy(&mut ur, &mut cw) =>
+            format!("upstream closed, down={}B", r.context("upstream → client")?),
+    };
+    tracing::debug!("Passthrough {} ended: {}", remote, ended);
     Ok(())
 }
 
@@ -545,8 +565,10 @@ async fn serve_fallback<S: io::AsyncRead + io::AsyncWrite + Unpin>(mut stream: S
     if n == 0 {
         return Ok(());
     }
-    let status = if looks_like_http(&buf[..n]) { "404 Not Found" } else { "400 Bad Request" };
-    stream.write_all(nginx_error(status, SystemTime::now()).as_bytes()).await?;
+    let req = &buf[..n];
+    let status = if looks_like_http(req) { "404 Not Found" } else { "400 Bad Request" };
+    let head_only = req.starts_with(b"HEAD ");
+    stream.write_all(nginx_error(status, SystemTime::now(), head_only).as_bytes()).await?;
     stream.shutdown().await?;
     Ok(())
 }
@@ -562,8 +584,9 @@ fn looks_like_http(req: &[u8]) -> bool {
         && parts.next().is_some_and(|version| version.starts_with(b"HTTP/1."))
 }
 
-/// Byte-for-byte nginx error page with `server_tokens off`.
-fn nginx_error(status: &str, now: SystemTime) -> String {
+/// Byte-for-byte nginx error page with `server_tokens off`. A HEAD request
+/// gets the same headers (Content-Length included) and no body.
+fn nginx_error(status: &str, now: SystemTime, head_only: bool) -> String {
     let body = format!(
         "<html>\r\n<head><title>{status}</title></head>\r\n<body>\r\n\
          <center><h1>{status}</h1></center>\r\n<hr><center>nginx</center>\r\n\
@@ -571,9 +594,10 @@ fn nginx_error(status: &str, now: SystemTime) -> String {
     );
     format!(
         "HTTP/1.1 {status}\r\nServer: nginx\r\nDate: {}\r\nContent-Type: text/html\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
         http_date(now),
         body.len(),
+        if head_only { "" } else { &body },
     )
 }
 
@@ -726,11 +750,31 @@ mod tests {
         assert!(!looks_like_http(b"\x00\x01garbage"));
         assert!(!looks_like_http(b"get / HTTP/1.1\r\n"));
 
-        let resp = nginx_error("404 Not Found", UNIX_EPOCH);
+        let resp = nginx_error("404 Not Found", UNIX_EPOCH, false);
         let (head, body) = resp.split_once("\r\n\r\n").unwrap();
         assert!(head.starts_with("HTTP/1.1 404 Not Found\r\nServer: nginx\r\nDate: Thu, 01 Jan 1970"));
         assert!(head.contains(&format!("Content-Length: {}\r\n", body.len())));
         assert!(body.contains("<center><h1>404 Not Found</h1></center>"));
+
+        // HEAD: same headers, no body.
+        let head_resp = nginx_error("404 Not Found", UNIX_EPOCH, true);
+        assert_eq!(head_resp, format!("{}\r\n\r\n", head));
+    }
+
+    #[test]
+    fn upstream_addr_needs_port() {
+        let parse = |up: &str| {
+            let args = Args::parse_from([
+                "phantom-relay", "--listen", "127.0.0.1:0", "--expected-sni", "x", "--upstream", up,
+            ]);
+            EffectiveConfig::from_args(&args).is_ok()
+        };
+        assert!(parse("89.110.109.128:8443"));
+        assert!(parse("exit.example.com:8443"));
+        assert!(parse("[::1]:8443"));
+        assert!(!parse("89.110.109.128"));
+        assert!(!parse("exit.example.com:84430"));
+        assert!(!parse(":8443"));
     }
 
     fn test_cfg(upstream: SocketAddr) -> EffectiveConfig {
@@ -775,6 +819,36 @@ mod tests {
         let mut reply = [0u8; 12];
         client.read_exact(&mut reply).await.unwrap();
         assert_eq!(&reply, b"server-reply");
+    }
+
+    /// When the exit closes, the relay lets go of the client too, even if the
+    /// client stays silent and never closes its side.
+    #[tokio::test]
+    async fn passthrough_ends_when_upstream_closes() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cfg = test_cfg(upstream.local_addr().unwrap());
+        let relay_addr = relay.local_addr().unwrap();
+        let handled = tokio::spawn(async move {
+            let (tcp, remote) = relay.accept().await.unwrap();
+            let _ = handle_connection(tcp, remote, &cfg).await;
+        });
+
+        let hello = records(&hello_msg(b"tls.nl2.example.com"), &[]);
+        let mut client = TcpStream::connect(relay_addr).await.unwrap();
+        client.write_all(&hello).await.unwrap();
+
+        let (mut up, _) = upstream.accept().await.unwrap();
+        let mut got = vec![0u8; hello.len()];
+        up.read_exact(&mut got).await.unwrap();
+        drop(up);
+
+        // `client` is still open here.
+        timeout(Duration::from_secs(2), handled).await
+            .expect("relay still holds a connection the exit has closed")
+            .unwrap();
+        let mut b = [0u8; 1];
+        assert_eq!(client.read(&mut b).await.unwrap(), 0);
     }
 
     /// A wrong SNI without a fallback cert is closed and never reaches the exit.
