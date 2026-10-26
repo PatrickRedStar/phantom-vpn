@@ -1390,23 +1390,12 @@ private fun TunnelRows(
         showDivider = true,
     )
     // Real always-on (and "block connections without VPN") is a system
-    // setting; we can only show its state and send the user there.
+    // setting; the app can't read it (hidden key, SecurityException since
+    // Android 12), so we only send the user there.
     val context = LocalContext.current
-    var systemAlwaysOn by remember { mutableStateOf(systemAlwaysOnState(context)) }
-    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) {
-        systemAlwaysOn = systemAlwaysOnState(context)
-        onPauseOrDispose { }
-    }
     SettingRow(
         label = stringResource(R.string.row_system_always_on),
-        sub = stringResource(
-            when (systemAlwaysOn) {
-                SystemAlwaysOn.LOCKDOWN -> R.string.sub_system_always_on_lockdown
-                SystemAlwaysOn.ON -> R.string.sub_system_always_on_on
-                SystemAlwaysOn.OFF -> R.string.sub_system_always_on_off
-                SystemAlwaysOn.UNKNOWN -> R.string.sub_system_always_on_unknown
-            },
-        ),
+        sub = stringResource(R.string.sub_system_always_on_unknown),
         right = {
             Text("→", style = GsText.labelMono, color = C.textDim)
         },
@@ -1804,24 +1793,6 @@ private fun AddProfileDialog(
 // the next composition (battery-opt) or stays as confirmation (autostart
 // — we can't actually detect it from app side, so we just stop nagging
 // once user clicks through).
-private enum class SystemAlwaysOn { OFF, ON, LOCKDOWN, UNKNOWN }
-
-/**
- * State of the system Always-on VPN for this app. The keys are hidden
- * settings; if a ROM refuses to expose them we say "unknown" and still
- * offer the shortcut to the system screen.
- */
-private fun systemAlwaysOnState(ctx: Context): SystemAlwaysOn = runCatching {
-    val cr = ctx.contentResolver
-    when {
-        android.provider.Settings.Secure.getString(cr, "always_on_vpn_app") != ctx.packageName ->
-            SystemAlwaysOn.OFF
-        android.provider.Settings.Secure.getInt(cr, "always_on_vpn_lockdown", 0) == 1 ->
-            SystemAlwaysOn.LOCKDOWN
-        else -> SystemAlwaysOn.ON
-    }
-}.getOrDefault(SystemAlwaysOn.UNKNOWN)
-
 private fun isOemAutostartProblematic(): Boolean {
     val m = android.os.Build.MANUFACTURER.lowercase()
     return m in setOf("xiaomi", "huawei", "honor", "vivo", "oppo", "realme", "redmi")

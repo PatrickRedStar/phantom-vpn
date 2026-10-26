@@ -254,9 +254,6 @@
     <string name="sub_per_app_only">Выбрано прил.: %1$d</string>
     <string name="sub_per_app_all">Всё через VPN</string>
     <string name="row_system_always_on">Системный «Постоянный VPN»</string>
-    <string name="sub_system_always_on_lockdown">Включён · без VPN соединения блокируются</string>
-    <string name="sub_system_always_on_on">Включён · без блокировки</string>
-    <string name="sub_system_always_on_off">Выключен · настраивается в системных настройках VPN</string>
     <string name="sub_system_always_on_unknown">Настраивается в системных настройках VPN</string>
     <string name="hint_autostart_title">Запуск при загрузке</string>
     <string name="hint_autostart_text">%1$s: для автозапуска нужно вручную включить «Автозапуск» в настройках устройства — без этого VPN не стартует после перезагрузки.</string>

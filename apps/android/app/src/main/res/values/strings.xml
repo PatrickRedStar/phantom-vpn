@@ -262,9 +262,6 @@
     <string name="sub_per_app_only">%1$d apps selected</string>
     <string name="sub_per_app_all">All through VPN</string>
     <string name="row_system_always_on">System always-on VPN</string>
-    <string name="sub_system_always_on_lockdown">On · connections without VPN are blocked</string>
-    <string name="sub_system_always_on_on">On · without blocking</string>
-    <string name="sub_system_always_on_off">Off · set it up in Android VPN settings</string>
     <string name="sub_system_always_on_unknown">Set up in Android VPN settings</string>
     <string name="hint_autostart_title">Start on boot</string>
     <string name="hint_autostart_text">%1$s: turn on “Autostart” for the app in the device settings — otherwise the VPN won’t start after a reboot.</string>
