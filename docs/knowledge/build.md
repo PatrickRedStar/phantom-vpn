@@ -109,7 +109,7 @@ server/scripts/deploy.sh vdsina ~/.ssh/personal            # --dry-run трет�
 server/scripts/deploy-relay.sh vps_balancer ~/.ssh/bot      # RU relay
 ```
 
-`deploy.sh` собирает `--locked --profile release-server`, кладёт новые бинари рядом как `*.new`, останавливает сервис только на время замены (прежние остаются `.prev`), ждёт, пока начнёт слушаться порт `[h2]`, и **сам откатывает** бинарь и unit, если не дождался. `deploy-relay.sh` никогда не перезаписывает `relay.toml` на хосте. Детали — [platforms/server.md](platforms/server.md).
+`deploy.sh` собирает `--locked --profile release-server`, кладёт новые бинари рядом как `*.new`, останавливает сервис только на время замены (прежние остаются `.prev`), ждёт, пока начнёт слушаться порт `[h2]` и появится NAT-правило, и **сам откатывает** бинарь, unit и `server.toml`, если не дождался. `deploy-relay.sh` никогда не перезаписывает `relay.toml` на хосте. Детали — [platforms/server.md](platforms/server.md).
 
 ```bash
 # Статус и логи — на сервере
@@ -179,7 +179,7 @@ cp .env.example .env
 $EDITOR .env                   # SERVER_NAME (server) / UPSTREAM_ADDR+EXPECTED_SNI (relay), TAG
 docker login ghcr.io           # пакеты ghcr.io/patrickredstar/* приватные
 docker compose up -d
-grep token config/server.toml  # ADMIN_TOKEN — в server.toml (0600), в логи не печатается
+sudo grep token config/server.toml  # ADMIN_TOKEN — в server.toml (root 0600), в логи не печатается
 ```
 
 Клиент всегда проверяет серт сервера (ADR 0011), поэтому exit в Docker поднимается **только с Let's Encrypt** (`/etc/letsencrypt` хоста монтируется read-only). После продления — `renew_hook = docker restart phantom-server` (см. `docker/server/README.md`).
@@ -194,7 +194,7 @@ docker exec -it phantom-server keys     # интерактивное меню ke
 
 ```bash
 # На старом сервере (если bind-mount был ./config):
-tar czf phantom-state-$(date +%F).tar.gz -C /path/to/docker/server config/
+sudo tar czf phantom-state-$(date +%F).tar.gz -C /path/to/docker/server config/
 scp phantom-state-*.tar.gz new-host:~
 
 # На новом сервере:
@@ -276,7 +276,7 @@ tools/ship-android.sh --bump          # только локально
 tools/ship-android.sh --bump --tag    # + тег и запуск CI
 ```
 
-`--tag` = релиз в Play production, поэтому скрипт: отказывается при незакоммиченных правках (в Play уходит закоммиченное, а не то, что стоит на телефоне), перед пушем спрашивает «Проверил на устройстве? [y/N]», без локального NDK падает (CI-only сборка — только явно, `--tag --ci-only`).
+`--tag` = релиз в Play production, поэтому скрипт: отказывается при незакоммиченных правках (в Play уходит закоммиченное, а не то, что стоит на телефоне), без секции `## [Android X.Y.Z]` новой версии в `CHANGELOG.md` откатывает bump и падает до сборки, перед пушем спрашивает «Проверил на устройстве? [y/N]», без локального NDK падает (CI-only сборка — только явно, `--tag --ci-only`, с тем же отказом при грязном дереве и отдельным подтверждением).
 
 Перед тегом в `CHANGELOG.md` должна быть секция `## [Android X.Y.Z]` с тем же `versionName`: из неё берётся «Что нового» для Play, без неё (или если тег ≠ `vX.Y.Z` из `build.gradle.kts`) Android-джоба падает.
 
