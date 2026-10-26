@@ -65,7 +65,7 @@ internal fun shouldPromoteStatusFrameToConnected(
  *  milliseconds after onRevoke / stopSelf, and would drop them mid-flight. */
 private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-/** Last good IP per server host — used when no validated network can resolve it. */
+/** Last validated IP per server host — used when no network can resolve it. */
 private val resolvedCache = ConcurrentHashMap<String, String>()
 
 class GhostStreamVpnService : VpnService(), PhantomListener {
@@ -443,21 +443,26 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // "Подключение", not the previous session's leftovers.
         VpnStateManager.resetStatus()
         VpnStateManager.update(VpnState.Connecting)
-        persistScope.launch {
-            runCatching {
-                prefs.setWasRunning(true)
-                prefs.clearLegacyTunnelParams()
-            }
-        }
+        persistScope.launch { runCatching { prefs.setWasRunning(true) } }
 
         val myGeneration = tunnelGeneration.incrementAndGet()
         startupThread?.interrupt()
         startupThread = Thread {
-            val extras = fromIntent ?: startExtrasFromStore()
-            if (extras == null) {
-                mainHandler.post { failTunnel("Нет профиля для подключения — откройте приложение", myGeneration) }
-            } else {
-                startTunnel(extras, myGeneration)
+            // An uncaught exception here would kill the whole process. A stop or
+            // a newer start interrupts this thread (runBlocking then throws), and
+            // reading the profile does file IO.
+            try {
+                val extras = fromIntent ?: startExtrasFromStore()
+                if (extras == null) {
+                    mainHandler.post { failTunnel("Нет профиля для подключения — откройте приложение", myGeneration) }
+                } else {
+                    startTunnel(extras, myGeneration)
+                }
+            } catch (_: InterruptedException) {
+                // Superseded — whoever interrupted us owns the state now.
+            } catch (e: Exception) {
+                Log.e(TAG, "startup failed", e)
+                mainHandler.post { failTunnel("Не удалось запустить туннель: ${e.message}", myGeneration) }
             }
         }.apply {
             name = "vpn-startup"
@@ -1058,7 +1063,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 val wasValidated = physicalNetworks.put(n, caps)
                     ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
                 onPhysicalNetworksChanged()
-                if (validated && !wasValidated) onNetworkValidated()
+                if (validated && !wasValidated) reresolve(n)
             }
             override fun onLost(n: Network) {
                 physicalNetworks.remove(n)
@@ -1095,42 +1100,57 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     }
 
     /**
-     * host:port → ip:port. Resolved only through a physical network with
-     * VALIDATED: DNS through the TUN can't work (the core isn't up), and an
-     * unvalidated network — a captive portal, a spoofed resolver — hands back a
-     * wrong address. No such network or the lookup failed → the last good
+     * host:port → ip:port, resolved through a physical network: DNS through the
+     * TUN can't work (the core isn't up). A VALIDATED network is preferred.
+     * Some never validate (mobile whitelists, a blocked connectivity check), so
+     * any other will do — except a captive portal, whose resolver hands back the
+     * portal. Only a validated answer is remembered; a network that validates
+     * later re-checks the address ([reresolve]). Lookup failed → the last good
      * address of this host. null — nothing to go on yet. A name never reaches
      * Rust: there it would be resolved through the dead TUN.
      */
     private fun resolveServerAddr(hostPort: String): String? {
-        val lastColon = hostPort.lastIndexOf(':')
-        val host = if (lastColon > 0) hostPort.substring(0, lastColon) else hostPort
-        val port = if (lastColon > 0) hostPort.substring(lastColon + 1) else "443"
-        if (ipToLong(host) != null || host.contains(':')) return hostPort
+        val (host, port) = splitHostPort(hostPort)
+        if (isIpLiteral(host)) return hostPort
 
-        val fresh = validatedNetwork()?.let { net ->
-            runCatching {
-                val addrs = net.getAllByName(host)
-                // v0.25.0: prefer IPv4 explicit — наши серверы v4-only, на
-                // IPv6-only сетях (T-Mobile US, Иран) первый возвращённый адрес
-                // может быть IPv6 → TCP connect timeout. Bug #9.
-                (addrs.firstOrNull { it is Inet4Address } ?: addrs.firstOrNull())?.hostAddress
-            }.onFailure {
-                Log.w(TAG, "DNS resolution failed for $host: ${it.message}")
-                VpnStateManager.emitLifecycleLog("WARN", "DNS: не удалось разрешить $host — ${it.message}")
-            }.getOrNull()
-        }
+        val validated = validatedNetwork()
+        val net = validated ?: physicalNetworks.entries.firstOrNull {
+            !it.value.hasCapability(NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL)
+        }?.key
+        val fresh = net?.let { lookup(it, host)?.first() }
         val ip = if (fresh != null) {
-            resolvedCache[host] = fresh
-            VpnStateManager.emitLifecycleLog("DEBUG", "DNS: $host → $fresh")
+            if (validated != null) resolvedCache[host] = fresh
             fresh
         } else {
             resolvedCache[host]?.also {
                 VpnStateManager.emitLifecycleLog("INFO", "DNS: $host — последний известный адрес $it")
             } ?: return null
         }
-        return if (ip.contains(':')) "[$ip]:$port" else "$ip:$port"
+        return joinHostPort(ip, port)
     }
+
+    /** All addresses of [host] through [net], IPv4 first; null — lookup failed. */
+    private fun lookup(net: Network, host: String): List<String>? = runCatching {
+        // v0.25.0: prefer IPv4 explicit — наши серверы v4-only, на
+        // IPv6-only сетях (T-Mobile US, Иран) первый возвращённый адрес
+        // может быть IPv6 → TCP connect timeout. Bug #9.
+        net.getAllByName(host).sortedBy { it !is Inet4Address }.mapNotNull { it.hostAddress }
+    }.onFailure {
+        Log.w(TAG, "DNS resolution failed for $host: ${it.message}")
+        VpnStateManager.emitLifecycleLog("WARN", "DNS: не удалось разрешить $host — ${it.message}")
+    }.getOrNull()?.takeIf { it.isNotEmpty() }?.also {
+        VpnStateManager.emitLifecycleLog("DEBUG", "DNS: $host → ${it.joinToString()}")
+    }
+
+    private fun splitHostPort(hostPort: String): Pair<String, String> {
+        val lastColon = hostPort.lastIndexOf(':')
+        return if (lastColon > 0) hostPort.substring(0, lastColon) to hostPort.substring(lastColon + 1)
+        else hostPort to "443"
+    }
+
+    private fun isIpLiteral(host: String) = ipToLong(host) != null || host.contains(':')
+
+    private fun joinHostPort(ip: String, port: String) = if (ip.contains(':')) "[$ip]:$port" else "$ip:$port"
 
     /** Blocks until the server address is known (see [resolveServerAddr]).
      *  null — the start was cancelled meanwhile. */
@@ -1140,7 +1160,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             resolveServerAddr(hostPort)?.let { return it }
             if (!announced) {
                 announced = true
-                VpnStateManager.emitLifecycleLog("WARN", "Нет проверенной сети — жду, чтобы узнать адрес сервера")
+                VpnStateManager.emitLifecycleLog("WARN", "Не удалось узнать адрес сервера — жду сеть")
             }
             try {
                 synchronized(networkLock) { networkLock.wait(10_000L) }
@@ -1152,20 +1172,30 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     }
 
     /**
-     * A network just got VALIDATED: the server name may resolve to a new address
-     * now (or resolve at all — awaitServerAddr is woken separately). The core is
-     * restarted only if the address actually changed; reconnecting after a
-     * network change as such is the core's job.
+     * The server name may point elsewhere now: [net] just got VALIDATED, or the
+     * link has been down for a while (the relay may have moved). Resolved
+     * through the validated [net]; the core is restarted only if its address is
+     * not among the answers. Reconnecting after a network change as such is the
+     * core's job.
      */
-    private fun onNetworkValidated() {
+    private fun reresolve(net: Network) {
         val params = savedParams ?: return
         val current = currentServerAddr ?: return
         val generation = tunnelGeneration.get()
         Thread {
-            val fresh = resolveServerAddr(effectiveHostPort(params)) ?: return@Thread
-            if (fresh == current || currentServerAddr != current) return@Thread
+            val (host, port) = splitHostPort(effectiveHostPort(params))
+            if (isIpLiteral(host)) return@Thread
+            val addrs = lookup(net, host) ?: return@Thread
+            resolvedCache[host] = addrs.first()
+            if (addrs.any { joinHostPort(it, port) == current } || currentServerAddr != current) return@Thread
+            val fresh = joinHostPort(addrs.first(), port)
             Log.i(TAG, "Server address changed: $current → $fresh")
             VpnStateManager.emitLifecycleLog("INFO", "Адрес сервера сменился ($current → $fresh), перезапуск")
+            // A new core starts from scratch — the UI must not keep the old "Connected".
+            VpnStateManager.resetStatus()
+            mainHandler.post {
+                if (tunnelGeneration.get() == generation) VpnStateManager.update(VpnState.Connecting)
+            }
             startNative(params, fresh, generation)
         }.apply { name = "vpn-reresolve"; isDaemon = true; start() }
     }
@@ -1256,8 +1286,11 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 .distinctUntilChanged { a, b -> a.first::class == b.first::class && a.second == b.second }
                 .collectLatest { (state, degraded) ->
                     // Don't resurrect a notification once the tunnel is gone — the
-                    // teardown path calls stopForeground(REMOVE) itself.
-                    if (state is VpnState.Disconnected || state is VpnState.Disconnecting) {
+                    // teardown path calls stopForeground(REMOVE) itself, and for an
+                    // error it posts the reason as an alert.
+                    if (state is VpnState.Disconnected || state is VpnState.Disconnecting ||
+                        state is VpnState.Error
+                    ) {
                         wasUp = false
                         return@collectLatest
                     }
@@ -1269,6 +1302,10 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                     nm.notify(NOTIFICATION_ID, buildNotification(notificationContentFor(state, degraded)))
                     if (state is VpnState.Reconnecting || state is VpnState.Connecting) {
                         delay(NO_LINK_ALERT_DELAY_MS)
+                        // A stable network never re-validates — check here whether
+                        // the server name has moved away from the address the core
+                        // keeps retrying.
+                        validatedNetwork()?.let { reresolve(it) }
                         nm.notify(
                             NOTIFICATION_ID,
                             buildNotification(Triple(
