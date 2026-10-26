@@ -749,9 +749,9 @@ async fn tokio_worker(
                 admin_refresh(&profiles, &win_weak).await;
             }
             UiCommand::AdminAddSubmit { name, expires_days } => {
-                let Some(ac) = make_admin_client(&profiles).await else {
-                    set_admin_status(&win_weak, "Admin credentials missing on active profile.".into());
-                    continue;
+                let ac = match make_admin_client(&profiles).await {
+                    Ok(ac) => ac,
+                    Err(e) => { set_admin_status(&win_weak, format!("{:#}", e)); continue; }
                 };
                 match ac.create_client(&name, expires_days).await {
                     Ok(_) => {
@@ -762,9 +762,9 @@ async fn tokio_worker(
                 }
             }
             UiCommand::AdminRowAction { action, name } => {
-                let Some(ac) = make_admin_client(&profiles).await else {
-                    set_admin_status(&win_weak, "Admin credentials missing on active profile.".into());
-                    continue;
+                let ac = match make_admin_client(&profiles).await {
+                    Ok(ac) => ac,
+                    Err(e) => { set_admin_status(&win_weak, format!("{:#}", e)); continue; }
                 };
                 let res: anyhow::Result<String> = match action.as_str() {
                     "extend30" => ac.extend_subscription(&name, 30).await.map(|_| format!("+30d on {}", name)),
@@ -924,20 +924,10 @@ fn save_settings_from_ui(w: &MainWindow) {
 
 async fn make_admin_client(
     profiles: &Arc<Mutex<profiles::Store>>,
-) -> Option<admin_api::AdminClient> {
-    let ps = profiles.lock().await;
-    let active = ps.active()?.clone();
-    drop(ps);
-    let url = active.admin_url.as_deref()?;
-    let token = active.admin_token.as_deref()?;
-    let fp = active.admin_server_cert_fp.as_deref();
-    match admin_api::AdminClient::new(url, token, fp) {
-        Ok(c) => Some(c),
-        Err(e) => {
-            tracing::warn!(?e, "admin client");
-            None
-        }
-    }
+) -> anyhow::Result<admin_api::AdminClient> {
+    let active = profiles.lock().await.active().cloned()
+        .ok_or_else(|| anyhow::anyhow!("no active profile"))?;
+    admin_api::AdminClient::new(&active)
 }
 
 fn set_admin_status(win_weak: &slint::Weak<MainWindow>, msg: String) {
@@ -953,16 +943,19 @@ async fn admin_refresh(
     profiles: &Arc<Mutex<profiles::Store>>,
     win_weak: &slint::Weak<MainWindow>,
 ) {
-    let Some(ac) = make_admin_client(profiles).await else {
-        set_admin_status(win_weak, "No admin URL/token on active profile.".into());
-        let win_weak = win_weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(w) = win_weak.upgrade() {
-                w.set_admin_rows(slint::ModelRc::new(slint::VecModel::from(Vec::<AdminClientRow>::new())));
-                w.set_admin_busy(false);
-            }
-        });
-        return;
+    let ac = match make_admin_client(profiles).await {
+        Ok(ac) => ac,
+        Err(e) => {
+            set_admin_status(win_weak, format!("{:#}", e));
+            let win_weak = win_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w) = win_weak.upgrade() {
+                    w.set_admin_rows(slint::ModelRc::new(slint::VecModel::from(Vec::<AdminClientRow>::new())));
+                    w.set_admin_busy(false);
+                }
+            });
+            return;
+        }
     };
 
     {
@@ -977,6 +970,14 @@ async fn admin_refresh(
 
     let status = ac.server_status().await.ok();
     let clients = ac.list_clients().await;
+    // Trust on first use: pin the admin-server cert behind the first answer.
+    if let Some(fp) = ac.new_pin().filter(|_| clients.is_ok()) {
+        let mut ps = profiles.lock().await;
+        if let Some(p) = ps.profiles.iter_mut().find(|p| p.id == ac.profile_id) {
+            p.admin_server_cert_fp.get_or_insert(fp);
+        }
+        let _ = ps.save();
+    }
     let win_weak = win_weak.clone();
     let _ = slint::invoke_from_event_loop(move || {
         let Some(w) = win_weak.upgrade() else { return };

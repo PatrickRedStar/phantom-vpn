@@ -29,7 +29,7 @@ use tokio::sync::mpsc;
 use phantom_core::{
     mtu::clamp_tcp_mss,
     wire::{
-        build_heartbeat_frame,
+        batch_packets, build_heartbeat_frame,
         BATCH_MAX_PLAINTEXT, MAX_N_STREAMS, MIN_N_STREAMS, QUIC_TUNNEL_MSS,
     },
 };
@@ -67,11 +67,12 @@ const FRAME_QUEUE: usize = 32;
 #[cfg(target_os = "linux")]
 const NOTSENT_LOWAT: libc::c_int = 128 * 1024;
 
-/// Build the transport TLS config. Same as `phantom_core::h2_transport::make_h2_server_tls`
-/// plus: the client cert is checked against the allowlist inside the handshake
-/// (revoked → alert, the client can tell "access revoked" from a network
-/// failure), and the CA name list is not sent in CertificateRequest (it would
-/// name our CA to any prober; rustls clients send their only cert anyway).
+/// Build the transport TLS config: optional mTLS against our CA (a client
+/// without a cert gets the fake app-face); the client cert is checked against
+/// the allowlist inside the handshake (revoked → alert, the client can tell
+/// "access revoked" from a network failure), and the CA name list is not sent
+/// in CertificateRequest (it would name our CA to any prober; rustls clients
+/// send their only cert anyway).
 pub fn make_tls_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
@@ -96,7 +97,10 @@ pub fn make_tls_config(
         }
         None => builder.with_no_client_auth().with_single_cert(certs, key)?,
     };
-    cfg.alpn_protocols = vec![b"h2".to_vec()];
+    // h2 first: our clients offer both and always get h2. http/1.1 is there
+    // for probers — with h2 alone they got a no_application_protocol alert,
+    // which no nginx in front of a website ever sends.
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     cfg.max_early_data_size = 0;
     Ok(Arc::new(cfg))
 }
@@ -235,7 +239,7 @@ pub async fn run_h2_accept_loop(
             // Do NOT reintroduce an escape hatch that assigns an identity without a
             // cert (there used to be a PHANTOM_TEST_CERTLESS_FP env var here). The
             // server TLS config uses `.allow_unauthenticated()` — see
-            // crates/core/src/h2_transport.rs — so a certless handshake *does* reach
+            // `make_tls_config` above — so a certless handshake *does* reach
             // this point, and any such branch is an unauthenticated VPN open to the
             // internet: exit through the NL node, reachability of 10.7.0.0/24 and of
             // the admin API on 10.7.0.1:8080, under a real client's identity.
@@ -243,7 +247,11 @@ pub async fn run_h2_accept_loop(
             // answer is no, see docs/knowledge/architecture/dpi-tspu.md.
             let client_fp = if peer_certs.is_empty() {
                 tracing::info!("Unauthenticated TLS from {} → fake app-face", remote);
-                fakeapp::handle(tls_stream, remote).await;
+                if tls_stream.get_ref().1.alpn_protocol() == Some(b"h2") {
+                    fakeapp::handle(tls_stream, remote).await;
+                } else {
+                    fakeapp::handle_http1(tls_stream, remote).await;
+                }
                 return;
             } else {
                 vpn_session::cert_fingerprint(peer_certs[0].as_ref())
@@ -527,17 +535,9 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
             break;
         }
 
-        // Ensure capacity for this frame.
-        if buf.capacity() < frame_len {
-            buf.reserve(frame_len.max(buf_reserve) - buf.len());
-        }
-        // Grow so we can read_exact into &mut [u8].
-        let old_len = buf.len();
-        buf.resize(old_len + frame_len, 0);
-        match tokio::time::timeout(
-            STREAM_IDLE_TIMEOUT,
-            reader.read_exact(&mut buf[old_len..old_len + frame_len]),
-        ).await {
+        // The pool is empty here: the previous frame was split off whole.
+        buf.resize(frame_len, 0);
+        match tokio::time::timeout(STREAM_IDLE_TIMEOUT, reader.read_exact(&mut buf[..])).await {
             Ok(Ok(_)) => {}
             _ => break,
         }
@@ -545,29 +545,12 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
         session.bytes_rx.fetch_add((4 + frame_len) as u64, Ordering::Relaxed);
         session.touch();
 
-        // Zero-copy: split the frame bytes out of the pool.
-        // `frame` is an owned Bytes sharing the underlying BytesMut allocation.
-        let mut frame: Bytes = {
-            // split_off at old_len to leave unread prefix (none at old_len==0)
-            // We built frame at [old_len .. old_len+frame_len]; the only content
-            // in the buffer right now IS that frame (old_len was 0 or the tail
-            // of a previous frame already consumed). Ensure old_len is 0.
-            debug_assert_eq!(old_len, 0);
-            let _ = old_len;
-            buf.split_to(frame_len).freeze()
-        };
+        // Zero-copy: `frame` shares the pool allocation, every packet below
+        // is a slice of it.
+        let frame: Bytes = buf.split_to(frame_len).freeze();
 
-        // Parse batch walking `frame` — each pkt is a zero-copy slice.
-        while frame.len() >= 2 {
-            let pkt_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
-            // Consume the 2-byte length prefix.
-            let _ = frame.split_to(2);
-            if pkt_len == 0 { break; }
-            if frame.len() < pkt_len { break; }
-
-            let pkt = frame.split_to(pkt_len);
-
-            if pkt_len < 20 || (pkt[0] >> 4) != 4 { continue; }
+        for pkt in batch_packets(&frame) {
+            if pkt.len() < 20 || (pkt[0] >> 4) != 4 { continue; }
 
             let src_v4 = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
             if tun_ip.is_none() && u32::from(src_v4) & mask == u32::from(tun_network) & mask {
@@ -587,12 +570,12 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
 
             // Only a SYN gets its MSS clamped — copy just those, the rest go
             // out as zero-copy slices of the frame.
-            let pkt_bytes: Bytes = if is_tcp_syn(&pkt) {
-                let mut pkt_mut = BytesMut::from(&pkt[..]);
+            let pkt_bytes: Bytes = if is_tcp_syn(pkt) {
+                let mut pkt_mut = BytesMut::from(pkt);
                 let _ = clamp_tcp_mss(&mut pkt_mut, QUIC_TUNNEL_MSS);
                 pkt_mut.freeze()
             } else {
-                pkt
+                frame.slice_ref(pkt)
             };
 
             // Log destination (sampled every 64th packet)
@@ -620,12 +603,9 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
             }
         }
 
-        // Drop what remains of this frame (padding, trailing bytes).
-        drop(frame);
-        // Reset the pool for the next iteration.
-        buf.clear();
+        // Replenish the pool for the next frame.
         if buf.capacity() < buf_reserve {
-            buf.reserve(buf_reserve - buf.capacity());
+            buf.reserve(buf_reserve);
         }
     }
 
@@ -723,7 +703,7 @@ async fn tls_write_loop<W: AsyncWriteExt + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phantom_core::wire::{build_batch_plaintext, extract_batch_packets};
+    use phantom_core::wire::build_batch_plaintext;
 
     /// Padded frames must stay readable by every existing receiver: same
     /// packets, length prefix matches the body, padding only after 0x0000.
@@ -743,8 +723,8 @@ mod tests {
         let len = u32::from_be_bytes(padded[..4].try_into().unwrap()) as usize;
         assert_eq!(len, padded.len() - 4);
         assert!(PAD_TARGET.contains(&len));
-        let got = extract_batch_packets(&padded[4..]).unwrap();
-        assert_eq!(got, pkts.iter().map(|p| p.to_vec()).collect::<Vec<_>>());
+        let got: Vec<&[u8]> = batch_packets(&padded[4..]).collect();
+        assert_eq!(got, pkts);
 
         let mut none = 0;
         assert_eq!(pad_start(frame.clone(), &mut none), frame);

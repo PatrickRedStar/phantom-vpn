@@ -104,7 +104,7 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
         .ok_or_else(|| anyhow::anyhow!("Malformed ghs:// URL: missing query string"))?;
 
     // v0.27.0: strip whitespace/control from userinfo. base64url alphabet is
-    // [A-Za-z0-9-_=] only. URL_SAFE_NO_PAD.decode is strict (errors on stray
+    // [A-Za-z0-9-_=] only. The decoder is strict (errors on stray
     // chars), but if the URL was line-wrapped by a terminal/IM during paste,
     // we want to recover rather than fail. Mirror Kotlin parse fix.
     let userinfo: String = userinfo_raw.chars()
@@ -130,9 +130,15 @@ pub fn parse_conn_string(input: &str) -> anyhow::Result<ClientConfig> {
         );
     }
 
-    // Decode userinfo = base64url(cert_pem + "\n" + key_pem)
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    let pem_bytes = URL_SAFE_NO_PAD.decode(userinfo.as_bytes())
+    // Decode userinfo = base64url(cert_pem + "\n" + key_pem). Padding is
+    // optional, same as the Kotlin ConnStringParser: the bot emits no '=',
+    // but a link re-encoded by some other tool may carry it.
+    use base64::{Engine, alphabet, engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig}};
+    const URL_SAFE_ANY_PAD: GeneralPurpose = GeneralPurpose::new(
+        &alphabet::URL_SAFE,
+        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    );
+    let pem_bytes = URL_SAFE_ANY_PAD.decode(userinfo.as_bytes())
         .context("Invalid base64url userinfo in ghs:// URL")?;
     let pem_str = String::from_utf8(pem_bytes)
         .context("Userinfo is not valid UTF-8 after base64url decode")?;
@@ -235,6 +241,17 @@ mod tests {
         assert_eq!(cfg.network.server_name.as_deref(), Some("tls.example.com"));
         assert_eq!(cfg.network.tun_addr.as_deref(), Some("10.7.0.5/24"));
         assert_eq!(cfg.network.default_gw.as_deref(), Some("10.7.0.1"));
+    }
+
+    #[test]
+    fn parses_padded_userinfo() {
+        use base64::engine::general_purpose::URL_SAFE;
+        let pem = sample_pem(); // 125 bytes, not a multiple of 3
+        let enc = URL_SAFE.encode(pem.as_bytes());
+        assert!(enc.ends_with('='), "sample must produce padding: {}", enc);
+        let s = format!("ghs://{}@1.2.3.4:443?sni=tls.example.com&tun=10.7.0.5%2F24&v=1", enc);
+        let cfg = parse_conn_string(&s).expect("padded link must parse");
+        assert!(cfg.tls.unwrap().key_pem.unwrap().contains("PRIVATE KEY"));
     }
 
     #[test]

@@ -1,14 +1,9 @@
-//! TUN интерфейс на Linux: создание, настройка, async read/write.
+//! TUN интерфейс на Linux: создание, настройка, NAT.
 
 use std::fs::File;
 use std::io::{self};
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
-use std::pin::Pin;
-use std::task::Poll;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::process::Command;
-
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::io::unix::AsyncFd;
 
 // ─── ioctl constants ─────────────────────────────────────────────────────────
 
@@ -99,110 +94,6 @@ impl TunInterface {
 
     pub fn into_file(self) -> File {
         self.file
-    }
-}
-
-// ─── AsyncTun ────────────────────────────────────────────────────────────────
-
-/// Async TUN wrapper — implements tokio AsyncRead + AsyncWrite
-/// so it can be split with tokio::io::split()
-pub struct AsyncTun {
-    inner: AsyncFd<File>,
-}
-
-impl AsyncTun {
-    pub fn new(file: File) -> io::Result<Self> {
-        Ok(Self { inner: AsyncFd::new(file)? })
-    }
-}
-
-impl AsyncRead for AsyncTun {
-    fn poll_read(
-        self:  Pin<&mut Self>,
-        cx:    &mut std::task::Context<'_>,
-        buf:   &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        loop {
-            let mut guard = match self.inner.poll_read_ready(cx) {
-                Poll::Ready(Ok(g))  => g,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending       => return Poll::Pending,
-            };
-            let unfilled = buf.initialize_unfilled();
-            match guard.try_io(|inner| {
-                // SAFETY: AsyncFd guarantees the fd is ready; we read without mut ref clone
-                let n = unsafe {
-                    libc::read(
-                        inner.as_raw_fd(),
-                        unfilled.as_mut_ptr() as *mut libc::c_void,
-                        unfilled.len(),
-                    )
-                };
-                if n < 0 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(n as usize)
-                }
-            }) {
-                Ok(Ok(n)) => {
-                    buf.advance(n);
-                    return Poll::Ready(Ok(()));
-                }
-                Ok(Err(e))    => return Poll::Ready(Err(e)),
-                Err(_blocked) => continue,
-            }
-        }
-    }
-}
-
-impl AsyncWrite for AsyncTun {
-    fn poll_write(
-        self:  Pin<&mut Self>,
-        cx:    &mut std::task::Context<'_>,
-        data:  &[u8],
-    ) -> Poll<io::Result<usize>> {
-        loop {
-            let mut guard = match self.inner.poll_write_ready(cx) {
-                Poll::Ready(Ok(g))  => g,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending       => return Poll::Pending,
-            };
-            match guard.try_io(|inner| {
-                let n = unsafe {
-                    libc::write(
-                        inner.as_raw_fd(),
-                        data.as_ptr() as *const libc::c_void,
-                        data.len(),
-                    )
-                };
-                if n < 0 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(n as usize)
-                }
-            }) {
-                Ok(result)    => return Poll::Ready(result),
-                Err(_blocked) => continue,
-            }
-        }
-    }
-
-    fn poll_flush(
-        self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>
-    ) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(
-        self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>
-    ) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl AsRawFd for AsyncTun {
-    fn as_raw_fd(&self) -> RawFd {
-        self.inner.as_raw_fd()
     }
 }
 

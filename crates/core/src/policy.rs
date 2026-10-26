@@ -1,15 +1,15 @@
-//! Transport policy — единый набор anti-DPI рычагов, пушится сервером клиенту.
+//! Transport policy — единый набор anti-DPI рычагов клиента.
 //!
 //! См. ADR 0014. Философия:
-//! - `TransportPolicy` — сериализуемый wire-тип (все поля `Option` + `#[serde(default)]`),
-//!   именно он едет в `ClientConfigResponse.transport_policy` и лежит в `server.toml [policy]`.
+//! - `TransportPolicy` — сериализуемый тип (все поля `Option` + `#[serde(default)]`):
+//!   его читает лабораторный override-файл. Канала доставки с сервера нет —
+//!   `/api/client-config` удалён.
 //! - `ResolvedTransportPolicy` — конкретные значения, которыми пользуется рантайм; строится
 //!   мержем policy поверх `Default` (= текущие компайл-тайм `const`).
 //! - Глобал `install()/current()` даёт рантайму доступ без прокидывания через все слои.
 //!
-//! BACKWARD-COMPAT: без установленной policy `current()` возвращает дефолты — встроенные
-//! константы (wire.rs / h2_transport.rs). Старые клиенты игнорируют незнакомые поля
-//! (serde), новые клиенты на старом сервере получают `None` → дефолты.
+//! Без установленной policy `current()` возвращает дефолты — встроенные
+//! константы (wire.rs / h2_transport.rs).
 //!
 //! Статус доставки (см. ADR 0014): сервер policy клиентам не шлёт; в проде всегда
 //! действуют дефолты, `install()` вызывается только лабораторным харнессом.
@@ -27,9 +27,9 @@ use crate::wire::{
 /// несовпадении откатывается на дефолты.
 pub const POLICY_SCHEMA_VERSION: u32 = 1;
 
-// ─── Wire-тип (сериализуется, пушится, лежит в toml) ──────────────────────────
+// ─── Сериализуемый тип (override-файл) ────────────────────────────────────────
 
-/// Anti-DPI рычаги, доставляемые с сервера. Все поля опциональны — отсутствие любого
+/// Anti-DPI рычаги. Все поля опциональны — отсутствие любого
 /// означает «использовать встроенный дефолт» (текущее поведение).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TransportPolicy {
@@ -355,7 +355,7 @@ impl ResolvedTransportPolicy {
         if let Some(m) = p.mtls {
             r.mtls = m;
         }
-        // Санитизация инвариантов (защита от кривого server-конфига): heartbeat
+        // Санитизация инвариантов (защита от кривого override-файла): heartbeat
         // не реже HEARTBEAT_INTERVAL_MAX_SECS — иначе живой стрим упрётся в
         // детектор мёртвого (90 с); заглушка — от 20 байт (нужен байт-сентинел)
         // и до 1200, чтобы кадр не выглядел аномально и не ломал u16-длину.
@@ -382,7 +382,7 @@ fn slot() -> &'static RwLock<Arc<ResolvedTransportPolicy>> {
     SLOT.get_or_init(|| RwLock::new(Arc::new(ResolvedTransportPolicy::default())))
 }
 
-/// Установить активную policy (обычно на (ре)коннекте, из client-config или server.toml).
+/// Установить активную policy (лабораторный харнесс / override-файл).
 pub fn install(resolved: ResolvedTransportPolicy) {
     if let Ok(mut w) = slot().write() {
         *w = Arc::new(resolved);
