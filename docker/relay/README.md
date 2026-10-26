@@ -11,6 +11,7 @@ cp .env.example .env
 $EDITOR .env                           # UPSTREAM_ADDR + EXPECTED_SNI
 mkdir -p config && cp -L /etc/letsencrypt/live/<имя реле>/{fullchain,privkey}.pem config/
 sudo chown -R 10001 config                # контейнер работает от UID 10001
+docker login ghcr.io                      # пакеты приватные: логин GitHub + токен с read:packages
 docker compose up -d
 ```
 

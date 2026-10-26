@@ -1,6 +1,6 @@
 services:
   phantom-relay:
-    image: ghcr.io/${GHCR_OWNER:-ghoststream}/ghoststream-relay:${TAG:-latest}
+    image: ghcr.io/${GHCR_OWNER:-patrickredstar}/ghoststream-relay:${TAG:-latest}
     # build:
     #   context: ../..
     #   dockerfile: docker/relay/Dockerfile

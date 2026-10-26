@@ -5,12 +5,6 @@ FROM rust:1-bookworm AS builder
 
 WORKDIR /src
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        pkg-config \
-        clang \
-        cmake \
-    && rm -rf /var/lib/apt/lists/*
-
 # Cargo workspace resolve требует manifests всех members на диске, поэтому
 # копируем не только server/relay но и apps/linux + apps/openwrt.
 COPY Cargo.toml Cargo.lock ./
@@ -44,6 +38,6 @@ VOLUME ["/config"]
 RUN useradd -r -u 10001 -g nogroup relay
 USER relay
 
-EXPOSE 443/tcp
+EXPOSE 5443/tcp
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
