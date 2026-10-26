@@ -60,9 +60,16 @@ echo "Local OS: $LOCAL_OS"
 [[ -f server/scripts/keys.py ]] || { echo "Missing server/scripts/keys.py"; exit 1; }
 
 # ─── Step 1: Build locally ────────────────────────────────────────────────────
+OUT="target/release-server"
 LOCAL_BUILD=1
 if [[ "$LOCAL_OS" != "Linux" ]]; then
-    LOCAL_BUILD=0
+    if command -v cargo-zigbuild >/dev/null 2>&1; then
+        # macOS: кросс-сборка через zig под glibc 2.31 (не выше, чем на хостах).
+        BUILD="${BUILD/cargo build/cargo zigbuild --target x86_64-unknown-linux-gnu.2.31}"
+        OUT="target/x86_64-unknown-linux-gnu/release-server"
+    else
+        LOCAL_BUILD=0
+    fi
 fi
 
 if [[ "$LOCAL_BUILD" -eq 1 ]]; then
@@ -70,8 +77,8 @@ if [[ "$LOCAL_BUILD" -eq 1 ]]; then
     run_cmd "$BUILD"
     if [[ "$DRY_RUN" != "--dry-run" ]]; then
         for b in phantom-server phantom-keygen; do
-            [[ -f "target/release-server/$b" ]] || { echo "Missing target/release-server/$b"; exit 1; }
-            echo "  $b: $(du -sh "target/release-server/$b" | cut -f1)"
+            [[ -f "$OUT/$b" ]] || { echo "Missing $OUT/$b"; exit 1; }
+            echo "  $b: $(du -sh "$OUT/$b" | cut -f1)"
         done
     fi
 else
@@ -100,8 +107,8 @@ fi"
 # Сервис пока работает: остановка — только в шаге 5, вплотную к замене.
 echo "[3/5] Syncing project artifacts..."
 if [[ "$LOCAL_BUILD" -eq 1 ]]; then
-    run_cmd "rsync -az -e \"$RSYNC_SSH\" target/release-server/phantom-server \"$REMOTE:$REMOTE_DIR/phantom-server.new\""
-    run_cmd "rsync -az -e \"$RSYNC_SSH\" target/release-server/phantom-keygen \"$REMOTE:$REMOTE_DIR/phantom-keygen.new\""
+    run_cmd "rsync -az -e \"$RSYNC_SSH\" $OUT/phantom-server \"$REMOTE:$REMOTE_DIR/phantom-server.new\""
+    run_cmd "rsync -az -e \"$RSYNC_SSH\" $OUT/phantom-keygen \"$REMOTE:$REMOTE_DIR/phantom-keygen.new\""
 else
     # Remote build mode: sync source and build on server to avoid Exec format mismatch.
     # Тот же набор, что COPY в docker/server/Dockerfile: cargo читает манифесты

@@ -52,15 +52,24 @@ echo "=== PhantomVPN Relay Deploy: local → $REMOTE ==="
 echo "Local OS: $LOCAL_OS"
 
 # ─── Step 1: Build (local on Linux, otherwise remote) ────────────────────────
+OUT="target/release-server"
 LOCAL_BUILD=1
-[[ "$LOCAL_OS" != "Linux" ]] && LOCAL_BUILD=0
+if [[ "$LOCAL_OS" != "Linux" ]]; then
+    if command -v cargo-zigbuild >/dev/null 2>&1; then
+        # macOS: кросс-сборка через zig под glibc 2.31 (не выше, чем на хостах).
+        BUILD="${BUILD/cargo build/cargo zigbuild --target x86_64-unknown-linux-gnu.2.31}"
+        OUT="target/x86_64-unknown-linux-gnu/release-server"
+    else
+        LOCAL_BUILD=0
+    fi
+fi
 
 if [[ "$LOCAL_BUILD" -eq 1 ]]; then
     echo "[1/5] Building release binary locally..."
     run_cmd "$BUILD"
     if [[ "$DRY_RUN" != "--dry-run" ]]; then
-        [[ -f target/release-server/phantom-relay ]] || { echo "Missing target/release-server/phantom-relay"; exit 1; }
-        echo "  phantom-relay: $(du -sh target/release-server/phantom-relay | cut -f1)"
+        [[ -f $OUT/phantom-relay ]] || { echo "Missing $OUT/phantom-relay"; exit 1; }
+        echo "  phantom-relay: $(du -sh $OUT/phantom-relay | cut -f1)"
     fi
 else
     echo "[1/5] Local OS is not Linux, will build on remote host..."
@@ -85,7 +94,7 @@ fi"
 # Реле пока работает: остановка — только в шаге 4, вплотную к замене бинаря.
 echo "[3/5] Syncing artifacts..."
 if [[ "$LOCAL_BUILD" -eq 1 ]]; then
-    run_cmd "rsync -az -e \"$RSYNC_SSH\" target/release-server/phantom-relay \"$REMOTE:$REMOTE_DIR/phantom-relay.new\""
+    run_cmd "rsync -az -e \"$RSYNC_SSH\" $OUT/phantom-relay \"$REMOTE:$REMOTE_DIR/phantom-relay.new\""
 else
     run_remote "mkdir -p '$REMOTE_DIR/src'"
     # Тот же набор, что COPY в docker/relay/Dockerfile: сборка идёт в workspace
@@ -99,7 +108,7 @@ else
     fi"
     run_remote "source \"\$HOME/.cargo/env\" 2>/dev/null || true; \
       cd '$REMOTE_DIR/src' && $BUILD && \
-      install -m 0755 target/release-server/phantom-relay '$REMOTE_DIR/phantom-relay.new'"
+      install -m 0755 $OUT/phantom-relay '$REMOTE_DIR/phantom-relay.new'"
 fi
 
 run_cmd "rsync -az --ignore-existing -e \"$RSYNC_SSH\" server/relay/relay.example.toml \"$REMOTE:$REMOTE_DIR/config/relay.toml\""
