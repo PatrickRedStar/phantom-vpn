@@ -469,13 +469,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 )
                 // PROV-R2-N07 — start a fresh outbound loop now that the
                 // new bridge is live and route settings are in place.
-                let replacement: Task<Void, Never> = Task.detached { [weak self] in
-                    guard let self else { return }
-                    await self.outboundLoop()
-                }
-                self.withStateLock {
-                    self.outboundTask = replacement
-                }
+                self.startOutboundLoop()
             } catch {
                 self.emitProviderEvent(
                     level: "ERR",
@@ -640,8 +634,38 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // Before the first `.connected` NE still waits on the start
         // completion; a non-nil completion tears the tunnel down itself
         // (PROV-R4-N04), so `cancelTunnelWithError` only after it.
-        if !callStartCompletionOnce(err) {
+        if callStartCompletionOnce(err) {
+            // NE should follow up with stopTunnel, but the system extension
+            // outlives the session: don't count on it and leave a live
+            // runtime behind (the next Connect would hit ERR_ALREADY_RUNNING,
+            // a path change would restart it). A later stopTunnel finds
+            // nothing to stop, which is harmless.
+            let outbound = withStateLock { () -> Task<Void, Never>? in
+                let captured = outboundTask
+                outboundTask = nil
+                activeProfile = nil
+                activeSettings = nil
+                return captured
+            }
+            outbound?.cancel()
+            stopPathMonitor()
+            Task { await PhantomBridge.shared.stop() }
+        } else {
             cancelTunnelWithError(err)
+        }
+    }
+
+    /// Spawns the TUN → runtime loop unless the session was torn down while
+    /// the runtime was starting (stopTunnel or a fatal error can land before
+    /// we get here) — a loop installed after that would never be cancelled.
+    private func startOutboundLoop() {
+        withStateLock {
+            guard activeProfile != nil else { return }
+            outboundTask?.cancel()
+            outboundTask = Task.detached { [weak self] in
+                guard let self else { return }
+                await self.outboundLoop()
+            }
         }
     }
 
@@ -1027,13 +1051,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // `.error` status (fatal) — see `handleRuntimeStatus`. While the
         // core keeps retrying, NE honestly stays in "connecting".
 
-        let task: Task<Void, Never> = Task.detached { [weak self] in
-            guard let self else { return }
-            await self.outboundLoop()
-        }
-        withStateLock {
-            outboundTask = task
-        }
+        startOutboundLoop()
     }
 
     /// Read the `verbose_log` toggle from the App Group `UserDefaults`
