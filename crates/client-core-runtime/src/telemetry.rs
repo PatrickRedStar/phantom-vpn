@@ -6,8 +6,8 @@
 //! `StatusFrame` to the watch channel for the GUI.
 
 use portable_atomic::AtomicU64; // у 32-битного MIPS нет нативного 64-бит атомика
-use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU32, AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ghoststream_gui_ipc::{BandwidthClass, ConnState, StatusFrame, TunnelHealth};
@@ -16,14 +16,12 @@ use tokio::sync::watch;
 /// EMA smoothing factor. Higher = faster to new signal, more jitter.
 const ALPHA: f64 = 0.35;
 
-/// Idle threshold (seconds) above which a `Connected` tunnel is downgraded to
-/// `Stale` for UI honesty — display-only, never triggers teardown (the runtime
-/// reaps a stream at `RX_IDLE_TIMEOUT_SECS`, currently 75 s). NOTE: at 18 s this
-/// sits below `HEARTBEAT_INTERVAL_MAX_SECS` (45 s), so a quiet-but-live tunnel
-/// can briefly show Stale between heartbeats. Raising it above 45 s is a
-/// separate UX change (the `derive_health` tests pin 25 s → Stale) and is left
-/// out of the 2026-06-13 connect-resilience fix on purpose.
-const STALE_IDLE_SECS: u32 = 18;
+/// Seconds without ANY received frame (data or heartbeat, on any stream) after
+/// which a `Connected` tunnel is shown as `Stale` — display-only, never
+/// triggers teardown (a stream is reaped at `RX_IDLE_TIMEOUT_SECS`, 90 s).
+/// Server heartbeats come every 30–60 s per stream, so a quiet-but-live
+/// tunnel never reaches 75 s; idle user traffic alone is not staleness.
+const STALE_IDLE_SECS: u32 = 75;
 
 // ── TSPU-128 signature detector (v0.26.5) ────────────────────────────────
 //
@@ -171,10 +169,23 @@ pub struct Telemetry {
     pub started_at: Instant,
     pub bytes_rx: AtomicU64,
     pub bytes_tx: AtomicU64,
-    /// Unix-ms timestamp of the last RX byte. `0` = no RX yet this session.
-    /// Updated by `telem_task` whenever `bytes_rx` advances; granularity
-    /// is the 250 ms tick which is fine for UI staleness UX.
+    /// Unix-ms timestamp of the last frame received from the server (data or
+    /// heartbeat). Set at Connected, then by `telem_task` whenever `rx_frames`
+    /// advances; granularity is the 250 ms tick, fine for UI staleness UX.
     pub last_rx_unix_ms: AtomicU64,
+    /// Frames received on all streams, heartbeats included (wrapping). Bumped
+    /// by the RX loops; `telem_task` stamps `last_rx_unix_ms` off it, so the
+    /// hot path never reads a clock.
+    pub rx_frames: AtomicU32,
+    /// Uplink packets the dispatcher dropped (dead stream or queue full past
+    /// the grace period).
+    pub tx_dropped: AtomicU64,
+    /// Set once all N streams are up — the backoff resets after a session
+    /// that stayed connected long enough.
+    pub connected_at: OnceLock<Instant>,
+    /// Full error chain of a fatal stream error (revoked access, certificate,
+    /// clock). Set by a stream task; the death watcher turns it into teardown.
+    pub fatal: OnceLock<String>,
     /// Unix-ms timestamp of the last TX byte. `0` = no TX yet.
     pub last_tx_unix_ms: AtomicU64,
     /// Per-stream TX byte counters for activity indicator. Fixed 16-entry
@@ -217,6 +228,10 @@ impl Telemetry {
             bytes_rx: AtomicU64::new(0),
             bytes_tx: AtomicU64::new(0),
             last_rx_unix_ms: AtomicU64::new(0),
+            rx_frames: AtomicU32::new(0),
+            tx_dropped: AtomicU64::new(0),
+            connected_at: OnceLock::new(),
+            fatal: OnceLock::new(),
             last_tx_unix_ms: AtomicU64::new(0),
             stream_tx_bytes: (0..16).map(|_| AtomicU64::new(0)).collect(),
             n_streams,
@@ -244,8 +259,10 @@ impl Telemetry {
 ///
 /// Behaviour for `Connected` state (in priority order):
 /// - `streams_up == 0` → `Dead` (watcher is about to tear us down).
-/// - `streams_up < ceil(n_streams/2)` → `Degraded` (partial death).
-/// - `idle_rx_secs > STALE_IDLE_SECS` → `Stale`.
+/// - `streams_up < n_streams` → `Degraded` (a stream is down / reopening —
+///   flows hashed to it are stalled).
+/// - `idle_rx_secs > STALE_IDLE_SECS` → `Stale` (no frame at all, heartbeats
+///   included).
 /// - `bandwidth_class == Throttled` → `Degraded`.
 /// - Otherwise → `Healthy`.
 ///
@@ -268,8 +285,7 @@ pub(crate) fn derive_health(
                 if streams_up == 0 {
                     return TunnelHealth::Dead;
                 }
-                let half = (n_streams + 1) / 2;
-                if streams_up < half {
+                if streams_up < n_streams {
                     return TunnelHealth::Degraded;
                 }
             }
@@ -383,6 +399,10 @@ pub fn spawn_telem_task(
     tokio::spawn(async move {
         let mut last_rx = 0u64;
         let mut last_tx = 0u64;
+        let mut last_frames = 0u32;
+        // Last user-data RX — feeds only the throttle detector, which must not
+        // count heartbeats as traffic.
+        let mut last_data_rx_ms = 0u64;
         let mut last_instant = Instant::now();
         let mut last_per_stream: [u64; 16] = [0; 16];
         let mut ema_rx = 0.0f64;
@@ -416,11 +436,16 @@ pub fn spawn_telem_task(
             last_rx = br;
             last_tx = bt;
 
-            // Stamp last_rx/tx_unix_ms on any byte movement this tick.
-            // Granularity = 250 ms, plenty for UI staleness UX. Stamping
-            // here (vs. inside the hot RX/TX path) keeps the path lock-free.
-            if drx > 0 {
+            // Stamp last_rx/tx_unix_ms on any movement this tick. Granularity
+            // = 250 ms, plenty for UI staleness UX. Stamping here (vs. inside
+            // the hot RX/TX path) keeps the path lock-free.
+            let frames = telemetry.rx_frames.load(Ordering::Relaxed);
+            if frames != last_frames || drx > 0 {
+                last_frames = frames;
                 telemetry.last_rx_unix_ms.store(now_ms, Ordering::Relaxed);
+            }
+            if drx > 0 {
+                last_data_rx_ms = now_ms;
             }
             if dtx > 0 {
                 telemetry.last_tx_unix_ms.store(now_ms, Ordering::Relaxed);
@@ -446,11 +471,14 @@ pub fn spawn_telem_task(
             // ── Honesty derivation ───────────────────────────────────────
             let last_rx_ms = telemetry.last_rx_unix_ms.load(Ordering::Relaxed);
             let last_tx_ms = telemetry.last_tx_unix_ms.load(Ordering::Relaxed);
-            let idle_rx_secs: u32 = if last_rx_ms == 0 {
-                0
-            } else {
-                now_ms.saturating_sub(last_rx_ms).saturating_div(1000) as u32
+            let idle_secs = |since_ms: u64| -> u32 {
+                if since_ms == 0 {
+                    0
+                } else {
+                    now_ms.saturating_sub(since_ms).saturating_div(1000) as u32
+                }
             };
+            let idle_rx_secs = idle_secs(last_rx_ms);
             let session_secs = telemetry.started_at.elapsed().as_secs();
 
             let mut cur = status_tx.borrow().clone();
@@ -477,7 +505,7 @@ pub fn spawn_telem_task(
                 stable_in_band,
                 session_secs,
                 cur.state,
-                idle_rx_secs,
+                idle_secs(last_data_rx_ms),
             );
             stable_in_band = new_counter;
             if new_bw != bandwidth_class {
@@ -642,12 +670,17 @@ mod tests {
         );
     }
 
-    /// Health derivation: Connected + idle > threshold + full streams → Stale.
+    /// Health derivation: Connected + no frame past the threshold → Stale; a
+    /// gap shorter than the 30–60 s heartbeat interval is still Healthy.
     #[test]
     fn test_health_connected_long_idle_is_stale() {
         assert_eq!(
-            derive_health(ConnState::Connected, 25, BandwidthClass::Normal, 8, 8),
+            derive_health(ConnState::Connected, 80, BandwidthClass::Normal, 8, 8),
             TunnelHealth::Stale,
+        );
+        assert_eq!(
+            derive_health(ConnState::Connected, 60, BandwidthClass::Normal, 8, 8),
+            TunnelHealth::Healthy,
         );
     }
 
@@ -664,7 +697,7 @@ mod tests {
     #[test]
     fn test_health_stale_beats_throttled() {
         assert_eq!(
-            derive_health(ConnState::Connected, 25, BandwidthClass::Throttled, 8, 8),
+            derive_health(ConnState::Connected, 80, BandwidthClass::Throttled, 8, 8),
             TunnelHealth::Stale,
         );
     }
@@ -692,8 +725,7 @@ mod tests {
         );
     }
 
-    /// I1 fix: partial stream death (streams_up < ceil(n_streams/2)) → Degraded.
-    /// This is the bug the previous derive_health missed — at 3/8 alive UI saw Healthy.
+    /// Partial stream death → Degraded.
     #[test]
     fn test_health_partial_streams_is_degraded() {
         // 3/8 alive → 3 < ceil(8/2)=4 → Degraded.
@@ -708,17 +740,16 @@ mod tests {
         );
     }
 
-    /// I1 fix: at exactly the half-threshold streams should NOT be Degraded.
-    /// 4/8 → ceil(8/2)=4, alive 4 >= 4 → not Degraded by stream count.
+    /// Any single dead stream is Degraded: flows hashed to it stall, so a
+    /// "mostly alive" tunnel must not look Healthy.
     #[test]
-    fn test_health_half_streams_not_degraded_by_stream_count() {
+    fn test_health_any_dead_stream_is_degraded() {
         assert_eq!(
-            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 4, 8),
-            TunnelHealth::Healthy,
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 7, 8),
+            TunnelHealth::Degraded,
         );
-        // Odd n: 2/3 → ceil(3/2)=2, alive 2 >= 2 → Healthy.
         assert_eq!(
-            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 2, 3),
+            derive_health(ConnState::Connected, 1, BandwidthClass::Normal, 8, 8),
             TunnelHealth::Healthy,
         );
     }

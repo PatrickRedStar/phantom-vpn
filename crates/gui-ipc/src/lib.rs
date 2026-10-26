@@ -337,9 +337,11 @@ impl ConnState {
 pub enum TunnelHealth {
     #[default]
     Healthy,
-    /// `Connected` but no RX traffic for > stale threshold (typically 20s).
+    /// `Connected` but no frame at all (data or heartbeat) received for
+    /// > 75 s — the channel is silent, not just idle.
     Stale,
-    /// `Connected`, traffic flowing but bandwidth is heavily reduced.
+    /// `Connected`, but a stream is down / reopening, or bandwidth is
+    /// heavily reduced (`BandwidthClass::Throttled`).
     Degraded,
     /// Recovering — runtime decided to reconnect but UI still on Connected lifecycle.
     Reconnecting,
@@ -379,6 +381,9 @@ pub struct StatusFrame {
     /// Last error message (cleared on successful Connect).
     pub last_error: Option<String>,
     /// Current reconnect attempt (1-based). `None` if not reconnecting.
+    /// There is no attempt limit: with `auto_reconnect` the runtime retries
+    /// network errors forever; `Error` is published only for fatal ones,
+    /// with a human-readable reason in `last_error`.
     #[serde(default)]
     pub reconnect_attempt: Option<u32>,
     /// Seconds until the next reconnect attempt. `None` if not waiting.
@@ -397,8 +402,9 @@ pub struct StatusFrame {
     /// which is not the same as DNS being broken.
     #[serde(default)]
     pub dns_queries: u64,
-    /// Unix-ms timestamp of last byte received from server. `0` if no
-    /// RX yet this session. New in v0.24.0.
+    /// Unix-ms timestamp of the last frame received from the server (data
+    /// or heartbeat; the handshake counts at Connected). `0` if none yet.
+    /// New in v0.24.0.
     #[serde(default)]
     pub last_rx_ms: u64,
     /// Unix-ms timestamp of last byte transmitted to server. `0` if no

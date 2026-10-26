@@ -1,10 +1,11 @@
 ---
-updated: 2026-07-05
+updated: 2026-10-26
 ---
 
 # ADR 0014 — Server-pushable Transport Policy (все anti-DPI рычаги в конфиге)
 
-**Status:** Accepted (реализуется поэтапно)
+**Status:** Accepted, реализован частично: доставка с сервера не сделана — в проде всегда
+действуют встроенные дефолты (см. «Статус реализации», 2026-10-26)
 **Context-doc:** [architecture/dpi-tspu.md](../architecture/dpi-tspu.md)
 **Связано:** ADR [0002 (Noise→mTLS)](0002-noise-to-mtls.md), [0003 (H2/TLS/TCP)](0003-h2-tls-tcp.md), [0011 (server verify)](0011-remove-insecure-always-verify.md)
 
@@ -65,9 +66,9 @@ TransportPolicy {
 ## Backward-compat (ОБЯЗАТЕЛЬНО — старые клиенты работают)
 
 - **Отсутствие policy = текущее поведение.** `ResolvedTransportPolicy::default()`
-  побайтово воспроизводит нынешние const (`MAX_N_STREAMS=16`, heartbeat 15-45с, MTU 1300,
-  padding off, ALPN=["h2"], rustls-default fingerprint). Без установленной policy код
-  ведёт себя как v0.27.x.
+  воспроизводит встроенные const (на момент решения: `MAX_N_STREAMS=16`, heartbeat 15-45с,
+  MTU 1300, padding off, ALPN=["h2"], rustls-default fingerprint; актуальные — в «Статусе
+  реализации»).
 - **Старый клиент ↔ новый сервер:** сервер добавляет `transport_policy` в JSON-ответ;
   старый клиент десериализует `ClientConfigResponse` с `serde` (unknown fields
   игнорируются) → **поле не ломает парсинг**, старый клиент просто его не видит и живёт
@@ -101,6 +102,32 @@ TransportPolicy {
 
 Каждая фаза — самостоятельный, backward-compatible шаг: до Phase 2 policy просто
 переносит существующие числа; фичи включаются, только когда сервер их пушит.
+
+## Статус реализации (2026-10-26)
+
+**Сделано:** `core::policy` — типы, резолвер, глобал `install/current`; резолвер зажимает
+heartbeat-параметры (интервал 1..60 с, заглушка 20..1200 байт), чтобы кривая policy не
+роняла TX-задачу и не переживала детектор мёртвого стрима. Рантайм читает: `heartbeat.*`,
+`padding.enabled/target`, `streams.count`, `fingerprint` (`named` → boring-путь; `raw`
+пока тоже просто boring — шаблон не применяется), `mtls`.
+
+**Не сделано (Phase 1 доставка):** секции `[policy]` в `server.toml` нет, поля
+`transport_policy` в `ClientConfigResponse` нет, клиентского fetch/cache нет. В проде
+policy всегда = дефолты; `install()` вызывает только лабораторный харнесс (Android, cargo
+feature `lab-overrides`, файл через `adb push`). Phase 3 (single-conn mux) и Phase 4
+(relay terminate) не начинались.
+
+**Поля, которые никто не читает:** `alpn`, `tls_min/max`, `streams.topology`, `mtu`,
+`mss`, `padding.min_frame/pace_ms`, `mimicry`, `recycle`, `relay`, `schema_version`.
+Оставлены в схеме ради совместимости. `heartbeat.enabled` удалён: выключать heartbeat
+нельзя — на нём держатся NAT-записи и детектор мёртвого стрима.
+
+**Дефолты сейчас:** heartbeat 30–60 с на стрим (несинхронно), ALPN клиента
+`h2, http/1.1`, паддинг первых 10–20 кадров стрима — встроен в код, не через policy.
+
+**Почему доставку не доделали:** эмпирика 2026-07-31 ([dpi-tspu.md](../architecture/dpi-tspu.md),
+§0) показала, что наш троттл — лимит оператора на IP реле, и ни один рычаг скорость не
+двигал. Возвращаться к доставке, когда появится реальный DPI-кейс, который рычаг лечит.
 
 ## Consequences
 

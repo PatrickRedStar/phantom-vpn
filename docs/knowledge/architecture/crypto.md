@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 ---
 
 # Crypto — TLS 1.3 + mTLS
@@ -23,9 +23,18 @@ Admin API использует отдельный TLS-пайплайн: self-sig
   / openssl-bridge.
 - **Cipher suites:** rustls дефолт для TLS 1.3 — `TLS_AES_256_GCM_SHA384`,
   `TLS_CHACHA20_POLY1305_SHA256`, `TLS_AES_128_GCM_SHA256`.
-- **ALPN:** `h2` (только). См. [transport](./transport.md).
-- **Session resumption:** включено через TLS 1.3 tickets, ускоряет reconnect
-  после разрыва сети — но не 0-RTT (tradeoff vs anti-DPI).
+- **ALPN:** клиент предлагает `h2, http/1.1` (как браузер), сервер выбирает
+  `h2` (другого не знает). См. [transport](./transport.md).
+- **Session resumption:** TLS 1.3 tickets из in-memory кэша сервера. Работает,
+  потому что клиент собирает `ClientConfig` один раз на подключение (`supervise`)
+  и переиспользует его на реконнектах после здорового соединения (≥ 30 с) —
+  раньше конфиг пересоздавался на каждый реконнект и каждый раз шёл полный
+  mTLS-хендшейк. Без 0-RTT (tradeoff vs anti-DPI). На resumed-сессии верификатор
+  клиентского серта не вызывается — проверка allowlist после хендшейка на
+  сервере обязательна, а клиент после короткоживущего соединения идёт полным
+  хендшейком, чтобы отказ пришёл алертом, а не молчаливым обрывом.
+- **CertificateRequest без root hints** (`clear_root_hint_subjects`): сервер не
+  перечисляет имя своего CA — раньше любой проб видел `CN=PhantomVPN CA`.
 
 ## Server identity (публичный TLS)
 
@@ -35,17 +44,26 @@ passthrough), он же — за счёт SNI-passthrough — виден на RU
 chain (`fullchain.pem`) + private key лежат на vdsina, монтируются в
 phantom-server и nginx.
 
-Клиент верифицирует серверный cert через **webpki-roots + системный root store**:
+Клиент верифицирует серверный cert через **вкомпилированный набор
+webpki-roots** (Mozilla, ~150 корней) + опциональный `server_ca` из конфига.
+Системный root store **не** используется:
 
 ```rust
 roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-// + platform-specific native roots
 ```
 
 Это значит: серверный cert должен быть выдан публичным CA — LE достаточно.
-Никакого custom CA bundle клиенту не нужно, никакого `insecure=true` в
-production profile'е быть не должно. Конфиг-флаг `insecure` оставлен для
-local dev.
+Никакого custom CA bundle клиенту не нужно. Флага `insecure` больше нет — серт
+сервера проверяется всегда ([ADR 0011](../decisions/0011-remove-insecure-always-verify.md)).
+Сужать набор до ISRG X1/X2 не стали (решение владельца): при смене иерархии LE
+пришлось бы срочно выпускать клиентов.
+
+Фатальны для клиента (не переподключается, показывает причину) только ошибки
+дат серта сервера — просроченный / ещё не действующий → «проверьте дату и время
+на устройстве» (типичная причина — сбитые часы телефона) — и TLS-алерты сервера
+`certificate_revoked` / `access_denied` → «доступ отозван». Прочие ошибки
+проверки (чужой издатель, не то имя) переходные: так выглядит captive portal
+или fallback-серт реле, и туннель должен подняться сам, когда сеть починится.
 
 ## Client identity (mTLS — PhantomVPN CA)
 
@@ -145,9 +163,10 @@ Admin API использует **второй TLS pipeline** — не тот, ч
   unique и immutable.
 - **Никаких статических shared secrets.** Каждый клиент — уникальный x509.
   Noise keypair больше не существует (см. [ADR 0002](../decisions/0002-noise-to-mtls.md)).
-- **Webpki roots + native roots оба включены в client trust store.** Fix
-  коммита `c722d0e` — без native roots некоторые Android-устройства с
-  custom CA store'ом ломали LE chain. В коде: `with_native_roots().and(webpki_roots)`.
+- **Client trust store = вкомпилированные webpki-roots (+ `server_ca` из
+  конфига).** Native roots не грузятся (`crates/core/src/tls.rs::build_root_store`).
+  Исключение — экспериментальный boring/uTLS-путь (выключен по умолчанию): он
+  грузит системные корни Android поштучно из `/system/etc/security/cacerts`.
 - **Admin role ≠ cert.** `is_admin` в keyring, toggleable без перевыпуска.
   Если в будущем появится cert extension для admin — это будет breaking
   change и потребует нового ADR.

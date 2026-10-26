@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 ---
 
 # Handshake — H2 / mTLS
@@ -18,24 +18,32 @@ Handshake устанавливает одну VPN-сессию, которая �
 ## Последовательность
 
 ```
-1. Client: N параллельных TCP connect → tls.nl2.bikini-bottom.com:443
-   На Android каждый сокет проходит через VpnService.protect() до connect,
-   чтобы собственный tun-маршрут не зациклил трафик.
+1. Client: N TCP connect → tls.nl2.bikini-bottom.com:443, СТРОГО ПОСЛЕДОВАТЕЛЬНО
+   (следующий стрим — после полного хендшейка предыдущего; залп SYN'ов —
+   DPI-признак, v0.27.1). Сокет создаёт ядро: на Android он проходит через
+   VpnService.protect() до connect, на всех платформах — connect ≤ 15 с и
+   TCP_USER_TIMEOUT 30 с. Неудачный стрим — до 2 повторов на свежем сокете.
+   ClientHello: ALPN `h2, http/1.1`; TLS-конфиг один на подключение, поэтому
+   реконнекты идут TLS-resumption'ом — если прежнее соединение (сессия или
+   стрим) прожило ≥ 30 с. После короткоживущего — полный хендшейк (см. ниже).
 
 2. nginx (NL :443, ssl_preread):
    SNI == tls.nl2 → stream passthrough к 127.0.0.1:8443 (phantom-server)
    SNI другой     → LE cert на frontend + HTML-заглушка
 
 3. phantom-server: TLS 1.3 accept + mTLS
+   CertificateRequest без списка имён CA (clear_root_hint_subjects).
    peer_certificates — обязательное поле:
      нет cert'а      → fakeapp::handle (H2 "сайт", см. ниже)
      cert есть       → SHA-256 DER fingerprint → allow_list lookup
      fp не в allow   → connection drop (no reply body)
 
-4. Client → Server: 2 байта атомарно в первый write каждого TLS-стрима
-   [1B stream_idx][1B client_max_streams]
-   Server: read_exact(2) — если клиент v0.17 (1-byte handshake) отвалится
-   естественным EOF, без timeout'а.
+4. Client → Server: первая запись каждого TLS-стрима
+   [1B stream_idx][1B n_streams][heartbeat-frame]
+   n_streams — всегда полное N клиента. Heartbeat в той же записи — чтобы
+   первая запись не была ровно 2 байта (размерный признак).
+   Server: read_exact(2), дальше штатный frame-цикл — heartbeat выбрасывается
+   фильтром, поэтому серверу менять ничего не нужно.
 
 5. Server: effective_n = client_max.clamp(MIN_N_STREAMS=2, MAX_N_STREAMS=16)
    SessionCoordinator: attach_stream(stream_idx, mpsc::Sender)
@@ -57,7 +65,10 @@ Handshake устанавливает одну VPN-сессию, которая �
 и не 5-tuple. Сессии хранятся в `DashMap<fingerprint, Arc<VpnSession>>` (см.
 [sessions](./sessions.md)).
 
-Если client реконнектит отдельный стрим в существующую сессию, сервер
+Клиент переоткрывает умерший стрим **один** (пауза 1–10 с, при повторных
+неудачах — дольше, до 30 с), не трогая остальные; всю сессию он переподключает,
+только когда мертвы все N стримов (≥ 3 с), после сна устройства или при
+фатальной ошибке. Когда стрим пристыковывается к существующей сессии, сервер
 проверяет:
 
 - `stream_idx < existing_session.effective_n` — иначе reject;
@@ -66,6 +77,23 @@ Handshake устанавливает одну VPN-сессию, которая �
   создаётся новая со свежим `effective_n`. Это предотвращает pinning сессии
   в `effective_n = 2` навсегда, если первый connect был слабый bastion-путь,
   а потом клиент наростил параллелизм.
+
+## Отказ в доступе — фатален для клиента
+
+TLS-алерт сервера `certificate_revoked` / `access_denied` клиент считает
+фатальным: не переподключается, публикует `ConnState::Error` с причиной
+«Доступ отозван». В TLS 1.3 такой алерт приходит уже после хендшейка — на
+первом чтении стрима, поэтому ядро проверяет и ошибки стримов, а не только
+результат connect. Так же фатальны ошибки дат серта сервера (просрочен /
+ещё не действует → «проверьте дату и время на устройстве»). Прочие ошибки
+проверки серта сервера (чужой издатель, не то имя) — переходные: так выглядит
+captive portal или fallback-серт реле. Обрыв без алерта (RST, EOF, таймаут) —
+обычная сетевая ошибка, переподключение бесконечное.
+
+На resumed-сессии сервер серт клиента не проверяет и алерт отправить не может —
+отозванный клиент увидел бы только обрыв сразу после хендшейка и
+переподключался бы вечно. Поэтому после соединения, прожившего меньше 30 с,
+клиент идёт полным хендшейком, и на нём алерт приходит.
 
 ## Mimicry warmup (`server/server/src/mimicry.rs`)
 
@@ -117,15 +145,15 @@ TLS handshake, H2 negotiation и набор endpoint'ов выглядят ка�
 
 ## Invariants
 
-- Handshake-header = **ровно 2 байта** атомарно в первом write. Никаких
-  delimiters, никаких payload-specific pre-amble. Server использует
-  `read_exact(2)` — partial read ⇒ drop без ответа.
+- Handshake-header = **ровно 2 байта** в начале первой записи; следом в той
+  же записи — обычный heartbeat-frame. Server использует `read_exact(2)` —
+  partial read ⇒ drop без ответа.
 - `stream_idx ∈ [0, MAX_N_STREAMS)`. Значение ≥ `effective_n` ⇒ reject.
 - `client_max_streams` проходит `clamp(MIN, MAX)` на сервере. Misbehaving
   клиент не может продавить параллелизм выше `MAX_N_STREAMS`.
-- Клиент drop'ит все non-IPv4 пакеты в `tls_rx_loop` через
-  `is_heartbeat_packet` (version nibble != 4). Это обеспечивает прозрачный
-  фильтр для mimicry placeholder'ов и heartbeat'ов — они не попадают в TUN.
+- Клиент drop'ит все non-IPv4 пакеты (и короче 20 байт) в `tls_rx_loop`.
+  Это обеспечивает прозрачный фильтр для mimicry placeholder'ов и
+  heartbeat'ов — они не попадают в TUN.
 - Warmup запускается ровно один раз на сессию — на `is_new && stream_idx==0`.
   Re-connect того же stream_idx после disconnect warmup НЕ повторяет.
 - Empty-cert TCP connection никогда не доходит до VPN-пути — только до

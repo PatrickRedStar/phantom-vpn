@@ -72,8 +72,9 @@ async fn connect_inner(
 }
 
 /// Perform TLS handshake on an already-connected TCP stream.
-/// Used by Android where VpnService.protect() must be called on the raw socket
-/// before any I/O (including TLS handshake).
+/// Used by the runtime, which dials the socket itself (Android must
+/// `VpnService.protect()` it before any I/O; every platform gets bounded
+/// connect and socket options there).
 ///
 /// Bounded by [`HANDSHAKE_TIMEOUT`] so a server that accepts the TCP connection
 /// but never finishes the TLS ClientHello can't pin the supervisor.
@@ -104,7 +105,7 @@ async fn do_connect(
     // keepalive segments every 30 s in lock-step across all 8 sockets — a periodic
     // on-wire signal that carrier-DPI uses to fingerprint a long-lived tunnel
     // (v0.22.4 had none). NAT is kept alive instead by the application-layer
-    // heartbeat (random 15-45 s per stream, see `wire::build_heartbeat_frame`),
+    // heartbeat (random 30-60 s per stream, see `wire::build_heartbeat_frame`),
     // which is < typical NAT idle timeouts and is already de-correlated per stream
     // — exactly the mechanism v0.22.4 relied on.
 
@@ -150,6 +151,21 @@ pub enum ClientTls {
     Boring(Arc<BoringClientTls>),
 }
 
+impl ClientTls {
+    /// The same config with TLS session resumption off, so every handshake is
+    /// a full one (the boring connector keeps no client sessions anyway).
+    pub fn without_resumption(&self) -> ClientTls {
+        match self {
+            ClientTls::Rustls(c) => {
+                let mut c = (**c).clone();
+                c.resumption = rustls::client::Resumption::disabled();
+                ClientTls::Rustls(Arc::new(c))
+            }
+            ClientTls::Boring(_) => self.clone(),
+        }
+    }
+}
+
 /// A prebuilt BoringSSL client connector (mTLS identity baked in) + the profile
 /// name it was built for. Reused across all N streams.
 pub struct BoringClientTls {
@@ -179,13 +195,27 @@ pub fn make_boring_client_tls(
         b.set_verify(SslVerifyMode::NONE);
     } else {
         b.set_verify(SslVerifyMode::PEER);
-        b.set_default_verify_paths().ok();
-        // Android: system CA certs live in a hashed dir, not a bundle file.
-        let _ = b.set_ca_file("/system/etc/security/cacerts");
+        if let Err(e) = b.set_default_verify_paths() {
+            tracing::warn!(category = "handshake", error = %e, "boring: default verify paths");
+        }
+        // Android keeps system roots as one PEM file per CA in a hashed
+        // directory, which `set_ca_file` cannot read — load them one by one.
+        if let Ok(dir) = std::fs::read_dir("/system/etc/security/cacerts") {
+            let (mut loaded, mut failed) = (0u32, 0u32);
+            for entry in dir.flatten() {
+                let cert = std::fs::read(entry.path()).ok().and_then(|pem| X509::from_pem(&pem).ok());
+                match cert.map(|x| b.cert_store_mut().add_cert(x)) {
+                    Some(Ok(())) => loaded += 1,
+                    _ => failed += 1,
+                }
+            }
+            tracing::info!(category = "handshake", loaded, failed, "boring: system roots");
+        }
         if let Some(cas) = &server_ca {
             for ca in cas {
-                if let Ok(x) = X509::from_der(ca.as_ref()) {
-                    let _ = b.cert_store_mut().add_cert(x);
+                let added = X509::from_der(ca.as_ref()).and_then(|x| b.cert_store_mut().add_cert(x));
+                if let Err(e) = added {
+                    tracing::warn!(category = "handshake", error = %e, "boring: server CA rejected");
                 }
             }
         }
@@ -212,8 +242,8 @@ pub fn make_boring_client_tls(
         b.set_private_key(&pkey).context("boring: set_private_key")?;
     }
 
-    // ALPN h2 (length-prefixed wire form).
-    b.set_alpn_protos(b"\x02h2").context("boring: set_alpn_protos")?;
+    // ALPN h2 + http/1.1 like a browser (length-prefixed wire form).
+    b.set_alpn_protos(b"\x02h2\x08http/1.1").context("boring: set_alpn_protos")?;
 
     apply_fingerprint(&mut b, &fingerprint);
 
@@ -281,16 +311,4 @@ pub async fn connect_with_tcp_boring(
     tokio::time::timeout(HANDSHAKE_TIMEOUT, do_connect_boring(tcp, server_name, tls))
         .await
         .map_err(|_| anyhow!("handshake timeout after {:?}", HANDSHAKE_TIMEOUT))?
-}
-
-/// Boring variant of [`connect`] (dials TCP itself, e.g. desktop).
-pub async fn connect_boring(
-    server_addr: SocketAddr,
-    server_name: String,
-    tls: Arc<BoringClientTls>,
-) -> anyhow::Result<(TlsReadHalf, TlsWriteHalf)> {
-    let tcp = tokio::net::TcpStream::connect(server_addr)
-        .await
-        .context("TCP connect failed")?;
-    connect_with_tcp_boring(tcp, server_name, tls).await
 }
