@@ -6,7 +6,6 @@ pub mod vpn_session;
 pub mod h2_server;
 pub mod admin;
 pub mod admin_tls;
-pub mod mimicry;
 pub mod fakeapp;
 
 use std::net::SocketAddr;
@@ -111,9 +110,33 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    // ─── Client allowlist (fingerprint-based) ────────────────────────────
+    // Loaded before the TLS config: the client-cert verifier checks it inside
+    // the handshake.
+    let allow_list = vpn_session::new_allow_list();
+    let allow_list_path = cfg.tls.as_ref()
+        .and_then(|q| q.allowed_clients_path.clone());
+
+    if let Some(ref path) = allow_list_path {
+        match vpn_session::load_allow_list(Path::new(path)) {
+            Ok(fps) => {
+                tracing::info!("Loaded {} allowed client fingerprints from {}", fps.len(), path);
+                vpn_session::set_allow_list(&allow_list, fps);
+            }
+            Err(e) => {
+                // Fail closed: an unreadable keyring must not let every cert
+                // of our CA (deleted and revoked ones included) back in.
+                tracing::error!("Failed to load client allowlist from {}: {} — no client is allowed until SIGHUP/fix", path, e);
+                vpn_session::set_allow_list(&allow_list, Default::default());
+            }
+        }
+    } else {
+        tracing::info!("No allowed_clients_path configured — all authenticated clients accepted");
+    }
+
     // ─── HTTP/2 TLS config ─────────────────────────────────────────────────
-    let h2_tls_config = phantom_core::h2_transport::make_h2_server_tls(
-        certs, key, client_ca
+    let h2_tls_config = h2_server::make_tls_config(
+        certs, key, client_ca, allow_list.clone()
     ).context("Failed to create HTTP/2 TLS config")?;
 
     // ─── TUN interface ──────────────────────────────────────────────────────
@@ -149,13 +172,19 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!("TUN {} configured: addr={} mtu={}", tun_name, tun_addr, tun_mtu);
 
-    // NAT
+    // NAT + tunnel firewall. The admin API port must stay reachable from the tunnel.
+    let admin_listen = cfg.admin.as_ref()
+        .and_then(|a| a.listen_addr.as_deref())
+        .unwrap_or("10.7.0.1:8080");
+    let admin_port = admin_listen.parse::<SocketAddr>().map(|a| a.port()).unwrap_or(8080);
     let nat_info = if let Some(ref wan) = cfg.network.wan_iface {
         let subnet = cidr_to_network(tun_addr);
         let exit_ip = cfg.network.exit_ip.as_deref();
-        tun_iface::teardown_nat(tun_name, wan, &subnet, exit_ip);
-        tun_iface::setup_nat(tun_name, wan, &subnet, exit_ip)
-            .unwrap_or_else(|e| tracing::warn!("NAT setup failed: {}", e));
+        tun_iface::teardown_nat(tun_name, wan, &subnet, exit_ip, admin_port);
+        if let Err(e) = tun_iface::setup_nat(tun_name, wan, &subnet, exit_ip, admin_port) {
+            tun_iface::teardown_nat(tun_name, wan, &subnet, exit_ip, admin_port);
+            return Err(e).context("NAT setup failed — clients would connect without internet");
+        }
         Some((tun_name.to_string(), wan.clone(), subnet, exit_ip.map(str::to_string)))
     } else {
         None
@@ -170,34 +199,17 @@ async fn main() -> anyhow::Result<()> {
     let idle_secs = cfg.timeouts.as_ref()
         .and_then(|t| t.idle_timeout_secs)
         .unwrap_or(300);
+    // 0 = no hard session lifetime: access is revoked through the allowlist,
+    // and a forced daily cut only breaks clients that never notice it.
     let hard_timeout_secs = cfg.timeouts.as_ref()
         .and_then(|t| t.hard_timeout_secs)
-        .unwrap_or(86_400);
+        .unwrap_or(0);
     tokio::spawn(vpn_session::cleanup_task(
         sessions.clone(),
         sessions_by_fp.clone(),
         idle_secs,
         hard_timeout_secs,
     ));
-
-    // ─── Client allowlist (fingerprint-based) ────────────────────────────
-    let allow_list = vpn_session::new_allow_list();
-    let allow_list_path = cfg.tls.as_ref()
-        .and_then(|q| q.allowed_clients_path.clone());
-
-    if let Some(ref path) = allow_list_path {
-        match vpn_session::load_allow_list(Path::new(path)) {
-            Ok(fps) => {
-                tracing::info!("Loaded {} allowed client fingerprints from {}", fps.len(), path);
-                *allow_list.write().await = fps;
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load client allowlist from {}: {} — allowing all", path, e);
-            }
-        }
-    } else {
-        tracing::info!("No allowed_clients_path configured — all authenticated clients accepted");
-    }
 
     // Keyring lock: guards all read-modify-write on clients.json
     let keyring_lock: admin::KeyringLock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
@@ -206,9 +218,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref cp) = allow_list_path {
         let cp2 = std::path::PathBuf::from(cp);
         let sessions2 = sessions.clone();
+        let by_fp2 = sessions_by_fp.clone();
         let allow_list2 = allow_list.clone();
         let kl2 = keyring_lock.clone();
-        tokio::spawn(admin::run_subscription_checker(cp2, sessions2, allow_list2, kl2));
+        tokio::spawn(admin::run_subscription_checker(cp2, sessions2, by_fp2, allow_list2, kl2));
     }
 
     // SIGHUP → hot-reload allowlist
@@ -223,7 +236,7 @@ async fn main() -> anyhow::Result<()> {
                     match vpn_session::load_allow_list(Path::new(p)) {
                         Ok(fps) => {
                             tracing::info!("SIGHUP: reloaded {} allowed fingerprints from {}", fps.len(), p);
-                            *allow_list.write().await = fps;
+                            vpn_session::set_allow_list(&allow_list, fps);
                         }
                         Err(e) => {
                             tracing::error!("SIGHUP: failed to reload {}: {}", p, e);
@@ -237,10 +250,10 @@ async fn main() -> anyhow::Result<()> {
     // ─── Admin HTTP API ──────────────────────────────────────────────────────────
     if let Some(ref admin_cfg) = cfg.admin {
         if let Some(ref token) = admin_cfg.token {
-            let listen_str = admin_cfg.listen_addr.as_deref().unwrap_or("10.7.0.1:8080");
+            let listen_str = admin_listen;
             match listen_str.parse::<SocketAddr>() {
                 Ok(admin_addr) => {
-                    // Resolve server SNI: explicit config > cert path > listen_addr
+                    // Resolve server SNI: explicit config > cert path > cert_subjects[0] > listen_addr
                     let server_name = cfg.network.server_name.clone()
                         .or_else(|| cfg.tls.as_ref()
                             .and_then(|q| q.cert_path.as_deref())
@@ -248,6 +261,9 @@ async fn main() -> anyhow::Result<()> {
                                 // Extract domain from /etc/letsencrypt/live/<domain>/fullchain.pem
                                 p.split('/').find(|s| s.contains('.') && !s.contains("letsencrypt")).map(String::from)
                             }))
+                        .or_else(|| cfg.tls.as_ref()
+                            .and_then(|q| q.cert_subjects.as_ref())
+                            .and_then(|s| s.first().cloned()))
                         .unwrap_or_else(|| cfg.network.listen_addr.clone());
 
                     let ca_cert_path = admin_cfg.ca_cert_path.as_ref()
@@ -259,9 +275,11 @@ async fn main() -> anyhow::Result<()> {
 
                     let admin_state = admin::AdminState {
                         sessions: sessions.clone(),
+                        sessions_by_fp: sessions_by_fp.clone(),
                         clients_path: PathBuf::from(cfg.tls.as_ref()
                             .and_then(|q| q.allowed_clients_path.as_deref())
                             .unwrap_or("/opt/phantom-vpn/config/clients.json")),
+                        tun_addr: tun_addr.to_string(),
                         token: token.clone(),
                         admin_url: format!("http://{}", listen_str),
                         started_at: std::time::SystemTime::now()
@@ -387,7 +405,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ─── Cleanup ────────────────────────────────────────────────────────────
     if let Some((tun, wan, subnet, exit_ip)) = nat_info {
-        tun_iface::teardown_nat(&tun, &wan, &subnet, exit_ip.as_deref());
+        tun_iface::teardown_nat(&tun, &wan, &subnet, exit_ip.as_deref(), admin_port);
     }
     tracing::info!("Server stopped.");
 

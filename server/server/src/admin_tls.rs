@@ -5,7 +5,8 @@
 //! request extensions for downstream middleware to check `is_admin`.
 //!
 //! The loopback bot listener (127.0.0.1:8081) runs the same router in plain
-//! HTTP with only shared-token auth. Both paths share `AdminState`.
+//! HTTP with only shared-token auth (token accepted from loopback peers only).
+//! Both paths share `AdminState`.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -140,6 +141,6 @@ fn ensure_admin_server_cert(config_dir: &Path) -> anyhow::Result<(PathBuf, PathB
     let ck = rcgen::generate_simple_self_signed(vec!["10.7.0.1".to_string()])
         .context("generate admin-server self-signed cert")?;
     std::fs::write(&cert_path, ck.cert.pem())?;
-    std::fs::write(&key_path,  ck.key_pair.serialize_pem())?;
+    crate::admin::write_private(&key_path, &ck.key_pair.serialize_pem())?;
     Ok((cert_path, key_path))
 }

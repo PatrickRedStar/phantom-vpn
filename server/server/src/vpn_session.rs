@@ -1,16 +1,16 @@
 //! Transport-agnostic VPN session types.
 //! Shared between QUIC and HTTP/2 transports.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use bytes::Bytes;
 use dashmap::DashMap;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 use phantom_core::wire::flow_stream_idx;
 
@@ -44,7 +44,7 @@ pub struct StatsSample {
 /// `data_sends[stream_idx]`. Slots can be `None` (disconnected) and are
 /// dynamically replaced on reconnect.
 pub struct VpnSession {
-    /// Session creation timestamp (unix seconds) for hard lifetime expiry.
+    /// Session creation time (`mono_secs`) for hard lifetime expiry.
     pub created_at:    u64,
     /// Negotiated stream count for THIS session. `data_sends.len() == effective_n`
     /// and `flow_stream_idx` must be called with this value (not MAX_N_STREAMS).
@@ -68,6 +68,13 @@ pub struct VpnSession {
     pub tun_pkt_txs:   std::sync::Mutex<Vec<Option<mpsc::Sender<Bytes>>>>,
     /// Transport-agnostic shutdown: send () to close the underlying connection
     pub close_tx:      std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Set by `close()`. RX loops check it per frame and exit, so a revoked
+    /// or evicted client can't keep pushing uplink into the TUN.
+    pub closed:        AtomicBool,
+    /// Peer IP of the most recent stream attach (one link on two devices shows
+    /// up as streams of one cert alternating between IPs).
+    pub last_peer:     std::sync::Mutex<Option<IpAddr>>,
+    /// Last received frame (`mono_secs`).
     pub last_seen:     AtomicU64,
     pub bytes_rx:      AtomicU64,
     pub bytes_tx:      AtomicU64,
@@ -98,7 +105,7 @@ impl VpnSession {
             tun_pkt_txs.len(), effective_n,
             "new_coordinator: tun_pkt_txs length must equal effective_n"
         );
-        let now = now_unix_secs();
+        let now = mono_secs();
         let data_sends = (0..effective_n)
             .map(|_| std::sync::Mutex::new(None))
             .collect();
@@ -112,6 +119,8 @@ impl VpnSession {
             attach_gen,
             tun_pkt_txs: std::sync::Mutex::new(tun_pkt_txs_wrapped),
             close_tx: std::sync::Mutex::new(Some(close_tx)),
+            closed: AtomicBool::new(false),
+            last_peer: std::sync::Mutex::new(None),
             last_seen: AtomicU64::new(now),
             bytes_rx: AtomicU64::new(0),
             bytes_tx: AtomicU64::new(0),
@@ -187,17 +196,25 @@ impl VpnSession {
     }
 
     pub fn touch(&self) {
-        self.last_seen.store(now_unix_secs(), Ordering::Relaxed);
+        self.last_seen.store(mono_secs(), Ordering::Relaxed);
+    }
+
+    /// Seconds since the last received frame.
+    pub fn idle_secs(&self) -> u64 {
+        mono_secs().saturating_sub(self.last_seen.load(Ordering::Relaxed))
     }
 
     pub fn is_idle(&self, idle_secs: u64) -> bool {
-        let now = now_unix_secs();
-        now.saturating_sub(self.last_seen.load(Ordering::Relaxed)) > idle_secs
+        self.idle_secs() > idle_secs
     }
 
+    /// `hard_timeout_secs == 0` disables the hard lifetime limit.
     pub fn is_hard_expired(&self, hard_timeout_secs: u64) -> bool {
-        let now = now_unix_secs();
-        now.saturating_sub(self.created_at) > hard_timeout_secs
+        hard_timeout_secs > 0 && mono_secs().saturating_sub(self.created_at) > hard_timeout_secs
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     /// Signal the transport layer to close the underlying connection.
@@ -207,6 +224,7 @@ impl VpnSession {
     /// so we drop every stream sender — the corresponding writer tasks will
     /// exit, which drops the TLS write halves and closes each TCP socket.
     pub fn close(&self) {
+        self.closed.store(true, Ordering::Release);
         if let Ok(mut guard) = self.close_tx.lock() {
             if let Some(tx) = guard.take() {
                 let _ = tx.send(());
@@ -227,12 +245,12 @@ impl VpnSession {
     }
 }
 
+/// Monotonic seconds since process start. Session timeouts run on this clock
+/// so a wall-clock jump (NTP step, manual date change) doesn't expire everyone.
 #[inline]
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+fn mono_secs() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs()
 }
 
 pub type VpnSessionMap = Arc<DashMap<IpAddr, Arc<VpnSession>>>;
@@ -268,28 +286,48 @@ pub fn register_session_ip(
 
 // ─── Client allowlist (fingerprint-based) ───────────────────────────────────
 
-/// Set of allowed client certificate SHA-256 fingerprints (hex, lowercase).
-/// Empty set = allow all authenticated clients (no filtering).
-/// Wrapped in RwLock for hot-reload via SIGHUP.
-pub type ClientAllowList = Arc<RwLock<HashSet<String>>>;
+/// Enabled clients: cert SHA-256 fingerprint (hex, lowercase) → tunnel IP from
+/// the keyring (`tun_addr`), if it has one.
+pub type AllowMap = HashMap<String, Option<Ipv4Addr>>;
+
+/// `None` = no `allowed_clients_path` configured: any cert of our CA is accepted.
+/// `Some(map)` = exactly the clients in `map`; an empty map lets nobody in.
+/// std RwLock: also read from the synchronous TLS client-cert verifier.
+pub type ClientAllowList = Arc<RwLock<Option<AllowMap>>>;
 
 pub fn new_allow_list() -> ClientAllowList {
-    Arc::new(RwLock::new(HashSet::new()))
+    Arc::new(RwLock::new(None))
 }
 
-/// Load allowed fingerprints from clients.json.
-pub fn load_allow_list(path: &Path) -> anyhow::Result<HashSet<String>> {
+pub fn set_allow_list(list: &ClientAllowList, map: AllowMap) {
+    *list.write().unwrap_or_else(|e| e.into_inner()) = Some(map);
+}
+
+/// `None` = client rejected. `Some(ip)` = allowed; `ip` is its keyring tunnel
+/// IP (`None` when the allowlist is off or the entry has no `tun_addr`).
+pub fn client_access(list: &ClientAllowList, fp: &str) -> Option<Option<Ipv4Addr>> {
+    match list.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        None => Some(None),
+        Some(map) => map.get(fp).copied(),
+    }
+}
+
+/// Load enabled clients from clients.json.
+pub fn load_allow_list(path: &Path) -> anyhow::Result<AllowMap> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
     let val: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))?;
 
-    let mut fps = HashSet::new();
+    let mut fps = AllowMap::new();
     if let Some(clients) = val.get("clients").and_then(|c| c.as_object()) {
         for (name, info) in clients {
             if info.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true) {
                 if let Some(fp) = info.get("fingerprint").and_then(|f| f.as_str()) {
-                    fps.insert(fp.to_lowercase());
+                    let tun_ip = info.get("tun_addr").and_then(|t| t.as_str())
+                        .and_then(|t| t.split('/').next())
+                        .and_then(|t| t.parse().ok());
+                    fps.insert(fp.to_lowercase(), tun_ip);
                     tracing::debug!("Allowed client: {} (fp={}…)", name, &fp[..8.min(fp.len())]);
                 }
             }
@@ -325,8 +363,11 @@ pub async fn tun_dispatch_loop(
 
         let dst = IpAddr::V4(Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]));
 
-        if let Some(session_ref) = sessions.get(&dst) {
-            let session = session_ref.value().clone();
+        // Clone the Arc and drop the map guard right away: the Closed branch
+        // below calls `remove_if` on the same key, which would deadlock on a
+        // still-held shard lock.
+        let session = sessions.get(&dst).map(|r| r.value().clone());
+        if let Some(session) = session {
             // Intercept DNS responses (src_port=53) for passive hostname cache
             if pkt.len() >= 28 && pkt[9] == 17 {
                 let ihl = ((pkt[0] & 0x0F) as usize) * 4;
@@ -395,6 +436,23 @@ pub fn reap_session_fp(by_fp: &SessionByFp, session: &Arc<VpnSession>) {
     by_fp.remove_if(&fp, |_, v| Arc::ptr_eq(v, session));
 }
 
+/// Remove `session` from both maps (only entries pointing at it) and close it.
+/// Must not be called while holding a guard into either map.
+pub fn evict_session(sessions: &VpnSessionMap, by_fp: &SessionByFp, session: &Arc<VpnSession>) {
+    reap_session_fp(by_fp, session);
+    sessions.retain(|_, v| !Arc::ptr_eq(v, session));
+    session.close();
+}
+
+/// Evict whatever session the client with fingerprint `fp` currently has.
+pub fn evict_fp(sessions: &VpnSessionMap, by_fp: &SessionByFp, fp: &str) -> bool {
+    let session = by_fp.get(&fp.to_lowercase()).map(|e| e.value().clone());
+    match session {
+        Some(s) => { evict_session(sessions, by_fp, &s); true }
+        None => false,
+    }
+}
+
 pub async fn cleanup_task(
     sessions: VpnSessionMap,
     sessions_by_fp: SessionByFp,
@@ -412,7 +470,10 @@ pub async fn cleanup_task(
         interval.tick().await;
 
         let mut to_remove: Vec<(IpAddr, ExpireReason)> = Vec::new();
-        let now_ts = now_unix_secs();
+        let now_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         for entry in sessions.iter() {
             if entry.value().is_idle(idle_secs) {
                 to_remove.push((*entry.key(), ExpireReason::Idle));
@@ -562,9 +623,9 @@ pub async fn stream_batch_loop(
     // class that triggered at 256 packets per batch.
     const MAX_PKTS_PER_BATCH: usize = 40;
 
-    let buf_size = 4 + BATCH_MAX_PLAINTEXT + 16;
-    let mut frame_buf = BytesMut::with_capacity(buf_size);
-    frame_buf.resize(buf_size, 0);
+    // One allocation that frames are carved from: `resize` below reallocates
+    // only once the tail is used up and zero-fills just what the frame needs.
+    let mut frame_buf = BytesMut::with_capacity(4 + BATCH_MAX_PLAINTEXT);
 
     let mut pending: Vec<Bytes> = Vec::with_capacity(MAX_PKTS_PER_BATCH);
 
@@ -595,9 +656,9 @@ pub async fn stream_batch_loop(
 
         let refs: Vec<&[u8]> = pending.iter().map(|p| p.as_ref()).collect();
 
-        if frame_buf.len() < buf_size {
-            frame_buf.resize(buf_size, 0);
-        }
+        let need = 4 + 2 + pending.iter().map(|p| 2 + p.len()).sum::<usize>();
+        frame_buf.clear();
+        frame_buf.resize(need.min(4 + BATCH_MAX_PLAINTEXT), 0);
 
         let pt_len = match build_batch_plaintext(&refs, 0, &mut frame_buf[4..]) {
             Ok(n) => n,
@@ -615,10 +676,6 @@ pub async fn stream_batch_loop(
         let total = 4 + pt_len;
 
         let frame = frame_buf.split_to(total).freeze();
-        if frame_buf.capacity() < buf_size {
-            frame_buf.reserve(buf_size - frame_buf.capacity());
-        }
-        frame_buf.resize(buf_size, 0);
 
         // Re-snapshot the sender every iteration — the slot can flip to a
         // fresh sender after reconnect. Do NOT cache.
@@ -700,6 +757,25 @@ fn dns_read_name(data: &[u8], pos: &mut usize) -> Option<String> {
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod allow_tests {
+    use super::*;
+
+    #[test]
+    fn allowlist_semantics() {
+        let list = new_allow_list();
+        // Not configured: everyone with a cert of our CA.
+        assert_eq!(client_access(&list, "aa"), Some(None));
+        // Configured but empty: nobody.
+        set_allow_list(&list, AllowMap::new());
+        assert_eq!(client_access(&list, "aa"), None);
+        let ip = Ipv4Addr::new(10, 7, 0, 5);
+        set_allow_list(&list, AllowMap::from([("aa".to_string(), Some(ip))]));
+        assert_eq!(client_access(&list, "aa"), Some(Some(ip)));
+        assert_eq!(client_access(&list, "bb"), None);
+    }
+}
 
 #[cfg(test)]
 mod dns_tests {
