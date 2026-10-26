@@ -272,4 +272,11 @@
     <string name="hint_battery_title">Background work</string>
     <string name="hint_battery_text">Android may kill the VPN to save battery. Find GhostStream in the list and turn optimisation off.</string>
     <string name="hint_battery_open">Open battery settings</string>
+    <string name="logs_copied">Copied</string>
+    <string name="logs_copied_all">All logs copied (%1$d)</string>
+    <string name="logs_empty">Logs are empty</string>
+    <string name="logs_share_title">Send logs</string>
+    <string name="logs_failed">Failed: %1$s</string>
+    <string name="logs_level">Level</string>
+    <string name="logs_category">Category</string>
 </resources>

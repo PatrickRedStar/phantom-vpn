@@ -71,10 +71,18 @@ fun LogsScreen(viewModel: LogsViewModel) {
     val listState = rememberLazyListState()
     val context = LocalContext.current
 
-    // When new logs come in, snap the reversed list to newest item (index 0).
-    LaunchedEffect(logs.size) {
-        if (logs.isNotEmpty()) {
-            runCatching { listState.animateScrollToItem(0) }
+    // Follow new lines only while the user sits at the newest one (index 0 of
+    // the reversed list). Scrolled up to read history — leave the list alone.
+    // Recomputed when a scroll settles, so our own jump keeps it true.
+    var followTail by remember { mutableStateOf(true) }
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) {
+            followTail = listState.firstVisibleItemIndex == 0
+        }
+    }
+    LaunchedEffect(logs) {
+        if (followTail && logs.isNotEmpty()) {
+            runCatching { listState.scrollToItem(0) }
         }
     }
 
@@ -276,7 +284,7 @@ private fun FilterPane(
         )
 
         Spacer(Modifier.height(14.dp))
-        SectionLabel("УРОВЕНЬ")
+        SectionLabel(stringResource(R.string.logs_level).uppercase())
         Spacer(Modifier.height(6.dp))
         val levelOptions = listOf(
             "ALL"   to stringResource(R.string.chip_all),
@@ -302,7 +310,7 @@ private fun FilterPane(
         }
 
         Spacer(Modifier.height(14.dp))
-        SectionLabel("КАТЕГОРИЯ")
+        SectionLabel(stringResource(R.string.logs_category).uppercase())
         Spacer(Modifier.height(6.dp))
         androidx.compose.foundation.layout.FlowRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),

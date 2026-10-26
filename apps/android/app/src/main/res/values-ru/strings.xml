@@ -264,4 +264,11 @@
     <string name="hint_battery_title">Фоновая работа</string>
     <string name="hint_battery_text">Android может убивать VPN при экономии заряда. Найдите GhostStream в списке и отключите для него оптимизацию.</string>
     <string name="hint_battery_open">Открыть настройки батареи</string>
+    <string name="logs_copied">Скопировано</string>
+    <string name="logs_copied_all">Все логи скопированы (%1$d)</string>
+    <string name="logs_empty">Логи пусты</string>
+    <string name="logs_share_title">Отправить логи</string>
+    <string name="logs_failed">Не удалось: %1$s</string>
+    <string name="logs_level">Уровень</string>
+    <string name="logs_category">Категория</string>
 </resources>

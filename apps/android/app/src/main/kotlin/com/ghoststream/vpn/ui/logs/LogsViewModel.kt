@@ -9,10 +9,13 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ghoststream.vpn.R
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.LogPersister
 import com.ghoststream.vpn.service.VpnStateManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -50,11 +53,30 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
             """^(?:\d{4}-\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+(\S+)(?:\s+\[([^]]*)])?\s*(.*)$""",
         )
         /** Max lines kept in RAM for the live tail. */
-        private const val MAX_LIVE_LINES = 50_000
+        private const val MAX_LIVE_LINES = 10_000
+        /** A burst of frames re-filters the list at most this often. */
+        private const val FILTER_THROTTLE_MS = 250L
         const val ALL_CATEGORIES = "all"
+
+        /** Parse one persisted line; seq is assigned by the caller on the main thread. */
+        private fun parsePersisted(line: String): LogEntry {
+            // Format: "[yyyy-MM-dd ]HH:mm:ss[.SSS] LEVEL [cat] msg k=v k=v"
+            //
+            // Дата опциональна. Прежний парсер её ТРЕБОВАЛ (искал пробел с
+            // индекса 11) и на строках без даты сдвигал все поля на одну
+            // колонку: уровень попадал в timestamp, категория — в уровень.
+            // Это ломало не только вид, но и фильтр по уровням (level
+            // становился "[TU"). Баг-репорт 2026-08-01.
+            val m = LOG_LINE_RE.matchEntire(line.trim()) ?: return LogEntry(0, "", "INFO", line)
+            val (displayTs, level, catRaw, msg) = m.destructured
+            return LogEntry(0, displayTs, level, msg, category = catRaw.ifEmpty { null })
+        }
     }
 
-    private val allLogs = mutableListOf<LogEntry>()
+    // Main thread only (viewModelScope runs on Main): the history replay
+    // parses on IO but merges here, so the list and seq never race.
+    private val allLogs = ArrayDeque<LogEntry>()
+    private var filterJob: Job? = null
 
     private val _logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val logs: StateFlow<List<LogEntry>> = _logs
@@ -93,8 +115,18 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         // app restarts. v0.27.0 (W4-1): persist file is owned by
         // `LogPersister` (service-scoped) — tailLines() is safe to call
         // even before the service has started writing this session.
-        viewModelScope.launch(Dispatchers.IO) {
-            replayPersistedLogs(application.applicationContext)
+        viewModelScope.launch {
+            val history = withContext(Dispatchers.IO) {
+                runCatching {
+                    LogPersister.tailLines(application, MAX_LIVE_LINES).map(::parsePersisted)
+                }.getOrDefault(emptyList())
+            }
+            // Live frames that arrived meanwhile are newer — history goes in front.
+            for (e in history.asReversed()) allLogs.addFirst(e.copy(seq = nextSeq++))
+            while (allLogs.size > MAX_LIVE_LINES) allLogs.removeFirst()
+            history.forEach { e -> e.category?.let { seenCategories.add(it) } }
+            _availableCategories.value = seenCategories.toList()
+            applyFilter()
         }
 
         // Collect push-based log frames from Rust via VpnStateManager for UI
@@ -119,8 +151,8 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                     category = frame.category,
                     fields = frame.fields,
                 )
-                allLogs.add(entry)
-                while (allLogs.size > MAX_LIVE_LINES) allLogs.removeAt(0)
+                allLogs.addLast(entry)
+                while (allLogs.size > MAX_LIVE_LINES) allLogs.removeFirst()
 
                 // Track categories for filter chips.
                 frame.category?.let {
@@ -129,8 +161,16 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                applyFilter()
+                scheduleFilter()
             }
+        }
+    }
+
+    private fun scheduleFilter() {
+        if (filterJob?.isActive == true) return
+        filterJob = viewModelScope.launch {
+            delay(FILTER_THROTTLE_MS)
+            applyFilter()
         }
     }
 
@@ -205,56 +245,25 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         applyFilter()
     }
 
+    /** Clears the screen and the journal on disk (persisted file, share/debug exports). */
     fun clearLogs() {
         allLogs.clear()
         _logs.value = emptyList()
         seenCategories.clear()
         _availableCategories.value = emptyList()
-    }
-
-    /**
-     * Read previously-persisted log lines from `LogPersister`'s on-disk file
-     * and seed `allLogs` so the user has historical context across app
-     * restarts and across Logs-screen open/close cycles. Best-effort; parse
-     * failures fall through as plain-text rows. v0.24.0; v0.27.0: source
-     * moved to LogPersister (service-scoped).
-     */
-    private fun replayPersistedLogs(context: Context) {
-        runCatching {
-            val take = LogPersister.tailLines(context, MAX_LIVE_LINES)
-            if (take.isEmpty()) return@runCatching
-            val parsed = mutableListOf<LogEntry>()
-            for (line in take) {
-                // Format: "[yyyy-MM-dd ]HH:mm:ss[.SSS] LEVEL [cat] msg k=v k=v"
-                //
-                // Дата опциональна. Прежний парсер её ТРЕБОВАЛ (искал пробел с
-                // индекса 11) и на строках без даты сдвигал все поля на одну
-                // колонку: уровень попадал в timestamp, категория — в уровень.
-                // Это ломало не только вид, но и фильтр по уровням (level
-                // становился "[TU"). Баг-репорт 2026-08-01.
-                val m = LOG_LINE_RE.matchEntire(line.trim())
-                if (m == null) {
-                    parsed.add(LogEntry(nextSeq++, "", "INFO", line))
-                    continue
+        val ctx = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                LogPersister.flushPending()
+                for (f in LogPersister.allLogFiles(ctx)) {
+                    // LogPersister keeps the active file open in append mode:
+                    // truncate it in place — after unlinking, new lines would
+                    // go to a file nobody can read.
+                    if (f.name == LogPersister.LOG_FILE) java.io.FileOutputStream(f).close() else f.delete()
                 }
-                val (displayTs, level, catRaw, msg) = m.destructured
-                val cat = catRaw.ifEmpty { null }
-                parsed.add(
-                    LogEntry(
-                        seq = nextSeq++,
-                        timestamp = displayTs,
-                        level = level,
-                        message = msg,
-                        category = cat,
-                    ),
-                )
-                if (cat != null && seenCategories.add(cat)) {
-                    _availableCategories.value = seenCategories.toList()
-                }
+                File(ctx.cacheDir, "logs").deleteRecursively()
+                File(ctx.cacheDir, "debug").deleteRecursively()
             }
-            allLogs.addAll(0, parsed)
-            while (allLogs.size > MAX_LIVE_LINES) allLogs.removeAt(0)
-            applyFilter()
         }
     }
 
@@ -262,7 +271,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         val text = "${entry.timestamp} ${entry.level} ${entry.message}"
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("log", text))
-        Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, R.string.logs_copied, Toast.LENGTH_SHORT).show()
     }
 
     fun copyAll(context: Context) {
@@ -274,7 +283,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         }
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("logs", text))
-        Toast.makeText(context, "Все логи скопированы (${allLogs.size})", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.logs_copied_all, allLogs.size), Toast.LENGTH_SHORT).show()
     }
 
     /**
@@ -283,6 +292,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
      * categories, and reads from the persistent files instead of just RAM.
      */
     fun shareLogs(context: Context) {
+        val snapshot = allLogs.toList()
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 // Flush any buffered live writes so the share captures the
@@ -294,7 +304,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                 out.bufferedWriter().use { w ->
                     if (parts.isEmpty()) {
                         // Fallback to RAM-only snapshot.
-                        allLogs.forEach { entry ->
+                        snapshot.forEach { entry ->
                             val cat = entry.category?.let { "[$it] " } ?: ""
                             val fields = if (entry.fields.isEmpty()) "" else " " +
                                 entry.fields.entries.joinToString(" ") { (k, v) -> "$k=$v" }
@@ -311,7 +321,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (out.length() == 0L) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(context, "Логи пусты", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, R.string.logs_empty, Toast.LENGTH_SHORT).show()
                     }
                     return@runCatching
                 }
@@ -327,11 +337,11 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
                 withContext(Dispatchers.Main) {
-                    context.startActivity(Intent.createChooser(intent, "Отправить логи"))
+                    context.startActivity(Intent.createChooser(intent, context.getString(R.string.logs_share_title)))
                 }
             }.onFailure { e ->
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "Не удалось: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, context.getString(R.string.logs_failed, e.message ?: ""), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -339,7 +349,8 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        // v0.27.0: persistence lifecycle moved to LogPersister (service-scoped).
-        // Nothing to tear down here — viewModelScope cancels its own coroutines.
+        // Trace is only for the open journal; back to the everyday level so the
+        // tunnel doesn't keep emitting every packet for the rest of the process.
+        try { GhostStreamVpnService.nativeSetLogLevel("debug") } catch (_: Exception) {}
     }
 }
