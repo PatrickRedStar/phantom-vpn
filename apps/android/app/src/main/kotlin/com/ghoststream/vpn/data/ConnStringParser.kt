@@ -50,8 +50,9 @@ object ConnStringParser {
             "conn_string userinfo too large (${userinfo.length} > 16384)"
         }
 
-        // Padding is optional, like the Rust side (DecodePaddingMode::Indifferent):
-        // trailing '=' are dropped, one in the middle is an error.
+        // Padding is optional: trailing '=' are dropped, one in the middle is an
+        // error. NB: client-common::parse_conn_string still decodes with
+        // URL_SAFE_NO_PAD and rejects a padded link.
         val pemBytes = Base64.getUrlDecoder().decode(userinfo.trimEnd('='))
         val pemStr = String(pemBytes, Charsets.UTF_8)
 

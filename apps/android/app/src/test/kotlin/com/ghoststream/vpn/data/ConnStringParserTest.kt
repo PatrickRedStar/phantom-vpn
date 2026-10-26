@@ -7,7 +7,7 @@ import org.junit.Test
 import java.io.File
 import java.util.Base64
 
-/** Vectors shared with client-common::parse_conn_string tests (Rust). */
+/** Same link shape as client-common::parse_conn_string; padding is tolerated only here. */
 class ConnStringParserTest {
 
     private val cert = "-----BEGIN CERTIFICATE-----\nMIIBcert\n-----END CERTIFICATE-----"
