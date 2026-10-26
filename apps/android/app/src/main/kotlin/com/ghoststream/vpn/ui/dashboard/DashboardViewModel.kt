@@ -56,8 +56,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private fun configOf(p: VpnProfile?, prefs: VpnConfig) = VpnConfig(
         serverAddr      = p?.serverAddr ?: "",
         serverName      = p?.serverName ?: "",
-        certPath        = p?.certPath ?: "",
-        keyPath         = p?.keyPath ?: "",
         tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
         dnsServers      = p?.dnsServers ?: prefs.dnsServers,
         splitRouting    = p?.splitRouting ?: prefs.splitRouting,
@@ -146,7 +144,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         // a profile switch such a flow may still carry the old profile's TUN,
         // DNS and cert paths.
         var profile = profilesStore.getActiveProfile()
-        var cfg = configOf(profile, prefs.value ?: return)
+        val cfg = configOf(profile, prefs.value ?: return)
         if (cfg.serverAddr.isBlank()) return
         val ctx = getApplication<Application>()
 
@@ -162,7 +160,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                     return
                 }
                 profile = restored
-                cfg = cfg.copy(certPath = restored.certPath, keyPath = restored.keyPath)
             }
             // Subscription and enabled flag are not checked here: the cache can
             // only be refreshed through a working tunnel, so a stale "expired"
@@ -216,8 +213,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 putExtra(GhostStreamVpnService.EXTRA_SERVER_ADDR, cfg.serverAddr)
                 putExtra(GhostStreamVpnService.EXTRA_SERVER_NAME,
                     cfg.serverName.ifBlank { cfg.serverAddr.substringBefore(":") })
-                putExtra(GhostStreamVpnService.EXTRA_CERT_PATH, cfg.certPath)
-                putExtra(GhostStreamVpnService.EXTRA_KEY_PATH, cfg.keyPath)
                 putExtra(GhostStreamVpnService.EXTRA_TUN_ADDR, cfg.tunAddr)
                 putExtra(GhostStreamVpnService.EXTRA_DNS_SERVERS, cfg.dnsServers.joinToString(","))
                 putExtra(GhostStreamVpnService.EXTRA_SPLIT_ROUTING, cfg.splitRouting)
@@ -228,8 +223,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 if (profile?.relayEnabled == true && !profile.relayAddr.isNullOrBlank()) {
                     putExtra(GhostStreamVpnService.EXTRA_RELAY_ADDR, profile.relayAddr)
                 }
-                // DPI recycle (W11) is gone from the UI; a value saved back then
-                // must not keep driving reconnect storms, so it is not passed.
             }
             ctx.startForegroundService(intent)
         }

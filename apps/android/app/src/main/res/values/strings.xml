@@ -238,6 +238,7 @@
     <string name="subscr_hours">%1$dh</string>
     <string name="subscr_less_hour">&lt; 1h ⚠</string>
     <string name="meta_stale">silent · %1$ds</string>
+    <string name="meta_degraded">degraded · %1$d/%2$d streams</string>
     <string name="meta_throttled">throttled · %1$d kbps</string>
     <string name="meta_reconnecting">reconnecting</string>
     <string name="meta_connecting">connecting</string>
@@ -263,6 +264,8 @@
     <string name="sub_per_app_all">All through VPN</string>
     <string name="row_system_always_on">System always-on VPN</string>
     <string name="sub_system_always_on_unknown">Set up in Android VPN settings</string>
+    <string name="sub_system_always_on_on">On</string>
+    <string name="sub_system_always_on_lockdown">On, traffic blocked without VPN</string>
     <string name="hint_autostart_title">Start on boot</string>
     <string name="hint_autostart_text">%1$s: turn on “Autostart” for the app in the device settings — otherwise the VPN won’t start after a reboot.</string>
     <string name="hint_autostart_open">Open autostart settings</string>

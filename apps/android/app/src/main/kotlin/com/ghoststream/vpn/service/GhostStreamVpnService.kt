@@ -21,6 +21,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import androidx.annotation.RequiresApi
 import com.ghoststream.vpn.BuildConfig
 import com.ghoststream.vpn.R
 import com.ghoststream.vpn.data.ConnStringParser
@@ -228,22 +229,15 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
 
         const val EXTRA_SERVER_ADDR   = "server_addr"
         const val EXTRA_SERVER_NAME   = "server_name"
-        /** Unused: cert and key travel inside [EXTRA_CONN_STRING]. */
-        const val EXTRA_CERT_PATH     = "cert_path"
-        /** Unused: cert and key travel inside [EXTRA_CONN_STRING]. */
-        const val EXTRA_KEY_PATH      = "key_path"
         const val EXTRA_TUN_ADDR      = "tun_addr"
         const val EXTRA_DNS_SERVERS   = "dns_servers"
         const val EXTRA_SPLIT_ROUTING = "split_routing"
         const val EXTRA_DIRECT_CIDRS  = "direct_cidrs_path"
         const val EXTRA_PER_APP_MODE  = "per_app_mode"
         const val EXTRA_PER_APP_LIST  = "per_app_list"
-        /** Phase 4: full ghs:// connection string, used by new nativeStart. */
+        /** Full ghs:// connection string; cert and key travel inside it. */
         const val EXTRA_CONN_STRING   = "conn_string"
         const val EXTRA_RELAY_ADDR    = "relay_addr"
-        /** Ignored. The DPI recycle toggle left the UI, and a value saved back
-         *  then caused reconnect storms nobody could switch off. */
-        const val EXTRA_DPI_RECYCLE_BYTES = "dpi_recycle_bytes"
 
         private const val CHANNEL_ID      = "ghoststream_vpn"
         private const val NOTIFICATION_ID  = 1001
@@ -357,11 +351,15 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         ) return
         lastWidgetState = frame.state
         lastWidgetPushMs = now
+        // Toggled in system settings while the tunnel is up — Android doesn't
+        // re-establish a running VPN, so re-ask on the same throttle.
+        publishSystemAlwaysOn()
         serviceScope.launch {
             WidgetState.push(
                 context = applicationContext,
                 connected = frame.state == "connected",
-                connecting = frame.state == "connecting" || frame.state == "reconnecting",
+                connecting = frame.state == "connecting",
+                reconnecting = frame.state == "reconnecting",
                 serverName = savedParams?.serverName ?: "",
                 timer = formatTimer(frame.sessionSecs),
                 rxSpeed = formatSpeed(frame.rateRxBps),
@@ -370,6 +368,13 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                 streamsTotal = frame.nStreams,
             )
         }
+    }
+
+    /** System Always-on / lockdown for the settings row; only a service with a
+     *  live TUN can ask (API 29+). */
+    private fun publishSystemAlwaysOn() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || vpnInterface == null) return
+        VpnStateManager.systemAlwaysOn.value = isAlwaysOn to isLockdownEnabled
     }
 
     override fun onLogFrame(json: String) {
@@ -534,11 +539,11 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                         Log.w(TAG, "Empty VPN route set (direct list covers everything?), full tunnel")
                         addFullTunnelRoutes(builder)
                     } else {
-                        // v0.28.1: склейка соседних туннельных блоков перед addRoute.
-                        // Rust уже умеет это (compute_vpn_routes_merged), но в APK
-                        // лежит prebuilt .so, поэтому страхуемся здесь же — логика
-                        // безопасна по построению: расширяется ТУННЕЛЬ, наружу ничего
-                        // не выходит. Уберём, когда .so пересоберут с NDK.
+                        // Ядро (compute_vpn_routes_merged) уже склеивает до того же
+                        // бюджета и заново вырезает LAN/link-local/multicast. Этот
+                        // проход — страховка ROUTE_BUDGET, если ядро ушло в запасное
+                        // урезание (до MAX_VPN_ROUTES): расширяется только ТУННЕЛЬ,
+                        // спец-диапазоны вырезаются снова, наружу ничего не выходит.
                         val merged = mergeSmallGaps(arr, ROUTE_BUDGET)
                         for ((addr, prefix) in merged) {
                             builder.addRoute(addr, prefix)
@@ -645,6 +650,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             }
             vpnInterface = iface
         }
+        publishSystemAlwaysOn()
         // The TUN is up from here on and blocks traffic until the core
         // connects — and keeps blocking it while the core reconnects. Only
         // Disconnect, onRevoke or a fatal error take it down.
@@ -806,6 +812,8 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
         // watchdog на nativeStop.
         val iface = synchronized(ifaceLock) { vpnInterface.also { vpnInterface = null } }
         runCatching { iface?.close() }
+        // Without a live tunnel nobody can re-ask — don't show a stale value.
+        VpnStateManager.systemAlwaysOn.value = null
 
         Thread {
             val nativeStopDone = Thread {
@@ -938,6 +946,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
      *
      * Пустой результат — список непригоден, вызывающий включает полный туннель.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun loadExcludePrefixes(path: String, budget: Int): List<IpPrefix> {
         val nets = ArrayList<Pair<Long, Long>>()
         var tooWide = false
@@ -994,6 +1003,7 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     }
 
     /** Склеивает диапазоны, проглатывая разрывы ≤ [gap], и режет результат на CIDR. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun collapseToPrefixes(nets: List<Pair<Long, Long>>, gap: Long): List<IpPrefix> {
         val out = ArrayList<IpPrefix>()
         var cs = nets[0].first
@@ -1028,11 +1038,15 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     }
 
     private fun quietCleanup() {
+        // The core may still report "TUN closed" for the fd closed below;
+        // that is this teardown, not a fatal error to show.
+        teardownInProgress = true
         tunnelGeneration.incrementAndGet()
         startupThread?.interrupt()
         DnsHealthMonitor.stop()
         val iface = synchronized(ifaceLock) { vpnInterface.also { vpnInterface = null } } ?: return
         runCatching { iface.close() }
+        VpnStateManager.systemAlwaysOn.value = null
         Thread { runCatching { synchronized(nativeLock) { nativeStop() } } }
             .apply { name = "vpn-native-stop"; isDaemon = true; start() }
         VpnStateManager.resetStatus()
