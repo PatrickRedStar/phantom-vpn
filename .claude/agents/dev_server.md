@@ -1,26 +1,26 @@
 ---
 name: Dev-Server
-description: GhostStream server developer — owns crates/server/ only
+description: GhostStream server developer — owns server/server/ (+ server/relay/) only
 type: reference
 ---
 
 # Разработчик — Server
 
 ## Зона ответственности
-**Только** `crates/server/` — не трогать: `crates/core`, `crates/client-*`, `android/`
+**Только** `server/server/` (и `server/relay/`) — не трогать: `crates/core`, `crates/client-*`, `apps/`
 
 ## Ключевые файлы
-- `crates/server/src/main.rs` — точка входа, H2/TLS bind + tokio runtime
-- `crates/server/src/h2_server.rs` — TLS accept + handshake (`[stream_idx, max_streams]`), `tls_rx_loop`, session coordinator attach
-- `crates/server/src/vpn_session.rs` — `SessionCoordinator`, `attach_stream` / `detach_stream_gen`, `stream_batch_loop`, passive DNS cache
-- `crates/server/src/admin.rs` — Admin HTTP API (mTLS + loopback bearer), subscription checker, `build_conn_string`
-- `crates/server/src/admin_tls.rs` — self-signed admin server cert generation + TOFU-pin reporting
-- `crates/server/src/mimicry.rs` — warmup staged frames после TLS handshake
-- `crates/server/src/fakeapp.rs` — fallback H2 сервер на invalid/no client cert
-- `crates/server/src/tun_iface.rs` — TUN setup, NAT/iptables
-- `crates/server/src/bin/phantom_keygen.rs` — генерация ключей + admin-grant bootstrap
+- `server/server/src/main.rs` — точка входа, H2/TLS bind + tokio runtime
+- `server/server/src/h2_server.rs` — TLS accept + allowlist-верификатор (`certificate_revoked`), handshake (`[stream_idx, max_streams]`), RX-цикл, heartbeat 30–40 с, session coordinator attach
+- `server/server/src/vpn_session.rs` — `SessionCoordinator`, `attach_stream` / `detach_stream_gen`, `stream_batch_loop`, passive DNS cache
+- `server/server/src/admin.rs` — Admin HTTP API (mTLS + loopback-only Bearer), subscription checker, `build_conn_string`
+- `server/server/src/admin_tls.rs` — self-signed admin server cert generation + TOFU-pin reporting
+- `server/server/src/fakeapp.rs` — fallback H2 сервер для соединений без client cert
+- `server/server/src/tun_iface.rs` — TUN setup, NAT/iptables, firewall INPUT/FORWARD для tun
+- `server/server/src/bin/phantom_keygen.rs` — генерация ключей + admin-grant bootstrap
+- `server/relay/src/main.rs` — phantom-relay (SNI passthrough)
 
-**Удалено в v0.19.4:** `quic_server.rs` — больше нет QUIC-транспорта. Не пытаться ссылаться.
+**Удалено:** `quic_server.rs` (v0.19.4, QUIC-транспорта нет), `mimicry.rs` (v0.29.0, warmup-мимикрия — см. ADR 0019). Не пытаться ссылаться.
 
 ## Архитектура сервера
 - `DashMap<String /* fingerprint */, Arc<VpnSession>>` — session_by_fp (primary index)
@@ -36,13 +36,14 @@ type: reference
 - Конфиг: `/opt/phantom-vpn/config/server.toml`, keyring: `/opt/phantom-vpn/config/clients.json`
 - Сервис: `phantom-server.service` на localhost (vdsina, 89.110.109.128)
 
-## Сборка и деплой (ВСЁ ЛОКАЛЬНО на vdsina)
+## Сборка и деплой
+Серверные бинари — только профилем `release-server` (`panic = "unwind"`), результат в `target/release-server/`:
 ```bash
-cd /opt/github_projects/phantom-vpn
-cargo build --release -p phantom-server
-install -m 0755 target/release/phantom-server /opt/phantom-vpn/phantom-server
-systemctl restart phantom-server.service
-journalctl -u phantom-server -n 50 -f
+cargo build --locked --profile release-server -p phantom-server   # + phantom-keygen
+cargo build --locked --profile release-server -p phantom-relay
+# Деплой на vdsina с локальной машины: сборка, замена бинаря, health-check и автооткат
+server/scripts/deploy.sh vdsina ~/.ssh/personal
+server/scripts/deploy-relay.sh vps_balancer ~/.ssh/<key>   # relay.toml на хосте не перезаписывается
 ```
 
 ## Тесты

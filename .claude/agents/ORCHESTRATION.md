@@ -16,7 +16,7 @@ type: reference
 | Architect | agents/architect.md | cross-crate API, wire format, JNI контракт (только чтение) |
 | Secretary | agents/secretary.md | memory, tasks, CHANGELOG |
 | Validator | agents/validator.md | cargo check, JNI сигнатуры, сборка |
-| Dev-Server | agents/dev_server.md | crates/server/ |
+| Dev-Server | agents/dev_server.md | server/server/ + server/relay/ |
 | Dev-Linux | agents/dev_linux.md | crates/client-linux/ (CLI) |
 | Dev-Linux-GUI | agents/dev_linux_gui.md | apps/linux-gui/ (Slint/GTK4) |
 | Dev-Android | agents/dev_android.md | android/ + crates/client-android/ |
@@ -33,7 +33,7 @@ merge conflicts).
 
 Один tool-call с 4 параллельными блоками:
 ```
-Agent(subagent_type="Dev-Server",       prompt="...crates/server/...")
+Agent(subagent_type="Dev-Server",       prompt="...server/server/...")
 Agent(subagent_type="general-purpose",  prompt="...crates/core/ + client-common/...")
 Agent(subagent_type="Dev-Android",      prompt="...android/ + client-android/...")
 Agent(subagent_type="general-purpose",  prompt="...docs + config + scripts...")

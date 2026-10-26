@@ -58,7 +58,7 @@ Batch plaintext: [2B pkt1_len][pkt1]...[2B 0x0000][optional padding]
 - `sni` / `tun` / `v=1` — required query params
 - Legacy base64-JSON формат **не поддерживается** (отвергается `parse_conn_string`)
 
-Генерация: `crates/server/src/admin.rs::build_conn_string`.
+Генерация: `server/server/src/admin.rs::build_conn_string`.
 Парсинг: `crates/client-common/src/helpers.rs::parse_conn_string`, `ConnStringParser.kt`.
 
 ## Inline PEM в TlsConfig (приоритет над файлами)

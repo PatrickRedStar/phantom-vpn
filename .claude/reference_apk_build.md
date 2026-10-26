@@ -4,12 +4,11 @@ description: Где собирать .so, APK, и как устанавлива�
 type: reference
 originSessionId: 86cd0a63-4677-4164-83d8-fdbac6637377
 ---
-**.so сборка (на vdsina локально):**
-```bash
-ANDROID_NDK_HOME=/opt/android-ndk cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android
-cp target/aarch64-linux-android/release/libphantom_android.so \
-   android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
-```
+**.so сборка:** отдельно не нужна — её делает gradle (`preBuild` → `buildRustAndroid`,
+`cargo ndk -t arm64-v8a -t armeabi-v7a ... -o app/src/main/jniLibs`); в git `.so` нет.
+Основной путь сборки и установки — `tools/ship-android.sh` на Unix-хосте с NDK
+(rustup-таргеты `aarch64-linux-android`, `armv7-linux-androideabi`). Ниже — старый
+путь через vdsina, актуален только как запасной.
 
 **Android SDK на vdsina НЕТ** — APK нельзя собрать локально. Нужно собирать на машине пользователя через SSH тунель:
 ```bash
@@ -18,11 +17,9 @@ ssh -i ~/.ssh/home_tunnel_key -p 22222 spongebob@127.0.0.1
 ```
 
 **Workflow:**
-1. Собрать .so на vdsina (cargo ndk)
-2. Скопировать .so в `android/app/src/main/jniLibs/arm64-v8a/`
-3. Rsync android/ на машину пользователя: `rsync -az --delete -e "ssh -i ~/.ssh/home_tunnel_key -p 22222" /opt/github_projects/phantom-vpn/android/ spongebob@127.0.0.1:~/phantom-vpn-build/android/`
-4. Собрать APK там: `ssh ... "cd ~/phantom-vpn-build/android && ANDROID_HOME=~/Android/Sdk ./gradlew assembleDebug --no-daemon"`
-5. Установить на телефоны (см. ниже)
+1. Rsync репо (gradle-сборке нужен весь cargo workspace, не только `apps/android/`) на машину с SDK и NDK
+2. Собрать APK там: `cd apps/android && ./gradlew assembleDebug --no-daemon` — `.so` соберётся сам
+3. Установить на телефоны (см. ниже)
 
 **SSH тунель до машины пользователя:** `ssh -i ~/.ssh/home_tunnel_key -p 22222 spongebob@127.0.0.1`
 **JDK на vdsina:** `/usr/lib/jvm/java-17-openjdk-amd64`

@@ -62,28 +62,24 @@ ghs://<base64url(cert_pem + "\n" + key_pem)>@<host>:<port>?sni=<sni>&tun=<cidr>&
 - OkHttp — для admin API (с mTLS)
 - compileSdk 34, minSdk 26, versionCode см. таблицу в CLAUDE.md
 
-## Сборка Android (ВСЁ ЛОКАЛЬНО на vdsina)
+## Сборка Android
+Тестовый билд + установка — только `tools/ship-android.sh` (Unix-хост). Rust `.so`
+собирает сам gradle: `preBuild` → `buildRustAndroid` (`cargo ndk -t arm64-v8a -t
+armeabi-v7a ... -o app/src/main/jniLibs`); в git `.so` не хранится. Нужны
+`cargo-ndk`, NDK и rustup-таргеты `aarch64-linux-android`, `armv7-linux-androideabi`.
 ```bash
-# Rust .so (требует ANDROID_NDK_ROOT)
-export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
-cargo ndk -t arm64-v8a --platform 26 build --release -p phantom-client-android
-cp target/aarch64-linux-android/release/libphantom_android.so \
-   android/app/src/main/jniLibs/arm64-v8a/libphantom_android.so
-
-# APK — собирается на машине пользователя (Android SDK не на vdsina)
-# Через SSH тунель port 22222
-cd android && JAVA_HOME=/usr/lib/jvm/java-17-openjdk ./gradlew assembleDebug --no-daemon
-# APK: android/app/build/outputs/apk/debug/app-debug.apk
+cd apps/android && ./gradlew assembleDebug --no-daemon
+# APK: apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ## Релизный чеклист
 - [ ] `build.gradle.kts`: `versionCode` инкрементирован, `versionName` обновлён, `GIT_TAG` обновлён
-- [ ] `.so` пересобран через `cargo ndk` если менялся Rust-код
+- [ ] В `CHANGELOG.md` есть секция `## [Android X.Y.Z]` (без неё Android-джоба на теге падает)
 - [ ] Тег вида `v0.X.Y` → GitHub Actions сделает release автоматически
 
 ## Запрещено без архитектора
 - Менять JNI сигнатуры без обновления Rust (и наоборот)
-- Менять TUN MTU (должен быть 1350)
+- Менять TUN MTU (1300, `QUIC_TUNNEL_MTU`; решение владельца — не трогать без замера)
 - Менять формат `ghs://` conn_string
 - Ссылаться на QUIC / `runtimeTransport` / `transport=auto` — удалено в v0.19.4
 
