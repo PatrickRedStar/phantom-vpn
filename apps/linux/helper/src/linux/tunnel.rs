@@ -64,7 +64,11 @@ impl Manager {
     pub fn inc_clients(&self) { self.client_count.fetch_add(1, Ordering::Relaxed); }
     pub fn dec_clients(&self) { self.client_count.fetch_sub(1, Ordering::Relaxed); }
     pub fn client_count(&self) -> usize { self.client_count.load(Ordering::Relaxed) }
-    pub fn is_connected(&self) -> bool { self.status_tx.borrow().state == ConnState::Connected }
+    /// A tunnel is up or on its way back (connecting, reconnecting) — only
+    /// Disconnected and a fatal Error mean there is nothing to keep alive.
+    pub fn is_active(&self) -> bool {
+        !matches!(self.status_tx.borrow().state, ConnState::Disconnected | ConnState::Error)
+    }
 
     pub fn current_status(&self) -> StatusFrame {
         self.status_tx.borrow().clone()

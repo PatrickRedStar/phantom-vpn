@@ -303,10 +303,9 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
             )
         };
 
-        let settings = TunnelSettings {
-            auto_reconnect: false, // CLI: single attempt, user retries manually
-            ..TunnelSettings::default()
-        };
+        // Reconnects live in the runtime: network drops are retried forever,
+        // only a fatal error (access revoked, expired, closed TUN) ends it.
+        let settings = TunnelSettings::default();
 
         let profile = ConnectProfile {
             name: "cli".to_string(),
@@ -314,7 +313,7 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
             settings,
         };
 
-        let (status_tx, _status_rx) = tokio::sync::watch::channel(
+        let (status_tx, status_rx) = tokio::sync::watch::channel(
             client_core_runtime::StatusFrame::default()
         );
         let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
@@ -332,24 +331,29 @@ fn run_cmd(prog: &str, args: &[&str]) -> anyhow::Result<()> {
         let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt()).unwrap();
         let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate()).unwrap();
         tokio::pin!(join_handle);
-        tokio::select! {
+        let fatal = tokio::select! {
             _ = sigint.recv() => {
                 tracing::info!("Received SIGINT. Initiating shutdown...");
                 // v0.25.1 (W3-2): watch::Sender::send replaces Notify::notify_waiters
                 let _ = handles.cancel.send(true);
                 let _ = join_handle.await;
+                None
             }
             _ = sigterm.recv() => {
                 tracing::info!("Received SIGTERM. Initiating shutdown...");
                 let _ = handles.cancel.send(true);
                 let _ = join_handle.await;
+                None
             }
-            res = &mut join_handle => {
-                tracing::warn!("Tunnel exited: {:?}", res);
+            _ = &mut join_handle => {
+                Some(status_rx.borrow().last_error.clone().unwrap_or_else(|| "tunnel stopped".into()))
             }
-        }
+        };
 
         drop(_cleanup_guard);
+        if let Some(reason) = fatal {
+            anyhow::bail!("{}", reason);
+        }
         tracing::info!("Client shutdown complete.");
         Ok(())
     }

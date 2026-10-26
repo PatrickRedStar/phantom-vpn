@@ -85,7 +85,8 @@ async fn async_main(target_uid: u32, target_gid: u32) -> anyhow::Result<()> {
         });
     }
 
-    // Idle-exit watchdog: quit after 5 min with no client (no active tunnel).
+    // Idle-exit watchdog: quit when no GUI is attached and no tunnel is up or
+    // reconnecting — a tunnel riding out a network drop is not idle.
     {
         let tm = tunnel_manager.clone();
         let sp = socket_path.clone();
@@ -94,7 +95,7 @@ async fn async_main(target_uid: u32, target_gid: u32) -> anyhow::Result<()> {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                let idle = tm.client_count() == 0 && !tm.is_connected();
+                let idle = tm.client_count() == 0 && !tm.is_active();
                 if idle {
                     tracing::info!("idle, exiting");
                     tm.disconnect().await;
