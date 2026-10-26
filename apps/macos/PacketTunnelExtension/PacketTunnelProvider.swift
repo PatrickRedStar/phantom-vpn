@@ -488,7 +488,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 )
                 // The old runtime is already stopped: without a new one the
                 // tunnel is a black hole. Stop it with a visible reason.
-                self.stopOnFatalError(Self.describeStartError(error))
+                let detail = Self.describeStartError(error)
+                self.writeErrorSnapshot(detail)
+                self.stopOnFatalError(detail)
             }
         }
     }
