@@ -35,6 +35,25 @@ fn push_entry(ring: &mut IoUring, entry: &Entry) -> anyhow::Result<()> {
     }
 }
 
+/// Starts one TUN worker thread. However it ends, `stop` is raised so the rest
+/// of the set winds down on its next packet and the channels close: the owner
+/// sees a dead TUN (the server exits for a restart, the client reports a fatal
+/// error) instead of running on with one queue silently gone.
+fn spawn_worker(
+    name: String,
+    stop: &Arc<AtomicBool>,
+    work: impl FnOnce(Arc<AtomicBool>) -> anyhow::Result<()> + Send + 'static,
+) -> std::io::Result<()> {
+    let stop = stop.clone();
+    std::thread::Builder::new().name(name.clone()).spawn(move || {
+        if let Err(e) = work(stop.clone()) {
+            tracing::error!("{}: {:#} — TUN I/O stopped", name, e);
+        }
+        stop.store(true, Ordering::Relaxed);
+    })?;
+    Ok(())
+}
+
 pub fn spawn(
     tun_fd: RawFd,
     channel_size: usize,
@@ -43,28 +62,8 @@ pub fn spawn(
     let (write_tx, write_rx) = mpsc::channel::<Bytes>(channel_size);
 
     let stop = Arc::new(AtomicBool::new(false));
-
-    {
-        let stop = stop.clone();
-        std::thread::Builder::new()
-            .name("tun-uring-read".into())
-            .spawn(move || {
-                if let Err(e) = reader_loop(tun_fd, read_tx, stop) {
-                    tracing::error!("io_uring reader: {}", e);
-                }
-            })?;
-    }
-
-    {
-        let stop = stop.clone();
-        std::thread::Builder::new()
-            .name("tun-uring-write".into())
-            .spawn(move || {
-                if let Err(e) = writer_loop(tun_fd, write_rx, stop) {
-                    tracing::error!("io_uring writer: {}", e);
-                }
-            })?;
-    }
+    spawn_worker("tun-uring-read".into(), &stop, move |stop| reader_loop(tun_fd, read_tx, stop))?;
+    spawn_worker("tun-uring-write".into(), &stop, move |stop| writer_loop(tun_fd, write_rx, stop))?;
 
     Ok((read_rx, write_tx))
 }
@@ -107,6 +106,10 @@ fn reader_loop(
 
         // Process completions and resubmit
         for (idx, result) in completed {
+            if result < 0 && result != -libc::EAGAIN && result != -libc::EINTR {
+                // TUN detached or broken: resubmitting would spin on the same error.
+                anyhow::bail!("read: {}", std::io::Error::from_raw_os_error(-result));
+            }
             if result > 0 {
                 let len = result as usize;
                 if len >= 20 && (bufs[idx][0] >> 4) == 4 {
@@ -203,14 +206,7 @@ pub fn spawn_multiqueue(
     // Reader thread per queue — all merge into merged_tx
     for (i, &fd) in fds.iter().enumerate() {
         let tx = merged_tx.clone();
-        let stop = stop.clone();
-        std::thread::Builder::new()
-            .name(format!("tun-mq-read-{}", i))
-            .spawn(move || {
-                if let Err(e) = reader_loop(fd, tx, stop) {
-                    tracing::error!("io_uring reader queue {}: {}", i, e);
-                }
-            })?;
+        spawn_worker(format!("tun-mq-read-{}", i), &stop, move |stop| reader_loop(fd, tx, stop))?;
     }
     drop(merged_tx);
 
@@ -219,14 +215,7 @@ pub fn spawn_multiqueue(
     for (i, &fd) in fds.iter().enumerate() {
         let (wtx, wrx) = mpsc::channel::<Bytes>(channel_size / n_queues + 1);
         writer_txs.push(wtx);
-        let stop = stop.clone();
-        std::thread::Builder::new()
-            .name(format!("tun-mq-write-{}", i))
-            .spawn(move || {
-                if let Err(e) = writer_loop(fd, wrx, stop) {
-                    tracing::error!("io_uring writer queue {}: {}", i, e);
-                }
-            })?;
+        spawn_worker(format!("tun-mq-write-{}", i), &stop, move |stop| writer_loop(fd, wrx, stop))?;
     }
 
     // Fan-out: write_rx → flow-hashed to writer threads.
