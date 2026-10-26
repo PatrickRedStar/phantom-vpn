@@ -16,11 +16,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - In-process state
 
+    /// Guards `lastStatusFrame`, `recentLogFrames`, `statusBroadcastGate` and
+    /// the start-completion flag: Rust callbacks (PhantomBridge actor), IPC
+    /// (`handleAppMessage`) and the start/stop Tasks touch them from
+    /// different threads. Same pattern as the macOS provider.
+    private let stateLock = NSLock()
     private var lastStatusFrame: StatusFrame = .disconnected
     private var recentLogFrames: [LogFrame] = []
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
     private var statusBroadcastGate = StatusBroadcastGate(minInterval: 1.0)
+
+    @discardableResult
+    private func withStateLock<T>(_ block: () -> T) -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return block()
+    }
 
     // MARK: - Lifecycle
 
@@ -69,14 +81,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         switch message {
         case .getStatus:
-            let response = TunnelIpcBridge.Response.status(lastStatusFrame)
+            let response = TunnelIpcBridge.Response.status(withStateLock { lastStatusFrame })
             completionHandler?(try? JSONEncoder().encode(response))
 
         case .subscribeLogs(let sinceUs):
             // µs-курсор (см. TunnelIpcBridge.Message): мс-гранулярность
             // теряла фреймы, попавшие в ту же миллисекунду, что и максимум
             // предыдущего батча.
-            let filtered = recentLogFrames.filter { $0.timestampUs > sinceUs }
+            let filtered = withStateLock { recentLogFrames.filter { $0.timestampUs > sinceUs } }
             let response = TunnelIpcBridge.Response.logs(filtered)
             completionHandler?(try? JSONEncoder().encode(response))
 
@@ -110,7 +122,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - Start implementation
 
     private func startTunnelAsync(completionHandler: @escaping (Error?) -> Void) async throws {
-        statusBroadcastGate.reset()
+        withStateLock {
+            statusBroadcastGate.reset()
+            lastStatusFrame = .disconnected
+        }
         writeStatePayload(VpnStatePayload(kind: .connecting))
 
         var profile = try loadProfile()
@@ -122,7 +137,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
         try await setTunnelNetworkSettings(networkSettings)
 
+        // Read and set only under `stateLock`: the status callback and the
+        // fallback below race, and a second completion call traps the extension.
         var didCallCompletion = false
+        let claimCompletion = { [weak self] () -> Bool in
+            self?.withStateLock { () -> Bool in
+                defer { didCallCompletion = true }
+                return !didCallCompletion
+            } ?? false
+        }
 
         // Start the Rust tunnel via PhantomKit actor bridge.
         do {
@@ -131,26 +154,51 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 settings: settings,
                 onStatus: { [weak self] frame in
                     guard let self else { return }
-                    self.lastStatusFrame = frame
-
-                    if self.statusBroadcastGate.shouldBroadcast(
-                        frame,
-                        now: ProcessInfo.processInfo.systemUptime
-                    ) {
+                    let (previousState, broadcast) = self.withStateLock { () -> (ConnState, Bool) in
+                        let previous = self.lastStatusFrame.state
+                        self.lastStatusFrame = frame
+                        let pass = self.statusBroadcastGate.shouldBroadcast(
+                            frame,
+                            now: ProcessInfo.processInfo.systemUptime
+                        )
+                        return (previous, pass)
+                    }
+                    if broadcast {
                         self.writeSnapshot(frame)
                     }
 
                     // Signal connected to NEPacketTunnelProvider on first .connected
-                    if frame.state == .connected && !didCallCompletion {
-                        didCallCompletion = true
+                    if frame.state == .connected && claimCompletion() {
                         completionHandler(nil)
+                    }
+
+                    // The core reconnects on its own after network failures;
+                    // `.error` means a fatal reason (config, certificate,
+                    // revoked access, wrong clock) and the runtime has given
+                    // up. A tunnel without a runtime is a black hole — stop
+                    // and leave the reason in the snapshot for the app.
+                    if frame.state == .error && previousState != .error {
+                        let err = NSError(
+                            domain: "GhostStream",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: frame.lastError ?? "VPN error"]
+                        )
+                        self.log.error("runtime error: \(err.localizedDescription, privacy: .public)")
+                        if claimCompletion() {
+                            completionHandler(err)
+                            Task { await PhantomBridge.shared.stop() }
+                        } else {
+                            self.cancelTunnelWithError(err)
+                        }
                     }
                 },
                 onLog: { [weak self] frame in
                     guard let self else { return }
-                    self.recentLogFrames.append(frame)
-                    if self.recentLogFrames.count > 1000 {
-                        self.recentLogFrames.removeFirst(self.recentLogFrames.count - 1000)
+                    self.withStateLock {
+                        self.recentLogFrames.append(frame)
+                        if self.recentLogFrames.count > 1000 {
+                            self.recentLogFrames.removeFirst(self.recentLogFrames.count - 1000)
+                        }
                     }
                 },
                 onInbound: { [weak self] data in
@@ -163,11 +211,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw error
         }
 
-        // If we haven't received .connected yet, call completion after a short delay
+        // If we haven't received .connected yet, call completion now
         // to avoid hanging the system VPN UI forever. The tunnel is running,
         // status callbacks will update the state.
-        if !didCallCompletion {
-            didCallCompletion = true
+        if claimCompletion() {
             completionHandler(nil)
         }
 
@@ -669,17 +716,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func writeDisconnectedSnapshot() {
-        statusBroadcastGate.reset()
-        lastStatusFrame = .disconnected
-        writeSnapshot(.disconnected)
+        // A fatal error stays in the snapshot until the next start so the
+        // app can show why the tunnel stopped (revoked, certificate, clock).
+        let keepError = withStateLock { () -> Bool in
+            statusBroadcastGate.reset()
+            guard lastStatusFrame.state != .error else { return true }
+            lastStatusFrame = .disconnected
+            return false
+        }
+        if !keepError {
+            writeSnapshot(.disconnected)
+        }
     }
 
     private func writeErrorSnapshot(_ message: String) {
-        statusBroadcastGate.reset()
         var frame = StatusFrame.disconnected
         frame.state = .error
         frame.lastError = message
-        lastStatusFrame = frame
+        withStateLock {
+            statusBroadcastGate.reset()
+            lastStatusFrame = frame
+        }
         writeSnapshot(frame)
     }
 

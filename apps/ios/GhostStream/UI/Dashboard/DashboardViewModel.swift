@@ -140,6 +140,9 @@ final class DashboardViewModel {
         let status = await tunnel.currentStatus()
         switch status {
         case .invalid, .disconnected:
+            // A fatal error from the core (revoked access, certificate,
+            // clock) stays on screen until the next connect attempt.
+            if case .error = VpnStateManager.shared.state { break }
             VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
         case .connecting, .reasserting:
             VpnStateManager.shared.update(.connecting)
