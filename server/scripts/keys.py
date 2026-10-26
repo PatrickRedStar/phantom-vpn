@@ -211,7 +211,8 @@ def save_keyring(path, keyring):
     allowlist только по сигналу, без него удалённый клиент пускается до рестарта."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
+    # Своё имя tmp: admin API сервера пишет в clients.json.tmp.
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(keyring, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, p)
     try:

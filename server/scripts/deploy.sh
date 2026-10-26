@@ -9,20 +9,21 @@
 #   * overwrite only if local server/config/server.toml exists
 #   * otherwise upload server.example.toml and create server.toml once
 # - Сервис останавливается только на время замены бинаря; прежний бинарь и unit
-#   хранятся как .prev. Если после рестарта порт [h2] не слушается — откат.
+#   хранятся как .prev (и server.toml тоже). Если после рестарта порт [h2] не
+#   слушается или нет NAT-правила (при заданном wan_iface) — откат.
 #
 # Usage (из любого каталога репо):
 #   server/scripts/deploy.sh [user@host] [ssh_key_path] [--dry-run]
 #
 # Examples:
-#   server/scripts/deploy.sh root@89.110.109.128 ~/.ssh/personal
+#   server/scripts/deploy.sh vdsina ~/.ssh/personal
 #   server/scripts/deploy.sh vdsina ~/.ssh/personal --dry-run
 
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-REMOTE="${1:-root@89.110.109.128}"
+REMOTE="${1:-vdsina}"
 SSH_KEY="${2:-$HOME/.ssh/personal}"
 DRY_RUN="${3:-}"
 
@@ -120,6 +121,9 @@ else
 fi
 run_cmd "rsync -az -e \"$RSYNC_SSH\" server/scripts/keys.py \"$REMOTE:$REMOTE_DIR/keys.py\""
 
+# Прежний server.toml — для отката в шаге 5.
+run_remote "f='$REMOTE_DIR/config/server.toml'; [ -f \"\$f\" ] && cp -p \"\$f\" \"\$f.prev\" || true"
+
 # Config policy:
 # - if local server/config/server.toml exists -> overwrite remote server.toml
 # - else -> sync server.example.toml; create server.toml only if absent
@@ -145,7 +149,7 @@ fi"
 # под /run/xtables.lock. Прежний unit остаётся как .prev для отката.
 UNIT="[Unit]
 Description=PhantomVPN Server (H2/TLS transport)
-After=network-online.target time-sync.target
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -156,7 +160,6 @@ ExecStart=$REMOTE_DIR/phantom-server --config $REMOTE_DIR/config/server.toml --v
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536
-LimitMEMLOCK=infinity
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE
@@ -194,8 +197,15 @@ set -u
 dir="$1"; svc="$2"; unit="/etc/systemd/system/$svc"
 
 # Порт транспорта — [h2].listen_addr (дефолт сервера 0.0.0.0:9443).
-port=$(awk '/^\[/{s=$0} s=="[h2]" && /^[[:space:]]*listen_addr[[:space:]]*=/{sub(/#.*/,""); gsub(/[" ]/,""); n=split($0,a,":"); print a[n]; exit}' "$dir/config/server.toml")
+cfg="$dir/config/server.toml"
+port=$(awk '/^\[/{h=($0 ~ /^\[h2\][[:space:]]*(#.*)?$/)} h && /^[[:space:]]*listen_addr[[:space:]]*=/{sub(/#.*/,""); gsub(/["\047 \t]/,""); n=split($0,a,":"); print a[n]; exit}' "$cfg")
 port="${port:-9443}"
+
+# NAT сервер ставит сам и ошибки iptables только логирует — проверяем правило.
+nat_ok() {
+    ! grep -Eq '^[[:space:]]*wan_iface[[:space:]]*=' "$cfg" ||
+        iptables -t nat -S POSTROUTING 2>/dev/null | grep -q phantom-vpn-
+}
 
 for b in phantom-server phantom-keygen; do
     [ -f "$dir/$b" ] && ln -f "$dir/$b" "$dir/$b.prev"
@@ -208,21 +218,22 @@ systemctl restart "$svc"
 ok=0
 for _ in $(seq 1 15); do
     sleep 1
-    if systemctl is-active -q "$svc" && ss -Htln "sport = :$port" | grep -q .; then ok=1; break; fi
+    if systemctl is-active -q "$svc" && ss -Htln "sport = :$port" | grep -q . && nat_ok; then ok=1; break; fi
 done
 
 if [ "$ok" = 1 ]; then
-    echo "OK: $svc active, :$port listening"
+    echo "OK: $svc active, :$port listening, NAT ok"
     systemctl status "$svc" --no-pager -n 15 || true
     exit 0
 fi
 
-echo "[error] :$port не слушается после рестарта — откат на прежний бинарь и unit" >&2
+echo "[error] после рестарта :$port не слушается или нет NAT-правила — откат на прежние бинарь, unit и server.toml" >&2
 journalctl -u "$svc" -n 40 --no-pager >&2 || true
 for b in phantom-server phantom-keygen; do
     [ -f "$dir/$b.prev" ] && mv -f "$dir/$b.prev" "$dir/$b"
 done
 [ -f "$unit.prev" ] && mv -f "$unit.prev" "$unit"
+[ -f "$cfg.prev" ] && cp -p "$cfg.prev" "$cfg"
 systemctl daemon-reload
 systemctl restart "$svc"
 sleep 2

@@ -55,8 +55,9 @@ server/scripts/deploy.sh vdsina ~/.ssh/personal           # --dry-run треть
   или на сервере из того же набора файлов, что `docker/server/Dockerfile`;
 - кладёт новые бинари рядом как `*.new`, сервис работает до последнего шага;
 - `systemctl restart` сразу после атомарного `mv`, прежние бинари остаются `.prev`;
-- ждёт до 15 с, пока сервис active и слушается порт `[h2].listen_addr`; если нет —
-  **откатывает** бинари и unit на `.prev` и выходит с ошибкой;
+- ждёт до 15 с, пока сервис active, слушается порт `[h2].listen_addr` и (если задан
+  `wan_iface`) стоит NAT-правило `phantom-vpn-*` — сервер ошибки iptables только логирует;
+  если нет — **откатывает** бинари, unit и `server.toml` на `.prev` и выходит с ошибкой;
 - unit с sandboxing: `NoNewPrivileges`, `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
   CAP_NET_BIND_SERVICE`, `ProtectSystem=strict` (писать можно только в `config/` — keyring,
   admin-server.*, clients/ — и `/run` под `xtables.lock`), `ProtectHome`, `PrivateTmp`.
@@ -198,7 +199,8 @@ Cert/key в TOML опциональны — если nginx уже фильтру
 standalone-хостов).
 
 Unit реле — без `--verbose`, логи в своём journald-namespace (`LogNamespace=phantom-relay`,
-`/etc/systemd/journald@phantom-relay.conf` с `MaxRetentionSec=1day`): в них адреса
+`/etc/systemd/journald@phantom-relay.conf` с `MaxRetentionSec=1day` + `MaxFileSec=1day`,
+то есть не дольше ~2 суток): в них адреса
 клиентов, а общий журнал хоста (xray/3x-ui на balancer) не трогаем. Нужен systemd ≥ 245.
 Смотреть: `journalctl --namespace=phantom-relay -f`.
 
@@ -212,7 +214,7 @@ xray inbound → outbound socks 127.0.0.1:10808
                 ↑ microsocks (uid 996, phantom-proxy.service)
                 ↑ ip rule: from uidrange 996 lookup table 51820
                 ↑ table 51820 default dev tun0
-                ↑ phantom-client → tls.nl2.bikini-bottom.com:443 (NL phantom-server)
+                ↑ phantom-client → tls.nl2.bikini-bottom.com:8443 (NL phantom-server; :443 из РФ фильтруется)
 ```
 
 Критичная деталь: с v0.22 клиент по умолчанию ставит **глобальный route-hijack**
@@ -260,8 +262,8 @@ curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8081/api/status
 # RU relay (vps_balancer)
 ssh vps_balancer
 sudo systemctl status phantom-relay phantom-client phantom-proxy
-sudo journalctl --namespace=phantom-relay -f              # passthrough events (хранятся 1 сутки)
-sudo ss -tnp | grep ':5443\|89.110.109.128:443'          # active tunnels
+sudo journalctl --namespace=phantom-relay -f              # passthrough events (хранятся ≤2 суток)
+sudo ss -tnp | grep ':5443\|89.110.109.128:8443'         # active tunnels
 
 # Sanity check that nginx SNI routing didn't break 3x-ui:
 echo | openssl s_client -connect 158.160.135.140:443 \
@@ -292,7 +294,9 @@ ssh vps_balancer "curl -s -x socks5h://127.0.0.1:10808 https://ifconfig.me"
 Сервер не тегается отдельно — релизится вместе с клиентом через тег `v*`
 (бинари `phantom-server`/`phantom-keygen` в GitHub Release, образы в ghcr.io).
 На vdsina выкатывается `server/scripts/deploy.sh` (см. «Сборка + деплой» выше):
-health-check по порту `[h2]` и автоматический откат встроены.
+health-check по порту `[h2]` и NAT-правилу и автоматический откат встроены. После первого
+деплоя с sandbox-unit проверить руками: `iptables -t nat -S POSTROUTING | grep phantom-vpn`
+и реальный трафик через туннель.
 
 ```bash
 # Проверить что поднялось (на сервере)

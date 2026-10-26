@@ -128,7 +128,7 @@ LimitNOFILE=65536
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
-# Свой журнал с хранением 1 сутки: в логах реле адреса клиентов, а общий
+# Свой журнал с хранением ≤2 суток: в логах реле адреса клиентов, а общий
 # journald хоста (на balancer — ещё xray/3x-ui) не трогаем.
 # Смотреть: journalctl --namespace=phantom-relay -f
 LogNamespace=phantom-relay
@@ -139,6 +139,7 @@ EOF
 sudo tee /etc/systemd/journald@phantom-relay.conf >/dev/null <<'EOF'
 [Journal]
 MaxRetentionSec=1day
+MaxFileSec=1day
 EOF"
 fi
 
