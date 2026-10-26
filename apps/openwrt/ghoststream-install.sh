@@ -41,11 +41,15 @@ echo ""
 
 # 4. Скачиваем бинарник
 echo "[1/4] Downloading ${BIN} → /usr/bin/ghoststream ..."
-wget -O /usr/bin/ghoststream "${GITHUB}/${BIN}" || {
+# Во временный файл и rename: поверх запущенного бинаря (интерфейс поднят)
+# запись падает с ETXTBSY, а переименование разрешено.
+wget -O /usr/bin/ghoststream.new "${GITHUB}/${BIN}" || {
+    rm -f /usr/bin/ghoststream.new
     echo "ERROR: Failed to download ${GITHUB}/${BIN}" >&2
     exit 1
 }
-chmod 0755 /usr/bin/ghoststream
+chmod 0755 /usr/bin/ghoststream.new
+mv -f /usr/bin/ghoststream.new /usr/bin/ghoststream
 echo "      OK"
 
 # 5. Скачиваем netifd proto handler
