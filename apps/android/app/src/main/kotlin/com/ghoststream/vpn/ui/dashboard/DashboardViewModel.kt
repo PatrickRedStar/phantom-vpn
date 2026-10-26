@@ -56,7 +56,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private fun configOf(p: VpnProfile?, prefs: VpnConfig) = VpnConfig(
         serverAddr      = p?.serverAddr ?: "",
         serverName      = p?.serverName ?: "",
-        tunAddr        = p?.tunAddr ?: "10.7.0.2/24",
+        tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
         dnsServers      = p?.dnsServers ?: prefs.dnsServers,
         splitRouting    = p?.splitRouting ?: prefs.splitRouting,
         directCountries = p?.directCountries ?: prefs.directCountries,

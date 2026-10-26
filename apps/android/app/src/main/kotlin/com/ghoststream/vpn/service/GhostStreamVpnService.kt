@@ -539,11 +539,11 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
                         Log.w(TAG, "Empty VPN route set (direct list covers everything?), full tunnel")
                         addFullTunnelRoutes(builder)
                     } else {
-                        // v0.28.1: склейка соседних туннельных блоков перед addRoute.
-                        // Rust уже умеет это (compute_vpn_routes_merged), но в APK
-                        // лежит prebuilt .so, поэтому страхуемся здесь же — логика
-                        // безопасна по построению: расширяется ТУННЕЛЬ, наружу ничего
-                        // не выходит. Уберём, когда .so пересоберут с NDK.
+                        // Ядро (compute_vpn_routes_merged) уже склеивает до того же
+                        // бюджета и заново вырезает LAN/link-local/multicast. Этот
+                        // проход — страховка ROUTE_BUDGET, если ядро ушло в запасное
+                        // урезание (до MAX_VPN_ROUTES): расширяется только ТУННЕЛЬ,
+                        // спец-диапазоны вырезаются снова, наружу ничего не выходит.
                         val merged = mergeSmallGaps(arr, ROUTE_BUDGET)
                         for ((addr, prefix) in merged) {
                             builder.addRoute(addr, prefix)
