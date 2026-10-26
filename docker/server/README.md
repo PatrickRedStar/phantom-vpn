@@ -1,27 +1,42 @@
 # phantom-server (Docker)
 
-NL exit узел: H2/TLS listener :443 + TUN + NAT.
+NL exit узел: H2/TLS listener :8443 + TUN + NAT.
 
 ## Требования к хосту
 
 - Linux kernel ≥ 5.10 (io_uring для tun_uring)
 - Docker ≥ 20.10, docker-compose v2
-- Открытый порт 443/tcp на публичном интерфейсе
+- Открытый порт 8443/tcp на публичном интерфейсе (`LISTEN_ADDR`, дефолт `0.0.0.0:8443`;
+  RU-реле ходит на exit именно сюда)
 - Свободное имя интерфейса `tun1` (`wg0` от WireGuard не мешает)
+- **Let's Encrypt сертификат на `SERVER_NAME`** в `/etc/letsencrypt` хоста. Без него
+  контейнер не стартует: клиент всегда проверяет серт сервера (ADR 0011), а
+  самоподписанный не примет — все подключения упадут с UnknownIssuer.
+- Доступ к образам: пакеты `ghcr.io/patrickredstar/*` приватные — `docker login ghcr.io`
+  (GitHub-токен со scope `read:packages`).
 
 ## Быстрый старт (свежий хост)
 
 ```sh
+certbot certonly --standalone -d <SERVER_NAME>   # :80 должен быть свободен
 git clone https://github.com/<org>/ghoststream.git
 cd ghoststream/docker/server
 cp compose.example.yml compose.yml
 cp .env.example .env
-$EDITOR .env                          # выставить SERVER_NAME
+$EDITOR .env                          # выставить SERVER_NAME (и актуальный TAG)
+docker login ghcr.io
 docker compose up -d
-docker compose logs -f phantom-server # увидеть ADMIN_TOKEN в bootstrap-логах
+sudo grep token config/server.toml    # ADMIN_TOKEN (в логи не печатается; файл root 0600)
 ```
 
-После старта в `./config/` лежит весь state: `ca.crt`, `ca.key`, `server.crt`, `server.key`, `server.toml`, `clients.json`.
+После старта в `./config/` лежит весь state: `ca.crt`, `ca.key`, `server.toml`, `clients.json` (права 0600).
+
+Сервер читает сертификат только при старте — после продления certbot должен его
+перезапустить. В `/etc/letsencrypt/renewal/<SERVER_NAME>.conf`, секция `[renewalparams]`:
+
+```ini
+renew_hook = docker restart phantom-server
+```
 
 ## Создать первого клиента
 
@@ -37,7 +52,7 @@ docker exec -it phantom-server keys
 
 На старом сервере:
 ```sh
-tar czf phantom-state-$(date +%F).tar.gz -C /var/lib/phantom-vpn config/
+sudo tar czf phantom-state-$(date +%F).tar.gz -C /var/lib/phantom-vpn config/
 # или там где у тебя bind-mount: -C /path/to/docker/server config/
 scp phantom-state-*.tar.gz new-host:~
 ```
@@ -64,14 +79,18 @@ docker compose up -d
 | Обновить образ | `docker compose pull && docker compose up -d` |
 | Шелл внутрь | `docker exec -it phantom-server sh` |
 | keys меню | `docker exec -it phantom-server keys` |
-| Бэкап state | `tar czf phantom-state.tgz ./config` |
+| Бэкап state | `sudo tar czf phantom-state.tgz ./config` |
 
 ## Troubleshooting
 
 **`[bootstrap] FATAL: SERVER_NAME env var must be set`** — забыл прописать `SERVER_NAME=...` в `.env`, или забыл сделать `cp .env.example .env`.
 
+**`[bootstrap] FATAL: нет Let's Encrypt сертификата`** — выпусти серт на хосте (`certbot certonly --standalone -d <SERVER_NAME>`) или задай `CERT_PATH`/`KEY_PATH` в `.env` на файлы внутри смонтированного `/etc/letsencrypt`.
+
+**`denied` / `unauthorized` при `docker compose pull`** — не сделан `docker login ghcr.io`.
+
 **`iptables: command not found`** — Dockerfile должен ставить iptables в runtime стадии. Перепроверить что используется правильный образ (не distroless).
 
 **Сервер стартует, но клиент не подключается** — проверь `WAN_IFACE`: имя интерфейса в `.env` должно совпадать с реальным `ip route show default`.
 
-**`Address already in use`** — на хосте уже что-то слушает :443. Останови (nginx, другой VPN) или меняй `LISTEN_ADDR=0.0.0.0:8443` + поставь nginx-stream впереди.
+**`Address already in use`** — на хосте уже что-то слушает `LISTEN_ADDR` (дефолт :8443). Освободи порт или задай другой `LISTEN_ADDR` в `.env` (только до первого старта — потом правится `[h2].listen_addr` в `config/server.toml`) и поправь upstream реле.

@@ -13,7 +13,7 @@ COPY server/ server/
 COPY apps/linux/ apps/linux/
 COPY apps/openwrt/ apps/openwrt/
 
-RUN cargo build --release -p phantom-relay --bin phantom-relay
+RUN cargo build --locked --profile release-server -p phantom-relay --bin phantom-relay
 
 # ─── Runtime ──────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /src/target/release/phantom-relay /usr/local/bin/phantom-relay
+COPY --from=builder /src/target/release-server/phantom-relay /usr/local/bin/phantom-relay
 
 # Пример конфига как seed для первого запуска
 COPY server/relay/relay.example.toml /opt/phantom-relay/relay.example.toml

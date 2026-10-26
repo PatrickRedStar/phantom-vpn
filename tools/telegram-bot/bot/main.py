@@ -14,6 +14,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
 )
+# httpx на INFO пишет URL каждого запроса к api.telegram.org — с BOT_TOKEN внутри.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("phantom-telegram-bot")
 
 

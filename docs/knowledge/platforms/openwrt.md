@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-17
+updated: 2026-10-26
 ---
 
 # OpenWrt
@@ -27,8 +27,8 @@ wget -O /tmp/gs-install.sh \
 
 ## CI — cross-compile
 
-Workflow [`.github/workflows/openwrt.yml`](../../../.github/workflows/openwrt.yml)
-собирает binary для четырёх архитектур:
+Джоба `build-openwrt` в [`.github/workflows/release.yml`](../../../.github/workflows/release.yml)
+(отдельного `openwrt.yml` больше нет) собирает binary для четырёх архитектур:
 
 | Target | Toolchain | Build method |
 |---|---|---|
@@ -128,11 +128,16 @@ routing metric hint, статус интерфейса.
 
 ## Релизный процесс
 
-OpenWrt артефакты собираются в `openwrt.yml` на каждый тег `v*` — результат
+OpenWrt артефакты собираются в `release.yml` на каждый тег `v*` — результат
 кладётся в GitHub Release как:
 
-- `ghoststream-mipsel` / `-aarch64` / `-armv7` / `-x86_64` — бинари
+- `openwrt-mipsel` / `-aarch64` / `-armv7` / `-x86_64` — бинари
 - `ghoststream-install.sh` — installer, тянет binary по архитектуре
+- `ghoststream.sh`, `ghoststream.js`, `luci-proto-ghoststream.json` — netifd proto и LuCI
+
+Релиз выходит, даже если упала сборка другой платформы (`if: !cancelled()`), так что
+фикс OpenWrt не ждёт, пока починят, скажем, macOS. Если упала сама OpenWrt-сборка —
+её файлов в релизе не будет, догонять через «Re-run failed jobs».
 
 После релиза юзер обновляется тем же one-liner'ом. Теги (versionCode analogue)
 не ведутся — OpenWrt берёт latest release из GitHub.
@@ -143,7 +148,7 @@ OpenWrt артефакты собираются в `openwrt.yml` на кажды
 - **netifd proto:** [apps/openwrt/proto/ghoststream.sh](../../../apps/openwrt/proto/ghoststream.sh)
 - **LuCI UI:** [apps/openwrt/luci/](../../../apps/openwrt/luci/)
 - **Installer:** [apps/openwrt/ghoststream-install.sh](../../../apps/openwrt/ghoststream-install.sh)
-- **CI workflow:** [.github/workflows/openwrt.yml](../../../.github/workflows/openwrt.yml)
+- **CI workflow:** [.github/workflows/release.yml](../../../.github/workflows/release.yml) (job `build-openwrt`)
 - **Runtime (shared):** [crates/client-core-runtime/](../../../crates/client-core-runtime/)
 - **ADR:** [0005 client-core-runtime](../decisions/0005-client-core-runtime.md), [0004 ghs:// conn_string](../decisions/0004-ghs-url-conn-string.md)
 - **gitnexus:** `gitnexus_query({query: "openwrt netifd proto"})`, `gitnexus_query({query: "tun simple fallback"})`

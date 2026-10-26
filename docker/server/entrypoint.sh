@@ -3,9 +3,11 @@
 #
 # Bootstrap policy:
 #   - Если /config/server.toml существует — стартуем как есть (восстановление из бэкапа).
-#   - Если /config/server.toml нет — генерируем fresh state: CA + server-cert,
+#   - Если /config/server.toml нет — генерируем fresh state: CA клиентов,
 #     рендерим server.toml из шаблона с подстановкой ENV (SERVER_NAME, WAN_IFACE,
 #     ADMIN_TOKEN), пишем пустой clients.json.
+#   - Серверный TLS-серт — только Let's Encrypt (смонтированный /etc/letsencrypt):
+#     клиент всегда проверяет серт сервера (ADR 0011), самоподписанный не примет.
 
 set -eu
 
@@ -25,10 +27,23 @@ if [ ! -f "$SERVER_TOML" ]; then
         exit 1
     fi
 
+    CERT_PATH="${CERT_PATH:-/etc/letsencrypt/live/${SERVER_NAME}/fullchain.pem}"
+    KEY_PATH="${KEY_PATH:-/etc/letsencrypt/live/${SERVER_NAME}/privkey.pem}"
+    if [ ! -f "$CERT_PATH" ] || [ ! -f "$KEY_PATH" ]; then
+        echo "[bootstrap] FATAL: нет Let's Encrypt сертификата $CERT_PATH / $KEY_PATH" >&2
+        echo "[bootstrap]        Выпусти его на хосте (certbot certonly --standalone -d ${SERVER_NAME})" >&2
+        echo "[bootstrap]        и смонтируй /etc/letsencrypt (см. compose.example.yml)." >&2
+        echo "[bootstrap]        С самоподписанным сертом клиенты не подключатся." >&2
+        exit 1
+    fi
+
+    # Ключи CA и token в server.toml — только для root.
+    umask 077
+
     WAN_IFACE="${WAN_IFACE:-eth0}"
     TUN_NAME="${TUN_NAME:-tun1}"
     TUN_ADDR="${TUN_ADDR:-10.7.0.1/24}"
-    LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:443}"
+    LISTEN_ADDR="${LISTEN_ADDR:-0.0.0.0:8443}"
     ADMIN_LISTEN="${ADMIN_LISTEN:-10.7.0.1:8080}"
 
     # Публичный адрес сервера для генерации ghs:// ссылок клиентам. listen_addr=0.0.0.0
@@ -49,12 +64,11 @@ if [ ! -f "$SERVER_TOML" ]; then
 
     if [ -z "${ADMIN_TOKEN:-}" ]; then
         ADMIN_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-        echo "[bootstrap] Generated ADMIN_TOKEN: $ADMIN_TOKEN"
-        echo "[bootstrap] Save it — it lets you call the admin API via VPN tunnel."
+        echo "[bootstrap] Generated ADMIN_TOKEN → $SERVER_TOML ([admin].token, права 0600)"
     fi
 
     if [ ! -f "$CA_CRT" ]; then
-        echo "[bootstrap] Generating CA + server certificate via phantom-keygen"
+        echo "[bootstrap] Generating client CA via phantom-keygen"
         phantom-keygen --out "$CONFIG_DIR" --server-name "$SERVER_NAME"
     else
         echo "[bootstrap] CA already in $CONFIG_DIR — keeping it, only regenerating server.toml"
@@ -75,20 +89,18 @@ tun_name    = "${TUN_NAME}"
 tun_addr    = "${TUN_ADDR}"
 tun_mtu     = 1350
 wan_iface   = "${WAN_IFACE}"
+server_name = "${SERVER_NAME}"
 ${PUBLIC_ADDR_LINE}
 
 [h2]
 listen_addr = "${LISTEN_ADDR}"
 
-[timeouts]
-idle_timeout_secs = 300
-hard_timeout_secs = 86400
-
-[quic]
+[tls]
+cert_path            = "${CERT_PATH}"
+key_path             = "${KEY_PATH}"
 cert_subjects        = ["${SERVER_NAME}"]
 ca_cert_path         = "${CA_CRT}"
 allowed_clients_path = "${CLIENTS_JSON}"
-idle_timeout_secs    = 30
 
 [admin]
 listen_addr  = "${ADMIN_LISTEN}"

@@ -33,11 +33,17 @@ echo
 echo "=== Smoke-test: server bootstrap ==="
 TEST_DIR="$(mktemp -d -t gs-docker-smoke.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
-mkdir -p "$TEST_DIR/config"
+mkdir -p "$TEST_DIR/config" "$TEST_DIR/le/live/smoke.example.com"
+# Bootstrap требует LE-серт — для смоука хватает самоподписанного на том же пути.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+    -subj /CN=smoke.example.com \
+    -keyout "$TEST_DIR/le/live/smoke.example.com/privkey.pem" \
+    -out "$TEST_DIR/le/live/smoke.example.com/fullchain.pem" 2>/dev/null
 
 if ! timeout 5 docker run --rm \
     -e SERVER_NAME=smoke.example.com \
     -v "$TEST_DIR/config:/config" \
+    -v "$TEST_DIR/le:/etc/letsencrypt:ro" \
     ghoststream-server:local 2>&1 | head -20; then
     # timeout 5 returns 124 on kill, that's expected (server starts then hits TUN).
     :

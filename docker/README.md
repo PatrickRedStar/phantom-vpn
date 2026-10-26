@@ -14,8 +14,11 @@ git clone https://github.com/<org>/ghoststream.git
 cd ghoststream/docker/server   # или docker/relay
 cp .env.example .env
 $EDITOR .env                    # выставить SERVER_NAME / UPSTREAM_ADDR
+docker login ghcr.io            # пакеты ghcr.io/patrickredstar/* приватные
 docker compose up -d
 ```
+
+Exit (server) стартует только с Let's Encrypt сертификатом на `SERVER_NAME` — см. [server/README.md](server/README.md).
 
 Восстановление из бэкапа (тот же docker compose, но с готовым state):
 
