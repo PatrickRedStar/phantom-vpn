@@ -74,7 +74,20 @@ impl Manager {
         self.status_tx.borrow().clone()
     }
 
+    /// A failure before the runtime takes over (bad conn string, TUN, DNS)
+    /// is published as Error so the status doesn't hang in Connecting.
     pub async fn connect(&self, profile: ConnectProfile) -> anyhow::Result<()> {
+        let res = self.start(profile).await;
+        if let Err(e) = &res {
+            self.publish(|f| {
+                f.state = ConnState::Error;
+                f.last_error = Some(format!("{:#}", e));
+            });
+        }
+        res
+    }
+
+    async fn start(&self, profile: ConnectProfile) -> anyhow::Result<()> {
         // Tear down any existing tunnel first.
         self.disconnect().await;
 
