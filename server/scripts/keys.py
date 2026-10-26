@@ -11,6 +11,7 @@ Usage (on the server):
 import argparse
 import base64
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -93,33 +94,15 @@ def _split_host_port(addr: str, default_port: str):
     return value, default_port
 
 
-def _detect_insecure_from_server_toml(quic_section: dict) -> bool:
-    """Решает, нужен ли клиенту `insecure=1` для skip server cert verification.
-
-    Logic:
-      - cert_path указан и существует → LE/коммерческий cert → клиент verify
-        через webpki_roots → insecure=False
-      - cert_path не задан → phantom-server генерит self-signed по cert_subjects →
-        клиент НЕ найдёт CA в webpki_roots → нужен insecure=True
-    """
-    cert_path_raw = quic_section.get("cert_path")
-    if isinstance(cert_path_raw, str) and cert_path_raw.strip():
-        try:
-            if Path(cert_path_raw).is_file():
-                return False  # имеется явный (LE) cert
-        except OSError:
-            pass
-    return True  # self-signed fallback
-
-
 def load_server_values(server_toml_path, server_ip_override=None, server_name_override=None):
     """Возвращает:
-    (server_ip, quic_port, h2_port, connect_host, server_name, ca_cert_path, ca_key_path, insecure).
+    (server_ip, quic_port, h2_port, connect_host, server_name, ca_cert_path, ca_key_path).
     """
     data = load_toml(server_toml_path)
 
     network = data.get("network", {}) if isinstance(data.get("network"), dict) else {}
-    quic    = data.get("quic",    {}) if isinstance(data.get("quic"),    dict) else {}
+    # Секция mTLS называется [tls]; [quic] — старое имя, сервер понимает оба.
+    quic    = next((data[k] for k in ("tls", "quic") if isinstance(data.get(k), dict)), {})
     h2      = data.get("h2",      {}) if isinstance(data.get("h2"),      dict) else {}
 
     listen_addr = network.get("listen_addr", "0.0.0.0:443")
@@ -183,7 +166,7 @@ def load_server_values(server_toml_path, server_ip_override=None, server_name_ov
     ca_cert_path = quic.get("ca_cert_path", "")
     if not ca_cert_path:
         raise RuntimeError(
-            "server.toml не содержит [quic].ca_cert_path\n"
+            "server.toml не содержит [tls].ca_cert_path\n"
             "Убедитесь что сервер использует mTLS и задан путь к CA сертификату.\n"
             "Если вы только что мигрировали с Noise IK — запустите phantom-keygen\n"
             "для генерации CA и клиентских сертификатов."
@@ -200,8 +183,6 @@ def load_server_values(server_toml_path, server_ip_override=None, server_name_ov
             f"Ожидается рядом с сертификатом CA: {ca_cert_path.parent}/"
         )
 
-    insecure = _detect_insecure_from_server_toml(quic)
-
     return (
         server_ip,
         quic_port,
@@ -210,7 +191,6 @@ def load_server_values(server_toml_path, server_ip_override=None, server_name_ov
         server_name,
         str(ca_cert_path),
         str(ca_key_path),
-        insecure,
     )
 
 
@@ -227,9 +207,17 @@ def load_keyring(path):
 
 
 def save_keyring(path, keyring):
+    """Атомарная запись (tmp + rename) и SIGHUP серверу — тот перечитывает
+    allowlist только по сигналу, без него удалённый клиент пускается до рестарта."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(keyring, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(keyring, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+    try:
+        subprocess.run(["pkill", "-HUP", "-x", "phantom-server"], check=False)
+    except OSError:
+        print("[!] pkill недоступен — пошли phantom-server SIGHUP вручную")
 
 
 # ─── TUN address allocation ───────────────────────────────────────────────────
@@ -353,7 +341,7 @@ def list_clients(clients):
 
 
 def add_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name,
-               ca_cert_path, ca_key_path, keyring_path, insecure=True):
+               ca_cert_path, ca_key_path, keyring_path):
     clients = keyring["clients"]
     name = input("Имя клиента (латиница, без пробелов): ").strip()
     if not name:
@@ -391,8 +379,7 @@ def add_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name
         print(f"[ОШИБКА] Не удалось прочитать сертификаты: {e}")
         return
 
-    _print_conn_for_client(name, connect_host, h2_port, server_name, tun_addr, cert_pem, key_pem,
-                          insecure=insecure)
+    _print_conn_for_client(name, connect_host, h2_port, server_name, tun_addr, cert_pem, key_pem)
 
 
 def _pick_client(clients, prompt="Выберите клиента для экспорта:"):
@@ -421,17 +408,13 @@ def _pick_client(clients, prompt="Выберите клиента для экс�
 
 
 def _build_ghs_url(connect_host: str, server_port: str, server_name: str,
-                   tun_addr: str, cert_pem: str, key_pem: str,
-                   insecure: bool = True) -> str:
-    """Канонический формат `ghs://` (см. `crates/server/src/admin.rs::build_conn_string`).
+                   tun_addr: str, cert_pem: str, key_pem: str) -> str:
+    """Канонический формат `ghs://` (см. `server/server/src/admin.rs::build_conn_string`).
 
-    Layout: `ghs://<base64url(cert\\nkey)>@<host:port>?sni=<sni>&tun=<tun>&v=1[&insecure=1]`
+    Layout: `ghs://<base64url(cert\\nkey)>@<host:port>?sni=<sni>&tun=<tun>&v=1`
 
-    `insecure=True` по умолчанию: phantom-server в docker раскатывает self-signed
-    CA, который НЕ в webpki_roots → стандартный rustls verify провалится с
-    UnknownCA. mTLS client cert остаётся — server pin'ит клиента по fingerprint,
-    идентичность не теряется. Если у тебя phantom-server за nginx с LE cert
-    (как vdsina) — генерируй с `insecure=False`.
+    Клиент всегда проверяет серт сервера (ADR 0011), поэтому сервер должен
+    отдавать публичный (LE) сертификат.
     """
     from urllib.parse import quote as _urlquote
     pem = cert_pem.rstrip() + "\n" + key_pem.strip()
@@ -442,30 +425,23 @@ def _build_ghs_url(connect_host: str, server_port: str, server_name: str,
         f"&tun={_urlquote(tun_addr, safe='')}"
         f"&v=1"
     )
-    if insecure:
-        url += "&insecure=1"
     return url
 
 
 def _print_conn_for_client(name: str, connect_host: str, server_port: str,
-                          server_name: str, tun_addr: str, cert_pem: str, key_pem: str,
-                          insecure: bool = True) -> None:
+                          server_name: str, tun_addr: str, cert_pem: str, key_pem: str) -> None:
     """Печать ghs:// строки для клиента.
 
     QR-код не рисуем: payload (cert+key в base64) >1 KB — ASCII QR размером с
     экран и нечитаемый сканером.
     """
     ghs = _build_ghs_url(connect_host, server_port, server_name, tun_addr,
-                         cert_pem, key_pem, insecure=insecure)
+                         cert_pem, key_pem)
     print()
     print(f"=== Подключение для {name!r} ===")
     print(f"  Адрес: {connect_host}:{server_port}")
     print(f"  SNI:   {server_name}")
     print(f"  TUN:   {tun_addr}")
-    if insecure:
-        print(f"  insecure: yes (self-signed CA — skip server cert verification)")
-    else:
-        print(f"  insecure: no (cert валиден через webpki_roots, e.g. Let's Encrypt)")
     print()
     print("Строка подключения (ghs://) — скопируй и вставь в Android/iOS приложение:")
     print()
@@ -475,7 +451,7 @@ def _print_conn_for_client(name: str, connect_host: str, server_port: str,
     print()
 
 
-def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name, insecure=True):
+def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name):
     """Печать ghs:// строки для выбранного клиента."""
     name, item = _pick_client(keyring["clients"])
     if name is None:
@@ -489,7 +465,7 @@ def export_conn_str(keyring, connect_host, quic_port, h2_port, server_name, inse
         return
 
     _print_conn_for_client(name, connect_host, h2_port, server_name,
-                          item["tun_addr"], cert_pem, key_pem, insecure=insecure)
+                          item["tun_addr"], cert_pem, key_pem)
 
 
 def grant_admin(keyring, keyring_path):
@@ -606,7 +582,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        server_ip, quic_port, h2_port, connect_host, server_name, ca_cert_path, ca_key_path, insecure = \
+        server_ip, quic_port, h2_port, connect_host, server_name, ca_cert_path, ca_key_path = \
             load_server_values(
                 args.server_config,
                 server_ip_override=args.server_ip,
@@ -646,14 +622,13 @@ def main():
             return
         elif choice == "1":
             add_client(keyring, server_ip, quic_port, h2_port, connect_host, server_name,
-                       ca_cert_path, ca_key_path, args.keyring, insecure=insecure)
+                       ca_cert_path, ca_key_path, args.keyring)
         elif choice == "2":
             remove_client(keyring, args.keyring)
         elif choice == "3":
             list_clients(keyring["clients"])
         elif choice == "4":
-            export_conn_str(keyring, connect_host, quic_port, h2_port, server_name,
-                            insecure=insecure)
+            export_conn_str(keyring, connect_host, quic_port, h2_port, server_name)
         elif choice == "5":
             grant_admin(keyring, args.keyring)
         elif choice == "":
