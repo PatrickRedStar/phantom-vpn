@@ -57,6 +57,9 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
         /** A burst of frames re-filters the list at most this often. */
         private const val FILTER_THROTTLE_MS = 250L
         const val ALL_CATEGORIES = "all"
+        /** The core's everyday filter (logsink default; set_level adds the noisy-crate caps). */
+        private const val DEFAULT_LOG_SPEC =
+            "info,client_core_runtime=debug,phantom_core=info,client_common=debug"
 
         /** Parse one persisted line; seq is assigned by the caller on the main thread. */
         private fun parsePersisted(line: String): LogEntry {
@@ -105,12 +108,10 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     val autoScroll: StateFlow<Boolean> = _autoScroll
 
     private var nextSeq = 0L
+    private var visible = false
     private val tsFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     init {
-        // Ensure Rust sends all log levels — filtering is UI-only.
-        try { GhostStreamVpnService.nativeSetLogLevel("trace") } catch (_: Exception) {}
-
         // Replay previously persisted logs so the user has context across
         // app restarts. v0.27.0 (W4-1): persist file is owned by
         // `LogPersister` (service-scoped) — tailLines() is safe to call
@@ -233,6 +234,26 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
     fun setFilter(level: String) {
         _filter.value = level
         applyFilter()
+        applyLogLevel()
+    }
+
+    /** The journal is on screen: Logs tab selected, app in foreground. */
+    fun setVisible(v: Boolean) {
+        visible = v
+        applyLogLevel()
+    }
+
+    // The core logs as verbosely as the chosen filter needs, and only while
+    // the journal is on screen: trace on every packet costs CPU, battery and
+    // LogPersister disk writes.
+    private fun applyLogLevel() {
+        val level = when {
+            !visible -> DEFAULT_LOG_SPEC
+            _filter.value == "TRACE" || _filter.value == "ALL" -> "trace"
+            _filter.value == "DEBUG" -> "debug"
+            else -> DEFAULT_LOG_SPEC
+        }
+        runCatching { GhostStreamVpnService.nativeSetLogLevel(level) }
     }
 
     fun setCategoryFilter(category: String) {
@@ -349,8 +370,7 @@ class LogsViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        // Trace is only for the open journal; back to the everyday level so the
-        // tunnel doesn't keep emitting every packet for the rest of the process.
-        try { GhostStreamVpnService.nativeSetLogLevel("debug") } catch (_: Exception) {}
+        visible = false
+        applyLogLevel()
     }
 }

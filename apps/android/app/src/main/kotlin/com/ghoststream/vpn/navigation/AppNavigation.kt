@@ -16,7 +16,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -58,6 +61,12 @@ fun AppNavigation() {
     val scope = rememberCoroutineScope()
 
     val isOnTabRoute = currentRoute == null || currentRoute == "tabs"
+
+    // The core logs at the journal's level only while it is on screen.
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val logsVisible = isOnTabRoute && pagerState.currentPage == 1 &&
+        lifecycleState.isAtLeast(Lifecycle.State.STARTED)
+    LaunchedEffect(logsVisible) { logsViewModel.setVisible(logsVisible) }
 
     // Forward QR results from NavHost savedStateHandle to settingsViewModel
     val tabsEntry = navBackStackEntry
