@@ -101,7 +101,7 @@ Exit слушает `:8443` (`LISTEN_ADDR`): реле ходит на exit то�
 
 7. **CI multi-arch.** `.github/workflows/docker.yml` собирает оба образа для
    `linux/amd64,linux/arm64` через QEMU buildx на push тега `v*`. Pushed в
-   `ghcr.io/<repo-owner>/ghoststream-{server,relay}` с тегами `vX.Y.Z`, `X.Y`;
+   `ghcr.io/<repo-owner>/ghoststream-{server,relay}` с тегами `X.Y.Z`, `X.Y` (без `v`);
    `latest` ставит metadata-action только на релизные теги. Бинари собираются
    `--locked --profile release-server` (`panic = "unwind"`).
 
