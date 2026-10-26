@@ -39,7 +39,8 @@ class PreferencesStore(private val context: Context) {
         private val LANGUAGE_OVERRIDE  = stringPreferencesKey("language_override")
         private val APP_ICON           = stringPreferencesKey("app_icon")
         // v0.27.0 (W11): null/0 = disabled, >0 = recycle threshold in bytes
-        // (total bytes_rx + bytes_tx). 100_000 = ~100 KB.
+        // (total bytes_rx + bytes_tx). 100_000 = ~100 KB. The service ignores
+        // it now: the toggle left the UI, a saved value couldn't be switched off.
         private val DPI_RECYCLE_BYTES  = androidx.datastore.preferences.core.longPreferencesKey("dpi_recycle_bytes")
     }
 
@@ -89,15 +90,12 @@ class PreferencesStore(private val context: Context) {
         }
     }.getOrDefault(false)
 
-    // Last successful ACTION_START extras as JSON — service re-reads when intent=null.
-    suspend fun saveLastTunnelParams(json: String) {
-        context.dataStore.edit { it[LAST_TUNNEL_PARAMS] = json }
+    // Older versions kept a snapshot of the last start here, connection string
+    // (private key included) and all. The service now reads the live active
+    // profile instead; the snapshot is only wiped.
+    suspend fun clearLegacyTunnelParams() {
+        context.dataStore.edit { it.remove(LAST_TUNNEL_PARAMS) }
     }
-    fun loadLastTunnelParamsBlocking(): String? = runCatching {
-        kotlinx.coroutines.runBlocking {
-            context.dataStore.data.map { it[LAST_TUNNEL_PARAMS] }.first()
-        }
-    }.getOrNull()
 
     val config: Flow<VpnConfig> = context.dataStore.data.map { prefs ->
         VpnConfig(
