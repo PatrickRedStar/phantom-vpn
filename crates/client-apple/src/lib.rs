@@ -954,7 +954,7 @@ mod tests {
         assert_eq!(res, Some("hello"));
     }
 
-    /// П7: a task that exits on its own is "clean"; a hung one is aborted
+    /// A task that exits on its own is "clean"; a hung one is aborted
     /// and joined, never left detached.
     #[tokio::test]
     async fn join_or_abort_aborts_hung_task() {
