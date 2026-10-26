@@ -1390,12 +1390,21 @@ private fun TunnelRows(
         showDivider = true,
     )
     // Real always-on (and "block connections without VPN") is a system
-    // setting; the app can't read it (hidden key, SecurityException since
-    // Android 12), so we only send the user there.
+    // setting; the row only shows what the running service last saw and
+    // sends the user there to change it.
     val context = LocalContext.current
+    val systemAlwaysOn = com.ghoststream.vpn.service.VpnStateManager.systemAlwaysOn
+        .collectAsStateWithLifecycle().value
     SettingRow(
         label = stringResource(R.string.row_system_always_on),
-        sub = stringResource(R.string.sub_system_always_on_unknown),
+        sub = stringResource(
+            when {
+                systemAlwaysOn == null -> R.string.sub_system_always_on_unknown
+                systemAlwaysOn.second -> R.string.sub_system_always_on_lockdown
+                systemAlwaysOn.first -> R.string.sub_system_always_on_on
+                else -> R.string.sub_off
+            },
+        ),
         right = {
             Text("→", style = GsText.labelMono, color = C.textDim)
         },

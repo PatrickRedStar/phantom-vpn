@@ -640,6 +640,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
             }
             vpnInterface = iface
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            VpnStateManager.systemAlwaysOn.value = isAlwaysOn to isLockdownEnabled
+        }
         // The TUN is up from here on and blocks traffic until the core
         // connects — and keeps blocking it while the core reconnects. Only
         // Disconnect, onRevoke or a fatal error take it down.

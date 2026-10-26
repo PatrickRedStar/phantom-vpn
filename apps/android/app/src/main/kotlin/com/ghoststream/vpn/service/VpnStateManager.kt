@@ -212,6 +212,14 @@ object VpnStateManager {
     private val _statusFrame = MutableStateFlow(StatusFrameData())
     val statusFrame: StateFlow<StatusFrameData> = _statusFrame.asStateFlow()
 
+    /**
+     * System Always-on VPN for this app and its "block connections without
+     * VPN", as (alwaysOn, lockdown). Only a service with an established
+     * tunnel can ask (VpnService.isAlwaysOn, API 29+), so it publishes them;
+     * null — not known yet.
+     */
+    val systemAlwaysOn = MutableStateFlow<Pair<Boolean, Boolean>?>(null)
+
     /** Log frames from Rust, emitted as a hot flow (replay=0, buffer=256). */
     private val _logFrames = MutableSharedFlow<LogFrameData>(extraBufferCapacity = 256)
     val logFrames: SharedFlow<LogFrameData> = _logFrames.asSharedFlow()
