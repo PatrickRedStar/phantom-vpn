@@ -195,24 +195,22 @@ impl Manager {
     }
 
     pub async fn disconnect(&self) {
-        let (handle, cancel) = {
+        let handle = {
             let mut g = self.inner.lock().await;
-            let handle = g.supervisor.take();
-            let cancel = g.cancel.take();
+            // Cancel BEFORE removing the TUN: the core sees a closed TUN
+            // reader as fatal ("TUN-интерфейс закрыт") unless the stop is
+            // already signalled. v0.25.1 (W3-2): send carries `true` so the
+            // supervisor wakes even if it had not yet re-armed its select! arm.
+            if let Some(c) = g.cancel.take() {
+                let _ = c.send(true);
+            }
             // Drop guards in teardown order: dns → ipv6 → route → tun.
             drop(g._dns_guard.take());
             drop(g._ipv6_guard.take());
             drop(g._route_guard.take());
             drop(g._tun_device.take());
-            (handle, cancel)
+            g.supervisor.take()
         };
-
-        // Wake any pending backoff sleep in the supervisor.
-        // v0.25.1 (W3-2): watch::Sender::send carries `true` so the
-        // supervisor wakes even if it had not yet re-armed its select! arm.
-        if let Some(c) = cancel {
-            let _ = c.send(true);
-        }
 
         if let Some(h) = handle {
             let grace = tokio::time::timeout(
@@ -233,6 +231,7 @@ impl Manager {
             f.rate_tx_bps = 0.0;
             f.reconnect_attempt = None;
             f.reconnect_next_delay_secs = None;
+            f.last_error = None;
         });
     }
 
