@@ -44,7 +44,9 @@ class VpnTileService : TileService() {
                 PendingIntent.getActivity(this, 0, launch, PendingIntent.FLAG_IMMUTABLE),
             )
         } else {
+            // The Intent overload only throws from 14 on; below that it's the only one.
             @Suppress("DEPRECATION")
+            @android.annotation.SuppressLint("StartActivityAndCollapseDeprecated")
             startActivityAndCollapse(launch)
         }
     }

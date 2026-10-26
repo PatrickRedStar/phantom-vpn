@@ -215,7 +215,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _importStatus = MutableStateFlow("")
     val importStatus: StateFlow<String> = _importStatus
 
-    fun setPendingConnString(value: String) { _pendingConnString.value = value }
+    fun setPendingConnString(value: String) {
+        _pendingConnString.value = value
+        _importStatus.value = ""
+    }
     fun setPendingName(value: String)       { _pendingName.value = value }
 
     /** Imports the pending string; false keeps the dialog open with [importStatus]. */

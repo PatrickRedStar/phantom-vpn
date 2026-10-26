@@ -394,8 +394,12 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
         }
     }
 
+    // The core goes to Error only for fatal causes (bad link, certificate,
+    // revoked access, wrong clock) — say which, or the user can't fix it.
+    val problem = preflightWarning
+        ?: (vpnState as? VpnState.Error)?.message?.takeIf { it.isNotBlank() }
     val preflightSection: @Composable () -> Unit = {
-        if (preflightWarning != null) {
+        if (problem != null) {
             Box(
                 Modifier.fillMaxWidth()
                     .padding(horizontal = 18.dp, vertical = 6.dp)
@@ -403,7 +407,7 @@ fun DashboardScreen(viewModel: DashboardViewModel = viewModel()) {
                     .padding(10.dp),
             ) {
                 Text(
-                    preflightWarning!!,
+                    problem,
                     style = com.ghoststream.vpn.ui.theme.GsText.kvValue,
                     color = C.danger,
                 )
