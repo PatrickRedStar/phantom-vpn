@@ -1028,6 +1028,9 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
     }
 
     private fun quietCleanup() {
+        // The core may still report "TUN closed" for the fd closed below;
+        // that is this teardown, not a fatal error to show.
+        teardownInProgress = true
         tunnelGeneration.incrementAndGet()
         startupThread?.interrupt()
         DnsHealthMonitor.stop()
