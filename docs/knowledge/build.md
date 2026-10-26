@@ -280,7 +280,7 @@ tools/ship-android.sh --bump --tag    # + тег и запуск CI
 
 Перед тегом в `CHANGELOG.md` должна быть секция `## [Android X.Y.Z]` с тем же `versionName`: из неё берётся «Что нового» для Play, без неё (или если тег ≠ `vX.Y.Z` из `build.gradle.kts`) Android-джоба падает.
 
-Вручную (если ship-скрипт недоступен — например, с Windows-хоста):
+Вручную — если ship-скрипт недоступен (например, с Windows-хоста) или релиз минорный/мажорный: `--bump` поднимает только patch, поэтому 0.28.x → 0.29.0 — правкой gradle и тегом руками:
 
 ```bash
 # 1. Обновить build.gradle.kts (versionCode++ + versionName; GIT_TAG подставляется из versionName)
