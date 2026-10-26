@@ -104,8 +104,8 @@ fi
 
 run_cmd "rsync -az --ignore-existing -e \"$RSYNC_SSH\" server/relay/relay.example.toml \"$REMOTE:$REMOTE_DIR/config/relay.toml\""
 
-# ─── Step 4: Install/refresh systemd unit, swap binary, restart ──────────────
-echo "[4/5] Installing systemd unit ($SERVICE) and swapping binary..."
+# ─── Step 4: Install/refresh systemd unit ────────────────────────────────────
+echo "[4/5] Installing systemd unit ($SERVICE)..."
 if [[ "$DRY_RUN" == "--dry-run" ]]; then
     echo "[dry-run] would install /etc/systemd/system/$SERVICE + journald@phantom-relay.conf"
 else
@@ -143,20 +143,57 @@ MaxFileSec=1day
 EOF"
 fi
 
-run_remote "sudo systemctl daemon-reload && sudo systemctl enable '$SERVICE' >/dev/null 2>&1; \
-  sudo mv -f '$REMOTE_DIR/phantom-relay.new' '$REMOTE_DIR/phantom-relay' && \
-  sudo systemctl restart '$SERVICE'"
+# ─── Step 5: Swap binary, restart, verify (rollback on failure) ──────────────
+# Как в deploy.sh: прежний бинарь — .prev; реле — единственный вход для всех
+# клиентов, поэтому без живого порта сразу откат.
+echo "[5/5] Swapping binary, restarting, checking..."
+if [[ "$DRY_RUN" == "--dry-run" ]]; then
+    echo "[dry-run][remote:$REMOTE] swap .new → bin (old → .prev), restart, wait for listen port, rollback on failure"
+    exit 0
+fi
 
-# ─── Step 5: Health check ────────────────────────────────────────────────────
-echo "[5/5] Post-deploy checks..."
-sleep 1
-run_remote "systemctl is-active '$SERVICE' || true"
-run_remote "sudo journalctl --namespace=phantom-relay -u '$SERVICE' -n 30 --no-pager || true"
+ssh "${SSH_OPTS[@]}" "$REMOTE" sudo bash -s -- "$REMOTE_DIR" "$SERVICE" <<'REMOTE_EOF'
+set -u
+dir="$1"; svc="$2"; bin="$dir/phantom-relay"
+port=$(awk -F= '/^[[:space:]]*listen_addr[[:space:]]*=/{sub(/#.*/,"",$2); gsub(/[ "\047\t]/,"",$2); n=split($2,a,":"); print a[n]; exit}' "$dir/config/relay.toml")
+port="${port:-443}"
 
-run_remote "port=\$(awk -F= '/^[[:space:]]*listen_addr[[:space:]]*=/{gsub(/[ \"\\047]/, \"\", \$2); split(\$2,a,\":\"); print a[length(a)]; exit}' '$REMOTE_DIR/config/relay.toml'); \
-  [ -n \"\$port\" ] || port=443; \
-  echo \"Detected listen port: \$port\"; \
-  ss -tlnp 2>/dev/null | grep -E \":\$port \" || sudo ss -tlnp | grep -E \":\$port \" || true"
+# Живо 10 с подряд одним и тем же процессом: crash-loop через Restart=on-failure
+# на секунду выглядит active + LISTEN.
+healthy() {
+    local pid
+    for _ in $(seq 1 15); do
+        sleep 1
+        if systemctl is-active -q "$svc" && ss -Htln "sport = :$port" | grep -q .; then
+            pid=$(systemctl show -p MainPID --value "$svc")
+            sleep 10
+            systemctl is-active -q "$svc" && [ "$(systemctl show -p MainPID --value "$svc")" = "$pid" ]
+            return
+        fi
+    done
+    return 1
+}
+
+[ -f "$bin" ] && ln -f "$bin" "$bin.prev"
+mv -f "$bin.new" "$bin"
+systemctl daemon-reload
+systemctl enable "$svc" >/dev/null 2>&1
+systemctl restart "$svc"
+
+if healthy; then
+    echo "OK: $svc active, :$port listening"
+    journalctl --namespace=phantom-relay -u "$svc" -n 15 --no-pager || true
+    exit 0
+fi
+
+echo "[error] после рестарта реле не держит :$port — откат на прежний бинарь" >&2
+journalctl --namespace=phantom-relay -u "$svc" -n 40 --no-pager >&2 || true
+[ -f "$bin.prev" ] && mv -f "$bin.prev" "$bin"
+systemctl restart "$svc"
+sleep 2
+systemctl is-active "$svc" >&2 || true
+exit 1
+REMOTE_EOF
 
 echo ""
 echo "=== Deploy complete ==="

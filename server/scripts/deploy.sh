@@ -135,6 +135,10 @@ else
     run_cmd "rsync -az -e \"$RSYNC_SSH\" server/config/server.example.toml \"$REMOTE:$REMOTE_DIR/config/server.example.toml\""
     run_remote "test -f '$REMOTE_DIR/config/server.toml' || cp '$REMOTE_DIR/config/server.example.toml' '$REMOTE_DIR/config/server.toml'"
 fi
+# Явный hard_timeout_secs (наследство шаблона install.py: 86400) возвращает
+# суточный обрыв всех сессий — дефолт сервера 0, строку убираем (.prev выше).
+run_remote "f='$REMOTE_DIR/config/server.toml'; grep -Eq '^[[:space:]]*hard_timeout_secs[[:space:]]*=' \"\$f\" && \
+  sed -i -E '/^[[:space:]]*hard_timeout_secs[[:space:]]*=/d' \"\$f\" && echo '  server.toml: hard_timeout_secs removed' || true"
 
 # ─── Step 4: Install/refresh systemd unit ────────────────────────────────────
 echo "[4/5] Installing/updating systemd service ($SERVICE)..."
@@ -215,10 +219,17 @@ systemctl daemon-reload
 systemctl enable "$svc" >/dev/null 2>&1
 systemctl restart "$svc"
 
+# Живо 10 с подряд одним и тем же процессом: crash-loop через Restart=on-failure
+# на секунду выглядит active + LISTEN + NAT.
 ok=0
 for _ in $(seq 1 15); do
     sleep 1
-    if systemctl is-active -q "$svc" && ss -Htln "sport = :$port" | grep -q . && nat_ok; then ok=1; break; fi
+    if systemctl is-active -q "$svc" && ss -Htln "sport = :$port" | grep -q . && nat_ok; then
+        pid=$(systemctl show -p MainPID --value "$svc")
+        sleep 10
+        systemctl is-active -q "$svc" && [ "$(systemctl show -p MainPID --value "$svc")" = "$pid" ] && ok=1
+        break
+    fi
 done
 
 if [ "$ok" = 1 ]; then
@@ -227,7 +238,7 @@ if [ "$ok" = 1 ]; then
     exit 0
 fi
 
-echo "[error] после рестарта :$port не слушается или нет NAT-правила — откат на прежние бинарь, unit и server.toml" >&2
+echo "[error] после рестарта :$port не слушается, нет NAT-правила или сервис перезапускается — откат на прежние бинарь, unit и server.toml" >&2
 journalctl -u "$svc" -n 40 --no-pager >&2 || true
 for b in phantom-server phantom-keygen; do
     [ -f "$dir/$b.prev" ] && mv -f "$dir/$b.prev" "$dir/$b"
