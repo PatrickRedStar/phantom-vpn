@@ -269,6 +269,24 @@ async def _show_client(update: Update, name: str) -> None:
 
 # ─── Conn string / QR ─────────────────────────────────────────────────────
 
+# Строка подключения и QR содержат приватный ключ клиента: в облачном чате
+# Telegram они не должны жить вечно. Задачи JobQueue живут в памяти — при
+# рестарте бота в эти 10 минут сообщение останется, удалить руками.
+SECRET_TTL_SECS = 600
+
+
+async def _delete_msg(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        await ctx.bot.delete_message(ctx.job.chat_id, ctx.job.data)
+    except Exception:
+        log.warning("не удалось удалить сообщение %s", ctx.job.data)
+
+
+def _expire(ctx: ContextTypes.DEFAULT_TYPE, *msgs) -> None:
+    for m in msgs:
+        ctx.job_queue.run_once(_delete_msg, SECRET_TTL_SECS, chat_id=m.chat_id, data=m.message_id)
+
+
 def _kb_after_send(name: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -287,10 +305,11 @@ async def _send_qr(update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str) ->
         await q.message.reply_text(f"❌ API error: {e}", reply_markup=_kb_after_send(name))
         return
     img = generate_qr(s)
-    await q.message.reply_photo(
+    msg = await q.message.reply_photo(
         photo=InputFile(img, filename=f"{name}.png"),
-        caption=f"QR · {name}",
+        caption=f"QR · {name} (удалится через 10 мин)",
     )
+    _expire(ctx, msg)
     await q.message.reply_text("Навигация:", reply_markup=_kb_after_send(name))
 
 
@@ -301,10 +320,11 @@ async def _send_conn(update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str) 
     except PhantomApiError as e:
         await q.message.reply_text(f"❌ API error: {e}", reply_markup=_kb_after_send(name))
         return
-    await q.message.reply_text(
-        f"<b>{html.escape(name)}</b>\n<code>{html.escape(s)}</code>",
+    msg = await q.message.reply_text(
+        f"<b>{html.escape(name)}</b> (удалится через 10 мин)\n<code>{html.escape(s)}</code>",
         parse_mode=ParseMode.HTML,
     )
+    _expire(ctx, msg)
     await q.message.reply_text("Навигация:", reply_markup=_kb_after_send(name))
 
 
@@ -527,14 +547,15 @@ async def add_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         parse_mode=ParseMode.HTML,
     )
     img = generate_qr(conn)
-    await q.message.reply_photo(
+    photo = await q.message.reply_photo(
         photo=InputFile(img, filename=f"{name}.png"),
-        caption=f"QR · {name} [{tag}]",
+        caption=f"QR · {name} [{tag}] (удалится через 10 мин)",
     )
-    await q.message.reply_text(
+    text = await q.message.reply_text(
         f"<code>{html.escape(conn)}</code>",
         parse_mode=ParseMode.HTML,
     )
+    _expire(ctx, photo, text)
     await q.message.reply_text("Навигация:", reply_markup=_kb_after_send(name))
     ctx.user_data.pop("add_name", None)
     ctx.user_data.pop("add_days", None)
@@ -559,8 +580,12 @@ async def _add_fallback_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
+# Только админ и только в личке: в группе ключи увидели бы все участники.
+_ADMIN_FILTER = filters.User(user_id=CONFIG.admin_telegram_id) & filters.ChatType.PRIVATE
+
+
 def add_conversation() -> ConversationHandler:
-    admin_filter = filters.User(user_id=CONFIG.admin_telegram_id)
+    admin_filter = _ADMIN_FILTER
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(add_entry, pattern=r"^add$"),
@@ -598,7 +623,7 @@ def add_conversation() -> ConversationHandler:
 # ─── Application wiring ───────────────────────────────────────────────────
 
 def register(app: Application) -> None:
-    admin_filter = filters.User(user_id=CONFIG.admin_telegram_id)
+    admin_filter = _ADMIN_FILTER
     app.add_handler(CommandHandler("start", cmd_start, filters=admin_filter))
     # ConversationHandler must be registered BEFORE other MessageHandlers so its
     # reply-keyboard entry point wins over the top-level reply-text handlers.

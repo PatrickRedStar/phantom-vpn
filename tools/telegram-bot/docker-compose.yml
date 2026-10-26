@@ -10,3 +10,10 @@ services:
     # network_mode: host нужен чтобы дотянуться до 127.0.0.1:8081
     # (loopback bot-API phantom-server с Bearer-auth) + исходящий до api.telegram.org.
     network_mode: host
+    # В сети хоста виден tun сервера — поэтому без root и без capabilities
+    # (иначе при взломе бота CAP_NET_RAW даёт снифать трафик клиентов).
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
