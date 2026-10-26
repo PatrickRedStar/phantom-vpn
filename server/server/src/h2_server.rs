@@ -29,7 +29,7 @@ use tokio::sync::mpsc;
 use phantom_core::{
     mtu::clamp_tcp_mss,
     wire::{
-        build_heartbeat_frame,
+        batch_packets, build_heartbeat_frame,
         BATCH_MAX_PLAINTEXT, MAX_N_STREAMS, MIN_N_STREAMS, QUIC_TUNNEL_MSS,
     },
 };
@@ -527,17 +527,9 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
             break;
         }
 
-        // Ensure capacity for this frame.
-        if buf.capacity() < frame_len {
-            buf.reserve(frame_len.max(buf_reserve) - buf.len());
-        }
-        // Grow so we can read_exact into &mut [u8].
-        let old_len = buf.len();
-        buf.resize(old_len + frame_len, 0);
-        match tokio::time::timeout(
-            STREAM_IDLE_TIMEOUT,
-            reader.read_exact(&mut buf[old_len..old_len + frame_len]),
-        ).await {
+        // The pool is empty here: the previous frame was split off whole.
+        buf.resize(frame_len, 0);
+        match tokio::time::timeout(STREAM_IDLE_TIMEOUT, reader.read_exact(&mut buf[..])).await {
             Ok(Ok(_)) => {}
             _ => break,
         }
@@ -545,29 +537,12 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
         session.bytes_rx.fetch_add((4 + frame_len) as u64, Ordering::Relaxed);
         session.touch();
 
-        // Zero-copy: split the frame bytes out of the pool.
-        // `frame` is an owned Bytes sharing the underlying BytesMut allocation.
-        let mut frame: Bytes = {
-            // split_off at old_len to leave unread prefix (none at old_len==0)
-            // We built frame at [old_len .. old_len+frame_len]; the only content
-            // in the buffer right now IS that frame (old_len was 0 or the tail
-            // of a previous frame already consumed). Ensure old_len is 0.
-            debug_assert_eq!(old_len, 0);
-            let _ = old_len;
-            buf.split_to(frame_len).freeze()
-        };
+        // Zero-copy: `frame` shares the pool allocation, every packet below
+        // is a slice of it.
+        let frame: Bytes = buf.split_to(frame_len).freeze();
 
-        // Parse batch walking `frame` — each pkt is a zero-copy slice.
-        while frame.len() >= 2 {
-            let pkt_len = u16::from_be_bytes([frame[0], frame[1]]) as usize;
-            // Consume the 2-byte length prefix.
-            let _ = frame.split_to(2);
-            if pkt_len == 0 { break; }
-            if frame.len() < pkt_len { break; }
-
-            let pkt = frame.split_to(pkt_len);
-
-            if pkt_len < 20 || (pkt[0] >> 4) != 4 { continue; }
+        for pkt in batch_packets(&frame) {
+            if pkt.len() < 20 || (pkt[0] >> 4) != 4 { continue; }
 
             let src_v4 = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
             if tun_ip.is_none() && u32::from(src_v4) & mask == u32::from(tun_network) & mask {
@@ -587,12 +562,12 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
 
             // Only a SYN gets its MSS clamped — copy just those, the rest go
             // out as zero-copy slices of the frame.
-            let pkt_bytes: Bytes = if is_tcp_syn(&pkt) {
-                let mut pkt_mut = BytesMut::from(&pkt[..]);
+            let pkt_bytes: Bytes = if is_tcp_syn(pkt) {
+                let mut pkt_mut = BytesMut::from(pkt);
                 let _ = clamp_tcp_mss(&mut pkt_mut, QUIC_TUNNEL_MSS);
                 pkt_mut.freeze()
             } else {
-                pkt
+                frame.slice_ref(pkt)
             };
 
             // Log destination (sampled every 64th packet)
@@ -620,12 +595,9 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
             }
         }
 
-        // Drop what remains of this frame (padding, trailing bytes).
-        drop(frame);
-        // Reset the pool for the next iteration.
-        buf.clear();
+        // Replenish the pool for the next frame.
         if buf.capacity() < buf_reserve {
-            buf.reserve(buf_reserve - buf.capacity());
+            buf.reserve(buf_reserve);
         }
     }
 
@@ -723,7 +695,7 @@ async fn tls_write_loop<W: AsyncWriteExt + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phantom_core::wire::{build_batch_plaintext, extract_batch_packets};
+    use phantom_core::wire::build_batch_plaintext;
 
     /// Padded frames must stay readable by every existing receiver: same
     /// packets, length prefix matches the body, padding only after 0x0000.
@@ -743,8 +715,8 @@ mod tests {
         let len = u32::from_be_bytes(padded[..4].try_into().unwrap()) as usize;
         assert_eq!(len, padded.len() - 4);
         assert!(PAD_TARGET.contains(&len));
-        let got = extract_batch_packets(&padded[4..]).unwrap();
-        assert_eq!(got, pkts.iter().map(|p| p.to_vec()).collect::<Vec<_>>());
+        let got: Vec<&[u8]> = batch_packets(&padded[4..]).collect();
+        assert_eq!(got, pkts);
 
         let mut none = 0;
         assert_eq!(pad_start(frame.clone(), &mut none), frame);
