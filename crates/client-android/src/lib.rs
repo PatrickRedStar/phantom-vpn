@@ -254,9 +254,10 @@ pub extern "system" fn Java_com_ghoststream_vpn_service_GhostStreamVpnService_na
         }
     }
 
-    // Transport policy (ADR 0014). The real source is the server
-    // (`ClientConfigResponse`). Reset to built-in defaults on every start so a
-    // policy installed by a previous tunnel in this same process can't leak in.
+    // Transport policy (ADR 0014). The server doesn't ship one (`/api/client-config`
+    // is gone): production always runs the built-in defaults, only the lab
+    // harness below installs a policy. Reset on every start so a policy installed
+    // by a previous tunnel in this same process can't leak in.
     phantom_core::policy::reset();
 
     // Anti-DPI lab harness ONLY — levers pushed with `adb push` + reconnect, no

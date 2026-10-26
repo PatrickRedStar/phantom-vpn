@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 
 # Handshake — H2 / mTLS
@@ -101,8 +101,11 @@ captive portal или fallback-серт реле. Обрыв без алерта
 ## Fakeapp fallback (`server/server/src/fakeapp.rs`)
 
 Если на TLS-handshake клиент не предъявил cert, сервер не отвечает 404 / blank —
-это DPI-tell. Вместо этого
-запускается минимальный H2-сервер, имитирующий легитимный mobile backend:
+это DPI-tell. Вместо этого отвечает «сайт», похожий на легитимный mobile backend
+за nginx. Сервер предлагает ALPN `h2, http/1.1` (VPN-клиенты всегда получают
+`h2`): с ALPN `h2` поднимается минимальный H2-сервер, с `http/1.1` или без ALPN
+читается один HTTP/1.1-запрос (только заголовок) — тот же сайт, как у nginx,
+который обслуживает оба протокола:
 
 | Path | Response |
 |---|---|
@@ -112,17 +115,21 @@ captive portal или fallback-серт реле. Обрыв без алерта
 | `/manifest.json` | 200 + PWA manifest |
 | `/api/v1/health` | 200 + `{"status":"ok","version":"1.24.0"}` |
 | `/api/v1/status` | 200 + `{"uptime":…,"region":"nl2","build":"1.24.0"}` |
-| `/.well-known/*` | 404 |
-| default | 404 + plain text |
+| остальное | 404 — страница nginx (`<center>nginx</center>`), байт в байт как у fallback реле |
 
-Headers: `server: nginx/1.24.0`, `cache-control: public, max-age=3600`,
+Заголовки начинаются с `Server: nginx` (как nginx с `server_tokens off`, без
+версии) и `Date`; у страниц сайта ещё `cache-control: public, max-age=3600` и
 `x-request-id: <16 random hex>`. Тело запроса не читается — ответ уходит сразу
 (POST без конца тела не вешает обработчик). Простой — 30 с, всё соединение
-вместе с h2-рукопожатием — не дольше 45 с.
+вместе с рукопожатием — не дольше 45 с.
+
+По HTTP/1.1: один запрос на соединение, ответ с `Connection: close` и закрытие;
+`HEAD` — без тела; мусор вместо запроса или заголовок больше 8 КБ — nginx-овая
+400.
 
 Обнаружить fakeapp со стороны probe'а без правильного cert'а невозможно:
-TLS handshake, H2 negotiation и набор endpoint'ов выглядят как честный
-мобильный backend.
+TLS handshake, ALPN, ответы по h2 и HTTP/1.1 и набор endpoint'ов выглядят как
+честный мобильный backend за nginx.
 
 ## Invariants
 

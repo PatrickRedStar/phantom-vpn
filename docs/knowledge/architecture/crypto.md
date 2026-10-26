@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 
 # Crypto — TLS 1.3 + mTLS
@@ -23,8 +23,10 @@ Admin API использует отдельный TLS-пайплайн: self-sig
   / openssl-bridge.
 - **Cipher suites:** rustls дефолт для TLS 1.3 — `TLS_AES_256_GCM_SHA384`,
   `TLS_CHACHA20_POLY1305_SHA256`, `TLS_AES_128_GCM_SHA256`.
-- **ALPN:** клиент предлагает `h2, http/1.1` (как браузер), сервер выбирает
-  `h2` (другого не знает). См. [transport](./transport.md).
+- **ALPN:** клиент предлагает `h2, http/1.1` (как браузер), сервер предлагает
+  `h2, http/1.1` и с нашим клиентом всегда выбирает `h2`; `http/1.1` нужен
+  пробам без серта — им отвечает fakeapp, как nginx. См.
+  [transport](./transport.md), [handshake](./handshake.md).
 - **Session resumption:** TLS 1.3 tickets из in-memory кэша сервера. Работает,
   потому что клиент собирает `ClientConfig` один раз на подключение (`supervise`)
   и переиспользует его на реконнектах после здорового соединения (≥ 30 с) —

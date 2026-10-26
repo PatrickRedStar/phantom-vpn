@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 
 # Глоссарий
@@ -57,10 +57,12 @@ updated: 2026-10-26
   SYN/ClientHello/DNS. Wire-формат не меняется. Warmup удалён —
   [ADR 0019](decisions/0019-owner-decisions-audit-2026-10.md).
 
-- **Fakeapp** — fallback H2-сервер для соединений без client cert (серт не из
-  allowlist получает алерт `certificate_revoked`). Отдаёт `/`, `/favicon.ico`,
-  `/robots.txt`, `/api/v1/{health,status}` с nginx-like headers, тело запроса
-  не читает, соединение — не дольше 45 с. Для active-probing резистентности.
+- **Fakeapp** — fallback-«сайт» для соединений без client cert (серт не из
+  allowlist получает алерт `certificate_revoked`). По h2 и по HTTP/1.1 (один
+  запрос, `Connection: close`) отдаёт `/`, `/favicon.ico`, `/robots.txt`,
+  `/api/v1/{health,status}` с `Server: nginx` и `Date`, остальное — nginx-овая
+  404; тело запроса не читает, соединение — не дольше 45 с. Для
+  active-probing резистентности.
   Источник: [server/server/src/fakeapp.rs](../../server/server/src/fakeapp.rs).
 
 - **SNI passthrough** — режим работы RU-relay (`phantom-relay`): прочитать
@@ -85,9 +87,9 @@ updated: 2026-10-26
 - **Фатальная ошибка** — `ConnState::Error` с причиной в `last_error`: отзыв
   доступа (алерт `certificate_revoked`), истечение доступа, ошибки дат серта
   сервера (сбитые часы), кривой профиль, закрытый TUN. Остальное — сетевые
-  ошибки, ретрай бесконечный. Обёртки (Kotlin/Swift/Linux GUI) туннель на
-  переходных состояниях не перезапускают; Linux CLI — исключение, одна попытка
-  и перезапуск за systemd — [ADR 0018](decisions/0018-rust-owns-reconnect.md).
+  ошибки, ретрай бесконечный. Обёртки (Kotlin/Swift/Linux) туннель на
+  переходных состояниях не перезапускают —
+  [ADR 0018](decisions/0018-rust-owns-reconnect.md).
 - **`tx_dropped`** — счётчик пакетов, выброшенных диспетчером TUN→стрим:
   стрим мёртв или его очередь так и не освободилась за отсрочку 50 мс. Живёт в
   телеметрии ядра, пишется в лог `teardown.start`.

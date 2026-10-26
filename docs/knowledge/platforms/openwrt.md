@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 
 # OpenWrt
@@ -109,6 +109,20 @@ routing metric hint, статус интерфейса.
   скрипт не добавляет default route, чтобы не ломать роутинг OpenWrt'а.
   Пользователь настраивает через LuCI metric (чем ниже, тем приоритетнее).
 
+## Переподключение
+
+Клиент собран на `client-common`, без `client-core-runtime`
+([main.rs](../../../apps/openwrt/client/src/main.rs)). Каждый из N стримов живёт
+весь процесс и переподключается сам, по одному: обрыв, FIN сервера или 90 с без
+единого кадра → пауза 1, 2, 5, 10, 20, затем 30 с (+ до 25 % джиттера) → новое
+соединение. Счётчик пауз сбрасывается, если стрим прожил ≥ 30 с. Процесс не
+выходит никогда — ни на сетевых ошибках, ни на отзыве или истёкшем серте.
+
+Отзыв и истёкший доступ на OpenWrt **не фатальны** — в отличие от остальных
+клиентов ([ADR 0018](../decisions/0018-rust-owns-reconnect.md)). Это осознанно:
+роутер без экрана должен подниматься сам, а ретрай раз в ~30 с почти ничего не
+стоит. Снять туннель — `ifdown`.
+
 ## Критичные pitfalls
 
 - **Размер бинаря** — важно на MIPS-роутерах с 16 MB flash. Релизные бинари
@@ -139,8 +153,10 @@ OpenWrt артефакты собираются в `release.yml` на кажды
 фикс OpenWrt не ждёт, пока починят, скажем, macOS. Если упала сама OpenWrt-сборка —
 её файлов в релизе не будет, догонять через «Re-run failed jobs».
 
-После релиза юзер обновляется тем же one-liner'ом. Теги (versionCode analogue)
-не ведутся — OpenWrt берёт latest release из GitHub.
+После релиза юзер обновляется тем же one-liner'ом. Бинарь подменяется через
+временный файл и `mv`, поэтому обновление работает и при поднятом интерфейсе;
+новая версия запускается со следующим `ifup` (или `ifdown && ifup`). Теги
+(versionCode analogue) не ведутся — OpenWrt берёт latest release из GitHub.
 
 ## Sources
 
@@ -149,7 +165,7 @@ OpenWrt артефакты собираются в `release.yml` на кажды
 - **LuCI UI:** [apps/openwrt/luci/](../../../apps/openwrt/luci/)
 - **Installer:** [apps/openwrt/ghoststream-install.sh](../../../apps/openwrt/ghoststream-install.sh)
 - **CI workflow:** [.github/workflows/release.yml](../../../.github/workflows/release.yml) (job `build-openwrt`)
-- **Runtime (shared):** [crates/client-core-runtime/](../../../crates/client-core-runtime/)
+- **Транспорт (shared):** [crates/client-common/](../../../crates/client-common/) — `client-core-runtime` OpenWrt не использует
 - **ADR:** [0005 client-core-runtime](../decisions/0005-client-core-runtime.md), [0004 ghs:// conn_string](../decisions/0004-ghs-url-conn-string.md)
 - **gitnexus:** `gitnexus_query({query: "openwrt netifd proto"})`, `gitnexus_query({query: "tun simple fallback"})`
 - **Troubleshooting:** [../troubleshooting.md](../troubleshooting.md)

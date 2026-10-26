@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 
 # Linux
@@ -31,10 +31,14 @@ sudo phantom-client-linux --conn-string 'ghs://...'
 sudo phantom-client-linux --conn-string-file /etc/phantom-vpn/conn_string
 ```
 
-CLI запускает ядро с `auto_reconnect = false`: одна попытка, при обрыве процесс
-завершается — перезапуск за systemd (`Restart=`). GUI/helper работают с
-`auto_reconnect` из настроек, и тогда ядро ретраит бесконечно
-([ADR 0018](../decisions/0018-rust-owns-reconnect.md)).
+Переподключением владеет ядро ([ADR 0018](../decisions/0018-rust-owns-reconnect.md)):
+CLI запускает его с настройками по умолчанию (`auto_reconnect = true`), сетевые
+обрывы ретраятся бесконечно, без выхода процесса. CLI завершается только по
+SIGINT/SIGTERM или на фатальной ошибке (отзыв, истёкший доступ, часы, закрытый
+TUN) — с причиной в stderr и кодом ≠ 0. `Restart=` у systemd нужен только на
+этот случай. GUI/helper берут `auto_reconnect` из настроек; helper на
+Disconnect сначала отменяет ядро, потом снимает TUN, так что ручное отключение
+не выглядит фатальной ошибкой.
 
 Требует root: создание TUN + манипуляция routing table / `ip rule` / iptables
 (для split-routing и policy-based сохранения SSH-коннектов во full-tunnel).
@@ -47,6 +51,12 @@ Split GUI ↔ helper (не один бинарь):
   session; не должен работать от root — security hygiene + AppArmor/SELinux нормы).
 - **Helper** — минимальный privileged демон. Делает: открывает TUN fd, настраивает
   routing, запускает `client-core-runtime`, шлёт `StatusFrame`/`LogFrame` в GUI.
+- **Админка** (экран Admin) ходит в admin API (`10.7.0.1:8080`, только через
+  поднятый туннель) по mTLS с сертом и ключом активного профиля, как Android и
+  Apple; admin-серт пинится при первом ответе
+  ([admin_api.rs](../../../apps/linux/gui/src/admin_api.rs)). Bearer сервер
+  принимает только со своего loopback, поэтому поле «Admin token» в редакторе
+  профиля больше не используется (значение хранится, но не отправляется).
 
 Канал между ними — **`gui-ipc`** ([crates/gui-ipc/](../../../crates/gui-ipc/)):
 Unix socket + canonical serde_json wire types (`StatusFrame`, `TunnelSettings`,
@@ -58,8 +68,8 @@ Unix socket + canonical serde_json wire types (`StatusFrame`, `TunnelSettings`,
 Единственный рабочий формат — строка подключения `ghs://` (cert и key
 закодированы base64url в userinfo, см. [ADR 0004](../decisions/0004-ghs-url-conn-string.md)).
 TOML-конфиг рантаймом не поддерживается: CLI с ним завершается с ошибкой
-«use --conn-string or --conn-string-file». `server/config/client.example.toml` —
-реликт эпохи Noise/QUIC (ключи `[keys]`, `insecure`), по нему не настраивать.
+«use --conn-string or --conn-string-file» (реликтовый `client.example.toml`
+удалён).
 `PHANTOM_NO_DEFAULT_ROUTE=1` — не ставить глобальный default route (headless-боксы,
 см. [server.md](server.md)).
 
