@@ -1,8 +1,6 @@
 package com.ghoststream.vpn.service
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,7 +37,7 @@ sealed class DnsHealth {
     /** First probe of this session is in flight. */
     data object Probing : DnsHealth()
 
-    /** [resolver] — which server actually answered. See [DnsHealthMonitor.resolverLabel]. */
+    /** [resolver] — which server is resolving: strict Private DNS, else the tunnel's first DNS. */
     data class Ok(val latencyMs: Int, val resolver: String?) : DnsHealth()
 
     /**
@@ -79,8 +77,13 @@ object DnsHealthMonitor {
      * our own infrastructure keeps the probe off third parties, and that name
      * has to resolve for the tunnel to be usable at all, so a failure here is
      * exactly the failure the user cares about.
+     *
+     * The probe runs in our own process, which always rides the tunnel (in
+     * per-app "allowed" mode the service adds our package to the list), so it
+     * resolves exactly the way the user's apps do. [tunnelDns] — the DNS
+     * servers the service gave the tunnel, for display.
      */
-    fun start(context: Context, probeHost: String) {
+    fun start(context: Context, probeHost: String, tunnelDns: List<String> = emptyList()) {
         stop()
         if (probeHost.isBlank()) return
         val appContext = context.applicationContext
@@ -91,7 +94,7 @@ object DnsHealthMonitor {
             while (isActive) {
                 val latency = probeOnce(probeHost)
                 val strictHost = strictPrivateDnsHost(appContext)
-                val resolver = resolverLabel(appContext, strictHost)
+                val resolver = if (strictHost != null) "$strictHost · DoT" else tunnelDns.firstOrNull()
                 if (latency != null) {
                     consecutiveFailures = 0
                     firstFailureAt = 0L
@@ -153,69 +156,29 @@ object DnsHealthMonitor {
 
     /**
      * The strict-mode Private DNS hostname the *system* is configured with, or
-     * null when strict mode is off.
+     * null when strict mode is off. When strict mode is on, Android is required
+     * to send every query to this server over DoT and refuses to fall back — so
+     * if that server is unreachable from inside the tunnel, DNS stops entirely.
      *
-     * Read through the public `LinkProperties` API rather than `Settings.Global`
-     * so we get the platform's own view, and never a hardcoded hostname. When
-     * strict mode is on, Android is required to send every query to this server
-     * over DoT and refuses to fall back — so if that server is unreachable from
-     * inside the tunnel, DNS stops entirely.
+     * Strict Private DNS wins over the tunnel's own DNS servers, which is why
+     * the resolver label names it (the same address can be configured both in
+     * the app and in the phone; naming the server makes the override visible).
+     *
+     * `Settings.Global` only: it is what the user actually typed and what the
+     * resolver obeys. LinkProperties.privateDnsServerName came back null for
+     * every network on a live device with strict mode ON, and reading it meant
+     * pulling the VPN network's LinkProperties — thousands of routes, ~840 KB
+     * per Binder call — every probe. Unset mode = the default, not strict.
      */
-    private fun strictPrivateDnsHost(context: Context): String? {
-        // `Settings.Global` first. LinkProperties.privateDnsServerName looked like
-        // the tidier source, but on a live device with strict mode ON it came back
-        // null for every network the app can see — so the banner fell back to its
-        // generic text and never named the culprit. The global setting is what the
-        // user actually typed, and it is what the resolver obeys.
-        runCatching {
-            val mode = android.provider.Settings.Global.getString(
-                context.contentResolver, "private_dns_mode",
-            )
-            if (mode == "hostname") {
-                val host = android.provider.Settings.Global.getString(
-                    context.contentResolver, "private_dns_specifier",
-                )
-                if (!host.isNullOrBlank()) return host
-            } else if (mode != null) {
-                // Mode is known and is not strict — no override in play.
-                return null
-            }
-        }.onFailure { Log.w(TAG, "private DNS setting read failed: ${it.message}") }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
-        return runCatching {
-            val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
-            val networks = listOfNotNull(cm.activeNetwork) + cm.allNetworks.toList()
-            networks.asSequence()
-                .mapNotNull { cm.getLinkProperties(it) }
-                .firstNotNullOfOrNull { lp -> lp.privateDnsServerName?.takeIf { it.isNotBlank() } }
-        }.onFailure { Log.w(TAG, "private DNS lookup failed: ${it.message}") }.getOrNull()
-    }
-
-    /**
-     * Which server is *actually* resolving, for display.
-     *
-     * Needed because "through the tunnel" alone misleads: the same address can be
-     * configured both in the app and in the phone, and strict Private DNS silently
-     * overrides whatever the tunnel asked for. Naming the server makes that
-     * override visible instead of leaving the user to guess.
-     *
-     * Strict Private DNS wins when set — that is the resolver in force regardless
-     * of the tunnel's own DNS servers. Otherwise report the first DNS address the
-     * VPN network actually carries.
-     */
-    private fun resolverLabel(context: Context, strictHost: String?): String? {
-        if (strictHost != null) return "$strictHost · DoT"
-        return runCatching {
-            val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
-            cm.allNetworks.asSequence()
-                .mapNotNull { cm.getLinkProperties(it) }
-                .firstOrNull { it.interfaceName?.startsWith("tun") == true }
-                ?.dnsServers
-                ?.firstOrNull()
-                ?.hostAddress
-        }.getOrNull()
-    }
+    private fun strictPrivateDnsHost(context: Context): String? = runCatching {
+        val mode = android.provider.Settings.Global.getString(
+            context.contentResolver, "private_dns_mode",
+        )
+        if (mode != "hostname") return@runCatching null
+        android.provider.Settings.Global.getString(
+            context.contentResolver, "private_dns_specifier",
+        )?.takeIf { it.isNotBlank() }
+    }.onFailure { Log.w(TAG, "private DNS setting read failed: ${it.message}") }.getOrNull()
 
     private fun elapsedMs(): Long = android.os.SystemClock.elapsedRealtime()
 }
