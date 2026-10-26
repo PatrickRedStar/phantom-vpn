@@ -508,10 +508,6 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
     let mut dropped_spoofed: u64 = 0;
 
     let mut len_buf = [0u8; 4];
-    // Pre-allocated BytesMut pool (128 KB) — we split_to(frame_len) per frame
-    // to mint zero-copy Bytes, then replenish when capacity runs low.
-    let buf_reserve = 128 * 1024;
-    let mut buf = BytesMut::with_capacity(buf_reserve);
 
     loop {
         // Read frame header. A live client sends at least a heartbeat every
@@ -535,8 +531,10 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
             break;
         }
 
-        // The pool is empty here: the previous frame was split off whole.
-        buf.resize(frame_len, 0);
+        // Exactly frame_len per frame: packets below are zero-copy slices of
+        // it and keep it alive until written to TUN, so a shared oversized
+        // pool would pin 128 KB behind every queued ACK.
+        let mut buf = BytesMut::zeroed(frame_len);
         match tokio::time::timeout(STREAM_IDLE_TIMEOUT, reader.read_exact(&mut buf[..])).await {
             Ok(Ok(_)) => {}
             _ => break,
@@ -545,9 +543,8 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
         session.bytes_rx.fetch_add((4 + frame_len) as u64, Ordering::Relaxed);
         session.touch();
 
-        // Zero-copy: `frame` shares the pool allocation, every packet below
-        // is a slice of it.
-        let frame: Bytes = buf.split_to(frame_len).freeze();
+        // Zero-copy: every packet below is a slice of `frame`.
+        let frame: Bytes = buf.freeze();
 
         for pkt in batch_packets(&frame) {
             if pkt.len() < 20 || (pkt[0] >> 4) != 4 { continue; }
@@ -601,11 +598,6 @@ async fn tls_rx_loop<R: AsyncReadExt + Unpin>(
             if tun_tx.send(pkt_bytes).await.is_err() {
                 return Ok(());
             }
-        }
-
-        // Replenish the pool for the next frame.
-        if buf.capacity() < buf_reserve {
-            buf.reserve(buf_reserve);
         }
     }
 

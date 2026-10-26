@@ -634,6 +634,9 @@ pub async fn stream_batch_loop(
     let mut pending: Vec<Bytes> = Vec::with_capacity(MAX_PKTS_PER_BATCH);
 
     let mut drop_detached: u64 = 0;
+    let mut drop_stalled: u64 = 0;
+    // Longer than one 64 KB frame takes on a crawling (~15 KB/s) link.
+    const WRITER_STALL: std::time::Duration = std::time::Duration::from_secs(5);
 
     loop {
         let first = match pkt_rx.recv().await {
@@ -712,14 +715,32 @@ pub async fn stream_batch_loop(
             continue;
         };
 
-        if let Err(_e) = sender.send(frame).await {
-            // Send-half dropped — writer loop has exited. Next iteration will
-            // re-snapshot and either find a reconnected slot or drop again.
-            tracing::debug!(
-                "stream_batch_loop[{}]: send_to_writer closed, will re-snapshot",
-                stream_idx
-            );
-            continue;
+        // Bounded wait: a writer stuck on a dead path (the relay is alive and
+        // holds a zero window) would otherwise pin this loop to its full
+        // channel forever, and a reattached stream would never get a frame.
+        // Same rule as a detached slot — drop, never block the pipeline.
+        match sender.send_timeout(frame, WRITER_STALL).await {
+            Ok(()) => {}
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                drop_stalled += 1;
+                if drop_stalled == 1 || drop_stalled % 1024 == 0 {
+                    tracing::warn!(
+                        "stream_batch_loop[{}]: writer stalled {:?}, dropped {} frames (fp={}…)",
+                        stream_idx, WRITER_STALL, drop_stalled,
+                        &session.fingerprint[..16.min(session.fingerprint.len())]
+                    );
+                }
+                continue;
+            }
+            Err(mpsc::error::SendTimeoutError::Closed(_)) => {
+                // Send-half dropped — writer loop has exited. Next iteration will
+                // re-snapshot and either find a reconnected slot or drop again.
+                tracing::debug!(
+                    "stream_batch_loop[{}]: send_to_writer closed, will re-snapshot",
+                    stream_idx
+                );
+                continue;
+            }
         }
 
         session.bytes_tx.fetch_add(total as u64, Ordering::Relaxed);
