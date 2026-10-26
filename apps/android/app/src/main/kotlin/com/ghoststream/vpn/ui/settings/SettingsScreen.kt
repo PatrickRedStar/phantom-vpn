@@ -109,8 +109,6 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
     onNavigateToQrScanner: () -> Unit = {},
     onAdminNavigate: (String) -> Unit = {},
-    onShareToTv: (profileId: String) -> Unit = {},
-    onGetFromPhone: () -> Unit = {},
 ) {
     val config by viewModel.config.collectAsStateWithLifecycle()
     val profiles by viewModel.profiles.collectAsStateWithLifecycle()

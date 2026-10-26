@@ -168,8 +168,6 @@
     <string name="action_close">Закрыть</string>
     <string name="action_delete">Удалить</string>
     <string name="action_admin_panel">Админ-панель</string>
-    <string name="action_share_to_tv">Отправить на TV</string>
-    <string name="action_get_from_phone">Получить с телефона</string>
     <string name="action_add">Добавить</string>
 
     <string name="admin_uptime">Аптайм</string>

@@ -173,8 +173,6 @@
     <string name="action_close">Close</string>
     <string name="action_delete">Delete</string>
     <string name="action_admin_panel">Admin panel</string>
-    <string name="action_share_to_tv">Send to TV</string>
-    <string name="action_get_from_phone">Get from phone</string>
     <string name="action_add">Add</string>
 
     <!-- Admin -->
