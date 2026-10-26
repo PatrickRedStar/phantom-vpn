@@ -66,10 +66,22 @@ const ROBOTS_TXT: &str = "User-agent: *\nDisallow: /\n";
 
 const MANIFEST_JSON: &str = r##"{"name":"Service","short_name":"svc","start_url":"/","display":"standalone","background_color":"#ffffff","theme_color":"#0066cc","icons":[{"src":"/favicon.ico","sizes":"16x16","type":"image/png"}]}"##;
 
+/// Hard cap on one unauthenticated connection, handshake included.
+const CONN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+
 /// Handle an unauthenticated TLS stream by running a tiny HTTP/2 server that
-/// answers a few realistic endpoints. Times out after 30s idle so probers
-/// don't tie up resources.
+/// answers a few realistic endpoints. Times out after 30s idle and 45 s total
+/// so probers don't tie up resources.
 pub async fn handle<S>(stream: S, remote: SocketAddr)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    if tokio::time::timeout(CONN_TIMEOUT, serve(stream, remote)).await.is_err() {
+        tracing::debug!("fakeapp connection from {} timed out", remote);
+    }
+}
+
+async fn serve<S>(stream: S, remote: SocketAddr)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -90,10 +102,10 @@ where
         match accept_result {
             Ok(poll_outcome) => match poll_outcome {
                 Some(Ok((req, mut send))) => {
+                    // Answer right away; the request body is never read (a
+                    // POST that never ends must not hang this loop).
                     let path = req.uri().path().to_string();
-                    // Drain request body (we don't need it but peer wants us to read).
-                    let mut body = req.into_body();
-                    while body.data().await.is_some() {}
+                    drop(req);
 
                     let (status, content_type, payload): (u16, &str, Bytes) = match path.as_str() {
                         "/" => (
