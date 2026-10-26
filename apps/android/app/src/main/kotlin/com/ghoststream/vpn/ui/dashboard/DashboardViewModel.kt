@@ -11,6 +11,7 @@ import com.ghoststream.vpn.data.PreferencesStore
 import com.ghoststream.vpn.data.ProfilesStore
 import com.ghoststream.vpn.data.RoutingRulesManager
 import com.ghoststream.vpn.data.VpnConfig
+import com.ghoststream.vpn.data.VpnProfile
 import com.ghoststream.vpn.service.GhostStreamVpnService
 import com.ghoststream.vpn.service.VpnState
 import com.ghoststream.vpn.service.VpnStateManager
@@ -23,7 +24,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -48,26 +48,23 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
      */
     val vpnState = VpnStateManager.derivedVpnState
 
-    // Combined: active profile (server/cert + per-profile overrides) + global prefs fallback
-    val config: StateFlow<VpnConfig> = combine(
-        profilesStore.profiles,
-        profilesStore.activeId,
-        preferencesStore.config,
-    ) { profiles, activeId, prefs ->
-        val p = profiles.find { it.id == activeId } ?: profiles.firstOrNull()
-        VpnConfig(
-            serverAddr      = p?.serverAddr ?: "",
-            serverName      = p?.serverName ?: "",
-            certPath        = p?.certPath ?: "",
-            keyPath         = p?.keyPath ?: "",
-            tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
-            dnsServers      = p?.dnsServers ?: prefs.dnsServers,
-            splitRouting    = p?.splitRouting ?: prefs.splitRouting,
-            directCountries = p?.directCountries ?: prefs.directCountries,
-            perAppMode      = p?.perAppMode ?: prefs.perAppMode,
-            perAppList      = p?.perAppList ?: prefs.perAppList,
-        )
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, VpnConfig())
+    /** Global prefs — fallback for what the profile doesn't override. Null until loaded. */
+    private val prefs: StateFlow<VpnConfig?> =
+        preferencesStore.config.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    // Active profile (server/cert + per-profile overrides) + global prefs fallback
+    private fun configOf(p: VpnProfile?, prefs: VpnConfig) = VpnConfig(
+        serverAddr      = p?.serverAddr ?: "",
+        serverName      = p?.serverName ?: "",
+        certPath        = p?.certPath ?: "",
+        keyPath         = p?.keyPath ?: "",
+        tunAddr         = p?.tunAddr ?: "10.7.0.2/24",
+        dnsServers      = p?.dnsServers ?: prefs.dnsServers,
+        splitRouting    = p?.splitRouting ?: prefs.splitRouting,
+        directCountries = p?.directCountries ?: prefs.directCountries,
+        perAppMode      = p?.perAppMode ?: prefs.perAppMode,
+        perAppList      = p?.perAppList ?: prefs.perAppList,
+    )
 
     private val _timerText = MutableStateFlow("00:00:00")
     val timerText: StateFlow<String> = _timerText
@@ -145,11 +142,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (isRunning(VpnStateManager.state.value) ||
             VpnStateManager.state.value is VpnState.Disconnecting
         ) return
-        var cfg = config.value
+        // Built from the store right now, not from a combined flow: right after
+        // a profile switch such a flow may still carry the old profile's TUN,
+        // DNS and cert paths.
+        var profile = profilesStore.getActiveProfile()
+        var cfg = configOf(profile, prefs.value ?: return)
         if (cfg.serverAddr.isBlank()) return
         val ctx = getApplication<Application>()
 
-        var profile = profilesStore.getActiveProfile()
         if (profile != null) {
             // Restore cert files from inline PEM if they were deleted (e.g. app update)
             val certExists = java.io.File(profile.certPath).exists()
