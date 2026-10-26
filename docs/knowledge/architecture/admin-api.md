@@ -148,8 +148,8 @@ ghs://<base64url(cert_pem + "\n" + key_pem)>@<host>:<port>?sni=<sni>&tun=<cidr>&
 - `ca` — CA не передаётся. Серверный cert верифицируется через системный +
   webpki root store (LE достаточно).
 - `admin=true` — роль динамическая, из `is_admin` в keyring.
-- `insecure` — production всегда `insecure=false`; для dev используется
-  config-файл.
+- `insecure` — удалён, серт сервера проверяется всегда
+  ([ADR 0011](../decisions/0011-remove-insecure-always-verify.md)).
 - Backcompat со старым base64(JSON) — отсутствует. Старые conn_string'и
   после v0.19.0 нужно regenerate через бота или admin UI.
 
