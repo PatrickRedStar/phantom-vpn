@@ -3,7 +3,7 @@
 #
 # Public traffic flow:
 #   client TLS w/ SNI=tls.nl2.bikini-bottom.com  (NL phantom-server cert SAN)
-#     → 89.169.175.55:443 phantom-relay  (raw copy_bidirectional, no TLS termination)
+#     → 89.169.175.55:443 phantom-relay  (raw TCP copy, no TLS termination)
 #       → 89.110.109.128:8443 phantom-server (NL exit, vdsina)
 #
 # upstream MUST be :8443, NOT :443.
@@ -25,8 +25,9 @@
 # Since 2026-07-31 `relay.bikini-bottom.com` resolves to .55 and the cert is issued
 # and renewed on the host itself: certbot standalone on :80 (port is free — the relay
 # owns :443 only), renewal config carries `renew_hook = systemctl restart
-# phantom-relay` because the relay reads the cert once at startup and would otherwise
-# keep serving the expired one until the next manual restart.
+# phantom-relay` — needed only by old relay builds that read the cert once at
+# startup. Current builds re-read it on every fallback connection, so once the new
+# binary is deployed the hook can go (a restart drops every live stream).
 #
 # Giving the relay its own name on its own RU IP is also the precondition for ADR 0014
 # P1 (relay terminates honest TLS on its own domain instead of raw passthrough).
