@@ -83,6 +83,11 @@ public struct StatusFrame: Codable {
     /// Coarse bandwidth class — `.throttled` flags suspected DPI shaping.
     /// `nil` if the runtime is too old. v0.24.0+.
     public var bandwidthClass: BandwidthClass?
+    /// Unix seconds of the tunnel session start, set by the iOS extension
+    /// (`SessionClock`), not by the core: `sessionSecs` restarts on every
+    /// full reconnect and stops while the device sleeps. Kept through
+    /// `reconnecting`; `nil` before the first `connected` and on macOS.
+    public var sessionStartedAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case state
@@ -106,6 +111,7 @@ public struct StatusFrame: Codable {
         case idleRxSecs = "idle_rx_secs"
         case health
         case bandwidthClass = "bandwidth_class"
+        case sessionStartedAt = "session_started_at"
     }
 
     public init(
@@ -180,6 +186,7 @@ public struct StatusFrame: Codable {
         self.idleRxSecs = try c.decodeIfPresent(Double.self, forKey: .idleRxSecs)
         self.health = try c.decodeIfPresent(TunnelHealth.self, forKey: .health)
         self.bandwidthClass = try c.decodeIfPresent(BandwidthClass.self, forKey: .bandwidthClass)
+        self.sessionStartedAt = try c.decodeIfPresent(Double.self, forKey: .sessionStartedAt)
     }
 
     public static let disconnected = StatusFrame(

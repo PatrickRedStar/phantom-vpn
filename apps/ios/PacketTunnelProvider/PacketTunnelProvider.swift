@@ -29,6 +29,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
     private var statusBroadcastGate = StatusBroadcastGate(minInterval: 1.0)
+    private var sessionClock = SessionClock()
     private var lastSurfaceKind: VpnStatePayload.Kind?
 
     @discardableResult
@@ -67,6 +68,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         Task {
             await PhantomBridge.shared.stop()
+            withStateLock { sessionClock.reset() }
             UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: SharedKeys.tunnelMemoryMiB)
             writeDisconnectedSnapshot()
             completionHandler()
@@ -143,6 +145,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         withStateLock {
             statusBroadcastGate.reset()
+            sessionClock.reset()
             lastStatusFrame = .disconnected
         }
         writeStatePayload(VpnStatePayload(kind: .connecting))
@@ -180,16 +183,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try await PhantomBridge.shared.start(
                 profile: profile,
                 settings: settings,
-                onStatus: { [weak self] frame in
+                onStatus: { [weak self] coreFrame in
                     guard let self else { return }
-                    let (previousState, broadcast) = self.withStateLock { () -> (ConnState, Bool) in
+                    let (frame, previousState, broadcast) = self.withStateLock { () -> (StatusFrame, ConnState, Bool) in
                         let previous = self.lastStatusFrame.state
+                        let frame = self.sessionClock.stamp(coreFrame)
                         self.lastStatusFrame = frame
                         let pass = self.statusBroadcastGate.shouldBroadcast(
                             frame,
                             now: ProcessInfo.processInfo.systemUptime
                         )
-                        return (previous, pass)
+                        return (frame, previous, pass)
                     }
                     if broadcast {
                         self.writeSnapshot(frame)
@@ -833,7 +837,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             payload = VpnStatePayload(kind: .connecting)
         case .connected, .reconnecting:
             payload = VpnStatePayload(kind: frame.state == .connected ? .connected : .reconnecting,
-                                       since: Date().timeIntervalSince1970 - Double(frame.sessionSecs),
+                                       since: frame.sessionStartedAt,
                                        serverName: frame.sni ?? frame.serverAddr ?? "")
         case .error:
             payload = VpnStatePayload(kind: .error, error: frame.lastError)
