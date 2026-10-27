@@ -10,6 +10,9 @@ import WidgetKit
 struct GhostStreamWidgets: WidgetBundle {
     var body: some Widget {
         StatusWidget()
+        if #available(iOS 18.0, *) {
+            VpnControl()
+        }
     }
 }
 
