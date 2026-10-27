@@ -291,6 +291,12 @@
 "admin.subscription.revoke.now" = "Revoke now";
 "admin.subscription.set.title" = "Set subscription";
 "admin.subscription.set.footer" = "Subscription is set from now + N days, regardless of the current term.";
+"admin.subscription.limit.title" = "Limit the subscription?";
+"admin.subscription.limit.message" = "Client “%@” has an unlimited subscription. After this it will end in %ld days.";
+"admin.subscription.limit.action" = "Limit to %ld days";
+"admin.subscription.revoke.title" = "Revoke access?";
+"admin.subscription.revoke.message" = "Client “%@” will be disconnected right away; the subscription ends now.";
+"admin.subscription.revoke.action" = "Revoke";
 
 // Profile editor
 "profile.relay.toggle" = "Via relay";

@@ -4,6 +4,7 @@
 // the tunnel extension already write.
 
 import SwiftUI
+import UIKit
 import WidgetKit
 
 @main
@@ -29,7 +30,16 @@ enum GS {
     static let danger = Color(hex: 0xFF4A3D)
 
     // Bundled in this extension (UIAppFonts); a missing font falls back to the system one.
-    static func grotesk(_ size: CGFloat) -> Font { .custom("SpaceGrotesk-Bold", fixedSize: size) }
+    /// Space Grotesk has no Cyrillic — iOS would fill in a serif; cascade to
+    /// the system bold instead, as PhantomUI Typography does in the app.
+    static func grotesk(_ size: CGFloat) -> Font {
+        guard let base = UIFont(name: "SpaceGrotesk-Bold", size: size) else {
+            return .system(size: size, weight: .bold)
+        }
+        let system = UIFont.systemFont(ofSize: size, weight: .bold).fontDescriptor
+        let descriptor = base.fontDescriptor.addingAttributes([.cascadeList: [system]])
+        return Font(UIFont(descriptor: descriptor, size: size) as CTFont)
+    }
     static func mono(_ size: CGFloat) -> Font { .custom("DepartureMono-Regular", fixedSize: size) }
     static func jet(_ size: CGFloat) -> Font { .custom("JetBrainsMono-Regular", fixedSize: size) }
 
@@ -37,6 +47,19 @@ enum GS {
     /// interpolation would turn the key into "state.%@".
     static func stateWord(_ kind: SurfaceState.Kind) -> Text {
         Text(LocalizedStringKey("state." + kind.rawValue), tableName: "Widgets")
+    }
+
+    /// VoiceOver label for the shield / status dot: "GhostStream · Передача".
+    static func a11yState(_ kind: SurfaceState.Kind) -> Text {
+        Text(verbatim: "GhostStream · ") + stateWord(kind)
+    }
+
+    /// "Relay · host" / "Напрямую" — same words as the Live Activity.
+    static func route(_ relayHost: String?) -> Text {
+        if let relayHost {
+            return Text("activity.route.relay \(relayHost)", tableName: "Widgets")
+        }
+        return Text("activity.route.direct", tableName: "Widgets")
     }
 
     static func headlineColor(_ kind: SurfaceState.Kind) -> Color {

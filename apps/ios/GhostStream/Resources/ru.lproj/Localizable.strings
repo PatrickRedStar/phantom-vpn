@@ -291,6 +291,12 @@
 "admin.subscription.revoke.now" = "Отозвать сейчас";
 "admin.subscription.set.title" = "Срок подписки";
 "admin.subscription.set.footer" = "Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.";
+"admin.subscription.limit.title" = "Ограничить подписку?";
+"admin.subscription.limit.message" = "У клиента «%@» бессрочная подписка. После продления она закончится через %ld дн.";
+"admin.subscription.limit.action" = "Ограничить: %ld дн.";
+"admin.subscription.revoke.title" = "Отозвать доступ?";
+"admin.subscription.revoke.message" = "Клиент «%@» будет сразу отключён, подписка закончится сейчас.";
+"admin.subscription.revoke.action" = "Отозвать";
 
 // Profile editor
 "profile.relay.toggle" = "Через реле";
