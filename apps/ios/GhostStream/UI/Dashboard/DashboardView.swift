@@ -20,6 +20,7 @@ struct DashboardView: View {
     @Environment(ProfilesStore.self) private var profiles
     @Environment(PreferencesStore.self) private var prefs
     @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     @State private var vm = DashboardViewModel()
 
@@ -128,11 +129,17 @@ struct DashboardView: View {
                     .foregroundStyle(C.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(alignment: .firstTextBaseline) {
+            // Accessibility sizes: the caption goes under the timer.
+            let timerRow = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                : AnyLayout(HStackLayout(alignment: .firstTextBaseline))
+            timerRow {
                 Text(vm.timerText)
                     .gsFont(.ticker)
                     .foregroundStyle(isUp ? C.bone : C.textFaint)
-                Spacer()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 Text(L(isReconnecting ? "lbl_session_ongoing" : "lbl_session").uppercased())
                     .gsFont(.labelMono)
                     .foregroundStyle(C.textDim)
@@ -227,6 +234,8 @@ struct DashboardView: View {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(color.opacity(0.35), lineWidth: 1)
         )
+        // Past AX2 «восстанавливаю» no longer fits a line and breaks mid-word.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .accessibilityElement(children: .combine)
     }
 
@@ -363,22 +372,34 @@ struct DashboardView: View {
         .gsCardBackground(C)
     }
 
+    /// Label · value on one line; at accessibility sizes the value goes
+    /// under the label and wraps instead of truncating to «1.1.….8.8».
     private func kvRow(_ label: String, _ value: String, valueColor: Color? = nil, dot: Bool = false) -> some View {
-        HStack(spacing: 12) {
+        let stacked = typeSize.isAccessibilitySize
+        let row = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 12))
+        return row {
             Text(label.uppercased())
                 .gsFont(.labelMono)
                 .foregroundStyle(C.textDim)
-            Spacer(minLength: 12)
-            if dot {
-                Circle().fill(C.signal).frame(width: 6, height: 6)
-            }
-            Text(value)
-                .font(.custom(GsFontName.jetBrainsMono, size: 11))
-                .foregroundStyle(valueColor ?? C.bone)
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .minimumScaleFactor(0.5)
+                .layoutPriority(1)
+            if !stacked { Spacer(minLength: 12) }
+            HStack(spacing: 12) {
+                if dot {
+                    Circle().fill(C.signal).frame(width: 6, height: 6)
+                }
+                Text(value)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                    .foregroundStyle(valueColor ?? C.bone)
+                    .lineLimit(stacked ? nil : 1)
+                    .truncationMode(.middle)
+            }
         }
-        .frame(height: 44)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.vertical, stacked ? 8 : 0)
         .accessibilityElement(children: .combine)
     }
 
