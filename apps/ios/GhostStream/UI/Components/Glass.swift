@@ -47,12 +47,13 @@ extension View {
     /// background instead of showing through a see-through glass button.
     func bottomActionFade(_ color: Color) -> some View {
         background {
-            LinearGradient(
-                stops: [.init(color: color.opacity(0), location: 0), .init(color: color, location: 0.5)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .padding(.top, -16)
+            // 24 pt fade above the bar, solid behind the button and below.
+            VStack(spacing: 0) {
+                LinearGradient(colors: [color.opacity(0), color], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 24)
+                color
+            }
+            .padding(.top, -24)
             .ignoresSafeArea()
         }
     }
