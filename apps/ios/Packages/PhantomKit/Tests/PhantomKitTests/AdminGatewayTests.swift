@@ -15,6 +15,14 @@ final class AdminGatewayTests: XCTestCase {
         XCTAssertEqual(AdminGateway.host(forTunAddr: "bad-profile"), AdminGateway.fallbackHost)
     }
 
+    /// The server wraps the link in JSON; QR / Share / Copy need the bare `ghs://`.
+    func testConnStringIsUnwrappedFromServerJson() {
+        let link = "ghs://Y2VydA@vpn.example:443?sni=vpn.example&tun=10.7.0.5%2F24&v=1"
+        XCTAssertEqual(AdminHttpClient.connString(fromBody: Data(#"{"conn_string":"\#(link)"}"#.utf8)), link)
+        XCTAssertEqual(AdminHttpClient.connString(fromBody: Data("\(link)\n".utf8)), link)
+        XCTAssertNil(AdminHttpClient.connString(fromBody: Data()))
+    }
+
     /// `/api/me` is the only subscription source; an old server without
     /// `enabled` must not wipe the cached subscription.
     func testSelfInfoAppliesSubscriptionOnlyWhenServerSendsIt() throws {

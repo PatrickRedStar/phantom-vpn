@@ -359,14 +359,25 @@ public final class AdminHttpClient {
         try await requestVoid("POST", "/api/clients/\(escape(name))/disable")
     }
 
-    /// `GET /api/clients/:name/conn_string` — returns the raw `ghs://…`
+    /// `GET /api/clients/:name/conn_string` — returns the `ghs://…`
     /// connection string for `name`.
     public func getConnString(name: String) async throws -> String {
         let data = try await requestRaw("GET", "/api/clients/\(escape(name))/conn_string")
-        guard let str = String(data: data, encoding: .utf8) else {
+        guard let str = Self.connString(fromBody: data) else {
             throw AdminHttpError.invalidResponse
         }
-        return str.trimmingCharacters(in: .whitespacesAndNewlines)
+        return str
+    }
+
+    /// The server answers `{"conn_string":"ghs://…"}`; plain text is accepted
+    /// too, as in the Linux client (`admin_api.rs`).
+    nonisolated static func connString(fromBody data: Data) -> String? {
+        struct Body: Decodable { let conn_string: String }
+        if let body = try? JSONDecoder().decode(Body.self, from: data) {
+            return body.conn_string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text?.isEmpty == false ? text : nil
     }
 
     /// `GET /api/clients/:name/stats` — historical traffic counters.
