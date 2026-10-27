@@ -46,6 +46,7 @@ final class DashboardViewModel {
     private let tunnel = VpnTunnelController()
     private let log = Logger(subsystem: "com.ghoststream.client", category: "DashboardVM")
     private let maxSamples = 3600
+    @ObservationIgnored private var startTask: Task<Void, Never>?
 
     // MARK: - Derived samples for the chart
 
@@ -95,13 +96,15 @@ final class DashboardViewModel {
         }
         preflightWarning = nil
         VpnStateManager.shared.update(.connecting)
-        Task {
+        startTask = Task {
             do {
                 var p = profile
                 p.certPem = certPem
                 p.keyPem = keyPem
                 try await tunnel.installAndStart(profile: p, preferences: preferences)
             } catch {
+                // «Остановить попытку» cancelled the start; stop() owns the state.
+                guard !Task.isCancelled else { return }
                 log.error("start failed: \(error.localizedDescription, privacy: .public)")
                 VpnStateManager.shared.update(.error(ConnectErrorHumanizer.humanize(
                     error.localizedDescription,
@@ -112,6 +115,8 @@ final class DashboardViewModel {
     }
 
     func stop() {
+        startTask?.cancel()
+        startTask = nil
         VpnStateManager.shared.update(.disconnecting)
         Task { @MainActor in
             await tunnel.stopAndWait()
