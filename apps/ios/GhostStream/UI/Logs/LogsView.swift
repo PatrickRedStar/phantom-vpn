@@ -16,7 +16,7 @@ import UIKit
 struct LogsView: View {
 
     @Environment(\.gsColors) private var C
-    @State private var vm = LogsViewModel()
+    @Bindable private var vm = LogsViewModel.shared
     @State private var shareItem: ShareItem?
     @State private var showClearConfirmation = false
     @State private var userPinnedScroll = false
@@ -88,8 +88,6 @@ struct LogsView: View {
         } message: {
             Text(L("native.logs.clear.confirm.message"))
         }
-        .onAppear { vm.startPolling() }
-        .onDisappear { vm.stopPolling() }
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
@@ -265,13 +263,7 @@ private struct ActivityView: UIViewControllerRepresentable {
 
 // MARK: - Preview
 
-#Preview("Logs — Populated") {
-    let vm = LogsViewModel()
-    // Seed synthetic entries for preview (no Rust bridge calls in canvas).
-    // The real VM will keep polling; the preview is frozen.
-    return NavigationStack { LogsView() }
+#Preview("Logs") {
+    NavigationStack { LogsView() }
         .gsTheme(override: .dark)
-        .onAppear {
-            _ = vm // silence unused
-        }
 }

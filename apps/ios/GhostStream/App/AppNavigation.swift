@@ -103,6 +103,9 @@ struct AppNavigation: View {
         .task {
             await reconcileRoutePolicyOnLaunch()
         }
+        .task {
+            await LogsViewModel.shared.collect()
+        }
         .onChange(of: scenePhase) { _, phase in
             // The tunnel may have died while the app slept.
             if phase == .active {
