@@ -1,6 +1,7 @@
-// Home-screen widget 2×2: brand, status dot, state headline, "k/N · timer"
+// Home-screen widget 2×2: brand, status dot, state headline, "timer · route"
 // and a Connect / Disconnect button. The timeline is a single entry; the app
-// and the tunnel extension reload it when the VPN state changes.
+// and the tunnel extension reload it when the VPN state changes — so nothing
+// here may change between reloads (no k/N streams, no rates).
 
 import AppIntents
 import SwiftUI
@@ -53,6 +54,8 @@ struct StatusWidgetView: View {
                     .fill(GS.headlineColor(state.kind))
                     .frame(width: 8, height: 8)
                     .shadow(color: live ? GS.headlineColor(state.kind) : .clear, radius: 4)
+                    .widgetAccentable()
+                    .accessibilityHidden(true) // the headline says the same
             }
 
             Spacer(minLength: 4)
@@ -63,10 +66,13 @@ struct StatusWidgetView: View {
                 .foregroundColor(GS.headlineColor(state.kind))
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
+                .widgetAccentable()
+                .accessibilityLabel(GS.a11yState(state.kind))
 
             Group {
                 if live, let since = state.since {
-                    Text(verbatim: "\(state.streamsUp)/\(state.streamsTotal) · ") + Text(since, style: .timer)
+                    // Timer first: a long relay host is cut at the tail, not it.
+                    Text(since, style: .timer) + Text(verbatim: " · ") + GS.route(state.relayHost)
                 } else {
                     Text(state.profileName ?? " ")
                 }

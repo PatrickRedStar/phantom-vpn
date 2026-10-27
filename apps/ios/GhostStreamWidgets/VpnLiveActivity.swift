@@ -17,12 +17,14 @@ struct VpnLiveActivity: Widget {
                 .activitySystemActionForegroundColor(GS.bone)
         } dynamicIsland: { context in
             let tint = context.state.reconnecting ? GS.warn : GS.signal
+            let a11y = GS.a11yState(context.state.reconnecting ? .reconnecting : .connected)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Image(systemName: "shield")
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundColor(tint)
                         .padding(.leading, 4)
+                        .accessibilityLabel(a11y)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     // The inset keeps the digits off the island's corner,
@@ -40,6 +42,7 @@ struct VpnLiveActivity: Widget {
             } compactLeading: {
                 Image(systemName: "shield")
                     .foregroundColor(tint)
+                    .accessibilityLabel(a11y)
             } compactTrailing: {
                 // Uncapped, the timer takes all the width it is offered and
                 // the island grows to full width: cap at "HH:MM:SS"
@@ -52,6 +55,7 @@ struct VpnLiveActivity: Widget {
             } minimal: {
                 Image(systemName: "shield.fill")
                     .foregroundColor(tint)
+                    .accessibilityLabel(a11y)
             }
             .keylineTint(tint)
         }
@@ -121,10 +125,5 @@ private struct LockScreenView: View {
         .padding(.vertical, 16)
     }
 
-    private var route: Text {
-        if let host = context.attributes.relayHost {
-            return Text("activity.route.relay \(host)", tableName: "Widgets")
-        }
-        return Text("activity.route.direct", tableName: "Widgets")
-    }
+    private var route: Text { GS.route(context.attributes.relayHost) }
 }

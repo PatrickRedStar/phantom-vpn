@@ -13,10 +13,12 @@ struct SurfaceState {
     }
 
     var kind: Kind = .disconnected
+    /// Session start: `session_started_at` when the tunnel writes it, else
+    /// the payload's `since`.
     var since: Date?
-    var streamsUp = 0
-    var streamsTotal = 0
     var profileName: String?
+    /// Relay host of the active profile, nil = direct.
+    var relayHost: String?
 
     var isOn: Bool { kind == .connected || kind == .reconnecting || kind == .connecting }
 
@@ -32,24 +34,38 @@ struct SurfaceState {
     static func decode(defaults: UserDefaults, snapshot: Data?) -> SurfaceState {
         var state = SurfaceState()
 
-        struct Payload: Decodable { var kind: Kind; var since: Double? }
+        struct Payload: Decodable { var kind: Kind; var since: Double?; var session_started_at: Double? }
+        struct Frame: Decodable { var session_started_at: Double? }
         if let data = defaults.data(forKey: "vpn.state.v1"),
            let payload = try? JSONDecoder().decode(Payload.self, from: data) {
             state.kind = payload.kind
-            state.since = payload.since.map(Date.init(timeIntervalSince1970:))
+            let frameStart = snapshot.flatMap { try? JSONDecoder().decode(Frame.self, from: $0) }?.session_started_at
+            state.since = (payload.session_started_at ?? frameStart ?? payload.since)
+                .map(Date.init(timeIntervalSince1970:))
         }
 
-        struct Frame: Decodable { var streams_up: Int; var n_streams: Int }
-        if let snapshot, let frame = try? JSONDecoder().decode(Frame.self, from: snapshot) {
-            state.streamsUp = frame.streams_up
-            state.streamsTotal = frame.n_streams
+        struct Profile: Decodable {
+            var id: String
+            var name: String
+            var serverAddr: String?
+            var relayEnabled: Bool?
+            var relayAddr: String?
         }
-
-        struct Profile: Decodable { var id: String; var name: String }
         if let data = defaults.data(forKey: "profiles.json"),
            let profiles = try? JSONDecoder().decode([Profile].self, from: data) {
             let activeId = defaults.string(forKey: "active_id")
-            state.profileName = (profiles.first { $0.id == activeId } ?? profiles.first)?.name
+            let active = profiles.first { $0.id == activeId } ?? profiles.first
+            state.profileName = active?.name
+            // Same rule as VpnProfile.relayActive; the port is dropped.
+            if let active, active.relayEnabled == true,
+               let relay = active.relayAddr?.trimmingCharacters(in: .whitespaces),
+               !relay.isEmpty, relay != active.serverAddr {
+                if let colon = relay.lastIndex(of: ":"), UInt16(relay[relay.index(after: colon)...]) != nil {
+                    state.relayHost = String(relay[..<colon])
+                } else {
+                    state.relayHost = relay
+                }
+            }
         }
         return state
     }
