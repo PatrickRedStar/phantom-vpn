@@ -100,6 +100,9 @@ public final class VpnTunnelController: ObservableObject {
         lastError = nil
         if manager == nil { try await loadFromPreferences() }
         guard let manager else { throw VpnTunnelError.noManager }
+        // Every app-initiated start is a manual Connect: it lifts the
+        // extension's fatal-stop guard.
+        UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: SharedKeys.fatalStop)
 
         var providerProfile = profile
         let effectiveRoutingMode = preferences.effectiveRoutingMode(
@@ -164,6 +167,7 @@ public final class VpnTunnelController: ObservableObject {
         manager.protocolConfiguration = proto
         manager.localizedDescription = profile.name
         manager.isEnabled = true
+        Self.applyOnDemand(preferences.onDemand, to: manager)
 
         do {
             try await manager.saveToPreferences()
@@ -391,10 +395,42 @@ public final class VpnTunnelController: ObservableObject {
         }
     }
 
-    /// Stops the tunnel, if any. No-op when no manager is loaded.
+    /// «Автоподключение» = On-Demand: Connect on any interface. Turning it
+    /// on takes effect right away only while the tunnel is up — on an idle
+    /// configuration iOS would start the VPN by itself; otherwise it is
+    /// applied at the next Connect. Turning it off applies immediately.
+    public func setOnDemand(_ enabled: Bool) async {
+        do {
+            try await loadFromPreferences()
+            guard let manager, manager.protocolConfiguration != nil else { return }
+            let status = manager.connection.status
+            let up = status == .connected || status == .connecting || status == .reasserting
+            guard !enabled || up else { return }
+            Self.applyOnDemand(enabled, to: manager)
+            try await manager.saveToPreferences()
+        } catch {
+            log.error("on-demand update failed: \(error.localizedDescription, privacy: .public)")
+            lastError = error.localizedDescription
+        }
+    }
+
+    private static func applyOnDemand(_ enabled: Bool, to manager: NETunnelProviderManager) {
+        let rule = NEOnDemandRuleConnect()
+        rule.interfaceTypeMatch = .any
+        manager.onDemandRules = [rule]
+        manager.isOnDemandEnabled = enabled
+    }
+
+    /// Stops the tunnel, if any. No-op when no manager is loaded. On-Demand
+    /// goes off first, or iOS would bring the tunnel straight back
+    /// (ADR 0018: a user Disconnect is final until the next Connect).
     public func stopAndWait() async {
         do {
             try await loadFromPreferences()
+            if let manager, manager.isOnDemandEnabled {
+                manager.isOnDemandEnabled = false
+                try await manager.saveToPreferences()
+            }
             manager?.connection.stopVPNTunnel()
             lastError = nil
         } catch {

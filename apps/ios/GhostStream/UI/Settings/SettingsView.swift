@@ -46,6 +46,8 @@ public struct SettingsView: View {
                 SectionLabel(text: "\(L("settings.profiles")) · \(model.profiles.count)")
                 profilesCard
                 serverSection
+                SectionLabel(text: L("settings.section.connection"))
+                connectionCard
                 SectionLabel(text: L("settings.section.routing"))
                 routingCard
                 SectionLabel(text: L("settings.section.app"))
@@ -306,6 +308,18 @@ public struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Connection
+
+    private var connectionCard: some View {
+        NativeSectionCard {
+            NativeToggleRow(
+                title: L("settings.row.on.demand"),
+                subtitle: L("settings.on.demand.subtitle"),
+                isOn: Binding(get: { model.onDemand }, set: { model.setOnDemand($0) })
+            )
         }
     }
 

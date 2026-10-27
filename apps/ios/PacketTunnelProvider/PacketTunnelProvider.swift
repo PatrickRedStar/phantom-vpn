@@ -127,6 +127,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - Start implementation
 
     private func startTunnelAsync(completionHandler: @escaping (Error?) -> Void) async throws {
+        // On-Demand must not restart a profile that stopped on a fatal
+        // reason (revoked / expired access, clock): no handshake, same
+        // reason back, until the user connects from the app (ADR 0018).
+        if let profileId = (protocolConfiguration as? NETunnelProviderProtocol)?
+            .providerConfiguration?["profileId"] as? String,
+           let marker = UserDefaults(suiteName: SharedKeys.appGroup)?
+            .dictionary(forKey: SharedKeys.fatalStop) as? [String: String],
+           marker["profileId"] == profileId {
+            throw ProviderError.fatalStop(marker["reason"] ?? "VPN error")
+        }
+
         withStateLock {
             statusBroadcastGate.reset()
             lastStatusFrame = .disconnected
@@ -157,6 +168,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return !didCallCompletion
             } ?? false
         }
+
+        let profileId = profile.id
 
         // Start the Rust tunnel via PhantomKit actor bridge.
         do {
@@ -200,6 +213,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                             userInfo: [NSLocalizedDescriptionKey: frame.lastError ?? "VPN error"]
                         )
                         self.log.error("runtime error: \(err.localizedDescription, privacy: .public)")
+                        UserDefaults(suiteName: SharedKeys.appGroup)?.set(
+                            ["profileId": profileId, "reason": err.localizedDescription],
+                            forKey: SharedKeys.fatalStop
+                        )
                         if claimCompletion() {
                             completionHandler(err)
                             Task { await PhantomBridge.shared.stop() }
@@ -815,6 +832,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         case profileNotFound(String)
         case decodeFailed(String)
         case badTunAddr(String)
+        case fatalStop(String)
 
         var errorDescription: String? {
             switch self {
@@ -823,6 +841,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             case .profileNotFound(let id): return "Profile not found: \(id)"
             case .decodeFailed(let m):     return "providerConfiguration decode failed: \(m)"
             case .badTunAddr(let s):       return "Invalid tunAddr CIDR: \(s)"
+            case .fatalStop(let reason):   return reason
             }
         }
     }

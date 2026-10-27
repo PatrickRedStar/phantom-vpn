@@ -48,6 +48,7 @@ public final class PreferencesStore {
         static let streams           = "streams"
         static let verboseLog        = "verbose_log"
         static let killSwitch        = "kill_switch"
+        static let onDemand          = "on_demand"
     }
 
     /// Stored property so `@Observable` can track changes and trigger SwiftUI
@@ -84,6 +85,12 @@ public final class PreferencesStore {
 
     public var autoReconnect: Bool = true {
         didSet { defaults.set(autoReconnect, forKey: Key.autoReconnect) }
+    }
+
+    /// iOS «Автоподключение»: `isOnDemandEnabled` с правилом Connect на
+    /// любой сети. Выключен по умолчанию; macOS не читает.
+    public var onDemand: Bool = false {
+        didSet { defaults.set(onDemand, forKey: Key.onDemand) }
     }
 
     public var startInMenuBar: Bool = false {
@@ -172,6 +179,7 @@ public final class PreferencesStore {
         self.ipv6Killswitch = defaults.object(forKey: Key.ipv6Killswitch) as? Bool ?? true
         self.killSwitch = defaults.object(forKey: Key.killSwitch) as? Bool ?? false
         self.autoReconnect = defaults.object(forKey: Key.autoReconnect) as? Bool ?? true
+        self.onDemand = defaults.object(forKey: Key.onDemand) as? Bool ?? false
         self.startInMenuBar = defaults.object(forKey: Key.startInMenuBar) as? Bool ?? false
         self.notifyStateChanges = defaults.object(forKey: Key.notifyStateChanges) as? Bool ?? true
         self.reduceMotion = defaults.object(forKey: Key.reduceMotion) as? Bool ?? false

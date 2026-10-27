@@ -33,6 +33,10 @@ public enum SharedKeys {
     public static let appGroup = "group.com.ghoststream.client"
     /// Latest extension `phys_footprint`, MiB (iOS jetsam limit is ~50).
     public static let tunnelMemoryMiB = "tunnel.memory.mib"
+    /// `["profileId", "reason"]` of the last fatal stop (ADR 0018). The
+    /// extension refuses to start that profile — so On-Demand can't loop on
+    /// a revoked / expired access — until the app connects manually.
+    public static let fatalStop = "tunnel.fatal.stop"
 }
 
 // MARK: - DarwinNotifications

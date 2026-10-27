@@ -86,6 +86,7 @@ public final class SettingsViewModel {
     public var customDirectDomains: [String] { preferencesStore.customDirectDomains }
     var theme: ThemeOverride { ThemeOverride.current }
     public var languageOverride: String? { preferencesStore.languageOverride }
+    public var onDemand: Bool { preferencesStore.onDemand }
 
     // MARK: - Profile mutations
 
@@ -281,6 +282,12 @@ public final class SettingsViewModel {
     /// Sets the theme override (`.system` / `.dark` / `.light`).
     func setTheme(_ override: ThemeOverride) {
         preferencesStore.theme = override.rawValue
+    }
+
+    /// «Автоподключение» (iOS On-Demand) — see `VpnTunnelController.setOnDemand`.
+    public func setOnDemand(_ on: Bool) {
+        preferencesStore.onDemand = on
+        Task { await tunnelController.setOnDemand(on) }
     }
 
     /// Overrides app language. `nil` → follow system.

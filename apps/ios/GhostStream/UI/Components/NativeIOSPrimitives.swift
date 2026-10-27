@@ -29,6 +29,31 @@ struct SectionLabel: View {
     }
 }
 
+/// Native toggle with a two-line label (title + hint).
+struct NativeToggleRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var isOn: Bool
+
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 13))
+                    .foregroundStyle(C.bone)
+                Text(subtitle)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 10))
+                    .foregroundStyle(C.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .tint(C.signal)
+        .padding(.vertical, 12)
+    }
+}
+
 struct NativeRow<Trailing: View>: View {
     let title: String
     let subtitle: String?

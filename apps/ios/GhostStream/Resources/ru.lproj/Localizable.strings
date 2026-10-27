@@ -334,3 +334,6 @@
 "settings.import.clipboard.empty" = "В буфере обмена нет ссылки ghs://";
 "settings.profile.days.format" = "%lld д";
 "settings.split.value.format" = "%@ напрямую";
+"settings.section.connection" = "Подключение";
+"settings.row.on.demand" = "Автоподключение";
+"settings.on.demand.subtitle" = "iOS сама поднимет VPN при появлении сети. «Отключить» выключает до следующего подключения";
