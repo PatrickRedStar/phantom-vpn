@@ -225,9 +225,8 @@ Departure Mono, JetBrains Mono вшиты в расширение (`UIAppFonts`)
   скоростей показывается таймер. Если туннель упал при спящем приложении,
   activity висит до следующего открытия приложения или кнопки «Отключить».
   Пуши ActivityKit (APNs) не используем — нет сервера пушей.
-- **Подпись:** для TestFlight/устройства нужен App ID
-  `com.ghoststream.client.widgets` с App Groups (`group.com.ghoststream.client`)
-  и профиль для него.
+- **Подпись:** App ID `com.ghoststream.client.widgets` с App Groups
+  зарегистрирован 2026-10-27; профили Xcode создаёт сам при `ship-ios.sh`.
 
 ## IPv6 killswitch
 
@@ -326,17 +325,20 @@ JetBrains Mono) остаётся; стекло — только на слое у
 
 ## Релизный процесс
 
-iOS релизится в TestFlight / App Store (отдельно от Android-тегов, на общем `v*`-теге):
+Распространение — **только внутренний TestFlight** (решение владельца 2026-10-27):
+аккаунт разработчика на физлицо, а guideline 5.4 пускает VPN в App Store /
+Unlisted / внешний TestFlight только от организаций. Внутренние тестеры —
+пользователи App Store Connect (до 100), без App Review; сборка живёт 90 дней.
+Приложение в App Store Connect — «GhostStream Tunnel» (`com.ghoststream.client`).
 
 ```bash
-# 1. Пересобрать Rust xcframework (если правил client-apple/client-core-runtime)
-cd crates/client-apple && ./build-xcframework.sh
-
-# 2. Открыть проект
-cd apps/ios
-xcodegen generate      # если project.yml менялся
-open GhostStream.xcodeproj
+# поднять CURRENT_PROJECT_VERSION в apps/ios/project.yml (все таргеты), затем:
+apps/ios/scripts/ship-ios.sh     # xcframework → archive → upload
 ```
+
+Подпись — через аккаунт, залогиненный в Xcode: с ключом App Store Connect API
+Xcode не может привязать App Group к новому App ID. Homebrew `rsync` в PATH
+ломает упаковку IPA — скрипт запускает экспорт с системным PATH.
 
 CI: `.github/workflows/ios-ci.yml` — xcframework, `swift test` PhantomKit,
 симуляторная сборка + GhostStreamTests (без подписи). Версия — в
@@ -344,7 +346,6 @@ CI: `.github/workflows/ios-ci.yml` — xcframework, `swift test` PhantomKit,
 кладётся в `GitCommitSHA` Info.plist пост-сборочным шагом. Манифесты
 приватности — `PrivacyInfo.xcprivacy` у приложения и extension.
 
-Archive + upload — через Xcode Organizer (manual code signing, App Store distribution).
 Отдельная таблица `versionCode` не ведётся — App Store требует только `CFBundleVersion`
 инкрементальным.
 
