@@ -302,22 +302,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         // iOS rejects NEIPv6Settings without at least one tunnel address.
         // Route IPv6 into the tunnel with a ULA address so unsupported IPv6
-        // traffic is captured and dropped instead of leaking outside the VPN.
+        // traffic is captured and dropped instead of leaking outside the VPN —
+        // in split modes too: apps fall back to IPv4, which follows the split
+        // rules. Only explicit direct IPv6 rules bypass the tunnel.
         if settings.ipv6Killswitch {
             let ipv6 = NEIPv6Settings(
                 addresses: ["fd00:6768:6f73:7473::1"],
                 networkPrefixLengths: [64]
             )
-            let directIpv6Cidrs = directIpv6RoutesForRouteComputation(settings: settings)
-            if shouldTunnelIPv6Traffic(settings: settings, directIpv6Cidrs: directIpv6Cidrs) {
-                ipv6.includedRoutes = [NEIPv6Route.default()]
-                let excludedRoutes = directIpv6Cidrs.compactMap(route(forIPv6CIDR:))
-                if !excludedRoutes.isEmpty {
-                    ipv6.excludedRoutes = excludedRoutes
-                }
-            } else {
-                ipv6.excludedRoutes = [NEIPv6Route.default()]
-                log.warning("split routing leaves IPv6 outside tunnel because no routeable IPv6 direct rules are available")
+            ipv6.includedRoutes = [NEIPv6Route.default()]
+            let excludedRoutes = directIpv6RoutesForRouteComputation(settings: settings)
+                .compactMap(route(forIPv6CIDR:))
+            if !excludedRoutes.isEmpty {
+                ipv6.excludedRoutes = excludedRoutes
             }
             networkSettings.ipv6Settings = ipv6
         }
@@ -565,15 +562,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             || !serverDirectCidrs.isEmpty
             || (settings.routePolicy == nil && profile.splitRouting == true)
         let adminGatewayHost = AdminGateway.host(forTunAddr: profile.tunAddr)
-        guard shouldUseSplitRoutes else {
+        let applyFullTunnel = {
             // Full tunnel leaves LAN, link-local and multicast reachable
             // (ADR 0019); our own subnet (admin API) stays in the tunnel —
             // more specific than the excluded 10/8.
-            ipv4.includedRoutes = [NEIPv4Route.default()] + [route(forCIDR: profile.tunAddr)].compactMap { $0 }
-            ipv4.excludedRoutes = physicalServerExcludedRoutes(
+            ipv4.includedRoutes = [NEIPv4Route.default()] + [self.route(forCIDR: profile.tunAddr)].compactMap { $0 }
+            ipv4.excludedRoutes = self.physicalServerExcludedRoutes(
                 settings: settings,
                 preservingHost: adminGatewayHost
-            ) + Self.specialRanges.compactMap(route(forCIDR:))
+            ) + Self.specialRanges.compactMap(self.route(forCIDR:))
+        }
+        guard shouldUseSplitRoutes else {
+            applyFullTunnel()
             return
         }
 
@@ -590,17 +590,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     NEIPv4Route(destinationAddress: route.addr, subnetMask: $0)
                 }
             }
+        // The core returns nothing when the list is over its 256 KiB input
+        // cap or unparsable. Split routes of just the admin /32 would send
+        // everything else outside the tunnel — take the full tunnel instead.
+        guard !routes.isEmpty else {
+            log.error(
+                "split routing: no routes computed for \(directCidrs.count, privacy: .public) direct CIDRs; using full tunnel"
+            )
+            applyFullTunnel()
+            return
+        }
         if let adminRoute = route(forIPv4Host: adminGatewayHost),
            !routes.contains(where: { $0.destinationAddress == adminRoute.destinationAddress }) {
             routes.append(adminRoute)
         }
 
-        if routes.isEmpty {
-            log.error("split routing route computation returned no routes; leaving IPv4 includedRoutes empty")
-            ipv4.includedRoutes = []
-        } else {
-            ipv4.includedRoutes = routes
-        }
+        ipv4.includedRoutes = routes
         ipv4.excludedRoutes = physicalServerExcludedRoutes(
             settings: settings,
             preservingHost: adminGatewayHost
@@ -639,11 +644,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return routeable
     }
 
-    private func shouldTunnelIPv6Traffic(settings: TunnelSettings, directIpv6Cidrs: [String]) -> Bool {
-        if settings.routingMode == .global { return true }
-        return !directIpv6Cidrs.isEmpty
-    }
-
     private func physicalServerExcludedRoutes(
         settings: TunnelSettings,
         preservingHost host: String? = nil
@@ -658,9 +658,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Same ranges as Android `SPECIAL_RANGES` / core `special_ranges()`.
+    /// Same ranges as Android `SPECIAL_RANGES` / core `special_ranges()`,
+    /// minus 127/8: NE rejects it («Destination address is loopback») and
+    /// loopback never enters the tunnel anyway.
     private static let specialRanges = [
-        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16",
         "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4",
     ]
 
