@@ -106,7 +106,8 @@ public struct SettingsView: View {
             )
             .ignoresSafeArea()
         }
-        .sheet(isPresented: $showDNSDialog) {
+        // Swipe-down skips Cancel: drafts go back to what is saved.
+        .sheet(isPresented: $showDNSDialog, onDismiss: { dnsDraft = model.dnsServers }) {
             DNSDialog(
                 draft: $dnsDraft,
                 onSave: {
@@ -114,13 +115,12 @@ public struct SettingsView: View {
                     showDNSDialog = false
                 },
                 onDismiss: {
-                    dnsDraft = model.dnsServers
                     showDNSDialog = false
                 }
             )
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showSplitDialog) {
+        .sheet(isPresented: $showSplitDialog, onDismiss: hydrateRouteDrafts) {
             SplitTunnelDialog(
                 splitOn: $splitOn,
                 selectedCountries: $directCountrySelections,
@@ -147,7 +147,6 @@ public struct SettingsView: View {
                     }
                 },
                 onDismiss: {
-                    hydrateRouteDrafts()
                     showSplitDialog = false
                 }
             )
@@ -569,6 +568,12 @@ private struct DNSDialog: View {
                             .lineLimit(2...5)
                             .padding(12)
                             .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        if !invalidEntries.isEmpty {
+                            Text(String(format: L("settings.dns.invalid.format"), invalidEntries.joined(separator: ", ")))
+                                .font(.footnote)
+                                .foregroundColor(C.danger)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .padding(18)
@@ -582,16 +587,18 @@ private struct DNSDialog: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L("general.save")) {
-                        draft = customText
-                            .split { $0 == "," || $0 == " " || $0 == "\n" }
-                            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                            .filter { !$0.isEmpty }
+                        draft = SettingsViewModel.dnsEntries(customText)
                         onSave()
                     }
+                    .disabled(!invalidEntries.isEmpty)
                 }
             }
         }
         .onAppear { customText = draft.joined(separator: ", ") }
+    }
+
+    private var invalidEntries: [String] {
+        SettingsViewModel.dnsEntries(customText).filter { !SettingsViewModel.isValidDnsServer($0) }
     }
 
     private func presetRow(name: String, servers: [String]) -> some View {

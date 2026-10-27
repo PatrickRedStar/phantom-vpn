@@ -101,6 +101,7 @@
 "settings.delete.profile.title" = "Удалить профиль?";
 "settings.delete.profile.message" = "Профиль будет удалён с устройства.";
 "settings.dns.custom.hint" = "Свои DNS (через запятую)";
+"settings.dns.invalid.format" = "Не IP-адрес: %@";
 "settings.split.title" = "Раздельный туннель";
 "settings.split.mode.all" = "Всё через VPN";
 "settings.split.mode.bypass" = "Обход списков";

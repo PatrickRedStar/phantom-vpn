@@ -190,12 +190,28 @@ public final class SettingsViewModel {
 
     // MARK: - Preferences
 
-    /// Updates the global DNS server list (nil / empty → system default).
+    /// Updates the global DNS server list (nil / empty → the default).
     public func setDnsServers(_ servers: [String]) {
         let cleaned = servers
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+            .filter(Self.isValidDnsServer)
         preferencesStore.dnsServers = cleaned.isEmpty ? nil : cleaned
+    }
+
+    /// Entries of the custom DNS field (commas, spaces, new lines).
+    public static func dnsEntries(_ text: String) -> [String] {
+        text.split { $0 == "," || $0.isWhitespace }.map(String.init)
+    }
+
+    /// IP literals only: NEDNSSettings takes no host names, and a typo would
+    /// leave the tunnel without DNS. IPv4 needs all four parts and no
+    /// leading zeros (inet_aton reads "1.1" and octal "010").
+    public static func isValidDnsServer(_ s: String) -> Bool {
+        if s.contains(":") { return !s.contains("%") && IPv6Address(s) != nil }
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4
+            && parts.allSatisfy { $0 == "0" || !$0.hasPrefix("0") }
+            && IPv4Address(s) != nil
     }
 
     /// Toggles global split-routing.

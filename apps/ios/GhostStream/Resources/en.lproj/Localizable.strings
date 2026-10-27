@@ -101,6 +101,7 @@
 "settings.delete.profile.title" = "Delete profile?";
 "settings.delete.profile.message" = "This profile will be removed from the device.";
 "settings.dns.custom.hint" = "Custom DNS (comma-separated)";
+"settings.dns.invalid.format" = "Not an IP address: %@";
 "settings.split.title" = "Split-tunnel";
 "settings.split.mode.all" = "All via VPN";
 "settings.split.mode.bypass" = "Bypass lists";
