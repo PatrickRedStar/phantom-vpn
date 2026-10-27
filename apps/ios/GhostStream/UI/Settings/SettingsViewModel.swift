@@ -138,8 +138,19 @@ public final class SettingsViewModel {
         try importFromString(payload)
     }
 
-    /// Deletes a profile by id.
+    /// Deletes a profile by id. The tunnel running on it is stopped first —
+    /// its keys go with the profile.
     public func deleteProfile(id: String) {
+        if id == profilesStore.activeId {
+            switch VpnStateManager.shared.state {
+            case .connecting, .connected, .reconnecting:
+                VpnStateManager.shared.update(.disconnecting)
+                let tunnel = tunnelController
+                Task { await tunnel.stopAndWait() }
+            case .disconnected, .disconnecting, .error:
+                break
+            }
+        }
         profilesStore.remove(id: id)
         pingResults.removeValue(forKey: id)
         pinging.remove(id)
