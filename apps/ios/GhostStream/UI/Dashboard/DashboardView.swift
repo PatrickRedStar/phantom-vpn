@@ -50,6 +50,13 @@ struct DashboardView: View {
         .scrollIndicators(.hidden)
         .background(C.bg.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+        // No nav bar here: keep scrolled content out from under the status bar.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Color.clear
+                .frame(height: 0)
+                .background(C.bg.ignoresSafeArea(edges: .top))
+                .allowsHitTesting(false)
+        }
         .safeAreaInset(edge: .bottom) {
             bottomActionBar
         }
@@ -123,6 +130,7 @@ struct DashboardView: View {
                 .gsFont(.stateHeadline)
                 .lineLimit(2)
                 .minimumScaleFactor(0.6)
+                .headlineLineHeight()
             if case .error(let reason) = vm.state {
                 Text(reason)
                     .font(.custom(GsFontName.jetBrainsMono, size: 12))
@@ -525,6 +533,19 @@ struct DashboardView: View {
 
     private func L(_ key: String) -> String {
         AppStrings.localized(key)
+    }
+}
+
+private extension View {
+    /// Two-line headline on 56 pt lines, as in the mockup. Before iOS 26
+    /// SwiftUI has no exact line height — the font's own stays.
+    @ViewBuilder
+    func headlineLineHeight() -> some View {
+        if #available(iOS 26, *) {
+            lineHeight(.exact(points: 56))
+        } else {
+            self
+        }
     }
 }
 
