@@ -237,7 +237,6 @@
 "native.profile.subscription" = "Subscription";
 "native.profile.set.active" = "Set active";
 "native.profile.edit.endpoint" = "Edit endpoint";
-"native.profile.share.device" = "Share to device";
 "profile.role.admin" = "Admin";
 "profile.role.user" = "User";
 "profile.no.server.address" = "No server address";
@@ -248,8 +247,6 @@
 "profile.edit.subtitle" = "Name, server and connection string";
 "profile.delete" = "Delete profile";
 "profile.delete.subtitle" = "Remove local config and keys";
-"profile.share.subtitle" = "Send this profile to another device";
-"profile.share.unavailable" = "No connection string stored for this profile";
 "profile.assigned.address" = "Assigned address";
 "profile.certificate" = "Certificate";
 "profile.admin.fingerprint" = "Admin fingerprint";

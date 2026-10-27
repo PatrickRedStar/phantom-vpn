@@ -106,8 +106,6 @@ struct ProfileDetailView: View {
                 subtitle: L("profile.edit.subtitle"),
                 action: onEdit
             )
-        case .share:
-            shareRow
         case .delete:
             NativeRow(
                 title: L("profile.delete"),
@@ -115,34 +113,6 @@ struct ProfileDetailView: View {
                 role: .destructive,
                 action: onDelete
             )
-        }
-    }
-
-    @ViewBuilder
-    private var shareRow: some View {
-        if let connString = profile.connString, !connString.isEmpty {
-            ShareLink(item: connString) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L("native.profile.share.device"))
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(C.bone)
-                        Text(L("profile.share.subtitle"))
-                            .font(.footnote)
-                            .foregroundStyle(C.textDim)
-                    }
-                    Spacer(minLength: 12)
-                    Image(systemName: "square.and.arrow.up")
-                        .foregroundStyle(C.textFaint)
-                }
-                .contentShape(Rectangle())
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.plain)
-        } else {
-            NativeRow(title: L("native.profile.share.device"), subtitle: L("profile.share.unavailable"), action: nil) {
-                EmptyView()
-            }
         }
     }
 

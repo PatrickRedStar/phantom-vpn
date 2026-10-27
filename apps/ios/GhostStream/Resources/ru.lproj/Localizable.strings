@@ -237,7 +237,6 @@
 "native.profile.subscription" = "Подписка";
 "native.profile.set.active" = "Сделать активным";
 "native.profile.edit.endpoint" = "Редактировать endpoint";
-"native.profile.share.device" = "Передать на устройство";
 "profile.role.admin" = "Админ";
 "profile.role.user" = "Пользователь";
 "profile.no.server.address" = "Адрес сервера не указан";
@@ -248,8 +247,6 @@
 "profile.edit.subtitle" = "Имя, сервер и строка подключения";
 "profile.delete" = "Удалить профиль";
 "profile.delete.subtitle" = "Удалить локальный конфиг и ключи";
-"profile.share.subtitle" = "Отправить профиль на другое устройство";
-"profile.share.unavailable" = "Для этого профиля нет сохранённой строки подключения";
 "profile.assigned.address" = "Выданный адрес";
 "profile.certificate" = "Сертификат";
 "profile.admin.fingerprint" = "Отпечаток admin-сервера";

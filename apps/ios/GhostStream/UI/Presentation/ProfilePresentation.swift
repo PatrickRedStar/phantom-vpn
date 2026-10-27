@@ -8,7 +8,6 @@ enum ProfileActionKind: Hashable {
     case subscription
     case setActive
     case edit
-    case share
     case delete
 }
 
@@ -29,7 +28,6 @@ enum ProfilePresentation {
         }
 
         actions.append(.edit)
-        actions.append(.share)
         actions.append(.delete)
 
         return actions

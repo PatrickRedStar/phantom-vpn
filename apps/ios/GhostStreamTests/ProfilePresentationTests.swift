@@ -16,7 +16,7 @@ final class ProfilePresentationTests: XCTestCase {
         let actions = ProfilePresentation.actions(for: profile, isActive: true)
 
         XCTAssertFalse(actions.contains(.serverControl))
-        XCTAssertEqual(actions, [.identity, .subscription, .edit, .share, .delete])
+        XCTAssertEqual(actions, [.identity, .subscription, .edit, .delete])
     }
 
     func testAdminProfileExposesServerControlFirst() {
