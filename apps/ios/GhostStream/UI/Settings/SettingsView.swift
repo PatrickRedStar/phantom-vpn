@@ -25,6 +25,7 @@ public struct SettingsView: View {
     @State private var adminProfile: VpnProfile? = nil
     @State private var dnsDraft: [String] = []
     @State private var splitOn = false
+    @State private var splitSaveError: String?
     @State private var directCountrySelections: Set<String> = []
     @State private var manualDirectCidrsText = ""
     @State private var customDirectDomainsText = ""
@@ -126,6 +127,7 @@ public struct SettingsView: View {
                 selectedCountries: $directCountrySelections,
                 manualCidrsText: $manualDirectCidrsText,
                 directDomainsText: $customDirectDomainsText,
+                saveError: $splitSaveError,
                 downloadedRules: model.downloadedRoutingRules,
                 downloadingRuleIds: model.downloadingRoutingRuleIds,
                 downloadStatus: model.routingDownloadStatus,
@@ -137,13 +139,14 @@ public struct SettingsView: View {
                 },
                 onSave: {
                     Task {
-                        await model.saveRoutingSettings(
+                        // On failure the sheet stays open with the reason.
+                        splitSaveError = await model.saveRoutingSettings(
                             splitOn: splitOn,
                             selectedCountries: Array(directCountrySelections).sorted(),
                             manualCidrsText: manualDirectCidrsText,
                             directDomainsText: customDirectDomainsText
                         )
-                        showSplitDialog = false
+                        if splitSaveError == nil { showSplitDialog = false }
                     }
                 },
                 onDismiss: {
@@ -626,6 +629,7 @@ private struct SplitTunnelDialog: View {
     @Binding var selectedCountries: Set<String>
     @Binding var manualCidrsText: String
     @Binding var directDomainsText: String
+    @Binding var saveError: String?
     let downloadedRules: [String: RoutingRuleInfo]
     let downloadingRuleIds: Set<String>
     let downloadStatus: String?
@@ -696,6 +700,14 @@ private struct SplitTunnelDialog: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L("general.save"), action: onSave)
                 }
+            }
+            .alert(
+                L("admin.error"),
+                isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })
+            ) {
+                Button(L("general.ok"), role: .cancel) {}
+            } message: {
+                Text(saveError ?? "")
             }
         }
     }

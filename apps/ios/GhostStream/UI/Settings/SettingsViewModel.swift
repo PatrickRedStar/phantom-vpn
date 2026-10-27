@@ -231,12 +231,14 @@ public final class SettingsViewModel {
         preferencesStore.customDirectDomainsText = text
     }
 
+    /// Returns the error text when the tunnel config could not be updated.
+    @discardableResult
     public func saveRoutingSettings(
         splitOn: Bool,
         selectedCountries: [String],
         manualCidrsText: String,
         directDomainsText: String
-    ) async {
+    ) async -> String? {
         routingDownloadStatus = AppStrings.localized("settings.route.saving")
         preferencesStore.splitRouting = splitOn
         preferencesStore.directCountries = selectedCountries
@@ -246,7 +248,7 @@ public final class SettingsViewModel {
         guard let activeProfile else {
             routingDownloadStatus = AppStrings.localized("settings.route.saved")
             refreshDownloadedRoutingRules()
-            return
+            return nil
         }
 
         do {
@@ -257,12 +259,14 @@ public final class SettingsViewModel {
             routingDownloadStatus = String(
                 format: AppStrings.localized("settings.route.applied.format"), ipv4Count, ipv6Count
             )
+            return nil
         } catch {
             refreshDownloadedRoutingRules()
             routingDownloadStatus = String(
                 format: AppStrings.localized("settings.route.failed.format"), error.localizedDescription
             )
             log.error("route policy update failed: \(error.localizedDescription, privacy: .public)")
+            return routingDownloadStatus
         }
     }
 
