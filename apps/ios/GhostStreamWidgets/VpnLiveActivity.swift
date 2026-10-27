@@ -25,13 +25,13 @@ struct VpnLiveActivity: Widget {
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // 66 pt holds "9:59:59" in Departure Mono 14 (62 pt);
-                    // the inset keeps the digits off the island's corner.
+                    // The inset keeps the digits off the island's corner,
+                    // like the shield on the left.
                     SessionTimer(start: context.attributes.sessionStart)
                         .font(GS.mono(14))
                         .foregroundColor(tint)
-                        .frame(width: 66, alignment: .trailing)
                         .padding(.trailing, 4)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     LockScreenView(context: context, showsTimer: false)
@@ -41,9 +41,13 @@ struct VpnLiveActivity: Widget {
                 Image(systemName: "shield")
                     .foregroundColor(tint)
             } compactTrailing: {
+                // Uncapped, the timer takes all the width it is offered and
+                // the island grows to full width: cap at "HH:MM:SS"
+                // (8 × 7 pt), shrink a 100 h+ session to fit.
                 SessionTimer(start: context.attributes.sessionStart)
                     .font(GS.mono(11))
                     .foregroundColor(tint)
+                    .minimumScaleFactor(0.8)
                     .frame(maxWidth: 56)
             } minimal: {
                 Image(systemName: "shield.fill")
@@ -56,13 +60,15 @@ struct VpnLiveActivity: Widget {
 
 /// Dynamic Island timer. Text(timerInterval:) reserves the width of the
 /// longest value in its range: up to distantFuture that is a 14-digit hour
-/// count, wider than the region, and the digits got clipped. The island
-/// shows an activity for at most 8 h, so the range stops at 9:59:59.
+/// count, wider than the region, and the digits got clipped. The range ends
+/// 12 h after render — past the activity's life (8 h + up to 4 h on the Lock
+/// Screen); the session may already be days old when the app starts the
+/// activity — so it reserves "HH:MM:SS", rarely "HHH:MM:SS".
 private struct SessionTimer: View {
     let start: Date
 
     var body: some View {
-        Text(timerInterval: start...start.addingTimeInterval(10 * 3600 - 1), countsDown: false)
+        Text(timerInterval: start...max(start, Date()).addingTimeInterval(12 * 3600), countsDown: false)
             .monospacedDigit()
             .multilineTextAlignment(.trailing)
             .lineLimit(1)
