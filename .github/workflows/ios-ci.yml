@@ -1,0 +1,72 @@
+name: iOS CI
+
+# Сборка iOS-приложения под симулятор + GhostStreamTests и swift test
+# PhantomKit. Подпись не нужна (CODE_SIGNING_ALLOWED=NO); туннель в
+# симуляторе не поднимается — это проверка компиляции и юнит-тестов.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'apps/ios/**'
+      - 'crates/client-apple/**'
+      - 'crates/client-core-runtime/**'
+      - '.github/workflows/ios-ci.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    name: iOS app + PhantomKit
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Проект собирается Xcode 26; на раннере может стоять старее по умолчанию.
+      - name: Select Xcode 26
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [[ -n "$XCODE" ]]; then sudo xcode-select -s "$XCODE"; fi
+          xcodebuild -version
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ios-ci
+
+      - name: Install tools
+        run: |
+          brew install xcodegen
+          if ! command -v cbindgen >/dev/null 2>&1; then
+            cargo install cbindgen --locked
+          fi
+
+      - name: Build PhantomCore XCFramework
+        run: ./crates/client-apple/build-xcframework.sh
+
+      - name: PhantomKit swift test
+        run: cd apps/ios/Packages/PhantomKit && swift test
+
+      - name: Simulator build + GhostStreamTests
+        run: |
+          cd apps/ios
+          xcodegen
+          SIM="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          print(next(d["udid"] for runtime, ds in devices.items() if "iOS" in runtime
+                     for d in ds if d["name"].startswith("iPhone")))')"
+          xcodebuild test \
+            -project GhostStream.xcodeproj \
+            -scheme GhostStream \
+            -sdk iphonesimulator \
+            -destination "id=$SIM" \
+            CODE_SIGNING_ALLOWED=NO
