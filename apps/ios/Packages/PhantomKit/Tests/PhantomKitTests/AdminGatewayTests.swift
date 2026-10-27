@@ -23,6 +23,14 @@ final class AdminGatewayTests: XCTestCase {
         XCTAssertNil(AdminHttpClient.connString(fromBody: Data()))
     }
 
+    /// Server text survives into the message; the known 409 gets a human one.
+    func testBadStatusKeepsServerText() {
+        let other = AdminHttpError.badStatus(500, "boom").errorDescription ?? ""
+        XCTAssertTrue(other.contains("500") && other.contains("boom"), other)
+        let expired = AdminHttpError.badStatus(409, "subscription expired: extend it or make it unlimited first")
+        XCTAssertFalse(expired.errorDescription?.contains("subscription expired:") ?? true)
+    }
+
     /// `/api/me` is the only subscription source; an old server without
     /// `enabled` must not wipe the cached subscription.
     func testSelfInfoAppliesSubscriptionOnlyWhenServerSendsIt() throws {

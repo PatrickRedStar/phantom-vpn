@@ -72,7 +72,9 @@ public final class AdminViewModel {
         guard profile.certPem != nil, profile.keyPem != nil else {
             self.client = nil
             self.mtlsUnavailable = true
-            self.error = "Admin-клиент недоступен — отсутствуют сертификаты профиля"
+            self.error = AdminHttpError.english
+                ? "Admin client unavailable — the profile has no certificates"
+                : "Admin-клиент недоступен — отсутствуют сертификаты профиля"
             return
         }
 

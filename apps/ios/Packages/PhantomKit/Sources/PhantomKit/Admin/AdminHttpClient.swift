@@ -153,9 +153,11 @@ public struct ClientLog: Codable {
 
 // MARK: - Errors
 
-/// Errors surfaced by `AdminHttpClient`.
+/// Errors surfaced by `AdminHttpClient`. Descriptions follow the app's
+/// language (RU/EN), they are shown as is.
 public enum AdminHttpError: Error, LocalizedError {
-    case badStatus(Int)
+    /// HTTP status and the server's text, if it sent any.
+    case badStatus(Int, String?)
     case transport(Error)
     case decoding(Error)
     case identityCreation(String)
@@ -163,14 +165,41 @@ public enum AdminHttpError: Error, LocalizedError {
     case invalidResponse
 
     public var errorDescription: String? {
+        func t(_ ru: String, _ en: String) -> String { Self.english ? en : ru }
         switch self {
-        case .badStatus(let code):           return "HTTP \(code)"
-        case .transport(let e):              return "Transport error: \(e.localizedDescription)"
-        case .decoding(let e):               return "Decode error: \(e.localizedDescription)"
-        case .identityCreation(let msg):     return "Failed to build client identity: \(msg)"
-        case .pinMismatch:                   return "Server cert fingerprint mismatch"
-        case .invalidResponse:               return "Invalid server response"
+        case .badStatus(let code, let text):
+            switch code {
+            case 401, 403:
+                return t("Нет прав администратора на этом сервере", "No admin rights on this server")
+            case 404:
+                return t("Клиент не найден", "Client not found")
+            case 409 where text?.contains("subscription expired") == true:
+                return t("Подписка истекла — сначала продлите её или сделайте бессрочной",
+                         "Subscription expired — extend it or make it unlimited first")
+            case 409:
+                return text ?? t("Клиент с таким именем уже есть", "A client with this name already exists")
+            default:
+                return t("Ошибка сервера", "Server error") + " (HTTP \(code))" + (text.map { ": \($0)" } ?? "")
+            }
+        case .transport(let e):
+            return t("Сервер админки недоступен: ", "Admin server unreachable: ") + e.localizedDescription
+        case .decoding:
+            return t("Неожиданный ответ сервера", "Unexpected server response")
+        case .identityCreation(let msg):
+            return t("Не удалось подготовить сертификат клиента: ", "Failed to build client identity: ") + msg
+        case .pinMismatch:
+            return t("Сертификат админ-сервера сменился. Если сервер переустанавливали — заново импортируйте профиль.",
+                     "The admin server certificate changed. If the server was reinstalled, re-import the profile.")
+        case .invalidResponse:
+            return t("Некорректный ответ сервера", "Invalid server response")
         }
+    }
+
+    /// The app's language override from the App Group, else the system's.
+    static var english: Bool {
+        let override = UserDefaults(suiteName: SharedKeys.appGroup)?.string(forKey: "language_override")
+            .flatMap { $0.isEmpty || $0 == "system" ? nil : $0 }
+        return (override ?? Bundle.main.preferredLocalizations.first ?? "ru").hasPrefix("en")
     }
 }
 
@@ -480,6 +509,10 @@ public final class AdminHttpClient {
         do {
             (data, response) = try await session.data(for: req)
         } catch {
+            // A rejected pin surfaces as a bare "cancelled".
+            if let seen = delegate.lastServerCertFp, seen != delegate.pinnedServerCertFp {
+                throw AdminHttpError.pinMismatch
+            }
             throw AdminHttpError.transport(error)
         }
 
@@ -487,7 +520,8 @@ public final class AdminHttpClient {
             throw AdminHttpError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw AdminHttpError.badStatus(http.statusCode)
+            let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AdminHttpError.badStatus(http.statusCode, text?.isEmpty == false ? text : nil)
         }
         return data
     }
