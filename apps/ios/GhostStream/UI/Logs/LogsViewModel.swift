@@ -178,11 +178,11 @@ final class LogsViewModel {
         if let historyURL { try? FileManager.default.removeItem(at: historyURL) }
     }
 
-    /// Writes the last `range` entries (newest first in file) to a temp
-    /// `.txt` file and returns its URL for presentation in a share sheet.
-    /// Returns `nil` on I/O failure.
+    /// Writes the last `range` entries shown (filter + search applied),
+    /// oldest first, to a temp `.txt` file for the share sheet. Returns
+    /// `nil` on I/O failure.
     func shareFileURL(range: Int = 500) -> URL? {
-        let tail = allLogs.suffix(range)
+        let tail = visibleLogs.prefix(range).reversed()
         let lines = tail.map { Self.format($0) }
         let body = lines.joined(separator: "\n")
 

@@ -28,7 +28,14 @@ struct LogsView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    // Newest lines are on top: following = the top is in view.
                     Color.clear.frame(height: 0).id("__head__")
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(
+                                key: HeadOffsetKey.self,
+                                value: geo.frame(in: .named("logsScroll")).minY
+                            )
+                        })
                     filterRow
                     statusBanner
                     logCard
@@ -42,17 +49,16 @@ struct LogsView: View {
                 .padding(.bottom, 24)
             }
             .scrollIndicators(.hidden)
+            .coordinateSpace(name: "logsScroll")
+            .onPreferenceChange(HeadOffsetKey.self) { y in
+                userPinnedScroll = y < -40
+            }
             .onChange(of: vm.visibleLogs.count) { _, _ in
                 guard !userPinnedScroll else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo("__head__", anchor: .top)
                 }
             }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 6).onChanged { _ in
-                    userPinnedScroll = true
-                }
-            )
         }
         .background(C.bg.ignoresSafeArea())
         .navigationTitle(L("nav_logs"))
@@ -198,6 +204,11 @@ private extension View {
             searchable(text: text, placement: .navigationBarDrawer(displayMode: .automatic), prompt: prompt)
         }
     }
+}
+
+private struct HeadOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 // MARK: - LogLineRow
