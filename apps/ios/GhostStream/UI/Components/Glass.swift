@@ -43,6 +43,20 @@ extension View {
         }
     }
 
+    /// Under a floating bottom action: scrolled content fades into the
+    /// background instead of showing through a see-through glass button.
+    func bottomActionFade(_ color: Color) -> some View {
+        background {
+            LinearGradient(
+                stops: [.init(color: color.opacity(0), location: 0), .init(color: color, location: 0.5)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .padding(.top, -16)
+            .ignoresSafeArea()
+        }
+    }
+
     /// Opaque content card: elevated background, hairline, 26 pt corners.
     func gsCardBackground(_ C: GsColorSet, radius: CGFloat = 26) -> some View {
         background(C.bgElev, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
@@ -70,9 +84,11 @@ struct GlassPrimaryButton: View {
             Label(title.uppercased(), systemImage: systemImage)
                 .font(.custom(GsFontName.departureMono, size: 12))
                 .tracking(2.4)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
                 .foregroundStyle(prominent ? C.bg : C.bone)
                 .frame(maxWidth: .infinity)
-                .frame(height: 40)
+                .frame(minHeight: 40)
         }
         .buttonBorderShape(.capsule)
         .tint(tint)

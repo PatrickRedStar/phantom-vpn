@@ -154,6 +154,7 @@ public struct AdminView: View {
         .padding(.bottom, 8)
         .disabled(vm.mtlsUnavailable)
         .opacity(vm.mtlsUnavailable ? 0.45 : 1.0)
+        .bottomActionFade(C.bg)
     }
 }
 
