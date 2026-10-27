@@ -267,7 +267,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let networkSettings = NEPacketTunnelNetworkSettings(
             tunnelRemoteAddress: tunnelRemoteAddress(for: profile.serverAddr)
         )
-        networkSettings.mtu = NSNumber(value: 1350)
+        networkSettings.mtu = NSNumber(value: 1300)  // as Android, ADR 0019
 
         let ipv4 = NEIPv4Settings(addresses: [tunIp], subnetMasks: [subnetMask])
         configureIPv4Routes(ipv4, for: profile, settings: settings)
