@@ -120,7 +120,8 @@ public struct SettingsView: View {
                     showDNSDialog = false
                 }
             )
-            .presentationDetents([.medium, .large])
+            // Medium cut the custom-DNS field off on the SE.
+            .presentationDetents([.fraction(0.7), .large])
         }
         .sheet(isPresented: $showSplitDialog, onDismiss: hydrateRouteDrafts) {
             SplitTunnelDialog(
@@ -599,12 +600,16 @@ private struct DNSDialog: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(L("general.cancel"), action: onDismiss)
+                    Button(action: onDismiss) {
+                        Label(L("general.cancel"), systemImage: "xmark")
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(L("general.save")) {
+                    Button {
                         draft = SettingsViewModel.dnsEntries(customText)
                         onSave()
+                    } label: {
+                        Label(L("general.save"), systemImage: "checkmark")
                     }
                     .disabled(!invalidEntries.isEmpty)
                 }
@@ -706,12 +711,18 @@ private struct SplitTunnelDialog: View {
             .background(C.bg.ignoresSafeArea())
             .navigationTitle(L("settings.split.title"))
             .navigationBarTitleDisplayMode(.inline)
+            // Icon buttons, as in the profile editor: text pills squeezed
+            // the inline title down to «Раздельный т…».
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(L("general.cancel"), action: onDismiss)
+                    Button(action: onDismiss) {
+                        Label(L("general.cancel"), systemImage: "xmark")
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(L("general.save"), action: onSave)
+                    Button(action: onSave) {
+                        Label(L("general.save"), systemImage: "checkmark")
+                    }
                 }
             }
             .alert(
