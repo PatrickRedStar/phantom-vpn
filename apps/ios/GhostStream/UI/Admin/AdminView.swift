@@ -2,6 +2,9 @@
 //  AdminView.swift
 //  GhostStream
 //
+//  «Админка»: online / clients / uptime tiles, client rows, «Новый клиент»
+//  as the floating primary glass button.
+//
 
 import PhantomKit
 import PhantomUI
@@ -13,7 +16,6 @@ public struct AdminView: View {
     @Environment(\.gsColors) private var C
     @State private var vm: AdminViewModel
     @State private var showCreateSheet = false
-    @State private var toastMessage: String?
 
     public init(profile: VpnProfile) {
         _vm = State(initialValue: AdminViewModel(profile: profile))
@@ -25,18 +27,19 @@ public struct AdminView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 10) {
                 if vm.mtlsUnavailable {
-                    mtlsBanner
+                    banner(title: L("admin.mtls.unavailable"), detail: vm.error ?? L("admin.ed25519.error"))
                 } else if let err = vm.error, vm.status == nil {
-                    errorBanner(err)
+                    banner(title: L("admin.error"), detail: err)
                 }
 
-                statusGrid
-                clientsList
+                statTiles
+                SectionLabel(text: L("admin.clients"))
+                clientsCard
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 18)
+            .padding(.horizontal, 20)
+            .padding(.top, 4)
             .padding(.bottom, 24)
         }
         .background(C.bg.ignoresSafeArea())
@@ -47,19 +50,14 @@ public struct AdminView: View {
         .safeAreaInset(edge: .bottom) {
             createButton
         }
-        .overlay(alignment: .bottom) {
-            if let toastMessage {
-                toast(text: toastMessage)
-            }
-        }
-        .navigationTitle(vm.profile.name)
+        .navigationTitle(L("admin.nav.title"))
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Task { await vm.refresh() }
                 } label: {
-                    Image(systemName: vm.loading ? "hourglass" : "arrow.clockwise")
+                    Label(L("admin.refresh"), systemImage: "arrow.clockwise")
                 }
                 .disabled(vm.loading)
             }
@@ -69,106 +67,75 @@ public struct AdminView: View {
         }
         .sheet(isPresented: $showCreateSheet) {
             CreateClientSheet(viewModel: vm)
-                .presentationDetents([.medium, .large])
                 .environment(\.gsColors, C)
         }
     }
 
-    private var mtlsBanner: some View {
-        NativeSectionCard {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L("admin.mtls.unavailable"))
-                    .font(.body.weight(.semibold))
-                    .foregroundColor(C.danger)
-                Text(L("admin.ed25519.error"))
-                    .font(.footnote)
-                    .foregroundColor(C.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 10)
-        }
-    }
-
-    private func errorBanner(_ message: String) -> some View {
-        NativeSectionCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L("admin.error"))
-                    .font(.body.weight(.semibold))
-                    .foregroundColor(C.danger)
-                Text(message)
-                    .font(.footnote)
-                    .foregroundColor(C.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button {
-                    Task { await vm.refresh() }
-                } label: {
-                    Label(L("admin.retry"), systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .tint(C.signal)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 10)
-        }
-    }
-
-    private var statusGrid: some View {
-        HStack(spacing: 8) {
-            statCell(label: L("admin.uptime"), value: vm.status.map { AdminFormat.duration($0.uptimeSecs) } ?? "—")
-            statCell(label: L("admin.sessions"), value: vm.status.map { "\($0.activeSessions)" } ?? "—", signal: (vm.status?.activeSessions ?? 0) > 0)
-            statCell(label: L("admin.egress"), value: AdminFormat.bytes(vm.clients.reduce(Int64(0)) { $0 + $1.bytesRx + $1.bytesTx }))
-        }
-    }
-
-    private func statCell(label: String, value: String, signal: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundColor(C.textDim)
-            Text(value)
-                .font(.title3.monospacedDigit().weight(.semibold))
-                .foregroundColor(signal ? C.signal : C.bone)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+    private func banner(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.custom(GsFontName.spaceGroteskBold, size: 15))
+                .foregroundStyle(C.danger)
+            Text(detail)
+                .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                .foregroundStyle(C.textDim)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(C.bgElev.opacity(0.92))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(C.hair, lineWidth: 1)
-                )
+        .padding(16)
+        .background(C.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(C.danger.opacity(0.35), lineWidth: 1)
         )
     }
 
-    private var clientsList: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(String(format: L("admin.clients.count"), vm.clients.count))
-                .font(.footnote.weight(.semibold))
-                .foregroundColor(C.textDim)
-                .padding(.leading, 4)
+    private var statTiles: some View {
+        let online = vm.clients.filter(\.connected).count
+        return HStack(spacing: 8) {
+            tile(L("admin.stat.online"), vm.status == nil ? "—" : "\(online)", color: online > 0 ? C.signal : C.bone)
+            tile(L("admin.stat.clients"), vm.status == nil ? "—" : "\(vm.clients.count)")
+            tile(L("admin.uptime"), vm.status.map { AdminFormat.duration($0.uptimeSecs) } ?? "—")
+        }
+    }
 
-            if vm.clients.isEmpty && !vm.loading {
-                NativeSectionCard {
-                    Text(L("admin.no.clients"))
-                        .font(.footnote.weight(.semibold))
-                        .foregroundColor(C.textFaint)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 18)
-                }
-            } else {
-                NativeSectionCard {
-                    ForEach(Array(vm.clients.enumerated()), id: \.element.id) { idx, client in
-                        NavigationLink(destination: ClientDetailView(client: client, adminVM: vm)) {
-                            ClientRowView(client: client)
-                        }
-                        .buttonStyle(.plain)
-                        if idx < vm.clients.count - 1 {
-                            HairlineDivider()
-                        }
+    private func tile(_ label: String, _ value: String, color: Color? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label.uppercased())
+                .gsFont(.labelMonoTiny)
+                .foregroundStyle(C.textDim)
+                .lineLimit(1)
+            Text(value)
+                .font(.custom(GsFontName.spaceGroteskBold, size: 24))
+                .foregroundStyle(color ?? C.bone)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .gsCardBackground(C, radius: 20)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var clientsCard: some View {
+        if vm.clients.isEmpty && !vm.loading {
+            NativeSectionCard {
+                Text(L("admin.no.clients"))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 12))
+                    .foregroundStyle(C.textFaint)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 18)
+            }
+        } else {
+            NativeSectionCard {
+                ForEach(Array(vm.clients.enumerated()), id: \.element.id) { idx, client in
+                    NavigationLink(destination: ClientDetailView(client: client, adminVM: vm)) {
+                        ClientRowView(client: client)
+                    }
+                    .buttonStyle(.plain)
+                    if idx < vm.clients.count - 1 {
+                        HairlineDivider()
                     }
                 }
             }
@@ -188,20 +155,6 @@ public struct AdminView: View {
         .disabled(vm.mtlsUnavailable)
         .opacity(vm.mtlsUnavailable ? 0.45 : 1.0)
     }
-
-    private func toast(text: String) -> some View {
-        Text(text)
-            .font(.caption.weight(.semibold))
-            .foregroundColor(C.bg)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(C.signal)
-            )
-            .padding(.bottom, 86)
-            .transition(.opacity)
-    }
 }
 
 /// Single row in the Admin clients list.
@@ -212,113 +165,82 @@ struct ClientRowView: View {
     @Environment(\.gsColors) private var C
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Circle()
-                .fill(client.connected ? C.signal : C.textFaint)
-                .frame(width: 10, height: 10)
-                .padding(.top, 7)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 8) {
+        HStack(spacing: 12) {
+            ClientStatusDot(client: client)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
                     Text(client.name)
-                        .font(.body.weight(.semibold))
-                        .foregroundColor(C.bone)
+                        .font(.custom(GsFontName.spaceGroteskBold, size: 17))
+                        .foregroundStyle(C.bone)
                         .lineLimit(1)
-                    Spacer(minLength: 8)
-                    statusBadge
+                    if client.isAdmin { AdminBadge() }
                 }
-
-                Text(clientSubtitle)
-                    .font(.footnote)
-                    .foregroundColor(C.textDim)
+                Text(subtitle)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 10))
+                    .foregroundStyle(C.textDim)
                     .lineLimit(1)
                     .truncationMode(.middle)
-
-                HStack(spacing: 8) {
-                    if client.isAdmin { AdminBadge() }
-                    if !client.enabled { DisabledBadge() }
-                    Text("RX \(AdminFormat.bytes(client.bytesRx))")
-                        .font(.caption.monospacedDigit())
-                    Text("TX \(AdminFormat.bytes(client.bytesTx))")
-                        .font(.caption.monospacedDigit())
-                }
-                .foregroundColor(C.textFaint)
             }
-
+            Spacer(minLength: 8)
+            if let days = AdminFormat.daysLeft(client.expiresAt), client.enabled, days >= 0 {
+                Text(String(format: L("settings.profile.days.format"), Int64(days)).uppercased())
+                    .gsFont(.labelMonoSmall)
+                    .foregroundStyle(days < 14 ? C.warn : C.textDim)
+            }
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
-                .foregroundColor(C.textFaint)
-                .padding(.top, 4)
+                .foregroundStyle(C.textDim)
         }
         .contentShape(Rectangle())
         .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
     }
 
-    private var daysLeft: Int? {
-        guard let expiresAt = client.expiresAt else { return nil }
-        return Int((expiresAt - Int64(Date().timeIntervalSince1970)) / 86_400)
-    }
-
-    private var statusBadge: some View {
-        let status = clientStatus
-        return Text(status.text)
-            .font(.caption.weight(.semibold))
-            .foregroundColor(status.color)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(status.color.opacity(0.12), in: Capsule(style: .continuous))
-    }
-
-    private var clientStatus: (text: String, color: Color) {
-        if !client.enabled {
-            return (L("admin.tag.off"), C.textFaint)
+    private var subtitle: String {
+        if !client.enabled || AdminFormat.daysLeft(client.expiresAt).map({ $0 < 0 }) == true {
+            var parts = [L("admin.client.off")]
+            if AdminFormat.daysLeft(client.expiresAt).map({ $0 < 0 }) == true {
+                parts.append(L("admin.client.expired"))
+            }
+            return parts.joined(separator: " · ")
         }
         if client.connected {
-            return (L("admin.tag.live"), C.signal)
+            let ip = client.tunAddr.split(separator: "/").first.map(String.init) ?? client.tunAddr
+            return "\(ip) · ↓ \(AdminFormat.bytes(client.bytesRx)) ↑ \(AdminFormat.bytes(client.bytesTx))"
         }
-        if let daysLeft, daysLeft < 7 {
-            return (String(format: L("admin.tag.exp.days.left"), max(0, daysLeft)), C.warn)
-        }
-        let hours = (client.lastSeenSecs ?? 0) / 3_600
-        return ("\(L("admin.tag.idle")) · \(hours)h", C.textDim)
+        guard let secs = client.lastSeenSecs else { return L("admin.client.never") }
+        return String(format: L("admin.client.seen.format"), AdminFormat.duration(secs))
     }
+}
 
-    private var clientSubtitle: String {
-        let address = client.tunAddr.isEmpty ? "—" : client.tunAddr
-        if let daysLeft {
-            return "\(address) · \(daysLeft)d"
+/// Lime dot (glowing) online, hollow ring offline, red when disabled.
+struct ClientStatusDot: View {
+    let client: AdminClient
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        Group {
+            if !client.enabled {
+                Circle().fill(C.danger)
+            } else if client.connected {
+                Circle().fill(C.signal).shadow(color: C.signal, radius: 4)
+            } else {
+                Circle().strokeBorder(C.textDim, lineWidth: 1.5)
+            }
         }
-        return address
+        .frame(width: 8, height: 8)
     }
 }
 
 struct AdminBadge: View {
     @Environment(\.gsColors) private var C
     var body: some View {
-        Text(L("profile.role.admin"))
-            .font(.caption2.weight(.semibold))
-            .foregroundColor(C.bg)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(C.warn)
-            )
-    }
-}
-
-struct DisabledBadge: View {
-    @Environment(\.gsColors) private var C
-    var body: some View {
-        Text(L("admin.tag.off"))
-            .font(.caption2.weight(.semibold))
-            .foregroundColor(C.textDim)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(
-                Capsule(style: .continuous)
-                    .stroke(C.hairBold, lineWidth: 1)
-            )
+        Text("ADMIN")
+            .gsFont(.labelMonoTiny)
+            .foregroundStyle(C.bg)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(C.signal, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
@@ -330,60 +252,29 @@ enum AdminFormat {
         return fmt.string(fromByteCount: n)
     }
 
+    /// «18 ч», «3 д» — one unit, in the app's language.
     static func duration(_ secs: Int64) -> String {
-        let s = max(0, secs)
-        let d = s / 86_400
-        let h = (s % 86_400) / 3_600
-        let m = (s % 3_600) / 60
-        let sec = s % 60
-        if d > 0 { return "\(d)d" }
-        if h > 0 { return "\(h)h" }
-        if m > 0 { return "\(m)m" }
-        return "\(sec)s"
+        let fmt = DateComponentsFormatter()
+        fmt.unitsStyle = .short
+        fmt.maximumUnitCount = 1
+        fmt.allowedUnits = [.day, .hour, .minute, .second]
+        var calendar = Calendar.current
+        calendar.locale = Locale(identifier: AppStrings.isEnglish ? "en" : "ru")
+        fmt.calendar = calendar
+        return fmt.string(from: TimeInterval(max(0, secs))) ?? "\(secs)s"
     }
 
-    static func subscriptionShort(_ expiresAt: Int64?) -> String {
-        guard let exp = expiresAt else { return "∞" }
-        let delta = exp - Int64(Date().timeIntervalSince1970)
-        if delta <= 0 { return L("admin.subscription.expired").uppercased() }
-        let days = Int(delta / 86_400)
-        if days >= 2 { return "exp \(days)d" }
-        let hours = Int(delta / 3_600)
-        return "exp \(hours)h"
+    /// Whole days until `expiresAt`; negative once expired, nil = perpetual.
+    static func daysLeft(_ expiresAt: Int64?) -> Int? {
+        guard let expiresAt else { return nil }
+        let delta = expiresAt - Int64(Date().timeIntervalSince1970)
+        return delta < 0 ? -1 : Int(delta / 86_400)
     }
 
-    static func subscriptionColor(_ expiresAt: Int64?, C: GsColorSet) -> Color {
-        guard let exp = expiresAt else { return C.textDim }
-        let delta = exp - Int64(Date().timeIntervalSince1970)
-        if delta <= 0 { return C.danger }
-        if delta < 3 * 86_400 { return C.danger }
-        if delta < 7 * 86_400 { return C.warn }
-        return C.textDim
-    }
-
-    static func absoluteDate(_ unix: Int64) -> String {
+    static func shortDate(_ unix: Int64) -> String {
         let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd HH:mm 'UTC'"
-        df.timeZone = TimeZone(secondsFromGMT: 0)
+        df.dateFormat = "dd.MM.yyyy"
         return df.string(from: Date(timeIntervalSince1970: TimeInterval(unix)))
-    }
-
-    static func subscriptionLong(_ expiresAt: Int64?) -> String {
-        guard let exp = expiresAt else { return L("admin.subscription.perpetual") }
-        let delta = exp - Int64(Date().timeIntervalSince1970)
-        if delta <= 0 { return L("admin.subscription.expired") }
-        let days = Int(delta / 86_400)
-        let hours = Int((delta % 86_400) / 3_600)
-        if days >= 1 { return "\(days)d \(hours)h" }
-        return "\(hours)h"
-    }
-
-    static func lastSeen(_ secs: Int64?) -> String {
-        guard let s = secs else { return "—" }
-        if s < 60 { return "\(s)s" }
-        if s < 3_600 { return "\(s / 60)m" }
-        if s < 86_400 { return "\(s / 3_600)h" }
-        return "\(s / 86_400)d"
     }
 }
 

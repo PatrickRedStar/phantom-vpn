@@ -356,3 +356,26 @@
 // Logs (Liquid Glass)
 "native.logs.footnote" = "Long-press a line to copy. The journal survives app restarts.";
 "native.logs.status.offline" = "VPN is off — new lines appear once connected.";
+
+// Admin (Liquid Glass)
+"admin.nav.title" = "Admin";
+"admin.refresh" = "Refresh";
+"admin.stat.online" = "Online";
+"admin.stat.clients" = "Clients";
+"admin.client.off" = "disabled";
+"admin.client.expired" = "expired";
+"admin.client.never" = "never connected";
+"admin.client.seen.format" = "seen %@ ago";
+"admin.client.online" = "online";
+"admin.client.access" = "Access enabled";
+"admin.client.administrator" = "Administrator";
+"admin.client.more" = "More";
+"admin.subscription.until.format" = "until %@";
+"admin.subscription.chip30" = "+30 d";
+"admin.subscription.chip90" = "+90 d";
+"admin.conn.qr" = "Connection link QR code";
+"admin.conn.warning" = "The link carries the key. Show it only to the device owner.";
+"admin.conn.share" = "Share";
+"admin.conn.copy" = "Copy";
+"admin.conn.copied" = "Copied";
+"admin.add.done" = "Done";

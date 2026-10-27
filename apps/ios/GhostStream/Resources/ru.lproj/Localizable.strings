@@ -356,3 +356,26 @@
 // Logs (Liquid Glass)
 "native.logs.footnote" = "Долгое нажатие на строку — копировать. Журнал переживает перезапуск приложения.";
 "native.logs.status.offline" = "VPN выключен — новые строки появятся после подключения.";
+
+// Admin (Liquid Glass)
+"admin.nav.title" = "Админка";
+"admin.refresh" = "Обновить";
+"admin.stat.online" = "Онлайн";
+"admin.stat.clients" = "Клиентов";
+"admin.client.off" = "отключён";
+"admin.client.expired" = "срок истёк";
+"admin.client.never" = "ещё не подключался";
+"admin.client.seen.format" = "был(а) %@ назад";
+"admin.client.online" = "онлайн";
+"admin.client.access" = "Доступ включён";
+"admin.client.administrator" = "Администратор";
+"admin.client.more" = "Ещё";
+"admin.subscription.until.format" = "до %@";
+"admin.subscription.chip30" = "+30 д";
+"admin.subscription.chip90" = "+90 д";
+"admin.conn.qr" = "QR-код ссылки подключения";
+"admin.conn.warning" = "Ссылка с ключом. Покажите её только владельцу устройства.";
+"admin.conn.share" = "Поделиться";
+"admin.conn.copy" = "Копировать";
+"admin.conn.copied" = "Скопировано";
+"admin.add.done" = "Готово";
