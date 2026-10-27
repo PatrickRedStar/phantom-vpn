@@ -24,6 +24,9 @@ public struct ClientDetailView: View {
     @State private var connString: String?
 
     @State private var showDeleteConfirm = false
+    @State private var showRevokeConfirm = false
+    /// +N days asked for an unlimited client — confirmed first.
+    @State private var limitDays: Int?
     @State private var showSetDaysSheet = false
     @State private var customDaysText = "30"
 
@@ -79,7 +82,7 @@ public struct ClientDetailView: View {
                         Label(L("admin.subscription.custom"), systemImage: "calendar")
                     }
                     Button(role: .destructive) {
-                        Task { await vm.subscription(action: "revoke", days: nil) }
+                        showRevokeConfirm = true
                     } label: {
                         Label(L("admin.subscription.revoke.now"), systemImage: "hand.raised")
                     }
@@ -97,13 +100,33 @@ public struct ClientDetailView: View {
         .confirmationDialog(L("admin.client.delete.title"), isPresented: $showDeleteConfirm, titleVisibility: .visible) {
             Button(L("general.delete"), role: .destructive) {
                 Task {
-                    await vm.delete()
-                    if vm.error == nil { dismiss() }
+                    if await vm.delete() { dismiss() }
                 }
             }
             Button(L("general.cancel"), role: .cancel) {}
         } message: {
             Text(String(format: L("admin.client.delete.message"), vm.client.name))
+        }
+        .confirmationDialog(L("admin.subscription.revoke.title"), isPresented: $showRevokeConfirm, titleVisibility: .visible) {
+            Button(L("admin.subscription.revoke.action"), role: .destructive) {
+                Task { await vm.subscription(action: "revoke", days: nil) }
+            }
+            Button(L("general.cancel"), role: .cancel) {}
+        } message: {
+            Text(String(format: L("admin.subscription.revoke.message"), vm.client.name))
+        }
+        .confirmationDialog(
+            L("admin.subscription.limit.title"),
+            isPresented: Binding(get: { limitDays != nil }, set: { if !$0 { limitDays = nil } }),
+            titleVisibility: .visible,
+            presenting: limitDays
+        ) { days in
+            Button(String(format: L("admin.subscription.limit.action"), days)) {
+                Task { await vm.subscription(action: "extend", days: days) }
+            }
+            Button(L("general.cancel"), role: .cancel) {}
+        } message: { days in
+            Text(String(format: L("admin.subscription.limit.message"), vm.client.name, days))
         }
         .sheet(isPresented: $showSetDaysSheet) {
             SetSubscriptionDaysSheet(
@@ -198,17 +221,22 @@ public struct ClientDetailView: View {
 
     private var subscriptionChips: some View {
         HStack(spacing: 8) {
-            chip(L("admin.subscription.chip30")) {
-                Task { await vm.subscription(action: "extend", days: 30) }
-            }
-            chip(L("admin.subscription.chip90")) {
-                Task { await vm.subscription(action: "extend", days: 90) }
-            }
+            chip(L("admin.subscription.chip30")) { extend(30) }
+            chip(L("admin.subscription.chip90")) { extend(90) }
             chip(L("admin.subscription.perpetual")) {
                 Task { await vm.subscription(action: "cancel", days: nil) }
             }
         }
         .disabled(vm.mutating)
+    }
+
+    /// Extending an unlimited client makes it time-limited — ask first.
+    private func extend(_ days: Int) {
+        if vm.client.expiresAt == nil {
+            limitDays = days
+        } else {
+            Task { await vm.subscription(action: "extend", days: days) }
+        }
     }
 
     private func chip(_ title: String, action: @escaping () -> Void) -> some View {
@@ -287,9 +315,8 @@ public struct ClientDetailView: View {
                 Text(String(format: L("admin.client.destinations.count"), vm.logs.count).uppercased())
                     .gsFont(.labelMono)
                     .foregroundStyle(C.textDim)
-                let ordered = Array(vm.logs.reversed())
-                ForEach(ordered.indices, id: \.self) { i in
-                    logRow(ordered[i])
+                ForEach(vm.logs.indices, id: \.self) { i in
+                    logRow(vm.logs[i])
                 }
             }
             .padding(18)
