@@ -337,7 +337,7 @@ struct DashboardView: View {
         let profile = profiles.activeProfile
         return VStack(spacing: 0) {
             if !isReconnecting {
-                kvRow(L("settings.row.dns"), dnsText, valueColor: C.bone, dot: isUp)
+                kvRow(L("settings.row.dns"), dnsText, valueColor: C.bone, dot: isUp && stateMgr.statusFrame.dnsQueries > 0)
                 HairlineDivider()
                 kvRow(L("kv_identity"), profile?.name ?? "—")
                 HairlineDivider()
@@ -384,8 +384,13 @@ struct DashboardView: View {
 
     // MARK: - Derived
 
+    /// Where the tunnel saw DNS go; before the first query — the servers
+    /// it was given (same fallback as the extension).
     private var dnsText: String {
-        let servers = prefs.dnsServers ?? profiles.activeProfile?.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
+        if isUp, let observed = stateMgr.statusFrame.dnsObserved {
+            return DashboardPresentation.dnsLabel(observed: observed)
+        }
+        let servers = prefs.dnsServers ?? profiles.activeProfile?.dnsServers ?? SettingsViewModel.defaultDnsServers
         return servers.joined(separator: " · ")
     }
 

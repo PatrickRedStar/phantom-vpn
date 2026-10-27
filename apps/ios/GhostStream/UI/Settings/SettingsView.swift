@@ -336,7 +336,9 @@ public struct SettingsView: View {
         NativeSectionCard {
             valueRow(
                 title: L("settings.row.dns"),
-                value: dnsDraft.isEmpty ? L("settings.value.system") : dnsDraft.joined(separator: " · "),
+                value: (dnsDraft.isEmpty
+                    ? model.activeProfile?.dnsServers ?? SettingsViewModel.defaultDnsServers
+                    : dnsDraft).joined(separator: " · "),
                 action: { showDNSDialog = true }
             )
             HairlineDivider()

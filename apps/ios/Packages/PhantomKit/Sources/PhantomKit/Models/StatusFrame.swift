@@ -83,6 +83,11 @@ public struct StatusFrame: Codable {
     /// Coarse bandwidth class — `.throttled` flags suspected DPI shaping.
     /// `nil` if the runtime is too old. v0.24.0+.
     public var bandwidthClass: BandwidthClass?
+    /// Where DNS queries actually go, seen leaving the TUN — `"8.8.8.8:53"`,
+    /// `":853"` = DoT. `nil` until a query is seen or on older runtimes.
+    public var dnsObserved: String?
+    /// DNS queries seen this session; 0 = none yet (not "DNS broken").
+    public var dnsQueries: UInt64
 
     enum CodingKeys: String, CodingKey {
         case state
@@ -106,6 +111,8 @@ public struct StatusFrame: Codable {
         case idleRxSecs = "idle_rx_secs"
         case health
         case bandwidthClass = "bandwidth_class"
+        case dnsObserved = "dns_observed"
+        case dnsQueries = "dns_queries"
     }
 
     public init(
@@ -129,7 +136,9 @@ public struct StatusFrame: Codable {
         lastTxMs: Int64? = nil,
         idleRxSecs: Double? = nil,
         health: TunnelHealth? = nil,
-        bandwidthClass: BandwidthClass? = nil
+        bandwidthClass: BandwidthClass? = nil,
+        dnsObserved: String? = nil,
+        dnsQueries: UInt64 = 0
     ) {
         self.state = state
         self.sessionSecs = sessionSecs
@@ -152,6 +161,8 @@ public struct StatusFrame: Codable {
         self.idleRxSecs = idleRxSecs
         self.health = health
         self.bandwidthClass = bandwidthClass
+        self.dnsObserved = dnsObserved
+        self.dnsQueries = dnsQueries
     }
 
     /// Custom decoder so older runtimes (or partial frames) survive parsing.
@@ -180,6 +191,8 @@ public struct StatusFrame: Codable {
         self.idleRxSecs = try c.decodeIfPresent(Double.self, forKey: .idleRxSecs)
         self.health = try c.decodeIfPresent(TunnelHealth.self, forKey: .health)
         self.bandwidthClass = try c.decodeIfPresent(BandwidthClass.self, forKey: .bandwidthClass)
+        self.dnsObserved = try c.decodeIfPresent(String.self, forKey: .dnsObserved)
+        self.dnsQueries = try c.decodeIfPresent(UInt64.self, forKey: .dnsQueries) ?? 0
     }
 
     public static let disconnected = StatusFrame(

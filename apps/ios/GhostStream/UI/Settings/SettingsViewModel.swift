@@ -32,6 +32,10 @@ public enum SettingsImportError: LocalizedError {
 @Observable
 public final class SettingsViewModel {
 
+    /// DNS the tunnel uses when neither the settings nor the profile set
+    /// any (PacketTunnelProvider's fallback).
+    public static let defaultDnsServers = ["1.1.1.1", "8.8.8.8"]
+
     // MARK: - Dependencies
 
     private let profilesStore: ProfilesStore
