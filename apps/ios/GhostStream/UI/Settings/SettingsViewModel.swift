@@ -360,11 +360,12 @@ public final class SettingsViewModel {
 
     // MARK: - Ping
 
-    /// Measures TCP connect latency to the profile's `serverAddr`. Returns
-    /// nil on invalid address; a negative value for unreachable.
+    /// Measures TCP connect latency to where the tunnel dials (the relay
+    /// when it is on). Returns nil on invalid address; a negative value for
+    /// unreachable.
     /// Updates `pingResults` and `pinging` as a side effect.
     public func pingProfile(_ p: VpnProfile) async -> Int? {
-        guard let (host, port) = Self.parseHostPort(p.serverAddr) else {
+        guard let (host, port) = Self.parseHostPort(p.effectiveServerAddr) else {
             return nil
         }
         pinging.insert(p.id)
