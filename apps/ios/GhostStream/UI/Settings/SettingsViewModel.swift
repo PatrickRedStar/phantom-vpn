@@ -9,6 +9,7 @@
 import PhantomUI
 import Foundation
 import Network
+import NetworkExtension
 import Observation
 import PhantomKit
 import os.log
@@ -125,9 +126,38 @@ public final class SettingsViewModel {
         profilesStore.update(p)
     }
 
-    /// Marks a profile as the active one.
+    /// Marks a profile as the active one. Switching while the tunnel is up
+    /// reconnects to the new profile, as on Android.
     public func setActiveProfile(id: String) {
+        let previous = profilesStore.activeProfile?.id
         profilesStore.setActive(id: id)
+        guard previous != id, let profile = profilesStore.activeProfile, profile.id == id else { return }
+        switch VpnStateManager.shared.state {
+        case .connecting, .connected, .reconnecting:
+            Task { await restartTunnel(with: profile) }
+        case .disconnected, .disconnecting, .error:
+            break
+        }
+    }
+
+    private func restartTunnel(with profile: VpnProfile) async {
+        VpnStateManager.shared.update(.disconnecting)
+        await tunnelController.stopAndWait()
+        // Up to 15 s for NE to tear the old session down; give up otherwise.
+        var stopped = false
+        for _ in 0..<60 {
+            let status = await tunnelController.currentStatus()
+            if status == .disconnected || status == .invalid { stopped = true; break }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        guard stopped else { return }
+        VpnStateManager.shared.update(.connecting)
+        do {
+            try await tunnelController.installAndStart(profile: profile, preferences: preferencesStore)
+        } catch {
+            log.error("profile switch restart failed: \(error.localizedDescription, privacy: .public)")
+            VpnStateManager.shared.update(.error(error.localizedDescription))
+        }
     }
 
     /// Replaces cert / tun data for an existing profile by re-importing a
