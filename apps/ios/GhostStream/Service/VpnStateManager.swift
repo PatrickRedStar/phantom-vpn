@@ -150,6 +150,7 @@ public final class VpnStateManager {
             Task { @MainActor in
                 self?.loadPayload()
                 self?.loadSnapshot()
+                SystemSurfaces.shared.sync()
             }
         }
     }

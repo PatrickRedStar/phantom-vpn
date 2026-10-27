@@ -95,6 +95,9 @@ targets:
       - target: PacketTunnelProvider
         embed: true
         codeSign: true
+      - target: GhostStreamWidgets
+        embed: true
+        codeSign: true
       - package: PhantomKit
         product: PhantomKit
       - package: PhantomKit
@@ -155,12 +158,54 @@ targets:
         product: PhantomUI
       - sdk: NetworkExtension.framework
 
+  # Home-screen widget, Control Center toggle (iOS 18+), Live Activity.
+  # Doesn't link PhantomKit (Rust core): reads the App Group directly.
+  GhostStreamWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: GhostStreamWidgets
+      - path: Shared
+      - path: Packages/PhantomKit/Sources/PhantomUI/Resources/Fonts/space_grotesk_bold.ttf
+      - path: Packages/PhantomKit/Sources/PhantomUI/Resources/Fonts/departure_mono.otf
+      - path: Packages/PhantomKit/Sources/PhantomUI/Resources/Fonts/jetbrains_mono.ttf
+    info:
+      path: GhostStreamWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: GhostStream
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        UIAppFonts:
+          - space_grotesk_bold.ttf
+          - departure_mono.otf
+          - jetbrains_mono.ttf
+    entitlements:
+      path: GhostStreamWidgets/GhostStreamWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.ghoststream.client
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client.widgets
+        INFOPLIST_FILE: GhostStreamWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: GhostStreamWidgets/GhostStreamWidgets.entitlements
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "0.29.0"
+        CURRENT_PROJECT_VERSION: "3"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+        # Shared/VpnIntents.swift: perform() runs in the app, not here.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
+
   GhostStreamTests:
     type: bundle.unit-test
     platform: iOS
     deploymentTarget: "17.0"
     sources:
       - path: GhostStreamTests
+      - path: GhostStreamWidgets/SurfaceState.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ghoststream.client.tests
