@@ -6,6 +6,7 @@
 import Foundation
 import NetworkExtension
 import PhantomKit
+import UserNotifications
 import os.log
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -170,6 +171,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         let profileId = profile.id
+        let profileName = profile.name
 
         // Start the Rust tunnel via PhantomKit actor bridge.
         do {
@@ -217,6 +219,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                             ["profileId": profileId, "reason": err.localizedDescription],
                             forKey: SharedKeys.fatalStop
                         )
+                        self.notifyFatalStop(err.localizedDescription, profileName: profileName)
                         if claimCompletion() {
                             completionHandler(err)
                             Task { await PhantomBridge.shared.stop() }
@@ -761,6 +764,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func appendProviderLog(_ msg: String) {
         appendLogFrame(.structured(level: "INF", category: "tunnel", msg: msg))
         log.info("\(msg, privacy: .private)")
+    }
+
+    // MARK: - Fatal stop notification
+
+    /// The tunnel is gone and won't come back by itself — tell the user why
+    /// (the app asked for permission on the first successful connect).
+    private func notifyFatalStop(_ reason: String, profileName: String) {
+        let override = UserDefaults(suiteName: SharedKeys.appGroup)?.string(forKey: "language_override")
+        let language = override.flatMap { $0.isEmpty || $0 == "system" ? nil : $0 }
+            ?? Locale.preferredLanguages.first ?? "ru"
+        let text = ConnectErrorHumanizer.fatalStop(
+            reason,
+            profileName: profileName,
+            english: language.hasPrefix("en")
+        )
+        let content = UNMutableNotificationContent()
+        content.title = text.title
+        content.body = text.body
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "fatal-stop", content: content, trigger: nil)
+        )
     }
 
     // MARK: - State broadcast

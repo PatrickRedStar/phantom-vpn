@@ -60,4 +60,20 @@ final class ConnectErrorHumanizerTests: XCTestCase {
             "Не удалось подключиться. Попробуйте ещё раз."
         )
     }
+
+    func testFatalStopNotificationNamesTheCause() {
+        let revoked = ConnectErrorHumanizer.fatalStop("Доступ отозван", profileName: "galaxy")
+        XCTAssertEqual(revoked.title, "VPN остановлен: доступ отозван")
+        XCTAssertTrue(revoked.body.contains("galaxy"))
+
+        let clock = ConnectErrorHumanizer.fatalStop(
+            "Сертификат сервера недействителен на текущую дату — проверьте дату и время на устройстве",
+            profileName: "galaxy",
+            english: true
+        )
+        XCTAssertEqual(clock.title, "VPN stopped: wrong date and time")
+
+        let expired = ConnectErrorHumanizer.fatalStop("Срок действия доступа истёк", profileName: "p")
+        XCTAssertEqual(expired.title, "VPN остановлен: доступ истёк")
+    }
 }

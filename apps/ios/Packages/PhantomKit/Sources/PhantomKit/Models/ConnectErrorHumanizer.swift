@@ -82,4 +82,38 @@ public enum ConnectErrorHumanizer {
         return t("Не удалось подключиться: \(trimmed)",
                      "Couldn't connect: \(trimmed)")
     }
+
+    /// Local-notification text for a fatal stop (ADR 0018): the cause in the
+    /// title («VPN остановлен: доступ отозван»), what to do in the body.
+    /// `raw` is the core's `last_error` (Russian reasons from `fatal_reason`).
+    public static func fatalStop(
+        _ raw: String,
+        profileName: String,
+        english: Bool = false
+    ) -> (title: String, body: String) {
+        let s = raw.lowercased()
+        func t(_ ru: String, _ en: String) -> String { english ? en : ru }
+        func has(_ needles: String...) -> Bool { needles.contains { s.contains($0) } }
+
+        let cause: String
+        let body: String
+        if has("доступ отозван", "revoked", "accessdenied", "access denied") {
+            cause = t("доступ отозван", "access revoked")
+            body = t("Сервер отклонил сертификат профиля \(profileName). Попросите новую ссылку у администратора.",
+                     "The server rejected the certificate of profile \(profileName). Ask the admin for a new link.")
+        } else if has("дату и время", "date and time", "not valid yet") {
+            // Before «expired»: a wrong clock also looks like an expired server cert.
+            cause = t("неверные дата и время", "wrong date and time")
+            body = t("Сертификат сервера не подходит к текущей дате. Проверьте дату и время на устройстве и подключитесь снова.",
+                     "The server certificate doesn't match the current date. Check the device date and time, then connect again.")
+        } else if has("срок действия доступа истёк", "certificateexpired", "access expired") {
+            cause = t("доступ истёк", "access expired")
+            body = t("Срок доступа профиля \(profileName) закончился. Попросите администратора продлить подписку.",
+                     "Access for profile \(profileName) has expired. Ask the admin to extend it.")
+        } else {
+            cause = t("ошибка", "error")
+            body = humanize(raw, english: english)
+        }
+        return (t("VPN остановлен: \(cause)", "VPN stopped: \(cause)"), body)
+    }
 }

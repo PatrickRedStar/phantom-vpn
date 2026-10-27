@@ -10,6 +10,7 @@ import Foundation
 import NetworkExtension
 import Observation
 import PhantomKit
+import UserNotifications
 import os.log
 
 /// A single stats sample tied to the wall-clock time it was captured.
@@ -203,6 +204,9 @@ final class DashboardViewModel {
             startSampleLoop()
             startTimerLoop(since: since)
             startSubscriptionLoop()
+            // Asked once by iOS: the extension notifies on a fatal stop
+            // (revoked / expired access, clock).
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         case .reconnecting(let since, _):
             // Same session — the timer keeps running.
             startSampleLoop()
