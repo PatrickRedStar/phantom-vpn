@@ -293,3 +293,7 @@
 "admin.subscription.revoke.now" = "Revoke now";
 "admin.subscription.set.title" = "Set subscription";
 "admin.subscription.set.footer" = "Subscription is set from now + N days, regardless of the current term.";
+
+// Profile editor
+"profile.relay.toggle" = "Relay";
+"profile.relay.desc" = "Route the connection through an extra hop before the exit server (SNI passthrough, end-to-end encryption). Useful when the direct address is blocked.";

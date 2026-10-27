@@ -142,6 +142,18 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
     /// `true` when the relay hop will actually be used by `effectiveServerAddr`.
     public var relayActive: Bool { effectiveServerAddr != serverAddr }
 
+    /// Copy that dials `effectiveServerAddr`: `serverAddr` and the authority
+    /// of `connString` point at the relay, SNI stays the exit's (passthrough).
+    public var withRelayEndpoint: VpnProfile {
+        guard relayActive else { return self }
+        var copy = self
+        copy.serverAddr = effectiveServerAddr
+        copy.connString = connString.flatMap {
+            ConnStringBuilder.replacingAuthority(in: $0, with: copy.serverAddr)
+        }
+        return copy
+    }
+
     /// Returns a copy with PEM secrets stripped — for persistence to
     /// UserDefaults while PEMs live in the Keychain.
     public var sanitizedForUserDefaults: VpnProfile {

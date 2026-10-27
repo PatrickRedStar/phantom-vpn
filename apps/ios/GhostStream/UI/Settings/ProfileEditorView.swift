@@ -30,6 +30,8 @@ public struct ProfileEditorView: View {
     @State private var name: String = ""
     @State private var tunAddr: String = ""
     @State private var connStringDraft: String = ""
+    @State private var relayEnabled: Bool = false
+    @State private var relayAddr: String = ""
     @State private var showDeleteConfirm: Bool = false
     @State private var errorMessage: String?
 
@@ -71,6 +73,7 @@ public struct ProfileEditorView: View {
                         if let profile {
                             idSection(profile: profile)
                             endpointSection(profile: profile)
+                            relaySection()
                             reimportSection()
                             GhostButton("СОХРАНИТЬ", action: { save(); close() })
                             dangerSection()
@@ -156,6 +159,27 @@ public struct ProfileEditorView: View {
         }
     }
 
+    /// Relay hop (ADR 0013): TCP goes to host:port, SNI stays the exit's.
+    @ViewBuilder
+    private func relaySection() -> some View {
+        GhostCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(isOn: $relayEnabled) {
+                    Text(L("profile.relay.toggle"))
+                        .gsFont(.labelMono)
+                        .foregroundColor(C.textFaint)
+                }
+                .tint(C.signal)
+                Text(L("profile.relay.desc"))
+                    .gsFont(.body)
+                    .foregroundColor(C.textDim)
+                if relayEnabled {
+                    GhostTextField("host:port", text: $relayAddr, keyboardType: .URL)
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private func reimportSection() -> some View {
         GhostCard {
@@ -207,6 +231,8 @@ public struct ProfileEditorView: View {
         guard let p = profile else { return }
         name = p.name
         tunAddr = p.tunAddr
+        relayEnabled = p.relayEnabled ?? false
+        relayAddr = p.relayAddr ?? ""
     }
 
     private func save() {
@@ -215,6 +241,13 @@ public struct ProfileEditorView: View {
         let newTun  = tunAddr.trimmingCharacters(in: .whitespaces)
         if !newName.isEmpty { p.name = newName }
         if !newTun.isEmpty { p.tunAddr = newTun }
+        var relay = relayAddr.trimmingCharacters(in: .whitespacesAndNewlines)
+        // No port typed → the exit's port, as Android does.
+        if !relay.isEmpty && !relay.contains(":") {
+            relay += ":" + (p.serverAddr.split(separator: ":").dropFirst().last.map(String.init) ?? "443")
+        }
+        p.relayEnabled = relayEnabled
+        p.relayAddr = relay.isEmpty ? nil : relay
         model.renameProfile(id: p.id, name: p.name)
         // tunAddr is not routed through renameProfile — update directly via store:
         ProfilesStore.shared.update(p)
@@ -223,6 +256,10 @@ public struct ProfileEditorView: View {
     private func close() {
         onClose()
         dismiss()
+    }
+
+    private func L(_ key: String) -> String {
+        AppStrings.localized(key)
     }
 }
 

@@ -293,3 +293,7 @@
 "admin.subscription.revoke.now" = "Отозвать сейчас";
 "admin.subscription.set.title" = "Срок подписки";
 "admin.subscription.set.footer" = "Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.";
+
+// Profile editor
+"profile.relay.toggle" = "Relay";
+"profile.relay.desc" = "Пускать подключение через дополнительный хоп перед exit-сервером (SNI-passthrough, шифрование end-to-end). Помогает, когда прямой адрес заблокирован.";

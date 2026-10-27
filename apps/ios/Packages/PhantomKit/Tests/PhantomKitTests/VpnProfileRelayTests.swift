@@ -54,6 +54,32 @@ final class VpnProfileRelayTests: XCTestCase {
         XCTAssertEqual(p.effectiveServerAddr, "5.6.7.8:443")
     }
 
+    // MARK: - withRelayEndpoint
+
+    func testWithRelayEndpointRewritesDialedAddressNotSni() {
+        var p = profile(relayEnabled: true, relayAddr: "5.6.7.8:443")
+        p.connString = "ghs://abc@1.2.3.4:443?sni=tls.exit.example.com&tun=10.7.0.2/24&v=1"
+        let r = p.withRelayEndpoint
+        XCTAssertEqual(r.serverAddr, "5.6.7.8:443")
+        XCTAssertEqual(r.serverName, "tls.exit.example.com")
+        XCTAssertEqual(r.connString, "ghs://abc@5.6.7.8:443?sni=tls.exit.example.com&tun=10.7.0.2/24&v=1")
+        // Idempotent: applying twice changes nothing.
+        XCTAssertEqual(r.withRelayEndpoint, r)
+    }
+
+    func testWithRelayEndpointIsNoOpWhenDirect() {
+        var p = profile(relayEnabled: false, relayAddr: "5.6.7.8:443")
+        p.connString = "ghs://abc@1.2.3.4:443?sni=x&tun=10.7.0.2/24&v=1"
+        XCTAssertEqual(p.withRelayEndpoint, p)
+    }
+
+    func testWithRelayEndpointDropsUnparsableConnString() {
+        var p = profile(relayEnabled: true, relayAddr: "5.6.7.8:443")
+        p.connString = "garbage"
+        // nil → PhantomBridge rebuilds the string from fields (relay serverAddr).
+        XCTAssertNil(p.withRelayEndpoint.connString)
+    }
+
     // MARK: - Codable back-compat
 
     /// Profiles persisted before the relay fields existed must decode

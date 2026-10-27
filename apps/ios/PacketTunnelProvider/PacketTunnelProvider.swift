@@ -130,12 +130,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         var profile = try loadProfile()
         let settings = loadSettings()
+        let relayOn = profile.relayActive
         profile = applyProviderConfigurationOverrides(to: profile)
         activeProfile = profile
         activeSettings = settings
 
         let networkSettings = try makeNetworkSettings(profile: profile, settings: settings)
         try await setTunnelNetworkSettings(networkSettings)
+        appendProviderLog(
+            "tunnel start relay=\(relayOn ? "on" : "off") target=\(profile.serverAddr) sni=\(profile.serverName)"
+                + " mtu=\(networkSettings.mtu?.intValue ?? 0)"
+                + " excludedRoutes=\(networkSettings.ipv4Settings?.excludedRoutes?.count ?? 0)"
+        )
 
         // Read and set only under `stateLock`: the status callback and the
         // fallback below race, and a second completion call traps the extension.
@@ -193,13 +199,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     }
                 },
                 onLog: { [weak self] frame in
-                    guard let self else { return }
-                    self.withStateLock {
-                        self.recentLogFrames.append(frame)
-                        if self.recentLogFrames.count > 1000 {
-                            self.recentLogFrames.removeFirst(self.recentLogFrames.count - 1000)
-                        }
-                    }
+                    self?.appendLogFrame(frame)
                 },
                 onInbound: { [weak self] data in
                     guard let self else { return }
@@ -407,7 +407,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func applyProviderConfigurationOverrides(to profile: VpnProfile) -> VpnProfile {
-        var output = profile
+        // Relay (ADR 0013): TCP goes to the relay, SNI stays the exit's.
+        var output = profile.withRelayEndpoint
         if let dnsServers = loadProviderDnsServers() {
             output.dnsServers = dnsServers
         }
@@ -675,6 +676,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 PhantomBridge.shared.submitInbound(pkt)
             }
         }
+    }
+
+    // MARK: - Log ring (served to the app's Logs screen over IPC)
+
+    private func appendLogFrame(_ frame: LogFrame) {
+        withStateLock {
+            recentLogFrames.append(frame)
+            if recentLogFrames.count > 1000 {
+                recentLogFrames.removeFirst(recentLogFrames.count - 1000)
+            }
+        }
+    }
+
+    /// Provider-side INFO line next to the core's logs.
+    private func appendProviderLog(_ msg: String) {
+        appendLogFrame(.structured(level: "INF", category: "tunnel", msg: msg))
+        log.info("\(msg, privacy: .private)")
     }
 
     // MARK: - State broadcast

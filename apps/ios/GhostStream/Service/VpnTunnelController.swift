@@ -147,7 +147,7 @@ public final class VpnTunnelController: ObservableObject {
         }
 
         let proto = NETunnelProviderProtocol()
-        proto.serverAddress = providerProfile.serverAddr
+        proto.serverAddress = profile.effectiveServerAddr
         proto.providerBundleIdentifier = providerBundleId
 
         // Phase 8: pass only the profile id plus non-secret runtime settings;
@@ -257,7 +257,7 @@ public final class VpnTunnelController: ObservableObject {
                 providerConfiguration.removeValue(forKey: "dnsServers")
             }
             proto.providerConfiguration = providerConfiguration
-            proto.serverAddress = providerProfile.serverAddr
+            proto.serverAddress = profile.effectiveServerAddr
             proto.providerBundleIdentifier = providerBundleId
             manager.protocolConfiguration = proto
             manager.localizedDescription = profile.name

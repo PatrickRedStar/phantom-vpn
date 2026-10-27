@@ -33,4 +33,14 @@ public enum ConnStringBuilder {
 
         return "ghs://\(userinfo)@\(profile.serverAddr)?sni=\(sni)&tun=\(tun)&v=1"
     }
+
+    /// Swaps the `host:port` of a `ghs://` string; userinfo and query (SNI
+    /// included) stay as they are. nil when the string isn't `ghs://…@…?…`.
+    public static func replacingAuthority(in connString: String, with authority: String) -> String? {
+        guard connString.hasPrefix("ghs://"),
+              let at = connString.firstIndex(of: "@"),
+              let query = connString[at...].firstIndex(of: "?")
+        else { return nil }
+        return String(connString[...at]) + authority + String(connString[query...])
+    }
 }

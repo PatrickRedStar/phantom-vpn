@@ -226,7 +226,7 @@ struct DashboardView: View {
                     .lineLimit(1)
             }
 
-            Text(profiles.activeProfile?.serverAddr ?? L("native.dashboard.no.endpoint"))
+            Text(profiles.activeProfile?.effectiveServerAddr ?? L("native.dashboard.no.endpoint"))
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(C.bone)
                 .lineLimit(2)
@@ -435,9 +435,7 @@ struct DashboardView: View {
     }
 
     private var routeIsDirect: Bool {
-        guard let profile = profiles.activeProfile else { return true }
-        let relayEnabled: Bool = reflectedProfileValue("relayEnabled", in: profile) ?? false
-        return !relayEnabled
+        profiles.activeProfile?.relayActive != true
     }
 
     private var subscriptionSummaryText: String? {
@@ -452,18 +450,6 @@ struct DashboardView: View {
         case .disconnected, .error:
             vm.start(profile: profiles.activeProfile, preferences: prefs)
         }
-    }
-
-    private func reflectedProfileValue<T>(_ label: String, in profile: VpnProfile) -> T? {
-        for child in Mirror(reflecting: profile).children where child.label == label {
-            if let value = child.value as? T { return value }
-            let mirror = Mirror(reflecting: child.value)
-            if mirror.displayStyle == .optional,
-               let value = mirror.children.first?.value as? T {
-                return value
-            }
-        }
-        return nil
     }
 
     private func L(_ key: String) -> String {
