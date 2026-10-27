@@ -39,7 +39,7 @@ public struct CreateClientSheet: View {
                         }
                         if let errorMessage {
                             Text(errorMessage)
-                                .font(.footnote)
+                                .font(.custom(GsFontName.jetBrainsMono, size: 11))
                                 .foregroundColor(C.danger)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -90,50 +90,38 @@ public struct CreateClientSheet: View {
                 TextField("alice", text: $name)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.body)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 15))
                     .padding(12)
                     .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             }
 
             NativeSectionCard {
-                Toggle(isOn: $perpetual) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L("admin.subscription.perpetual"))
-                            .font(.body.weight(.semibold))
-                            .foregroundColor(C.bone)
-                        Text(L("admin.add.days.hint"))
-                            .font(.footnote)
-                            .foregroundColor(C.textDim)
-                    }
-                }
-                .tint(C.signal)
+                NativeToggleRow(
+                    title: L("admin.subscription.perpetual"),
+                    subtitle: L("admin.add.days.hint"),
+                    isOn: $perpetual
+                )
 
                 if !perpetual {
                     HairlineDivider()
                     TextField(L("admin.sub.days.hint"), text: $expiresDaysText)
                         .keyboardType(.numberPad)
-                        .font(.body.monospacedDigit())
+                        .font(.custom(GsFontName.jetBrainsMono, size: 13))
                         .padding(.vertical, 12)
                 }
             }
 
             NativeSectionCard {
-                Toggle(isOn: $isAdmin) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L("admin.client.is.admin"))
-                            .font(.body.weight(.semibold))
-                            .foregroundColor(C.bone)
-                        Text(L("admin.client.is.admin.subtitle"))
-                            .font(.footnote)
-                            .foregroundColor(C.textDim)
-                    }
-                }
-                .tint(C.signal)
+                NativeToggleRow(
+                    title: L("admin.client.is.admin"),
+                    subtitle: L("admin.client.is.admin.subtitle"),
+                    isOn: $isAdmin
+                )
             }
 
             if let errorMessage {
                 Text(errorMessage)
-                    .font(.footnote)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
                     .foregroundColor(C.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -143,7 +131,7 @@ public struct CreateClientSheet: View {
 
     private func fieldLabel(_ text: String) -> some View {
         Text(text)
-            .font(.footnote.weight(.semibold))
+            .font(.custom(GsFontName.jetBrainsMono, size: 10))
             .foregroundColor(C.textDim)
     }
 

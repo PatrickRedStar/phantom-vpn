@@ -576,18 +576,18 @@ private struct DNSDialog: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text(L("settings.dns.custom.hint"))
-                            .font(.footnote.weight(.semibold))
+                            .font(.custom(GsFontName.jetBrainsMono, size: 10))
                             .foregroundColor(C.textDim)
                         TextField("1.1.1.1, 9.9.9.9", text: $customText, axis: .vertical)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                            .font(.body.monospaced())
+                            .font(.custom(GsFontName.jetBrainsMono, size: 13))
                             .lineLimit(2...5)
                             .padding(12)
                             .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         if !invalidEntries.isEmpty {
                             Text(String(format: L("settings.dns.invalid.format"), invalidEntries.joined(separator: ", ")))
-                                .font(.footnote)
+                                .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                                 .foregroundColor(C.danger)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -629,11 +629,11 @@ private struct DNSDialog: View {
         } label: {
             HStack {
                 Text(name)
-                    .font(.body.weight(.semibold))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 13))
                     .foregroundColor(draft == servers ? C.signal : C.bone)
                 Spacer()
                 Text(servers.joined(separator: " · "))
-                    .font(.caption.monospaced())
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
                     .foregroundColor(C.textDim)
             }
             .padding(.vertical, 12)
@@ -682,17 +682,18 @@ private struct SplitTunnelDialog: View {
 
                     HStack(spacing: 10) {
                         Button(L("settings.split.download.selected"), action: onDownloadSelected)
+                            .font(.custom(GsFontName.jetBrainsMono, size: 12))
                             .buttonStyle(.bordered)
                             .disabled(selectedCountries.isEmpty)
                         Spacer()
                         Text(String(format: L("settings.split.selected.count"), selectedCountries.count))
-                            .font(.footnote.weight(.semibold))
+                            .font(.custom(GsFontName.jetBrainsMono, size: 10))
                             .foregroundColor(C.textDim)
                     }
 
                     if let downloadStatus, !downloadStatus.isEmpty {
                         Text(downloadStatus)
-                            .font(.footnote)
+                            .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                             .foregroundColor(C.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -739,10 +740,10 @@ private struct SplitTunnelDialog: View {
     private var infoBanner: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(splitOn ? L("settings.split.mode.bypass") : L("settings.split.mode.all"))
-                .font(.body.weight(.semibold))
+                .font(.custom(GsFontName.jetBrainsMono, size: 13))
                 .foregroundColor(splitOn ? C.signal : C.bone)
             Text(splitOn ? L("settings.split.bypass.detail") : L("settings.split.all.summary"))
-                .font(.footnote)
+                .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                 .foregroundColor(C.textDim)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -755,15 +756,15 @@ private struct SplitTunnelDialog: View {
         NativeSectionCard {
             VStack(alignment: .leading, spacing: 10) {
                 Text(L("settings.split.custom.cidrs"))
-                    .font(.body.weight(.semibold))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 13))
                     .foregroundColor(C.bone)
                 Text(L("settings.split.custom.cidrs.hint"))
-                    .font(.footnote)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                     .foregroundColor(C.textDim)
                 TextField("8.8.8.0/24\n1.1.1.1/32", text: $manualCidrsText, axis: .vertical)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.body.monospaced())
+                    .font(.custom(GsFontName.jetBrainsMono, size: 13))
                     .lineLimit(4...8)
                     .padding(12)
                     .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -772,7 +773,7 @@ private struct SplitTunnelDialog: View {
                     .filter { !RoutePolicySnapshot.isValidIPv6Cidr($0) }
                 if !invalid.isEmpty {
                     Text(String(format: L("settings.split.invalid.cidrs"), invalid.joined(separator: ", ")))
-                        .font(.footnote)
+                        .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                         .foregroundColor(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -780,15 +781,15 @@ private struct SplitTunnelDialog: View {
                 HairlineDivider()
 
                 Text(L("settings.split.custom.domains"))
-                    .font(.body.weight(.semibold))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 13))
                     .foregroundColor(C.bone)
                 Text(L("settings.split.custom.domains.hint"))
-                    .font(.footnote)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                     .foregroundColor(C.textDim)
                 TextField("example.com\ndomain:apple.com", text: $directDomainsText, axis: .vertical)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.body.monospaced())
+                    .font(.custom(GsFontName.jetBrainsMono, size: 13))
                     .lineLimit(4...8)
                     .padding(12)
                     .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -809,10 +810,10 @@ private struct SplitTunnelDialog: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(L(preset.labelKey))
-                    .font(.body.weight(.semibold))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 13))
                     .foregroundColor(C.bone)
                 Text(countryInfoText(info, source: preset.source))
-                    .font(.footnote)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                     .foregroundColor(C.textDim)
             }
 
@@ -822,7 +823,7 @@ private struct SplitTunnelDialog: View {
                 onDownload(preset)
             } label: {
                 Text(downloadButtonTitle(info: info, downloading: downloading))
-                    .font(.caption.weight(.semibold))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
             }
             .buttonStyle(.borderless)
             .foregroundColor(info == nil ? C.signal : C.textDim)
@@ -856,10 +857,10 @@ private struct SplitTunnelDialog: View {
     private func infoRow(_ title: String, _ subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.body.weight(.semibold))
+                .font(.custom(GsFontName.jetBrainsMono, size: 13))
                 .foregroundColor(C.bone)
             Text(subtitle)
-                .font(.footnote)
+                .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                 .foregroundColor(C.textDim)
                 .fixedSize(horizontal: false, vertical: true)
         }
