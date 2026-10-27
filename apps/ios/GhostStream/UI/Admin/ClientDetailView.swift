@@ -159,11 +159,15 @@ public struct ClientDetailView: View {
             Text(statusText.uppercased())
                 .gsFont(.labelMonoSmall)
                 .foregroundStyle(statusColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
             if vm.client.isAdmin { AdminBadge() }
             Spacer()
             Text(vm.client.tunAddr)
                 .font(.custom(GsFontName.jetBrainsMono, size: 11))
                 .foregroundStyle(C.textDim)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
         }
         .padding(.horizontal, 4)
     }

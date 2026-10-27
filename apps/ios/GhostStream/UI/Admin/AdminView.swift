@@ -14,6 +14,7 @@ import SwiftUI
 public struct AdminView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var vm: AdminViewModel
     @State private var showCreateSheet = false
 
@@ -92,7 +93,11 @@ public struct AdminView: View {
 
     private var statTiles: some View {
         let online = vm.clients.filter(\.connected).count
-        return HStack(spacing: 8) {
+        // Accessibility sizes: three tiles in a row leave «ОНЛ…» / «2…».
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
+        return layout {
             tile(L("admin.stat.online"), vm.status == nil ? "—" : "\(online)", color: online > 0 ? C.signal : C.bone)
             tile(L("admin.stat.clients"), vm.status == nil ? "—" : "\(vm.clients.count)")
             tile(L("admin.uptime"), vm.status.map { AdminFormat.duration($0.uptimeSecs) } ?? "—")
@@ -105,6 +110,7 @@ public struct AdminView: View {
                 .gsFont(.labelMonoTiny)
                 .foregroundStyle(C.textDim)
                 .lineLimit(1)
+                .minimumScaleFactor(0.5)
             Text(value)
                 .font(.custom(GsFontName.spaceGroteskBold, size: 24))
                 .foregroundStyle(color ?? C.bone)
@@ -164,8 +170,11 @@ struct ClientRowView: View {
     let client: AdminClient
 
     @Environment(\.gsColors) private var C
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
+        // Accessibility sizes: the days badge moves under the name.
+        let large = typeSize.isAccessibilitySize
         HStack(spacing: 12) {
             ClientStatusDot(client: client)
             VStack(alignment: .leading, spacing: 2) {
@@ -174,6 +183,7 @@ struct ClientRowView: View {
                         .font(.custom(GsFontName.spaceGroteskBold, size: 17))
                         .foregroundStyle(C.bone)
                         .lineLimit(1)
+                        .minimumScaleFactor(large ? 0.5 : 1)
                     if client.isAdmin { AdminBadge() }
                 }
                 Text(subtitle)
@@ -181,13 +191,10 @@ struct ClientRowView: View {
                     .foregroundStyle(C.textDim)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if large { daysBadge }
             }
             Spacer(minLength: 8)
-            if let days = AdminFormat.daysLeft(client.expiresAt), client.enabled, days >= 0 {
-                Text(String(format: L("settings.profile.days.format"), Int64(days)).uppercased())
-                    .gsFont(.labelMonoSmall)
-                    .foregroundStyle(days < 14 ? C.warn : C.textDim)
-            }
+            if !large { daysBadge }
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(C.textDim)
@@ -195,6 +202,15 @@ struct ClientRowView: View {
         .contentShape(Rectangle())
         .padding(.vertical, 12)
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var daysBadge: some View {
+        if let days = AdminFormat.daysLeft(client.expiresAt), client.enabled, days >= 0 {
+            Text(String(format: L("settings.profile.days.format"), Int64(days)).uppercased())
+                .gsFont(.labelMonoSmall)
+                .foregroundStyle(days < 14 ? C.warn : C.textDim)
+        }
     }
 
     private var subtitle: String {
@@ -238,6 +254,8 @@ struct AdminBadge: View {
     var body: some View {
         Text("ADMIN")
             .gsFont(.labelMonoTiny)
+            .lineLimit(1)
+            .fixedSize()
             .foregroundStyle(C.bg)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)

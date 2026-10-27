@@ -15,10 +15,15 @@ struct ConnStringShareCard: View {
     let connString: String
 
     @Environment(\.gsColors) private var C
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var copied = false
 
     var body: some View {
-        HStack(alignment: .center, spacing: 16) {
+        // Accessibility sizes: QR on top, text and buttons get the full width.
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .center, spacing: 16))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: 16))
+        layout {
             if let qr = Self.qrImage(connString) {
                 Image(uiImage: qr)
                     .interpolation(.none)
@@ -36,6 +41,8 @@ struct ConnStringShareCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                 ShareLink(item: connString) {
                     Text(L("admin.conn.share").uppercased())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                         .frame(maxWidth: .infinity)
                 }
                 .glassButtonStyle()
@@ -44,6 +51,8 @@ struct ConnStringShareCard: View {
                     copied = true
                 } label: {
                     Text(L(copied ? "admin.conn.copied" : "admin.conn.copy").uppercased())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                         .frame(maxWidth: .infinity)
                 }
                 .glassButtonStyle()
@@ -51,6 +60,7 @@ struct ConnStringShareCard: View {
             .font(.custom(GsFontName.departureMono, size: 10.5))
             .tracking(1.2)
             .tint(C.bone)
+            .controlSize(.large)
         }
         .padding(18)
         .gsCardBackground(C)
