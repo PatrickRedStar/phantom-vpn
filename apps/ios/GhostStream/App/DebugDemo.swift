@@ -70,8 +70,9 @@ enum DebugDemo {
         seedProfiles()
         seedLogs()
         let snapshotURL = container.appendingPathComponent("snapshot.json")
-        try? FileManager.default.removeItem(at: snapshotURL)
+        // VpnStateManager has already loaded the previous run's snapshot.
         defaults.removeObject(forKey: SharedKeys.tunnelMemoryMiB)
+        VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
         // 12:34:56 into the session — two-digit hours, the widest common case.
         let start = Date().addingTimeInterval(-45_296)
         let sni = "tls.nl2.bikini-bottom.com"
