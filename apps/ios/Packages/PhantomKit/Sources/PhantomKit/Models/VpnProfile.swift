@@ -154,12 +154,16 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         return copy
     }
 
-    /// Returns a copy with PEM secrets stripped — for persistence to
-    /// UserDefaults while PEMs live in the Keychain.
+    /// Returns a copy with secrets stripped — for persistence to App Group
+    /// UserDefaults (readable by every member, the widget too) while PEMs
+    /// live in the Keychain. `connString` goes too: its userinfo is the
+    /// base64 cert + private key; the tunnel rebuilds it from the Keychain
+    /// PEMs (`ConnStringBuilder`).
     public var sanitizedForUserDefaults: VpnProfile {
         var copy = self
         copy.certPem = nil
         copy.keyPem = nil
+        copy.connString = nil
         return copy
     }
 
