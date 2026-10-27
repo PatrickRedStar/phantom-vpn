@@ -124,6 +124,49 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   `is_admin`) и кладутся в кэш профиля до запросов админки — срок видят и
   не-админы. Старый сервер без этих полей кэш не трогает.
 
+## Автоподключение (On-Demand) и фатальный маркер
+
+- **Тумблер «Автоподключение»** (`PreferencesStore.onDemand`, по умолчанию
+  выкл.) = `isOnDemandEnabled` с одним правилом `NEOnDemandRuleConnect`
+  (`interfaceTypeMatch = .any`) на `NETunnelProviderManager`. Ставится при
+  Connect (`installAndStart`); включение на простаивающем конфиге не
+  применяется сразу — иначе iOS сама подняла бы VPN. Выключение — сразу.
+- **ADR 0018 не нарушается.** «Отключить» (`stopAndWait`) сначала гасит
+  On-Demand и сохраняет менеджер, потом `stopVPNTunnel` — иначе iOS тут же
+  подняла бы туннель обратно. Смена профиля идёт через тот же stop → start.
+  Переподключением по-прежнему владеет ядро: On-Demand только поднимает
+  остановленный туннель, своих ретраев у обёртки нет.
+- **Фатальная ошибка не крутит рестарты.** На `error` ядра (отзыв,
+  истёкший доступ, часы, кривой профиль) провайдер пишет в App Group
+  `tunnel.fatal.stop = {profileId, reason}` (`SharedKeys.fatalStop`) и
+  останавливается. На следующем старте этого профиля (в т.ч. от On-Demand)
+  провайдер сразу отказывает с той же причиной — без хендшейка к серверу,
+  причина остаётся в снапшоте. Маркер снимает только ручной Connect из
+  приложения: любой `VpnTunnelController.installAndStart` удаляет ключ.
+  iOS продолжит изредка пробовать On-Demand, но каждая попытка — мгновенный
+  отказ без сети.
+- **Уведомление.** Там же провайдер кладёт локальное уведомление
+  «VPN остановлен: доступ отозван» + что делать
+  (`ConnectErrorHumanizer.fatalStop`, RU/EN по `language_override` из App
+  Group). Разрешение приложение спрашивает при первом успешном подключении.
+  В foreground iOS его не показывает — причина и так на дашборде.
+
+## «Без VPN — без сети» (kill switch)
+
+`PreferencesStore.killSwitch` (общий с macOS, по умолчанию выкл.) →
+`includeAllNetworks = true` + `excludeLocalNetworks = true` на
+`NETunnelProviderProtocol`, со следующего Connect.
+
+- Пока туннель не поднят (connecting / reasserting), трафик блокируется, а
+  не уходит мимо VPN. После ручного «Отключить» сеть обычная.
+- Только полный туннель: `includeAllNetworks` перекрывает `excludedRoutes`,
+  поэтому с раздельным туннелем тумблер неактивен (как на macOS).
+- LAN доступна (`excludeLocalNetworks`, ADR 0019). Сокеты самого провайдера
+  идут мимо туннеля, поэтому реле/сервер достижимы.
+- Оговорки iOS: часть системного трафика (APNs, сотовые сервисы — флаги
+  `excludeAPNs` / `excludeCellularServices`, по умолчанию true) идёт мимо;
+  AirDrop/CarPlay и подобное могут не работать, пока туннель поднимается.
+
 ## Маршруты, relay, MTU
 
 - **Relay** ([ADR 0013](../decisions/0013-macos-admin-relay-parity.md)):
@@ -148,6 +191,47 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
 явным отказом от IPv6), чтобы не утекал plain IPv6 при IPv4-only конфиге
 туннеля. Защита от классической DNS/трафик утечки при dual-stack клиенте.
 
+## UI: Liquid Glass
+
+Бренд (палитра `PhantomUI` dark/light, Space Grotesk / Departure Mono /
+JetBrains Mono) остаётся; стекло — только на слое управления поверх
+контента.
+
+- **Нативные контролы**: `TabView` без своего фона (на iOS 26 — плавающий
+  стеклянный таб-бар), тулбары `NavigationStack` с `ToolbarItem` (на iOS 26 —
+  стеклянные кружки), sheet'ы с `cancellationAction` / `confirmationAction`,
+  поиск журнала `.searchable` (на iOS 26 — `searchToolbarBehavior(.minimize)`).
+- **Главное действие** («Подключить/Отключить», «Новый клиент») —
+  `GlassPrimaryButton`: `.glassProminent` с цветом сигнала, плавает над
+  таб-баром через `safeAreaInset` без подложки; во время переходов —
+  обычное `.glass`.
+- **Контент непрозрачный**: карточки `bgElev` + hairline, радиус 26
+  (`gsCardBackground`, `NativeSectionCard`).
+- **Deployment target iOS 17**: все iOS 26 API — только в
+  `UI/Components/Glass.swift` под `#available(iOS 26, *)`; на 17–18
+  фолбэк сохраняет прежний вид (непрозрачный таб-бар, `.ultraThinMaterial`
+  у чипов, `.borderedProminent` у кнопки).
+- **Шрифты**: PhantomUI регистрирует их из своего бандла
+  (`PhantomUIResources.registerFonts`). На iOS SwiftPM кладёт ресурсы в
+  корень бандла — до 2026-10-27 поиск в подпапке `Fonts` возвращал пустой
+  массив, и весь UI шёл системным шрифтом. Space Grotesk без кириллицы —
+  русские заголовки рисуются системным шрифтом, это ожидаемо.
+- **Админка** открывается из «Настроек» (секция «Сервер», только для
+  админ-профилей). Ссылка нового клиента сразу показывается QR
+  (CoreImage `CIQRCodeGenerator`) с «Поделиться» / «Копировать».
+- **DEBUG-хуки для скриншотов**: `-gsTab logs|settings`, `-gsAdminDemo YES`.
+
+## Журнал
+
+Строки приходят из кольца extension (1000 кадров) по IPC раз в 500 мс, пока
+открыт экран. Приложение дописывает каждую пачку в `logs.jsonl` в App Group
+(одна JSON-строка `LogFrame`), хранит последние 10 000 строк (обрезка шагом
+1k — тогда файл переписывается), при старте читает файл и ставит курсор IPC
+на последний сохранённый кадр, чтобы не тянуть дубли. «Очистить» удаляет
+файл. Подряд идущие одинаковые сообщения сворачиваются в «×N», долгое
+нажатие копирует строку. Фильтр понимает трёхбуквенные уровни ядра
+(`WRN`/`DBG`/`INF`/`TRC`).
+
 ## i18n
 
 `Localizable.strings` с RU как baseline (русскоязычная аудитория) и EN-placeholder
@@ -170,7 +254,9 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   потоке форвардера в `autoreleasepool` — без Task на кадр, медленный
   потребитель упирается в ограниченный канал ядра. Раз в 60 с провайдер
   пишет в журнал `memory footprint=… available=…` (`phys_footprint` и
-  `os_proc_available_memory()`) — видно, сколько до лимита.
+  `os_proc_available_memory()`) — видно, сколько до лимита. То же значение
+  кладётся в App Group (`SharedKeys.tunnelMemoryMiB`), дашборд показывает
+  строку «Память туннеля x / 50 МБ»; при остановке ключ удаляется.
 - **Потокобезопасность провайдера** — буферы статуса/логов, gate снапшотов и
   флаг completion `startTunnel` под `stateLock`, как на macOS (двойной
   completion ронял бы экстеншен).

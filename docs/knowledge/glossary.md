@@ -169,6 +169,8 @@ updated: 2026-10-27
 
 - **`StatusFrame` EMA** — telemetry каждые 250ms, exponential moving average `α=0.35` для bytes/sec. Canonical wire types в `crates/gui-ipc/`.
 
+- **Фатальный маркер (`tunnel.fatal.stop`, iOS)** — `{profileId, reason}` в App Group после `Error` ядра. Пока он есть, extension не стартует этот профиль (On-Demand не крутит рестарты на отозванном доступе); снимается ручным Connect. См. [platforms/ios.md](platforms/ios.md).
+
 ---
 
 ## Hosts / deployment
