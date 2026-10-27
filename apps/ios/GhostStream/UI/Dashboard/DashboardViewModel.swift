@@ -37,6 +37,8 @@ final class DashboardViewModel {
     var window: ScopeWindow = .m1
     private(set) var timerText: String = "--:--:--"
     var preflightWarning: String?
+    /// Seconds until the core's next reconnect attempt; nil while it dials.
+    private(set) var retryIn: Int?
 
     /// App-wide state; views reading it re-render on its changes.
     var state: VpnState { VpnStateManager.shared.state }
@@ -47,6 +49,8 @@ final class DashboardViewModel {
     private let log = Logger(subsystem: "com.ghoststream.client", category: "DashboardVM")
     private let maxSamples = 3600
     @ObservationIgnored private var startTask: Task<Void, Never>?
+    @ObservationIgnored private var retryKey: [UInt32] = []
+    @ObservationIgnored private var retrySeenAt = Date()
 
     // MARK: - Derived samples for the chart
 
@@ -135,6 +139,7 @@ final class DashboardViewModel {
         case .connected(let since, _), .reconnecting(let since, _):
             timerText = Self.format(duration: Date().timeIntervalSince(since))
             appendSample()
+            updateRetryCountdown()
         case .connecting:
             timerText = "--:--:--"
             appendSample()
@@ -156,6 +161,23 @@ final class DashboardViewModel {
         if samples.count > maxSamples {
             samples.removeFirst(samples.count - maxSamples)
         }
+    }
+
+    /// The core publishes the delay once per attempt and keeps it in the
+    /// frame while dialing; count it down from when the attempt was seen.
+    private func updateRetryCountdown() {
+        let sf = VpnStateManager.shared.statusFrame
+        let key = [sf.reconnectAttempt ?? 0, sf.reconnectNextDelaySecs ?? 0]
+        if key != retryKey {
+            retryKey = key
+            retrySeenAt = Date()
+        }
+        retryIn = Self.secondsLeft(delay: sf.reconnectNextDelaySecs, since: retrySeenAt, now: Date())
+    }
+
+    static func secondsLeft(delay: UInt32?, since: Date, now: Date) -> Int? {
+        let left = Int(delay ?? 0) - Int(now.timeIntervalSince(since))
+        return left > 0 ? left : nil
     }
 
     static func format(duration: TimeInterval) -> String {

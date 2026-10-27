@@ -217,6 +217,7 @@
 "native.dashboard.streams.count.format" = "%d of %d";
 "native.dashboard.reconnecting" = "Reconnecting";
 "native.dashboard.reconnect.detail.format" = "Attempt %d · next in %d s · traffic is held";
+"native.dashboard.reconnect.dialing.format" = "Attempt %d · dialing · traffic is held";
 "native.dashboard.health.dead" = "All streams down — reconnecting";
 "native.dashboard.health.degraded.format" = "Degraded: %d of %d streams up";
 "native.dashboard.health.stale.format" = "No data from server for %ds";

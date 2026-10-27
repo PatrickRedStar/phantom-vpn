@@ -217,6 +217,7 @@
 "native.dashboard.streams.count.format" = "%d из %d";
 "native.dashboard.reconnecting" = "Переподключение";
 "native.dashboard.reconnect.detail.format" = "Попытка %d · следующая через %d с · трафик ждёт";
+"native.dashboard.reconnect.dialing.format" = "Попытка %d · подключаюсь · трафик ждёт";
 "native.dashboard.health.dead" = "Все потоки упали — переподключение";
 "native.dashboard.health.degraded.format" = "Деградация: живы %d из %d потоков";
 "native.dashboard.health.stale.format" = "Тишина в канале %d с";

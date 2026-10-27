@@ -167,11 +167,9 @@ struct DashboardView: View {
             banner(
                 icon: "arrow.clockwise",
                 title: L("native.dashboard.reconnect.title"),
-                detail: String(
-                    format: L("native.dashboard.reconnect.detail.format"),
-                    Int(sf.reconnectAttempt ?? 0),
-                    Int(sf.reconnectNextDelaySecs ?? 0)
-                ),
+                detail: vm.retryIn.map {
+                    String(format: L("native.dashboard.reconnect.detail.format"), Int(sf.reconnectAttempt ?? 0), $0)
+                } ?? String(format: L("native.dashboard.reconnect.dialing.format"), Int(sf.reconnectAttempt ?? 0)),
                 color: C.warn
             )
         }

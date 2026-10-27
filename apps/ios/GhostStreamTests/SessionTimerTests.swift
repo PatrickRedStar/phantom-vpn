@@ -36,3 +36,14 @@ final class SessionTimerTests: XCTestCase {
         XCTAssertNil(VpnStateManager.sessionStartedAt(in: Data(#"{"kind":"connected"}"#.utf8)))
     }
 }
+
+@MainActor
+final class ReconnectCountdownTests: XCTestCase {
+    func testCountsDownAndDropsNumberWhenDialing() {
+        let seen = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(DashboardViewModel.secondsLeft(delay: 5, since: seen, now: seen), 5)
+        XCTAssertEqual(DashboardViewModel.secondsLeft(delay: 5, since: seen, now: seen.addingTimeInterval(3.2)), 2)
+        XCTAssertNil(DashboardViewModel.secondsLeft(delay: 5, since: seen, now: seen.addingTimeInterval(5)))
+        XCTAssertNil(DashboardViewModel.secondsLeft(delay: nil, since: seen, now: seen))
+    }
+}
