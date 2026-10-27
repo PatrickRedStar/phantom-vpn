@@ -10,6 +10,7 @@ import Foundation
 import PhantomKit
 import PhantomUI
 import SwiftUI
+import UIKit
 
 /// App entry point. Hosts the root `AppNavigation` and injects:
 /// - `ProfilesStore` — VPN profiles + active selection
@@ -33,6 +34,13 @@ struct GhostStreamApp: App {
 
     init() {
         PhantomUIResources.registerFonts()
+        // Native navigation titles in the brand face (mockups: Space Grotesk).
+        let nav = UINavigationBar.appearance()
+        if let large = UIFont(name: GsFontName.spaceGroteskBold, size: 34),
+           let inline = UIFont(name: GsFontName.spaceGroteskBold, size: 17) {
+            nav.largeTitleTextAttributes = [.font: large]
+            nav.titleTextAttributes = [.font: inline]
+        }
     }
 
     var body: some Scene {

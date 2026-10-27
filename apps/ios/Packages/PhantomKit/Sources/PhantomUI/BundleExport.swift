@@ -29,7 +29,9 @@ public enum PhantomUIResources {
 
         var urls: [URL] = []
         for ext in extensions {
-            if let list = bundle.urls(forResourcesWithExtension: ext, subdirectory: "Fonts") {
+            // iOS flattens SwiftPM resources into the bundle root: the
+            // "Fonts" lookup comes back empty (not nil) there.
+            if let list = bundle.urls(forResourcesWithExtension: ext, subdirectory: "Fonts"), !list.isEmpty {
                 urls.append(contentsOf: list)
             } else if let list = bundle.urls(forResourcesWithExtension: ext, subdirectory: nil) {
                 urls.append(contentsOf: list)
