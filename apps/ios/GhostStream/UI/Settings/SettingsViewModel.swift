@@ -97,17 +97,39 @@ public final class SettingsViewModel {
     // MARK: - Profile mutations
 
     /// Parses a connection string (ghs://…) via `PhantomBridge` and adds the
-    /// resulting profile to `ProfilesStore`.
+    /// resulting profile to `ProfilesStore` — or refreshes the profile it
+    /// already belongs to (same link scanned twice, re-issued client).
     /// - Throws: `SettingsImportError.invalidConnString` on parse failure.
     @discardableResult
     public func importFromString(_ raw: String) throws -> VpnProfile {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parsed = PhantomBridge.parseConnString(trimmed),
+           let existing = Self.matchingProfile(
+               in: profilesStore.profiles,
+               certPem: parsed.certPem,
+               tunAddr: parsed.tunAddr,
+               serverAddr: parsed.serverAddr
+           ) {
+            try reimport(id: existing.id, rawConnString: trimmed)
+            return profilesStore.profiles.first { $0.id == existing.id } ?? existing
+        }
         do {
             return try profilesStore.importFromConnString(trimmed)
         } catch {
             lastError = SettingsImportError.invalidConnString.errorDescription
             throw SettingsImportError.invalidConnString
         }
+    }
+
+    /// Same client certificate, or the same tunnel address on the same server.
+    static func matchingProfile(
+        in profiles: [VpnProfile],
+        certPem: String,
+        tunAddr: String,
+        serverAddr: String
+    ) -> VpnProfile? {
+        profiles.first { $0.certPem == certPem }
+            ?? profiles.first { $0.tunAddr == tunAddr && $0.serverAddr == serverAddr }
     }
 
     /// Thin wrapper used by the QR scanner completion handler.
@@ -185,6 +207,8 @@ public final class SettingsViewModel {
         updated.certPem = parsed.certPem
         updated.keyPem = parsed.keyPem
         updated.tunAddr = parsed.tunAddr
+        // New link, maybe a new server: pin the admin server cert afresh.
+        updated.cachedAdminServerCertFp = nil
         profilesStore.update(updated)
     }
 
