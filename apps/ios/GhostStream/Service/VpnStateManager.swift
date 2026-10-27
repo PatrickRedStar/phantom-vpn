@@ -121,6 +121,9 @@ public final class VpnStateManager {
     private let payloadUpdatedAtKey = "vpn.state.updatedAt.v1"
     private var stateUpdatedAt = Date.distantPast
     @ObservationIgnored private var payloadSessionStartedAt: Double?
+    /// Local Disconnect: the extension keeps publishing the live session
+    /// until it actually stops — those frames must not flip the UI back.
+    @ObservationIgnored private var disconnectRequestedAt: Date?
 
     /// App Group container URL — used to locate snapshot.json.
     private var containerURL: URL? {
@@ -149,12 +152,14 @@ public final class VpnStateManager {
         self.loadPayload()
         self.loadSnapshot()
         self.observeDarwinNotifications()
+        self.observeSystemStatus()
     }
 
     /// Updates the state locally, writes a payload to App Group
     /// UserDefaults, and posts the Darwin notification so the other
     /// process can re-read.
     public func update(_ newState: VpnState) {
+        disconnectRequestedAt = newState == .disconnecting ? Date() : nil
         state = newState
         writePayload(VpnStatePayload.from(newState))
         DarwinNotifications.post(DarwinNotifications.stateChanged)
@@ -163,6 +168,7 @@ public final class VpnStateManager {
     /// Forces the host UI back to a clean disconnected state and removes
     /// stale extension snapshots that can otherwise outlive the tunnel.
     public func forceDisconnected(clearSnapshot: Bool = true) {
+        disconnectRequestedAt = nil
         state = .disconnected
         statusFrame = .disconnected
         tunnelMemoryMiB = nil
@@ -176,34 +182,64 @@ public final class VpnStateManager {
     /// Squares the shown state with the system VPN status — a snapshot or
     /// payload can outlive the extension that wrote it.
     public func reconcileWithSystem() async {
-        let status = await VpnTunnelController().currentStatus()
+        reconcile(with: await VpnTunnelController().currentStatus())
+    }
+
+    private func reconcile(with status: NEVPNStatus) {
+        // The extension may have written a final frame (error, disconnected).
+        loadPayload()
+        loadSnapshot()
         switch status {
         case .invalid, .disconnected:
             // A fatal error from the core (revoked access, certificate,
             // clock) stays on screen until the next connect attempt.
             if case .error = state { break }
             forceDisconnected(clearSnapshot: true)
-        case .connecting:
-            update(.connecting)
-        case .reasserting:
-            // The core is reconnecting; the extension's snapshot keeps the session.
-            if case .reconnecting = state { break }
-            update(.connecting)
         case .disconnecting:
-            update(.disconnecting)
-        case .connected:
+            if state != .disconnecting { update(.disconnecting) }
+        case .connecting, .reasserting, .connected:
             switch state {
-            case .connected, .reconnecting, .disconnecting:
+            case .connecting, .connected, .reconnecting:
+                break
+            case .disconnecting where disconnectInFlight:
                 break
             default:
-                let profile = ProfilesStore.shared.activeProfile
-                update(.connected(
-                    since: Date(),
-                    serverName: profile?.serverName ?? profile?.serverAddr ?? ""
-                ))
+                // NE says connected as soon as the provider calls its start
+                // completion — the handshake may still run; frames from the
+                // extension promote this to connected.
+                update(.connecting)
             }
         @unknown default:
             forceDisconnected(clearSnapshot: true)
+        }
+    }
+
+    private var disconnectInFlight: Bool {
+        disconnectRequestedAt.map { Date().timeIntervalSince($0) < 5 } ?? false
+    }
+
+    /// An extension killed by jetsam or a crash never writes a final frame;
+    /// the system status is the only signal that the tunnel is gone.
+    private func observeSystemStatus() {
+        let providerId = (Bundle.main.bundleIdentifier ?? "") + ".tunnel"
+        NotificationCenter.default.addObserver(
+            forName: .NEVPNStatusDidChange, object: nil, queue: .main
+        ) { note in
+            guard let connection = note.object as? NEVPNConnection,
+                  (connection.manager.protocolConfiguration as? NETunnelProviderProtocol)?
+                    .providerBundleIdentifier == providerId,
+                  connection.status == .disconnected || connection.status == .invalid
+            else { return }
+            let status = connection.status
+            MainActor.assumeIsolated {
+                let shared = VpnStateManager.shared
+                switch shared.state {
+                case .connected, .reconnecting, .disconnecting:
+                    shared.reconcile(with: status)
+                case .disconnected, .connecting, .error:
+                    break
+                }
+            }
         }
     }
 
@@ -268,6 +304,14 @@ public final class VpnStateManager {
         guard let data = defaults.data(forKey: payloadKey),
               let payload = try? JSONDecoder().decode(VpnStatePayload.self, from: data)
         else { return }
+        switch payload.kind {
+        case .connecting, .connected, .reconnecting:
+            if disconnectInFlight { return }
+        case .disconnected, .error:
+            disconnectRequestedAt = nil
+        case .disconnecting:
+            break
+        }
         payloadSessionStartedAt = Self.sessionStartedAt(in: data)
         let next = payload.asState
         setState(payloadSessionStartedAt.map { next.withSince(Date(timeIntervalSince1970: $0)) } ?? next)
@@ -291,6 +335,12 @@ public final class VpnStateManager {
         // supersede an old snapshot left behind by a dead PacketTunnelProvider.
         if snapshotModifiedAt.addingTimeInterval(1) < stateUpdatedAt {
             return
+        }
+        switch frame.state {
+        case .connecting, .connected, .reconnecting:
+            if disconnectInFlight { return }
+        case .disconnected, .error:
+            disconnectRequestedAt = nil
         }
 
         statusFrame = frame
