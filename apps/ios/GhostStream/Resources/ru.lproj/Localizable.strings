@@ -293,7 +293,7 @@
 "admin.subscription.set.footer" = "Подписка будет установлена с «сейчас + N дней», независимо от текущего срока.";
 
 // Profile editor
-"profile.relay.toggle" = "Relay";
+"profile.relay.toggle" = "Через реле";
 "profile.relay.desc" = "Пускать подключение через дополнительный хоп перед exit-сервером (SNI-passthrough, шифрование end-to-end). Помогает, когда прямой адрес заблокирован.";
 "profile.editor.title" = "Профиль";
 "profile.editor.not.found" = "Профиль не найден";
@@ -340,3 +340,15 @@
 "settings.row.kill.switch" = "Без VPN — без сети";
 "settings.kill.switch.subtitle" = "Блокировать трафик, пока туннель не поднят. Локальная сеть доступна. Со следующего подключения";
 "settings.kill.switch.split" = "Только в режиме «Всё через VPN» — с раздельным туннелем недоступно";
+
+// Profile editor (sheet)
+"profile.editor.name" = "Название";
+"profile.editor.readonly" = "Из ссылки · только чтение";
+"profile.editor.server" = "Сервер";
+"profile.editor.tun" = "Туннельный IP";
+"profile.editor.relay.section" = "Реле";
+"profile.relay.hint" = "Из РФ прямой адрес фильтруется";
+"profile.editor.relay.addr" = "Адрес реле (хост:порт)";
+"profile.editor.ping" = "Пинг";
+"profile.editor.ping.format" = "Пинг · %d мс";
+"profile.editor.reimport.clipboard" = "Обновить ключи из буфера (ghs://)";

@@ -293,7 +293,7 @@
 "admin.subscription.set.footer" = "Subscription is set from now + N days, regardless of the current term.";
 
 // Profile editor
-"profile.relay.toggle" = "Relay";
+"profile.relay.toggle" = "Via relay";
 "profile.relay.desc" = "Route the connection through an extra hop before the exit server (SNI passthrough, end-to-end encryption). Useful when the direct address is blocked.";
 "profile.editor.title" = "Profile";
 "profile.editor.not.found" = "Profile not found";
@@ -340,3 +340,15 @@
 "settings.row.kill.switch" = "No VPN — no network";
 "settings.kill.switch.subtitle" = "Block traffic while the tunnel is down. Local network stays reachable. From the next Connect";
 "settings.kill.switch.split" = "Full tunnel only — unavailable with split tunnel";
+
+// Profile editor (sheet)
+"profile.editor.name" = "Name";
+"profile.editor.readonly" = "From the link · read-only";
+"profile.editor.server" = "Server";
+"profile.editor.tun" = "Tunnel IP";
+"profile.editor.relay.section" = "Relay";
+"profile.relay.hint" = "The direct address is filtered from Russia";
+"profile.editor.relay.addr" = "Relay address (host:port)";
+"profile.editor.ping" = "Ping";
+"profile.editor.ping.format" = "Ping · %d ms";
+"profile.editor.reimport.clipboard" = "Refresh keys from clipboard (ghs://)";

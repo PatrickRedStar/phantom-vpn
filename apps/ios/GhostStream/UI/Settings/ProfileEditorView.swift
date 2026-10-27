@@ -2,19 +2,18 @@
 //  ProfileEditorView.swift
 //  GhostStream
 //
-//  Sheet for editing a single `VpnProfile`. Name and relay are editable;
-//  server address / SNI / tunnel IP are read-only: they come from the conn
-//  string, and the tunnel IP is assigned by the server (as on Android).
-//  Actions: re-import (paste new ghs://…) and delete.
+//  Native sheet for one `VpnProfile`: name and relay are editable; server,
+//  SNI and tunnel IP come from the conn string (tunnel IP is assigned by
+//  the server) and are read-only. Ping, delete, refresh keys from the
+//  clipboard.
 //
 
 import PhantomKit
 import PhantomUI
 import SwiftUI
+import UIKit
 
-/// Sheet presented from the Settings list. Allows renaming, setting the
-/// relay, re-importing fresh cert/key material from a new connection
-/// string, and deleting the profile.
+/// Sheet presented from the Settings list.
 public struct ProfileEditorView: View {
 
     // MARK: - Inputs
@@ -29,17 +28,12 @@ public struct ProfileEditorView: View {
     // MARK: - Local state
 
     @State private var name: String = ""
-    @State private var connStringDraft: String = ""
     @State private var relayEnabled: Bool = false
     @State private var relayAddr: String = ""
     @State private var showDeleteConfirm: Bool = false
     @State private var errorMessage: String?
+    @State private var pinging: Bool = false
 
-    // MARK: - Init
-
-    /// Creates an editor bound to the profile with id `profileId` inside
-    /// `model.profiles`. Caller should present this as a `.sheet` and
-    /// dismiss via `onClose`.
     public init(
         model: SettingsViewModel,
         profileId: String,
@@ -50,8 +44,6 @@ public struct ProfileEditorView: View {
         self.onClose = onClose
     }
 
-    // MARK: - Derived
-
     private var profile: VpnProfile? {
         model.profiles.first(where: { $0.id == profileId })
     }
@@ -59,62 +51,125 @@ public struct ProfileEditorView: View {
     // MARK: - Body
 
     public var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                ScreenHeader(
-                    brand: L("profile.editor.title").uppercased(),
-                    meta: profile?.name ?? "OFFLINE",
-                    leadingLabel: "✕",
-                    leadingAction: { close() }
-                )
+        NavigationStack {
+            ScrollView {
+                if let profile {
+                    VStack(alignment: .leading, spacing: 10) {
+                        SectionLabel(text: L("profile.editor.name"))
+                        TextField(L("profile.editor.name.placeholder"), text: $name)
+                            .font(.custom(GsFontName.jetBrainsMono, size: 15))
+                            .foregroundStyle(C.bone)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .padding(.horizontal, 16)
+                            .frame(height: 50)
+                            .gsCardBackground(C, radius: 18)
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        if let profile {
-                            idSection(profile: profile)
-                            endpointSection(profile: profile)
-                            relaySection()
-                            reimportSection()
-                            GhostButton(L("general.save").uppercased(), action: { save(); close() })
-                            dangerSection()
-                        } else {
-                            Text(L("profile.editor.not.found"))
-                                .gsFont(.body)
-                                .foregroundColor(C.textDim)
-                                .padding()
+                        SectionLabel(text: L("profile.editor.readonly"))
+                        NativeSectionCard {
+                            lockedRow(L("profile.editor.server"), profile.serverAddr)
+                            HairlineDivider()
+                            lockedRow("SNI", profile.serverName)
+                            HairlineDivider()
+                            lockedRow(L("profile.editor.tun"), profile.tunAddr)
                         }
+
+                        SectionLabel(text: L("profile.editor.relay.section"))
+                        relayCard
+
+                        HStack(spacing: 10) {
+                            Button {
+                                Task {
+                                    pinging = true
+                                    _ = await model.pingProfile(profile)
+                                    pinging = false
+                                }
+                            } label: {
+                                Text(pingTitle(profile).uppercased())
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .disabled(pinging)
+                            .glassButtonStyle()
+
+                            Button(role: .destructive) {
+                                showDeleteConfirm = true
+                            } label: {
+                                Text(L("general.delete").uppercased())
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .glassButtonStyle()
+                            .tint(C.danger)
+                        }
+                        .font(.custom(GsFontName.departureMono, size: 11))
+                        .tracking(1.5)
+                        .controlSize(.large)
+                        .padding(.top, 8)
+
+                        Button {
+                            reimportFromClipboard()
+                        } label: {
+                            Label(L("profile.editor.reimport.clipboard"), systemImage: "doc.on.clipboard")
+                                .font(.custom(GsFontName.jetBrainsMono, size: 12))
+                                .foregroundStyle(C.textDim)
+                                .frame(maxWidth: .infinity)
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .padding(18)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                } else {
+                    Text(L("profile.editor.not.found"))
+                        .gsFont(.body)
+                        .foregroundStyle(C.textDim)
+                        .padding()
                 }
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(C.bg.ignoresSafeArea())
-
-            if let errorMessage {
-                GhostDialog(
-                    title: L("admin.error").uppercased(),
-                    message: errorMessage,
-                    primaryTitle: L("general.ok"),
-                    primaryAction: { self.errorMessage = nil }
-                ) {
-                    EmptyView()
+            .navigationTitle(L("profile.editor.title"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        close()
+                    } label: {
+                        Label(L("general.cancel"), systemImage: "xmark")
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        save()
+                        close()
+                    } label: {
+                        Label(L("general.save"), systemImage: "checkmark")
+                    }
+                    .disabled(profile == nil)
                 }
             }
-
-            if showDeleteConfirm {
-                GhostDialog(
-                    title: L("settings.delete.profile.title").uppercased(),
-                    message: L("profile.editor.delete.message"),
-                    primaryTitle: L("general.delete").uppercased(),
-                    secondaryTitle: L("general.cancel").uppercased(),
-                    primaryAction: {
-                        if let profile { model.deleteProfile(id: profile.id) }
-                        showDeleteConfirm = false
-                        close()
-                    },
-                    secondaryAction: { showDeleteConfirm = false }
-                ) {
-                    EmptyView()
+            .confirmationDialog(
+                L("settings.delete.profile.title"),
+                isPresented: $showDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button(L("general.delete"), role: .destructive) {
+                    model.deleteProfile(id: profileId)
+                    close()
                 }
+                Button(L("general.cancel"), role: .cancel) {}
+            } message: {
+                Text(L("profile.editor.delete.message"))
+            }
+            .alert(
+                L("admin.error"),
+                isPresented: Binding(
+                    get: { errorMessage != nil },
+                    set: { if !$0 { errorMessage = nil } }
+                )
+            ) {
+                Button(L("general.ok"), role: .cancel) { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "")
             }
         }
         .onAppear(perform: loadFromProfile)
@@ -122,107 +177,59 @@ public struct ProfileEditorView: View {
 
     // MARK: - Sections
 
-    @ViewBuilder
-    private func idSection(profile: VpnProfile) -> some View {
-        GhostCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(L("native.profile.identity").uppercased())
-                    .gsFont(.labelMono)
-                    .foregroundColor(C.textFaint)
-                GhostTextField(
-                    L("profile.editor.name.placeholder"),
-                    text: $name,
-                    autocapitalization: .sentences
-                )
-                HairlineDivider()
-                kvRow("TUN", profile.tunAddr)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func endpointSection(profile: VpnProfile) -> some View {
-        GhostCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L("profile.editor.endpoint").uppercased())
-                    .gsFont(.labelMono)
-                    .foregroundColor(C.textFaint)
-                kvRow("SERVER", profile.serverAddr)
-                HairlineDivider()
-                kvRow("SNI", profile.serverName)
-                HairlineDivider()
-                kvRow("FP", profile.cachedAdminServerCertFp ?? "—")
-            }
-        }
-    }
-
     /// Relay hop (ADR 0013): TCP goes to host:port, SNI stays the exit's.
-    @ViewBuilder
-    private func relaySection() -> some View {
-        GhostCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $relayEnabled) {
-                    Text(L("profile.relay.toggle"))
-                        .gsFont(.labelMono)
-                        .foregroundColor(C.textFaint)
+    private var relayCard: some View {
+        NativeSectionCard {
+            NativeToggleRow(
+                title: L("profile.relay.toggle"),
+                subtitle: L("profile.relay.hint"),
+                isOn: $relayEnabled
+            )
+            if relayEnabled {
+                HairlineDivider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L("profile.editor.relay.addr"))
+                        .font(.custom(GsFontName.jetBrainsMono, size: 10))
+                        .foregroundStyle(C.textDim)
+                    TextField("host:port", text: $relayAddr)
+                        .font(.custom(GsFontName.jetBrainsMono, size: 13))
+                        .foregroundStyle(C.bone)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                 }
-                .tint(C.signal)
-                Text(L("profile.relay.desc"))
-                    .gsFont(.body)
-                    .foregroundColor(C.textDim)
-                if relayEnabled {
-                    GhostTextField("host:port", text: $relayAddr, keyboardType: .URL)
-                }
+                .padding(.vertical, 12)
             }
         }
     }
 
-    @ViewBuilder
-    private func reimportSection() -> some View {
-        GhostCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(L("profile.editor.reimport").uppercased())
-                    .gsFont(.labelMono)
-                    .foregroundColor(C.textFaint)
-                GhostTextField("ghs://…", text: $connStringDraft)
-                GhostButton(L("profile.editor.apply").uppercased(), variant: .secondary) {
-                    guard !connStringDraft.isEmpty else { return }
-                    do {
-                        try model.reimport(id: profileId, rawConnString: connStringDraft)
-                        connStringDraft = ""
-                    } catch {
-                        errorMessage = (error as? LocalizedError)?.errorDescription
-                            ?? L("profile.editor.parse.failed")
-                    }
-                }
-            }
+    private func lockedRow(_ key: String, _ value: String) -> some View {
+        HStack(spacing: 10) {
+            Text(key)
+                .font(.custom(GsFontName.jetBrainsMono, size: 13))
+                .foregroundStyle(C.bone)
+            Spacer(minLength: 12)
+            Text(value.isEmpty ? "—" : value)
+                .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                .foregroundStyle(C.textDim)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Image(systemName: "lock.fill")
+                .font(.caption2)
+                .foregroundStyle(C.textFaint)
+                .accessibilityHidden(true)
         }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
     }
 
-    @ViewBuilder
-    private func dangerSection() -> some View {
-        GhostCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(L("profile.editor.danger").uppercased())
-                    .gsFont(.labelMono)
-                    .foregroundColor(C.danger)
-                GhostButton(L("profile.delete").uppercased(), variant: .secondary) {
-                    showDeleteConfirm = true
-                }
-            }
-        }
+    private func pingTitle(_ profile: VpnProfile) -> String {
+        if pinging { return "\(L("profile.editor.ping")) · …" }
+        guard let ms = model.pingResults[profile.id] else { return L("profile.editor.ping") }
+        return ms < 0 ? L("profile.ping.failed") : String(format: L("profile.editor.ping.format"), ms)
     }
 
-    // MARK: - Helpers
-
-    private func kvRow(_ key: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(key).gsFont(.labelMonoSmall).foregroundColor(C.textDim)
-            Spacer()
-            Text(value).gsFont(.valueMono).foregroundColor(C.bone)
-                .lineLimit(1).truncationMode(.middle)
-        }
-    }
+    // MARK: - Actions
 
     private func loadFromProfile() {
         guard let p = profile else { return }
@@ -243,6 +250,19 @@ public struct ProfileEditorView: View {
         p.relayEnabled = relayEnabled
         p.relayAddr = relay.isEmpty ? nil : relay
         ProfilesStore.shared.update(p)
+    }
+
+    /// Fresh cert/key from a new ghs:// link, same profile id and name.
+    private func reimportFromClipboard() {
+        guard let raw = UIPasteboard.general.string, !raw.isEmpty else {
+            errorMessage = L("settings.import.clipboard.empty")
+            return
+        }
+        do {
+            try model.reimport(id: profileId, rawConnString: raw)
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? L("profile.editor.parse.failed")
+        }
     }
 
     private func close() {
