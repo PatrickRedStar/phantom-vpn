@@ -42,6 +42,22 @@ final class SystemSurfaces {
         }
     }
 
+    /// Tunnel session start the extension writes as `session_started_at`
+    /// (unix seconds) into the state payload or the snapshot; nil from an
+    /// extension that doesn't write it yet.
+    static func sessionStartedAt() -> Date? {
+        struct Session: Decodable { var session_started_at: Double? }
+        let payload = UserDefaults(suiteName: SharedKeys.appGroup)?.data(forKey: "vpn.state.v1")
+        let snapshot = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SharedKeys.appGroup)
+            .flatMap { try? Data(contentsOf: $0.appendingPathComponent("snapshot.json")) }
+        for data in [payload, snapshot].compactMap({ $0 }) {
+            if let t = (try? JSONDecoder().decode(Session.self, from: data))?.session_started_at {
+                return Date(timeIntervalSince1970: t)
+            }
+        }
+        return nil
+    }
+
     func endLiveActivity() async {
         for activity in Activity<GhostActivityAttributes>.activities {
             await activity.end(nil, dismissalPolicy: .immediate)

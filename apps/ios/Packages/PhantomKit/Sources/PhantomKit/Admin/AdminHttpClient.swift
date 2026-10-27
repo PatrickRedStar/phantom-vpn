@@ -179,14 +179,14 @@ public enum AdminHttpError: Error, LocalizedError {
 /// URLSession delegate that:
 /// 1. Presents the client SecIdentity for mTLS challenges.
 /// 2. Performs TOFU SHA-256 pinning on the server cert — accepts on first
-///    handshake, rejects on mismatch thereafter.
+///    handshake and pins it for the rest of the session, rejects on mismatch.
 final class MTLSDelegate: NSObject, URLSessionDelegate {
 
     private let clientIdentity: SecIdentity
     private let clientCertificates: [SecCertificate]
-    private let pinnedServerCertFp: String?
 
     private let lock = NSLock()
+    private var _pinnedServerCertFp: String?
     private var _lastServerCertFp: String?
 
     var lastServerCertFp: String? {
@@ -194,10 +194,16 @@ final class MTLSDelegate: NSObject, URLSessionDelegate {
         return _lastServerCertFp
     }
 
+    /// The configured pin, or the one learned on the first TOFU handshake.
+    var pinnedServerCertFp: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _pinnedServerCertFp
+    }
+
     init(identity: SecIdentity, certificates: [SecCertificate], pinnedFingerprint: String?) {
         self.clientIdentity = identity
         self.clientCertificates = certificates
-        self.pinnedServerCertFp = pinnedFingerprint?.lowercased()
+        self._pinnedServerCertFp = pinnedFingerprint?.lowercased()
     }
 
     func urlSession(
@@ -230,17 +236,15 @@ final class MTLSDelegate: NSObject, URLSessionDelegate {
 
             lock.lock()
             _lastServerCertFp = fp
+            // TOFU: the first handshake pins; the caller persists `lastServerCertFp`.
+            let pinned = _pinnedServerCertFp ?? fp
+            _pinnedServerCertFp = pinned
             lock.unlock()
 
-            if let pinned = pinnedServerCertFp {
-                if fp == pinned {
-                    completionHandler(.useCredential, URLCredential(trust: trust))
-                } else {
-                    completionHandler(.cancelAuthenticationChallenge, nil)
-                }
-            } else {
-                // TOFU: accept first handshake, caller persists `lastServerCertFp`.
+            if fp == pinned {
                 completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
             }
 
         default:
@@ -278,6 +282,35 @@ public final class AdminHttpClient {
     /// into `VpnProfile.cachedAdminServerCertFp` after first connect.
     public var lastServerCertFp: String? { delegate.lastServerCertFp }
 
+    /// One client per profile identity: building the identity costs keychain
+    /// writes, and a fresh URLSession costs a TLS handshake per request.
+    private static var cached: (key: String, client: AdminHttpClient)?
+
+    /// Shared client for `profile`'s admin API. Reused while the profile id,
+    /// certificate, key and gateway stay the same and its pin matches the
+    /// profile's (a cleared pin re-runs TOFU); otherwise replaced.
+    public static func shared(for profile: VpnProfile) throws -> AdminHttpClient {
+        guard let certPem = profile.certPem, !certPem.isEmpty,
+              let keyPem = profile.keyPem, !keyPem.isEmpty,
+              let baseURL = AdminGateway.adminBaseURL(for: profile)
+        else {
+            throw AdminHttpError.identityCreation("profile has no client certificate")
+        }
+        let key = [profile.id, baseURL.absoluteString, certPem, keyPem].joined(separator: "|")
+        let pin = profile.cachedAdminServerCertFp?.lowercased()
+        if let cached, cached.key == key, cached.client.delegate.pinnedServerCertFp == pin {
+            return cached.client
+        }
+        let client = try AdminHttpClient(
+            baseURL: baseURL,
+            clientCertPem: certPem,
+            clientKeyPem: keyPem,
+            pinnedServerCertFp: pin
+        )
+        cached = (key, client)
+        return client
+    }
+
     /// Builds a client. Fails if the PEMs can't be parsed into a SecIdentity.
     /// - Parameters:
     ///   - baseURL: Admin server URL, e.g. `https://10.7.0.1:8080`.
@@ -309,6 +342,12 @@ public final class AdminHttpClient {
         // принудительно ходим напрямую.
         cfg.connectionProxyDictionary = [:]
         self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+    }
+
+    deinit {
+        // A session retains its delegate until invalidated — without this
+        // every client leaked its session and identity.
+        session.finishTasksAndInvalidate()
     }
 
     // MARK: Endpoints
@@ -778,6 +817,9 @@ private extension AdminHttpClient {
             kSecValueRef as String: certificate,
             kSecAttrLabel as String: label,
             kSecUseDataProtectionKeychain as String: true,
+            // Default WhenUnlocked fails with -25308 when the app refreshes
+            // with the device locked.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
         let certStatus = SecItemAdd(certAttrs as CFDictionary, nil)
         if certStatus != errSecSuccess && certStatus != errSecDuplicateItem {
@@ -789,6 +831,7 @@ private extension AdminHttpClient {
             kSecValueRef as String: privateKey,
             kSecAttrLabel as String: label,
             kSecUseDataProtectionKeychain as String: true,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
         let keyStatus = SecItemAdd(keyAttrs as CFDictionary, nil)
         if keyStatus != errSecSuccess && keyStatus != errSecDuplicateItem {

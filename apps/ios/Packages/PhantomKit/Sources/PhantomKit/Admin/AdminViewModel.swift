@@ -69,11 +69,7 @@ public final class AdminViewModel {
         self.profile = profile
         self.profilesStore = profilesStore ?? .shared
 
-        guard
-            let certPem = profile.certPem,
-            let keyPem = profile.keyPem,
-            let baseURL = AdminGateway.adminBaseURL(for: profile)
-        else {
+        guard profile.certPem != nil, profile.keyPem != nil else {
             self.client = nil
             self.mtlsUnavailable = true
             self.error = "Admin-клиент недоступен — отсутствуют сертификаты профиля"
@@ -81,12 +77,8 @@ public final class AdminViewModel {
         }
 
         do {
-            self.client = try AdminHttpClient(
-                baseURL: baseURL,
-                clientCertPem: certPem,
-                clientKeyPem: keyPem,
-                pinnedServerCertFp: profile.cachedAdminServerCertFp
-            )
+            // Shared per profile: the view re-creates this VM on every render.
+            self.client = try AdminHttpClient.shared(for: profile)
         } catch {
             self.client = nil
             self.mtlsUnavailable = true
@@ -112,12 +104,13 @@ public final class AdminViewModel {
             // Persist /api/me (admin flag, subscription) and the TOFU pin as
             // soon as the handshake succeeded — a demoted admin gets 403 from
             // the calls below, and the flag must still drop.
-            var updated = profilesStore.profiles.first(where: { $0.id == profile.id }) ?? profile
+            let current = profilesStore.profiles.first(where: { $0.id == profile.id }) ?? profile
+            var updated = current
             selfInfo.apply(to: &updated)
             if let fp = client.lastServerCertFp {
                 updated.cachedAdminServerCertFp = fp
             }
-            profilesStore.update(updated)
+            if updated != current { profilesStore.update(updated) }
 
             async let statusTask = client.getStatus()
             async let clientsTask = client.listClients()
