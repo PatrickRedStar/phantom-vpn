@@ -100,8 +100,13 @@ public final class RoutingRulesManager {
     private static let appGroupId = "group.com.ghoststream.client"
     private static let geoipBaseURL = "https://raw.githubusercontent.com/v2fly/geoip/release/text"
     private static let geositeBaseURL = "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data"
-    private static let maxIPv4Prefix = 13
-    private static let geoipFormatMarker = "# ghoststream-format: geoip-v3-ios-p13"
+    /// Bumped when the stored geoip format changes. v4: prefixes as
+    /// published — the old /13 widening sent ~11 % of IPv4 (Telegram,
+    /// Instagram, YouTube ranges among them) outside the tunnel. The core
+    /// keeps the route budget by dropping small direct blocks INTO the
+    /// tunnel (safe side). Files without this marker are re-downloaded and
+    /// never used meanwhile.
+    private static let geoipFormatMarker = "# ghoststream-format: geoip-v4-exact"
 
     private let baseDirectory: URL
     private let fileManager: FileManager
@@ -217,7 +222,9 @@ public final class RoutingRulesManager {
         for code in normalizedCountryCodes(countryCodes) {
             let preset = RoutingRulePreset(source: .geoip, code: code, labelKey: "")
             let file = fileURL(for: preset)
-            guard let text = try? String(contentsOf: file, encoding: .utf8) else {
+            guard let text = try? String(contentsOf: file, encoding: .utf8),
+                  text.contains(Self.geoipFormatMarker)
+            else {
                 missing.append(code)
                 continue
             }
@@ -344,12 +351,8 @@ public final class RoutingRulesManager {
               let ipv4 = ipv4ToUInt32(String(parts[0]))
         else { return nil }
 
-        let effectivePrefix = min(prefix, maxIPv4Prefix)
-        let mask: UInt32 = effectivePrefix == 0
-            ? 0
-            : UInt32.max << UInt32(32 - effectivePrefix)
-        let network = ipv4 & mask
-        return "\(uint32ToIPv4(network))/\(effectivePrefix)"
+        let mask: UInt32 = prefix == 0 ? 0 : UInt32.max << UInt32(32 - prefix)
+        return "\(uint32ToIPv4(ipv4 & mask))/\(prefix)"
     }
 
     private static func ipv4ToUInt32(_ ip: String) -> UInt32? {

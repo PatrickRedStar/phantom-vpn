@@ -53,18 +53,6 @@ public final class VpnTunnelController: ObservableObject {
 
     public init() {}
 
-    private struct LastTunnelParams: Encodable {
-        let profileId: String
-        let dnsServers: [String]?
-        let settings: TunnelSettings
-
-        enum CodingKeys: String, CodingKey {
-            case profileId = "profile_id"
-            case dnsServers = "dns_servers"
-            case settings
-        }
-    }
-
     private struct DirectRouteRules: Sendable {
         let ipv4Cidrs: [String]
         let ipv6Cidrs: [String]
@@ -103,6 +91,9 @@ public final class VpnTunnelController: ObservableObject {
         // Every app-initiated start is a manual Connect: it lifts the
         // extension's fatal-stop guard.
         UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: SharedKeys.fatalStop)
+        // No longer written (see below); a stale copy would feed the
+        // extension's fallback an old DNS list.
+        UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: "last_tunnel_params")
 
         var providerProfile = profile
         let effectiveRoutingMode = preferences.effectiveRoutingMode(
@@ -132,19 +123,10 @@ public final class VpnTunnelController: ObservableObject {
             streams: preferences.streamOverride
         )
 
-        let settingsData: Data
-        do {
-            settingsData = try JSONEncoder().encode(settings)
-            let lastParams = LastTunnelParams(
-                profileId: profile.id,
-                dnsServers: providerProfile.dnsServers,
-                settings: settings
-            )
-            if let data = try? JSONEncoder().encode(lastParams),
-               let json = String(data: data, encoding: .utf8) {
-                preferences.saveLastTunnelParams(json)
-            }
-        } catch {
+        // Settings (with the country CIDR list, ~200 KB for RU) travel only
+        // in providerConfiguration — not in App Group UserDefaults, whose
+        // plist is rewritten on every 1 Hz state write.
+        guard let settingsData = try? JSONEncoder().encode(settings) else {
             lastError = VpnTunnelError.encoding.localizedDescription
             throw VpnTunnelError.encoding
         }
@@ -225,15 +207,6 @@ public final class VpnTunnelController: ObservableObject {
         guard let settingsData = try? JSONEncoder().encode(settings) else {
             lastError = VpnTunnelError.encoding.localizedDescription
             throw VpnTunnelError.encoding
-        }
-        let lastParams = LastTunnelParams(
-            profileId: profile.id,
-            dnsServers: providerProfile.dnsServers,
-            settings: settings
-        )
-        if let data = try? JSONEncoder().encode(lastParams),
-           let json = String(data: data, encoding: .utf8) {
-            preferences.saveLastTunnelParams(json)
         }
 
         let status = manager.connection.status

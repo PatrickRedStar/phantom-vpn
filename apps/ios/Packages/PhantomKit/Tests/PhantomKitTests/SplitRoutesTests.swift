@@ -14,6 +14,16 @@ final class SplitRoutesTests: XCTestCase {
         }.joined(separator: "\n")
     }
 
+    /// geoip ru is ~12.9k IPv4 blocks (~200 KB): exact prefixes fit the
+    /// input cap and come back within the core's 8000-route budget.
+    func testCountrySizedExactListFitsBudget() {
+        let text = directList(13_000)
+        XCTAssertLessThan(text.utf8.count, 262_144)
+        let routes = PhantomBridge.computeVpnRoutes(directCidrs: text)
+        XCTAssertFalse(routes.isEmpty)
+        XCTAssertLessThanOrEqual(routes.count, 8_000)
+    }
+
     func testListOverInputCapYieldsNoRoutes() {
         let text = directList(20_000)
         XCTAssertGreaterThan(text.utf8.count, 262_144)
