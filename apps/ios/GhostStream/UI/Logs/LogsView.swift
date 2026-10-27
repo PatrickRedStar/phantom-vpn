@@ -105,7 +105,7 @@ struct LogsView: View {
         case .connected: return C.signal
         case .connecting, .reconnecting, .disconnecting: return C.warn
         case .error: return C.danger
-        case .disconnected: return C.textFaint
+        case .disconnected: return C.textDim
         }
     }
 
@@ -117,7 +117,6 @@ struct LogsView: View {
                     .font(.system(size: 12, weight: .semibold))
                 Text(message)
                     .gsFont(.hdrMeta)
-                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .foregroundStyle(statusColor)
@@ -218,16 +217,27 @@ private struct LogLineRow: View {
     let line: LogLine
 
     @Environment(\.gsColors) private var C
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// Level column grows with the text — a fixed 34 pt gave «I / N / F».
+    @ScaledMetric(relativeTo: .body) private var levelWidth: CGFloat = 34
 
     var body: some View {
         let entry = line.frame
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(LogsViewModel.formatTs(entry.tsUnixMs))
-                .foregroundStyle(C.textDim)
-            Text(LogsViewModel.levelBadge(entry.level))
-                .font(.custom(GsFontName.departureMono, size: 10.5))
-                .foregroundStyle(levelColor)
-                .frame(width: 34, alignment: .leading)
+        // Accessibility sizes: time and level on top, the message under them.
+        let row = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        row {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(LogsViewModel.formatTs(entry.tsUnixMs))
+                    .foregroundStyle(C.textDim)
+                    .fixedSize()
+                Text(LogsViewModel.levelBadge(entry.level))
+                    .font(.custom(GsFontName.departureMono, size: 10.5))
+                    .foregroundStyle(levelColor)
+                    .lineLimit(1)
+                    .frame(width: levelWidth, alignment: .leading)
+            }
             (Text(entry.msg).foregroundColor(C.bone)
                 + Text(line.count > 1 ? "  ×\(line.count)" : "").foregroundColor(C.textDim))
                 .frame(maxWidth: .infinity, alignment: .leading)
