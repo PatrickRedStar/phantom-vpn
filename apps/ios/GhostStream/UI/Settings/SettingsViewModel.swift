@@ -92,7 +92,6 @@ public final class SettingsViewModel {
     var theme: ThemeOverride { ThemeOverride.current }
     public var languageOverride: String? { preferencesStore.languageOverride }
     public var onDemand: Bool { preferencesStore.onDemand }
-    public var killSwitch: Bool { preferencesStore.killSwitch }
     public var liveActivity: Bool { preferencesStore.liveActivity }
 
     // MARK: - Profile mutations
@@ -358,11 +357,6 @@ public final class SettingsViewModel {
     public func setOnDemand(_ on: Bool) {
         preferencesStore.onDemand = on
         Task { await tunnelController.setOnDemand(on) }
-    }
-
-    /// «Без VPN — без сети» (includeAllNetworks), applied at the next Connect.
-    public func setKillSwitch(_ on: Bool) {
-        preferencesStore.killSwitch = on
     }
 
     /// «Dynamic Island»: off ends the running Live Activity, on starts it

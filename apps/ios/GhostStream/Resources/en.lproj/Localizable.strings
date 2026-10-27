@@ -347,9 +347,6 @@
 "settings.section.connection" = "Connection";
 "settings.row.on.demand" = "Auto-connect";
 "settings.on.demand.subtitle" = "iOS brings the VPN up whenever a network appears. Disconnect pauses it until the next Connect";
-"settings.row.kill.switch" = "No VPN — no network";
-"settings.kill.switch.subtitle" = "Block traffic while the tunnel is down. Local network stays reachable. From the next Connect";
-"settings.kill.switch.split" = "Full tunnel only — unavailable with split tunnel";
 "settings.row.live.activity" = "Live Activity";
 "settings.live.activity.subtitle" = "Session timer on the Lock Screen and in the Dynamic Island, where there is one — iOS shows them only together. To hide it from the Lock Screen for all apps: Settings → Face ID & Passcode";
 

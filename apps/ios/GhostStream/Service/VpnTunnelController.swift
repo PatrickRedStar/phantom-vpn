@@ -410,18 +410,33 @@ public final class VpnTunnelController: ObservableObject {
         }
     }
 
-    /// «Без VPN — без сети»: includeAllNetworks blocks traffic while the
-    /// tunnel is not up (connecting / reconnecting) instead of letting it
-    /// out in the open. Full tunnel only — it overrides excludedRoutes, so
-    /// split routing would break (same rule as macOS). LAN stays reachable
-    /// (excludeLocalNetworks, ADR 0019). Applied at the next Connect.
+    /// No kill switch on iOS (ADR 0021): with includeAllNetworks an app update
+    /// deadlocks the phone — iOS kills the provider without stopTunnel, keeps
+    /// the block, and the update itself can't download (FB16482585).
     private static func applyKillSwitch(
         _ preferences: PreferencesStore,
         routingMode: RoutingMode,
         to proto: NETunnelProviderProtocol
     ) {
-        proto.includeAllNetworks = preferences.killSwitch && routingMode == .global
+        proto.includeAllNetworks = false
         proto.excludeLocalNetworks = true
+    }
+
+    /// Clears includeAllNetworks from a config saved by builds ≤ 5, before the
+    /// next update can deadlock. ponytail: drop once nobody runs those builds.
+    public func clearIncludeAllNetworks() async {
+        do {
+            try await loadFromPreferences()
+            guard let manager,
+                  let proto = manager.protocolConfiguration as? NETunnelProviderProtocol,
+                  proto.includeAllNetworks else { return }
+            proto.includeAllNetworks = false
+            manager.protocolConfiguration = proto
+            try await manager.saveToPreferences()
+            log.notice("cleared legacy includeAllNetworks")
+        } catch {
+            log.error("clear includeAllNetworks failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private static func applyOnDemand(_ enabled: Bool, to manager: NETunnelProviderManager) {

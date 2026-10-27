@@ -200,21 +200,17 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   Group). Разрешение приложение спрашивает при первом успешном подключении.
   В foreground iOS его не показывает — причина и так на дашборде.
 
-## «Без VPN — без сети» (kill switch)
+## Kill switch на iOS — нет
 
-`PreferencesStore.killSwitch` (общий с macOS, по умолчанию выкл.) →
-`includeAllNetworks = true` + `excludeLocalNetworks = true` на
-`NETunnelProviderProtocol`, со следующего Connect.
-
-- Пока туннель не поднят (connecting / reasserting), трафик блокируется, а
-  не уходит мимо VPN. После ручного «Отключить» сеть обычная.
-- Только полный туннель: `includeAllNetworks` перекрывает `excludedRoutes`,
-  поэтому с раздельным туннелем тумблер неактивен (как на macOS).
-- LAN доступна (`excludeLocalNetworks`, ADR 0019). Сокеты самого провайдера
-  идут мимо туннеля, поэтому реле/сервер достижимы.
-- Оговорки iOS: часть системного трафика (APNs, сотовые сервисы — флаги
-  `excludeAPNs` / `excludeCellularServices`, по умолчанию true) идёт мимо;
-  AirDrop/CarPlay и подобное могут не работать, пока туннель поднимается.
+Режима «Без VPN — без сети» (`includeAllNetworks`) на iOS нет
+([ADR 0021](../decisions/0021-ios-no-kill-switch.md)): при обновлении
+приложения iOS убивает провайдер без `stopTunnel`, блокировка остаётся, а
+само обновление не может скачаться — телефон без интернета до перезагрузки
+(FB16482585, пойман на сборке 4→5). `applyKillSwitch` всегда ставит
+`includeAllNetworks = false` (`excludeLocalNetworks = true`, ADR 0019), а
+`clearIncludeAllNetworks()` при запуске приложения снимает флаг с
+конфигураций, сохранённых сборками ≤ 5. `PreferencesStore.killSwitch`
+остаётся — им пользуется macOS.
 
 ## Маршруты, relay, MTU
 

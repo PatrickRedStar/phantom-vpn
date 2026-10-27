@@ -101,6 +101,7 @@ struct AppNavigation: View {
         .tint(C.signal)
         .legacyTabBarBackground(C.bg)
         .task {
+            await VpnTunnelController().clearIncludeAllNetworks()
             await reconcileRoutePolicyOnLaunch()
         }
         .task {

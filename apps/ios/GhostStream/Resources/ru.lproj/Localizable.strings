@@ -347,9 +347,6 @@
 "settings.section.connection" = "Подключение";
 "settings.row.on.demand" = "Автоподключение";
 "settings.on.demand.subtitle" = "iOS сама поднимет VPN при появлении сети. «Отключить» выключает до следующего подключения";
-"settings.row.kill.switch" = "Без VPN — без сети";
-"settings.kill.switch.subtitle" = "Блокировать трафик, пока туннель не поднят. Локальная сеть доступна. Со следующего подключения";
-"settings.kill.switch.split" = "Только в режиме «Всё через VPN» — с раздельным туннелем недоступно";
 "settings.row.live.activity" = "Live Activity";
 "settings.live.activity.subtitle" = "Таймер сессии на экране блокировки и в Dynamic Island, если он есть, — iOS показывает их только вместе. Убрать с экрана блокировки можно лишь для всех приложений: Настройки → Face ID и код-пароль";
 

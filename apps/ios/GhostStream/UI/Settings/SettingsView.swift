@@ -330,13 +330,6 @@ public struct SettingsView: View {
                 subtitle: L("settings.on.demand.subtitle"),
                 isOn: Binding(get: { model.onDemand }, set: { model.setOnDemand($0) })
             )
-            HairlineDivider()
-            NativeToggleRow(
-                title: L("settings.row.kill.switch"),
-                subtitle: L(splitOn ? "settings.kill.switch.split" : "settings.kill.switch.subtitle"),
-                isOn: Binding(get: { model.killSwitch }, set: { model.setKillSwitch($0) })
-            )
-            .disabled(splitOn)
         }
     }
 
