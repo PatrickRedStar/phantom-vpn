@@ -25,6 +25,8 @@ public enum VpnState: Equatable {
     case disconnected
     case connecting
     case connected(since: Date, serverName: String)
+    /// The core lost the link and is retrying (ADR 0018); same session.
+    case reconnecting(since: Date, serverName: String)
     case disconnecting
     case error(String)
 }
@@ -42,6 +44,8 @@ extension VpnStatePayload {
             return .init(kind: .connecting)
         case .connected(let since, let name):
             return .init(kind: .connected, since: since.timeIntervalSince1970, serverName: name)
+        case .reconnecting(let since, let name):
+            return .init(kind: .reconnecting, since: since.timeIntervalSince1970, serverName: name)
         case .disconnecting:
             return .init(kind: .disconnecting)
         case .error(let msg):
@@ -56,6 +60,9 @@ extension VpnStatePayload {
         case .connected:
             let date = Date(timeIntervalSince1970: since ?? Date().timeIntervalSince1970)
             return .connected(since: date, serverName: serverName ?? "")
+        case .reconnecting:
+            let date = Date(timeIntervalSince1970: since ?? Date().timeIntervalSince1970)
+            return .reconnecting(since: date, serverName: serverName ?? "")
         case .disconnecting: return .disconnecting
         case .error:         return .error(error ?? "unknown")
         }
@@ -194,12 +201,13 @@ public final class VpnStateManager {
             state = .disconnected
         case .connecting:
             state = .connecting
-        case .reconnecting:
-            state = .connecting
-        case .connected:
+        case .connected, .reconnecting:
+            // sessionSecs keeps counting across core reconnects.
             let since = Date().addingTimeInterval(-Double(frame.sessionSecs))
             let serverName = frame.sni ?? frame.serverAddr ?? ""
-            state = .connected(since: since, serverName: serverName)
+            state = frame.state == .connected
+                ? .connected(since: since, serverName: serverName)
+                : .reconnecting(since: since, serverName: serverName)
         case .error:
             state = .error(frame.lastError ?? "unknown")
         }

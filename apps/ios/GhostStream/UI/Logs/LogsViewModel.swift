@@ -100,7 +100,7 @@ final class LogsViewModel {
         switch tunnelState {
         case .disconnected, .disconnecting:
             return true
-        case .connecting, .connected, .error:
+        case .connecting, .connected, .reconnecting, .error:
             return false
         }
     }
@@ -110,6 +110,7 @@ final class LogsViewModel {
         switch tunnelState {
         case .connected: return "LIVE"
         case .connecting: return "CONNECTING"
+        case .reconnecting: return "RECONNECTING"
         case .disconnecting: return "DISCONNECTING"
         case .error: return "VPN ERROR"
         case .disconnected: return "DISCONNECTED"
@@ -128,7 +129,7 @@ final class LogsViewModel {
             return "VPN disconnecting. Live log IPC may be unavailable."
         case .error(let message):
             return "VPN error: \(message)"
-        case .connecting, .connected:
+        case .connecting, .connected, .reconnecting:
             return nil
         }
     }
@@ -252,7 +253,7 @@ final class LogsViewModel {
 
     private var shouldAttemptIpc: Bool {
         switch tunnelState {
-        case .connected, .connecting:
+        case .connected, .connecting, .reconnecting:
             return true
         case .disconnected, .disconnecting, .error:
             return false

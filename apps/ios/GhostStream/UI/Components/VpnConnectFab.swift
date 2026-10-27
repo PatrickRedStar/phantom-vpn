@@ -26,7 +26,7 @@ struct VpnConnectFab: View {
             switch state {
             case .disconnected, .error:
                 onStart()
-            case .connecting, .connected, .disconnecting:
+            case .connecting, .connected, .reconnecting, .disconnecting:
                 onStop()
             }
         }
@@ -38,7 +38,8 @@ struct VpnConnectFab: View {
     ) -> (String, Bool, Color) {
         switch state {
         case .disconnected:  return (L("action_connect").uppercased(),        true,  C.signal)
-        case .connecting:    return ("\(L("action_connect").uppercased())…",  false, C.warn)
+        case .connecting,
+             .reconnecting:  return ("\(L("action_connect").uppercased())…",  false, C.warn)
         case .connected:     return (L("action_disconnect").uppercased(),     false, C.signal)
         case .disconnecting: return ("\(L("action_disconnect").uppercased())…", false, C.warn)
         case .error:         return (L("action_retry").uppercased(),          true,  C.danger)

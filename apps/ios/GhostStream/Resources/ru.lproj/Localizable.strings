@@ -225,6 +225,7 @@
 "native.dashboard.subscription.hours.format" = "Подписка: %lldч";
 "native.dashboard.subscription.less_than_hour" = "Подписка: < 1ч";
 "native.dashboard.meta.connecting" = "подключение";
+"native.dashboard.meta.reconnecting" = "переподключение";
 "native.dashboard.meta.disconnecting" = "отключение";
 "native.dashboard.meta.error" = "ошибка";
 "native.dashboard.meta.standby" = "ожидание";

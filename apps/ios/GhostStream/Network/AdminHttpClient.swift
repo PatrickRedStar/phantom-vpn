@@ -47,7 +47,7 @@ enum ProfileEntitlementRefresher {
             return false
         }
         switch appState {
-        case .connected, .connecting:
+        case .connected, .connecting, .reconnecting:
             return true
         case .disconnected, .disconnecting, .error:
             break

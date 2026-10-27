@@ -178,6 +178,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         completionHandler(nil)
                     }
 
+                    // The core reconnects by itself (ADR 0018); NE only shows it.
+                    if (frame.state == .reconnecting) != (previousState == .reconnecting) {
+                        self.reasserting = frame.state == .reconnecting
+                    }
+
                     // The core reconnects on its own after network failures;
                     // `.error` means a fatal reason (config, certificate,
                     // revoked access, wrong clock) and the runtime has given
@@ -732,10 +737,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             payload = VpnStatePayload(kind: .disconnected)
         case .connecting:
             payload = VpnStatePayload(kind: .connecting)
-        case .reconnecting:
-            payload = VpnStatePayload(kind: .connecting)
-        case .connected:
-            payload = VpnStatePayload(kind: .connected,
+        case .connected, .reconnecting:
+            payload = VpnStatePayload(kind: frame.state == .connected ? .connected : .reconnecting,
                                        since: Date().timeIntervalSince1970 - Double(frame.sessionSecs),
                                        serverName: frame.sni ?? frame.serverAddr ?? "")
         case .error:

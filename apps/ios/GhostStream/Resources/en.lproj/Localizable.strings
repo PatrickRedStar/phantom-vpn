@@ -225,6 +225,7 @@
 "native.dashboard.subscription.hours.format" = "Subscription: %lldh";
 "native.dashboard.subscription.less_than_hour" = "Subscription: < 1h";
 "native.dashboard.meta.connecting" = "connecting";
+"native.dashboard.meta.reconnecting" = "reconnecting";
 "native.dashboard.meta.disconnecting" = "disconnecting";
 "native.dashboard.meta.error" = "error";
 "native.dashboard.meta.standby" = "standby";

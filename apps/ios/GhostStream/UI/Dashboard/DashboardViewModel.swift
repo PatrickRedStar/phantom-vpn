@@ -144,13 +144,17 @@ final class DashboardViewModel {
             // clock) stays on screen until the next connect attempt.
             if case .error = VpnStateManager.shared.state { break }
             VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
-        case .connecting, .reasserting:
+        case .connecting:
+            VpnStateManager.shared.update(.connecting)
+        case .reasserting:
+            // The core is reconnecting; the extension's snapshot keeps the session.
+            if case .reconnecting = VpnStateManager.shared.state { break }
             VpnStateManager.shared.update(.connecting)
         case .disconnecting:
             VpnStateManager.shared.update(.disconnecting)
         case .connected:
             switch VpnStateManager.shared.state {
-            case .connected, .disconnecting:
+            case .connected, .reconnecting, .disconnecting:
                 break
             default:
                 let profile = ProfilesStore.shared.activeProfile
@@ -180,6 +184,7 @@ final class DashboardViewModel {
              (.disconnecting, .disconnecting):
             return true
         case (.connected, .connected): return true
+        case (.reconnecting, .reconnecting): return true
         case (.error, .error): return true
         default: return false
         }
@@ -195,6 +200,10 @@ final class DashboardViewModel {
             startSampleLoop()
             startTimerLoop(since: since)
             startSubscriptionLoop()
+        case .reconnecting(let since, _):
+            // Same session — the timer keeps running.
+            startSampleLoop()
+            startTimerLoop(since: since)
         case .connecting:
             timerText = "--:--:--"
             startSampleLoop()

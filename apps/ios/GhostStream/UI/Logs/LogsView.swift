@@ -95,7 +95,7 @@ struct LogsView: View {
         if vm.hasIpcError { return C.danger }
         switch vm.tunnelState {
         case .connected: return C.signal
-        case .connecting, .disconnecting: return C.warn
+        case .connecting, .reconnecting, .disconnecting: return C.warn
         case .error: return C.danger
         case .disconnected: return C.textFaint
         }

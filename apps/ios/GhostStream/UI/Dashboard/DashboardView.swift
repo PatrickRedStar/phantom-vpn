@@ -414,6 +414,7 @@ struct DashboardView: View {
     private var headerMetaText: String {
         switch vm.state {
         case .connected(_, let name): return "\(name) · \(vm.timerText)"
+        case .reconnecting:           return L("native.dashboard.meta.reconnecting")
         case .connecting:             return L("native.dashboard.meta.connecting")
         case .disconnecting:          return L("native.dashboard.meta.disconnecting")
         case .error:                  return L("native.dashboard.meta.error")
@@ -429,7 +430,7 @@ struct DashboardView: View {
 
     private func shouldPulse(_ state: VpnState) -> Bool {
         switch state {
-        case .connected, .connecting, .disconnecting: return true
+        case .connected, .connecting, .reconnecting, .disconnecting: return true
         default: return false
         }
     }
@@ -445,7 +446,7 @@ struct DashboardView: View {
 
     private func handlePrimaryAction() {
         switch vm.state {
-        case .connected, .connecting, .disconnecting:
+        case .connected, .connecting, .reconnecting, .disconnecting:
             vm.stop()
         case .disconnected, .error:
             vm.start(profile: profiles.activeProfile, preferences: prefs)

@@ -36,6 +36,21 @@ final class DashboardPresentationTests: XCTestCase {
         XCTAssertEqual(result.subscriptionText, "5 days remaining")
     }
 
+    func testReconnectingKeepsSessionTimerAndOffersDisconnect() {
+        let result = DashboardPresentation.make(
+            state: .reconnecting(since: Date(timeIntervalSince1970: 100), serverName: "nl"),
+            activeProfileName: "nl",
+            timerText: "01:02:03",
+            routeIsDirect: true,
+            subscriptionText: nil
+        )
+
+        XCTAssertEqual(result.title, L("native.dashboard.reconnecting", "Reconnecting"))
+        XCTAssertEqual(result.subtitle, "nl · 01:02:03")
+        XCTAssertEqual(result.primaryActionTitle, L("action_disconnect", "Disconnect"))
+        XCTAssertEqual(result.tone, .warning)
+    }
+
     func testLanguageOverrideSelectsExplicitLocalizationBundle() {
         let defaults = UserDefaults(suiteName: "group.com.ghoststream.client")
         defaults?.set("en", forKey: "language_override")

@@ -41,6 +41,15 @@ enum DashboardPresentation {
                 routeText: route,
                 subscriptionText: subscription
             )
+        case .reconnecting:
+            return DashboardPresentationResult(
+                title: L("native.dashboard.reconnecting", "Reconnecting"),
+                subtitle: "\(profileName) · \(timerText)",
+                primaryActionTitle: L("action_disconnect", "Disconnect"),
+                tone: .warning,
+                routeText: route,
+                subscriptionText: subscription
+            )
         case .connecting:
             return DashboardPresentationResult(
                 title: L("native.dashboard.connecting", "Connecting"),

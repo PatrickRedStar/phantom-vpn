@@ -15,6 +15,7 @@ func pulseColor(for state: VpnState, colors C: GsColorSet) -> Color {
     switch state {
     case .connected:     return C.signal
     case .connecting,
+         .reconnecting,
          .disconnecting: return C.warn
     case .error:         return C.danger
     case .disconnected:  return C.textFaint

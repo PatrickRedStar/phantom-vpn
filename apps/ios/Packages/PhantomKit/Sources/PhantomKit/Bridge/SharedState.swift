@@ -11,7 +11,7 @@ import Foundation
 /// DTO rather than a shared enum type.
 public struct VpnStatePayload: Codable, Equatable {
     public enum Kind: String, Codable {
-        case disconnected, connecting, connected, disconnecting, error
+        case disconnected, connecting, connected, reconnecting, disconnecting, error
     }
     public var kind: Kind
     public var since: Double?
