@@ -40,9 +40,12 @@ struct NativeToggleRow: View {
     var body: some View {
         Toggle(isOn: $isOn) {
             VStack(alignment: .leading, spacing: 2) {
+                // Short titles: shrink rather than break mid-word at AX sizes.
                 Text(title)
                     .font(.custom(GsFontName.jetBrainsMono, size: 13))
                     .foregroundStyle(C.bone)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
                 Text(subtitle)
                     .font(.custom(GsFontName.jetBrainsMono, size: 10))
                     .foregroundStyle(C.textDim)

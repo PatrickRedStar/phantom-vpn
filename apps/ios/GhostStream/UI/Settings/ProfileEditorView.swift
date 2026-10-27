@@ -24,6 +24,7 @@ public struct ProfileEditorView: View {
 
     @Environment(\.gsColors) private var C
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     // MARK: - Local state
 
@@ -192,34 +193,50 @@ public struct ProfileEditorView: View {
                         .font(.custom(GsFontName.jetBrainsMono, size: 10))
                         .foregroundStyle(C.textDim)
                     TextField("host:port", text: $relayAddr)
-                        .font(.custom(GsFontName.jetBrainsMono, size: 13))
-                        .foregroundStyle(C.bone)
+                        .font(.custom(GsFontName.jetBrainsMono, size: 12))
+                        .foregroundStyle(C.signal)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 40)
+                        .background(C.bg, in: Capsule())
+                        .overlay(Capsule().stroke(C.hairBold, lineWidth: 1))
                 }
                 .padding(.vertical, 12)
             }
         }
     }
 
+    /// Key · value on one line; at accessibility sizes the value goes
+    /// under the key («Туннельный IP» broke mid-word next to it).
     private func lockedRow(_ key: String, _ value: String) -> some View {
-        HStack(spacing: 10) {
+        let stacked = typeSize.isAccessibilitySize
+        let row = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 10))
+        return row {
             Text(key)
                 .font(.custom(GsFontName.jetBrainsMono, size: 13))
                 .foregroundStyle(C.bone)
-            Spacer(minLength: 12)
-            Text(value.isEmpty ? "—" : value)
-                .font(.custom(GsFontName.jetBrainsMono, size: 11))
-                .foregroundStyle(C.textDim)
                 .lineLimit(1)
-                .truncationMode(.middle)
-            Image(systemName: "lock.fill")
-                .font(.caption2)
-                .foregroundStyle(C.textFaint)
-                .accessibilityHidden(true)
+                .minimumScaleFactor(0.5)
+                .layoutPriority(1)
+            if !stacked { Spacer(minLength: 12) }
+            HStack(spacing: 10) {
+                Text(value.isEmpty ? "—" : value)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(stacked ? nil : 1)
+                    .truncationMode(.middle)
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(C.textFaint)
+                    .accessibilityHidden(true)
+            }
         }
-        .frame(minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.vertical, stacked ? 8 : 0)
         .accessibilityElement(children: .combine)
     }
 

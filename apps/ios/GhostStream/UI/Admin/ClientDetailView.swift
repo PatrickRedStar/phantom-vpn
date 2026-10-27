@@ -208,6 +208,8 @@ public struct ClientDetailView: View {
         Text(text)
             .font(.custom(GsFontName.jetBrainsMono, size: 13))
             .foregroundStyle(C.bone)
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
     }
 
     // MARK: - Subscription
