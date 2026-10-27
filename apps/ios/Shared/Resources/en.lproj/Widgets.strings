@@ -6,6 +6,7 @@
 "intent.toggle.title" = "GhostStream VPN";
 "intent.toggle.value" = "On";
 "intent.error.no.profile" = "No profile with a certificate — add one in the app.";
+"intent.error.needs.setup" = "Connect once from the app — iOS will ask to allow the VPN.";
 "shortcut.connect" = "Connect";
 "shortcut.disconnect" = "Disconnect";
 
