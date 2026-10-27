@@ -242,13 +242,8 @@ public struct ProfileEditorView: View {
         guard var p = profile else { return }
         let newName = name.trimmingCharacters(in: .whitespaces)
         if !newName.isEmpty { p.name = newName }
-        var relay = relayAddr.trimmingCharacters(in: .whitespacesAndNewlines)
-        // No port typed → the exit's port, as Android does.
-        if !relay.isEmpty && !relay.contains(":") {
-            relay += ":" + (p.serverAddr.split(separator: ":").dropFirst().last.map(String.init) ?? "443")
-        }
         p.relayEnabled = relayEnabled
-        p.relayAddr = relay.isEmpty ? nil : relay
+        p.relayAddr = VpnProfile.normalizedRelayAddr(relayAddr)
         ProfilesStore.shared.update(p)
     }
 

@@ -53,18 +53,6 @@ public final class VpnTunnelController: ObservableObject {
 
     public init() {}
 
-    private struct LastTunnelParams: Encodable {
-        let profileId: String
-        let dnsServers: [String]?
-        let settings: TunnelSettings
-
-        enum CodingKeys: String, CodingKey {
-            case profileId = "profile_id"
-            case dnsServers = "dns_servers"
-            case settings
-        }
-    }
-
     private struct DirectRouteRules: Sendable {
         let ipv4Cidrs: [String]
         let ipv6Cidrs: [String]
@@ -103,6 +91,9 @@ public final class VpnTunnelController: ObservableObject {
         // Every app-initiated start is a manual Connect: it lifts the
         // extension's fatal-stop guard.
         UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: SharedKeys.fatalStop)
+        // No longer written (see below); a stale copy would feed the
+        // extension's fallback an old DNS list.
+        UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: "last_tunnel_params")
 
         var providerProfile = profile
         let effectiveRoutingMode = preferences.effectiveRoutingMode(
@@ -112,7 +103,8 @@ public final class VpnTunnelController: ObservableObject {
         providerProfile.splitRouting = effectiveRoutingMode.legacySplitRoutingValue
         let routeRules = try await directRulesForTunnelStart(
             preferences: preferences,
-            routingMode: effectiveRoutingMode
+            routingMode: effectiveRoutingMode,
+            requireCountryRules: false
         )
 
         let settings = TunnelSettings(
@@ -132,19 +124,10 @@ public final class VpnTunnelController: ObservableObject {
             streams: preferences.streamOverride
         )
 
-        let settingsData: Data
-        do {
-            settingsData = try JSONEncoder().encode(settings)
-            let lastParams = LastTunnelParams(
-                profileId: profile.id,
-                dnsServers: providerProfile.dnsServers,
-                settings: settings
-            )
-            if let data = try? JSONEncoder().encode(lastParams),
-               let json = String(data: data, encoding: .utf8) {
-                preferences.saveLastTunnelParams(json)
-            }
-        } catch {
+        // Settings (with the country CIDR list, ~200 KB for RU) travel only
+        // in providerConfiguration — not in App Group UserDefaults, whose
+        // plist is rewritten on every 1 Hz state write.
+        guard let settingsData = try? JSONEncoder().encode(settings) else {
             lastError = VpnTunnelError.encoding.localizedDescription
             throw VpnTunnelError.encoding
         }
@@ -179,6 +162,8 @@ public final class VpnTunnelController: ObservableObject {
             throw VpnTunnelError.saveFailed(error.localizedDescription)
         }
 
+        // «Остановить попытку» cancels the start Task: don't dial after it.
+        try Task.checkCancellation()
         do {
             try manager.connection.startVPNTunnel()
         } catch {
@@ -202,7 +187,8 @@ public final class VpnTunnelController: ObservableObject {
 
         let routeRules = try await directRulesForTunnelStart(
             preferences: preferences,
-            routingMode: effectiveRoutingMode
+            routingMode: effectiveRoutingMode,
+            requireCountryRules: true
         )
         let snapshot = RoutePolicySnapshot(
             mode: effectiveRoutingMode,
@@ -225,15 +211,6 @@ public final class VpnTunnelController: ObservableObject {
         guard let settingsData = try? JSONEncoder().encode(settings) else {
             lastError = VpnTunnelError.encoding.localizedDescription
             throw VpnTunnelError.encoding
-        }
-        let lastParams = LastTunnelParams(
-            profileId: profile.id,
-            dnsServers: providerProfile.dnsServers,
-            settings: settings
-        )
-        if let data = try? JSONEncoder().encode(lastParams),
-           let json = String(data: data, encoding: .utf8) {
-            preferences.saveLastTunnelParams(json)
         }
 
         let status = manager.connection.status
@@ -280,9 +257,14 @@ public final class VpnTunnelController: ObservableObject {
         }
     }
 
+    /// `requireCountryRules: false` (Connect): a failed download never
+    /// blocks the tunnel — without VPN raw.githubusercontent.com is often
+    /// unreachable. Cached lists are used; a country without one stays in
+    /// the tunnel (full tunnel for it).
     private func directRulesForTunnelStart(
         preferences: PreferencesStore,
-        routingMode: RoutingMode
+        routingMode: RoutingMode,
+        requireCountryRules: Bool
     ) async throws -> DirectRouteRules {
         var ipv4Cidrs = preferences.manualDirectCidrs
         var ipv6Cidrs = preferences.manualDirectIpv6Cidrs
@@ -298,10 +280,19 @@ public final class VpnTunnelController: ObservableObject {
             )
         }
 
-        try await RoutingRulesManager.shared.ensureCountryRules(countryCodes: preferences.directCountries)
+        do {
+            try await RoutingRulesManager.shared.ensureCountryRules(countryCodes: preferences.directCountries)
+        } catch where !requireCountryRules {
+            log.warning("country rules download failed, using cached: \(error.localizedDescription, privacy: .public)")
+        }
         let countryRules = RoutingRulesManager.shared.mergedCountryRules(
             countryCodes: preferences.directCountries
         )
+        if !countryRules.missingCountryCodes.isEmpty {
+            log.warning(
+                "no country rules for \(countryRules.missingCountryCodes.joined(separator: ","), privacy: .public): their traffic goes through the tunnel"
+            )
+        }
         ipv4Cidrs.append(contentsOf: countryRules.ipv4Cidrs)
         // iOS NetworkExtension cannot reliably apply country-sized IPv6 route
         // tables. RU geoip is ~9k IPv6 CIDRs, which can make tunnel startup

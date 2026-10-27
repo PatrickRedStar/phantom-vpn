@@ -98,7 +98,11 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
 
 `profileId` передаётся из host app в extension через IPC — extension сам
 читает профиль из `ProfilesStore` (App Group shared) и запускает Rust runtime.
-Секреты (cert/key) живут в Keychain с shared access group.
+Секреты (cert/key) живут в Keychain с shared access group. В `profiles.json`
+(UserDefaults App Group, его читает и виджет) нет ни PEM, ни `connString` —
+в userinfo `ghs://` лежит ключ; extension собирает строку из PEM
+(`ConnStringBuilder`). Старые профили чистятся при первом `load`.
+`ProfilesStore.save` пишет в Keychain только изменившиеся секреты.
 
 ## Состояния, ошибки, подписка
 
@@ -114,8 +118,13 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   это срезает паузу бэкоффа, живую сессию не рвёт.
 - **`reconnecting` — отдельное состояние** и на iOS: провайдер ставит
   `reasserting = true` на время переподключения ядра (системный статус —
-  «Переподключение»), дашборд показывает «Переподключение», таймер сессии
-  не сбрасывается — `session_secs` ядра идёт через переподключения.
+  «Переподключение»), дашборд показывает «Переподключение».
+- **Таймер сессии — `session_started_at`**, не `session_secs`: счётчик ядра
+  обнуляется на каждом полном переподключении и стоит во сне устройства.
+  Провайдер (`SessionClock`) фиксирует настенное время первого `connected`
+  после `startTunnel`, держит его через `reconnecting`, сбрасывает в
+  `stopTunnel` / новом старте. Едет в `StatusFrame.session_started_at`
+  (unix-секунды; снапшот и IPC, ядро его не шлёт) и в `VpnStatePayload.since`.
 - **`error` = фатальная причина** (отзыв доступа, истёкший доступ, неверные
   часы, кривой профиль). Провайдер останавливает туннель, error-кадр остаётся в
   снапшоте, и хост показывает `last_error` до следующего Connect. Неудачный
@@ -190,12 +199,25 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   на iOS в `providerConfiguration` едет только `profileId`, поэтому подмена
   адреса — в extension: `VpnProfile.withRelayEndpoint` ставит relay в
   `serverAddr` и в authority `ghs://`, SNI остаётся exit'ом. В редакторе
-  профиля — тумблер Relay и `host:port` (без порта — порт exit'а).
+  профиля — тумблер Relay и `host:port` (без порта — `:443`, там слушает
+  боевое реле).
 - **Полный туннель пропускает LAN** ([ADR 0019](../decisions/0019-owner-decisions-audit-2026-10.md)):
-  `excludedRoutes` = те же диапазоны, что Android `SPECIAL_RANGES` (0/8,
-  10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.168/16, 224/4, 240/4);
-  подсеть туннеля из `tunAddr` — в `includedRoutes` (admin API). Свой /32
-  сервера/реле не нужен: сокеты NE-провайдера мимо туннеля.
+  `excludedRoutes` = диапазоны Android `SPECIAL_RANGES` без 127/8 (0/8,
+  10/8, 100.64/10, 169.254/16, 172.16/12, 192.168/16, 224/4, 240/4; loopback
+  NE отвергает); подсеть туннеля из `tunAddr` — в `includedRoutes` (admin
+  API). Свой /32 сервера/реле не нужен: сокеты NE-провайдера мимо туннеля.
+- **Раздельный туннель**: `includedRoutes` = дополнение direct-списка от
+  ядра (`phantom_compute_vpn_routes`, бюджет 8000 — лишние мелкие direct-блоки
+  уходят В туннель). Страновые списки geoip хранятся с точными префиксами
+  (маркер `geoip-v4-exact`; файл старого формата не применяется, пока не
+  перекачан). RU: 12,9 тыс. блоков, ~200 КБ на вход ядра (потолок 256 КиБ),
+  ~7,9 тыс. маршрутов. Ядро ничего не вернуло (потолок, битый список) —
+  полный туннель и ERR в журнале. Списки едут только в `providerConfiguration`
+  (`last_tunnel_params` больше не пишется).
+- **Connect без списков не падает**: не скачались (GitHub без VPN часто
+  недоступен, таймаут 10 с) — берутся закэшированные, страна без списка идёт
+  через туннель, в os_log предупреждение. Сохранение split в настройках
+  (`applyRoutePolicy`) ошибку загрузки по-прежнему показывает.
 - **MTU 1300**, как на Android.
 - На старте туннеля в журнал (экран «Журнал») пишется строка
   `tunnel start relay=on|off target=… sni=… mtu=… excludedRoutes=N`.
@@ -225,14 +247,16 @@ Departure Mono, JetBrains Mono вшиты в расширение (`UIAppFonts`)
   фатальной ошибки остаётся).
 - **Пункт управления** (iOS 18+): тумблер «GhostStream», подпись — активный
   профиль. Значение и виджет берутся из App Group; перезагрузку
-  (`WidgetCenter` / `ControlCenter`) на смену состояния просит и приложение
-  (`SystemSurfaces`), и сам туннель (`writeStatePayload`), — когда приложение
-  спит, их обновляет только туннель. Смену активного профиля, его маршрута
-  и языка приложение ловит отдельно (Observation в `SystemSurfaces`).
+  (`WidgetCenter` / `ControlCenter`) на смену состояния просит приложение
+  (`SystemSurfaces`), а туннель (`writeStatePayload`) — только когда туннель
+  поднялся или упал (connected/reconnecting против остального; сравнение с
+  payload в App Group, так что попытки On-Demand бюджет не тратят). Когда
+  приложение спит, их обновляет только туннель. Смену активного профиля, его
+  маршрута и языка приложение ловит отдельно (Observation в `SystemSurfaces`).
 - **Виджет 2×2** (iOS 17+): состояние, «таймер · Relay · хост / Напрямую»,
   кнопка Подключить/Отключить. Таймлайн из одной записи, без опроса: его
-  перезагружают на смену состояния, поэтому в нём только то, что не
-  устаревает между перезагрузками — без `k/N` и скоростей. Таймер — от
+  перезагружают только на подъём/падение туннеля, поэтому в нём только то, что
+  не устаревает между перезагрузками — без `k/N` и скоростей. Таймер — от
   `session_started_at` (туннель), если есть, иначе от `since`. Заголовок —
   Space Grotesk с каскадом на системный bold (кириллица). Точка и заголовок
   `widgetAccentable`; щит в Dynamic Island подписан для VoiceOver.
@@ -276,9 +300,29 @@ Departure Mono, JetBrains Mono вшиты в расширение (`UIAppFonts`)
 
 В `PacketTunnelProvider` (добавлено в v0.22.0 Phase 6): IPv6-трафик, который
 система может пустить мимо TUN-интерфейса, блокируется на уровне
-`NEPacketTunnelNetworkSettings.ipv6Settings` с route'ом `::/0` в туннель (или
-явным отказом от IPv6), чтобы не утекал plain IPv6 при IPv4-only конфиге
-туннеля. Защита от классической DNS/трафик утечки при dual-stack клиенте.
+`NEPacketTunnelNetworkSettings.ipv6Settings` с route'ом `::/0` в туннель
+(ULA-адрес; IPv6-выхода у туннеля нет — пакеты пропадают), чтобы не утекал plain IPv6 при
+IPv4-only конфиге туннеля. Так и в раздельном режиме: мимо идут только явные
+direct-v6 правила, приложения откатываются на IPv4, который следует split.
+
+## Логи экстеншена на устройстве (os_log)
+
+Subsystem `com.ghoststream.client.PacketTunnel`, category `tunnel`, уровень
+default и выше (сохраняется на устройстве):
+
+- кадры ядра `WRN`/`ERR` — публично, как `core WRN [категория] текст k=v`
+  (в тексте ядра нет ключа и строки подключения);
+- строки провайдера — публично: `state X → Y streams=k/N`, `memory
+  footprint=…`, `stopTunnel reason=…`, ошибки старта и split; строка
+  `tunnel start …` (адрес сервера/реле) — приватно.
+
+Снять с iPhone: `log collect --device` или Console.app с предикатом
+`subsystem == "com.ghoststream.client.PacketTunnel"`.
+
+На `stopTunnel`, фатальной ошибке и неудачном старте последние 200 кадров
+кольца пишутся в App Group: `ext-tail.jsonl` (JSON Lines, тот же `LogFrame`,
+что `logs.jsonl`) — приложение подхватывает хвост, даже если экран «Журнал»
+был закрыт. Отказ по фатальному маркеру хвост не перетирает.
 
 ## UI: Liquid Glass
 
