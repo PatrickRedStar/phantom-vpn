@@ -163,6 +163,7 @@ public final class VpnTunnelController: ObservableObject {
             providerConfiguration["dnsServers"] = dnsServers
         }
         proto.providerConfiguration = providerConfiguration
+        Self.applyKillSwitch(preferences, routingMode: effectiveRoutingMode, to: proto)
 
         manager.protocolConfiguration = proto
         manager.localizedDescription = profile.name
@@ -263,6 +264,7 @@ public final class VpnTunnelController: ObservableObject {
             proto.providerConfiguration = providerConfiguration
             proto.serverAddress = profile.effectiveServerAddr
             proto.providerBundleIdentifier = providerBundleId
+            Self.applyKillSwitch(preferences, routingMode: effectiveRoutingMode, to: proto)
             manager.protocolConfiguration = proto
             manager.localizedDescription = profile.name
             manager.isEnabled = true
@@ -412,6 +414,20 @@ public final class VpnTunnelController: ObservableObject {
             log.error("on-demand update failed: \(error.localizedDescription, privacy: .public)")
             lastError = error.localizedDescription
         }
+    }
+
+    /// «Без VPN — без сети»: includeAllNetworks blocks traffic while the
+    /// tunnel is not up (connecting / reconnecting) instead of letting it
+    /// out in the open. Full tunnel only — it overrides excludedRoutes, so
+    /// split routing would break (same rule as macOS). LAN stays reachable
+    /// (excludeLocalNetworks, ADR 0019). Applied at the next Connect.
+    private static func applyKillSwitch(
+        _ preferences: PreferencesStore,
+        routingMode: RoutingMode,
+        to proto: NETunnelProviderProtocol
+    ) {
+        proto.includeAllNetworks = preferences.killSwitch && routingMode == .global
+        proto.excludeLocalNetworks = true
     }
 
     private static func applyOnDemand(_ enabled: Bool, to manager: NETunnelProviderManager) {
