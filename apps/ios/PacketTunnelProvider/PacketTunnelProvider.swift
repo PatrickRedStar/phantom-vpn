@@ -7,6 +7,7 @@ import Foundation
 import NetworkExtension
 import PhantomKit
 import UserNotifications
+import WidgetKit
 import os.log
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
@@ -28,6 +29,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
     private var statusBroadcastGate = StatusBroadcastGate(minInterval: 1.0)
+    private var lastSurfaceKind: VpnStatePayload.Kind?
 
     @discardableResult
     private func withStateLock<T>(_ block: () -> T) -> T {
@@ -797,6 +799,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             defaults.set(Date().timeIntervalSince1970, forKey: "vpn.state.updatedAt.v1")
         }
         DarwinNotifications.post(DarwinNotifications.stateChanged)
+
+        // The widget and the Control Center toggle read this payload; the app
+        // is usually suspended, so the tunnel asks for a reload itself.
+        let kindChanged = withStateLock { () -> Bool in
+            defer { lastSurfaceKind = payload.kind }
+            return lastSurfaceKind != payload.kind
+        }
+        if kindChanged {
+            WidgetCenter.shared.reloadAllTimelines()
+            if #available(iOS 18.0, *) {
+                ControlCenter.shared.reloadAllControls()
+            }
+        }
     }
 
     private func writeSnapshot(_ frame: StatusFrame) {

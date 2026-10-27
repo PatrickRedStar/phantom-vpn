@@ -39,6 +39,11 @@ PacketTunnelProvider/          # NE extension
   PrivacyInfo.xcprivacy        # у приложения — свой в GhostStream/
   PacketTunnelProvider.entitlements
 
+GhostStreamWidgets/            # widget extension: виджет, Пункт управления,
+                               # Live Activity (без PhantomKit)
+Shared/                        # App Intents + модель Live Activity —
+                               # компилируются в приложение и в виджеты
+
 Frameworks/                    # собранный PhantomCore.xcframework
 GhostStream.xcodeproj/
 project.yml                    # xcodegen spec
@@ -182,6 +187,47 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
 - **MTU 1300**, как на Android.
 - На старте туннеля в журнал (экран «Журнал») пишется строка
   `tunnel start relay=on|off target=… sni=… mtu=… excludedRoutes=N`.
+
+## Системные поверхности: виджет, Пункт управления, Live Activity, Shortcuts
+
+Отдельное расширение `GhostStreamWidgets` (`com.ghoststream.client.widgets`, App
+Group). PhantomKit не линкует — статическая Rust-библиотека раздула бы
+расширение с лимитом ~30 МБ; состояние читает из App Group сам
+(`SurfaceState`: `vpn.state.v1`, `snapshot.json`, `profiles.json` +
+`active_id`), ключи сверяет `SurfaceStateTests`. Шрифты Space Grotesk Bold,
+Departure Mono, JetBrains Mono вшиты в расширение (`UIAppFonts`).
+
+- **App Intents** (`Shared/VpnIntents.swift`): `ConnectVPNIntent`,
+  `DisconnectVPNIntent`, `ToggleVPNIntent` (для Пункта управления, в
+  Shortcuts скрыт); App Shortcuts с фразами RU/EN. Все — `LiveActivityIntent`,
+  поэтому `perform()` система выполняет **в процессе приложения** (поднимая
+  его в фоне), даже если кнопка в виджете, Пункте управления или Live
+  Activity: профили, Keychain и конфиг `NETunnelProviderManager` есть только
+  там. Connect идёт тем же путём, что кнопка на дашборде
+  (`VpnActions` → `VpnTunnelController.installAndStart`), и ждёт до 15 с, пока
+  туннель встанет. Disconnect через `stopAndWait()`, который заодно
+  выключает on-demand (сейчас iOS его не включает — это страховка).
+- **Пункт управления** (iOS 18+): тумблер «GhostStream», подпись — активный
+  профиль. Значение и виджет берутся из App Group; перезагрузку
+  (`WidgetCenter` / `ControlCenter`) на смену состояния просит и приложение
+  (`SystemSurfaces`), и сам туннель (`writeStatePayload`), — когда приложение
+  спит, их обновляет только туннель.
+- **Виджет 2×2** (iOS 17+): состояние, `k/N · таймер`, кнопка
+  Подключить/Отключить. Таймлайн из одной записи, без опроса.
+- **Live Activity** (Dynamic Island + экран блокировки): запускает приложение,
+  когда туннель поднялся (на экране или внутри intent'а), обновляет не чаще
+  раза в 5 с, пока приложение живо, завершает при отключении. Таймер считает
+  сама система (`Text(timerInterval:)`). **Ограничение:** ActivityKit
+  управляется только из процесса приложения — расширения чужих activity не
+  видят (проверено в симуляторе: widget extension получает пустой
+  `Activity.activities`), поэтому туннель Live Activity не обновляет. Когда
+  приложение уснуло, контент замирает; через `staleDate` (60 с) вместо
+  скоростей показывается таймер. Если туннель упал при спящем приложении,
+  activity висит до следующего открытия приложения или кнопки «Отключить».
+  Пуши ActivityKit (APNs) не используем — нет сервера пушей.
+- **Подпись:** для TestFlight/устройства нужен App ID
+  `com.ghoststream.client.widgets` с App Groups (`group.com.ghoststream.client`)
+  и профиль для него.
 
 ## IPv6 killswitch
 
