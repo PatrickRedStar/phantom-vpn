@@ -165,7 +165,15 @@ public final class SettingsViewModel {
         case .connecting, .connected, .reconnecting:
             Task { await restartTunnel(with: profile) }
         case .disconnected, .disconnecting, .error:
-            break
+            // On-Demand, Control Center and the Settings app start the saved
+            // configuration — point it at the new profile.
+            Task {
+                do {
+                    try await tunnelController.applyRoutePolicy(profile: profile, preferences: preferencesStore)
+                } catch {
+                    log.error("profile switch config update failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 
