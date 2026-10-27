@@ -30,7 +30,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var activeSettings: TunnelSettings?
     private var statusBroadcastGate = StatusBroadcastGate(minInterval: 1.0)
     private var sessionClock = SessionClock()
-    private var lastSurfaceKind: VpnStatePayload.Kind?
 
     @discardableResult
     private func withStateLock<T>(_ block: () -> T) -> T {
@@ -860,6 +859,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func writeStatePayload(_ payload: VpnStatePayload) {
         guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.client") else { return }
+        let previous = defaults.data(forKey: "vpn.state.v1")
+            .flatMap { try? JSONDecoder().decode(VpnStatePayload.self, from: $0) }
         if let data = try? JSONEncoder().encode(payload) {
             defaults.set(data, forKey: "vpn.state.v1")
             defaults.set(Date().timeIntervalSince1970, forKey: "vpn.state.updatedAt.v1")
@@ -867,12 +868,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         DarwinNotifications.post(DarwinNotifications.stateChanged)
 
         // The widget and the Control Center toggle read this payload; the app
-        // is usually suspended, so the tunnel asks for a reload itself.
-        let kindChanged = withStateLock { () -> Bool in
-            defer { lastSurfaceKind = payload.kind }
-            return lastSurfaceKind != payload.kind
-        }
-        if kindChanged {
+        // is usually suspended, so the tunnel asks for a reload itself — only
+        // when the tunnel goes up or down (reload budget): not on
+        // connected ↔ reconnecting (the timer runs from the stable `since`),
+        // and not on each On-Demand retry in a fresh process — compared with
+        // the stored payload, not with in-process memory.
+        let isUp = { (kind: VpnStatePayload.Kind?) in kind == .connected || kind == .reconnecting }
+        if isUp(previous?.kind) != isUp(payload.kind) {
             WidgetCenter.shared.reloadAllTimelines()
             if #available(iOS 18.0, *) {
                 ControlCenter.shared.reloadAllControls()
