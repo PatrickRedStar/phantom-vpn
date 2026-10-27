@@ -2,8 +2,9 @@
 //  ProfileEditorView.swift
 //  GhostStream
 //
-//  Sheet for editing a single `VpnProfile`. Name and tun CIDR are editable;
-//  server address / SNI are read-only because they come from the conn string.
+//  Sheet for editing a single `VpnProfile`. Name and relay are editable;
+//  server address / SNI / tunnel IP are read-only: they come from the conn
+//  string, and the tunnel IP is assigned by the server (as on Android).
 //  Actions: re-import (paste new ghs://…) and delete.
 //
 
@@ -11,9 +12,9 @@ import PhantomKit
 import PhantomUI
 import SwiftUI
 
-/// Sheet presented from the Settings list. Allows renaming, editing the
-/// local tunnel CIDR, re-importing fresh cert/key material from a new
-/// connection string, and deleting the profile.
+/// Sheet presented from the Settings list. Allows renaming, setting the
+/// relay, re-importing fresh cert/key material from a new connection
+/// string, and deleting the profile.
 public struct ProfileEditorView: View {
 
     // MARK: - Inputs
@@ -28,7 +29,6 @@ public struct ProfileEditorView: View {
     // MARK: - Local state
 
     @State private var name: String = ""
-    @State private var tunAddr: String = ""
     @State private var connStringDraft: String = ""
     @State private var relayEnabled: Bool = false
     @State private var relayAddr: String = ""
@@ -135,10 +135,7 @@ public struct ProfileEditorView: View {
                     autocapitalization: .sentences
                 )
                 HairlineDivider()
-                Text("ТУННЕЛЬ (CIDR)")
-                    .gsFont(.labelMono)
-                    .foregroundColor(C.textFaint)
-                GhostTextField("10.7.0.2/24", text: $tunAddr)
+                kvRow("TUN", profile.tunAddr)
             }
         }
     }
@@ -230,7 +227,6 @@ public struct ProfileEditorView: View {
     private func loadFromProfile() {
         guard let p = profile else { return }
         name = p.name
-        tunAddr = p.tunAddr
         relayEnabled = p.relayEnabled ?? false
         relayAddr = p.relayAddr ?? ""
     }
@@ -238,9 +234,7 @@ public struct ProfileEditorView: View {
     private func save() {
         guard var p = profile else { return }
         let newName = name.trimmingCharacters(in: .whitespaces)
-        let newTun  = tunAddr.trimmingCharacters(in: .whitespaces)
         if !newName.isEmpty { p.name = newName }
-        if !newTun.isEmpty { p.tunAddr = newTun }
         var relay = relayAddr.trimmingCharacters(in: .whitespacesAndNewlines)
         // No port typed → the exit's port, as Android does.
         if !relay.isEmpty && !relay.contains(":") {
@@ -248,8 +242,6 @@ public struct ProfileEditorView: View {
         }
         p.relayEnabled = relayEnabled
         p.relayAddr = relay.isEmpty ? nil : relay
-        model.renameProfile(id: p.id, name: p.name)
-        // tunAddr is not routed through renameProfile — update directly via store:
         ProfilesStore.shared.update(p)
     }
 
