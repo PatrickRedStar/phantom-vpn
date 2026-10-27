@@ -47,7 +47,7 @@ struct AppNavigation: View {
     @Environment(\.gsColors) private var C
     @Environment(ProfilesStore.self) private var profiles
     @Environment(PreferencesStore.self) private var prefs
-    @State private var selection: AppTab = .dashboard
+    @State private var selection: AppTab = Self.launchTab
     @State private var addProfileRequest = false
     @State private var routePolicyReconciled = false
 
@@ -80,8 +80,17 @@ struct AppNavigation: View {
             .tag(AppTab.logs)
 
             NavigationStack {
+                #if DEBUG
+                if UserDefaults.standard.bool(forKey: "gsAdminDemo") {
+                    AdminView(viewModel: AdminPreviewData.populatedVM())
+                } else {
+                    SettingsView(addProfileRequest: $addProfileRequest)
+                        .id(languageIdentity)
+                }
+                #else
                 SettingsView(addProfileRequest: $addProfileRequest)
                     .id(languageIdentity)
+                #endif
             }
             .tabItem {
                 Label(AppTab.settings.label, systemImage: AppTab.settings.systemImageName)
@@ -93,6 +102,20 @@ struct AppNavigation: View {
         .task {
             await reconcileRoutePolicyOnLaunch()
         }
+    }
+
+    /// Screenshot hook (DEBUG): `-gsTab logs|settings` opens that tab,
+    /// `-gsAdminDemo YES` puts the admin console with preview data there.
+    private static var launchTab: AppTab {
+        #if DEBUG
+        switch UserDefaults.standard.string(forKey: "gsTab") {
+        case "logs": return .logs
+        case "settings": return .settings
+        default: return .dashboard
+        }
+        #else
+        return .dashboard
+        #endif
     }
 
     private var languageIdentity: String {
