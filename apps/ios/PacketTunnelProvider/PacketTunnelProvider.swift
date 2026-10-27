@@ -504,11 +504,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             || (settings.routePolicy == nil && profile.splitRouting == true)
         let adminGatewayHost = AdminGateway.host(forTunAddr: profile.tunAddr)
         guard shouldUseSplitRoutes else {
-            ipv4.includedRoutes = [NEIPv4Route.default()]
+            // Full tunnel leaves LAN, link-local and multicast reachable
+            // (ADR 0019); our own subnet (admin API) stays in the tunnel —
+            // more specific than the excluded 10/8.
+            ipv4.includedRoutes = [NEIPv4Route.default()] + [route(forCIDR: profile.tunAddr)].compactMap { $0 }
             ipv4.excludedRoutes = physicalServerExcludedRoutes(
                 settings: settings,
                 preservingHost: adminGatewayHost
-            )
+            ) + Self.specialRanges.compactMap(route(forCIDR:))
             return
         }
 
@@ -593,13 +596,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    /// Same ranges as Android `SPECIAL_RANGES` / core `special_ranges()`.
+    private static let specialRanges = [
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+        "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4",
+    ]
+
+    /// Destination is the network address, so a host CIDR (tunAddr
+    /// 10.7.0.2/24) yields the subnet route 10.7.0.0/24.
     private func route(forCIDR cidr: String) -> NEIPv4Route? {
-        let parts = cidr.split(separator: "/", maxSplits: 1)
-        guard parts.count == 2,
-              let prefix = UInt8(parts[1]),
+        guard let range = ipv4Range(forCIDR: cidr),
+              let prefix = cidr.split(separator: "/").last.flatMap({ UInt8($0) }),
               let subnetMask = mask(forIPv4Prefix: prefix)
         else { return nil }
-        return NEIPv4Route(destinationAddress: String(parts[0]), subnetMask: subnetMask)
+        let network = [24, 16, 8, 0].map { String((range.lower >> UInt32($0)) & 0xFF) }
+        return NEIPv4Route(destinationAddress: network.joined(separator: "."), subnetMask: subnetMask)
     }
 
     private func route(forIPv4Host host: String) -> NEIPv4Route? {
