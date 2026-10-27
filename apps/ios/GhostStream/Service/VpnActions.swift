@@ -54,5 +54,7 @@ enum VpnActions {
     static func disconnect() async {
         VpnStateManager.shared.update(.disconnecting)
         await VpnTunnelController().stopAndWait()
+        // The app may be suspended before the tunnel reports "disconnected".
+        await SystemSurfaces.shared.endLiveActivity()
     }
 }

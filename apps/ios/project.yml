@@ -55,6 +55,7 @@ targets:
           - UIInterfaceOrientationPortrait
         UIViewControllerBasedStatusBarAppearance: true
         NSCameraUsageDescription: GhostStream uses the camera to scan QR codes containing VPN connection strings.
+        NSSupportsLiveActivities: true
         UIAppFonts:
           - space_grotesk.ttf
           - space_grotesk_bold.ttf
