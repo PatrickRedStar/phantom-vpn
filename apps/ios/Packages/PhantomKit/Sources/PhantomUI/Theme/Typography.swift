@@ -19,6 +19,9 @@
 //
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 // MARK: - PostScript names (per font file)
 
@@ -189,7 +192,19 @@ public struct GsFontSpec {
     }
 
     /// SwiftUI `Font` for use in non-Text contexts (buttons, labels, etc.).
-    public var font: Font { .custom(name, size: size) }
+    public var font: Font {
+        #if os(iOS)
+        // Space Grotesk has no Cyrillic: iOS fills the gap with a serif. Cascade
+        // to the system font of the same weight, as Android falls back to Roboto.
+        if name.hasPrefix("SpaceGrotesk"), let base = UIFont(name: name, size: size) {
+            let weight: UIFont.Weight = name.hasSuffix("Bold") ? .bold : name.hasSuffix("Medium") ? .medium : .regular
+            let system = UIFont.systemFont(ofSize: size, weight: weight).fontDescriptor
+            let descriptor = base.fontDescriptor.addingAttributes([.cascadeList: [system]])
+            return Font(UIFont(descriptor: descriptor, size: size) as CTFont)
+        }
+        #endif
+        return .custom(name, size: size)
+    }
 }
 
 // MARK: - Text.gsFont(_:) — apply a named style
@@ -200,7 +215,7 @@ extension Text {
     public func gsFont(_ style: GsFont) -> some View {
         let s = style.spec
         return self
-            .font(.custom(s.name, size: s.size))
+            .font(s.font)
             .tracking(s.trackingPoints)
             .lineSpacing(s.extraLineSpacing ?? 0)
     }
