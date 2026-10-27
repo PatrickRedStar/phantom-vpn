@@ -139,6 +139,15 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         return serverAddr
     }
 
+    /// Relay `host[:port]` as typed in the editor; nil when empty. No port →
+    /// 443: production relays listen there (nginx stream), not on the
+    /// exit's 8443.
+    public static func normalizedRelayAddr(_ raw: String) -> String? {
+        let relay = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !relay.isEmpty else { return nil }
+        return relay.contains(":") ? relay : relay + ":443"
+    }
+
     /// `true` when the relay hop will actually be used by `effectiveServerAddr`.
     public var relayActive: Bool { effectiveServerAddr != serverAddr }
 
