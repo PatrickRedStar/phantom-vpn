@@ -25,10 +25,13 @@ struct VpnLiveActivity: Widget {
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
+                    // 66 pt holds "9:59:59" in Departure Mono 14 (62 pt);
+                    // the inset keeps the digits off the island's corner.
                     SessionTimer(start: context.attributes.sessionStart)
                         .font(GS.mono(14))
                         .foregroundColor(tint)
-                        .frame(maxWidth: 90, alignment: .trailing)
+                        .frame(width: 66, alignment: .trailing)
+                        .padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     LockScreenView(context: context)
@@ -51,13 +54,18 @@ struct VpnLiveActivity: Widget {
     }
 }
 
+/// Dynamic Island timer. Text(timerInterval:) reserves the width of the
+/// longest value in its range: up to distantFuture that is a 14-digit hour
+/// count, wider than the region, and the digits got clipped. The island
+/// shows an activity for at most 8 h, so the range stops at 9:59:59.
 private struct SessionTimer: View {
     let start: Date
 
     var body: some View {
-        Text(timerInterval: start...Date.distantFuture, countsDown: false)
+        Text(timerInterval: start...start.addingTimeInterval(10 * 3600 - 1), countsDown: false)
             .monospacedDigit()
             .multilineTextAlignment(.trailing)
+            .lineLimit(1)
     }
 }
 
