@@ -3,8 +3,8 @@
 //  GhostStream
 //
 //  Polls the PacketTunnelProvider via TunnelIpcBridge every 500ms for
-//  LogFrame entries. Keeps an in-memory rolling buffer of up to 50 000
-//  entries and exposes a hierarchical level filter.
+//  LogFrame entries. Keeps an in-memory rolling buffer of up to 10 000
+//  entries (as Android) and exposes a hierarchical level filter.
 
 import Foundation
 import NetworkExtension
@@ -79,7 +79,7 @@ final class LogsViewModel {
     private var lastTsUs: UInt64 = 0
     private var pollTask: Task<Void, Never>?
     private var ipc: TunnelIpcBridge?
-    private let maxEntries = 50_000
+    private let maxEntries = 10_000
     private let log = Logger(subsystem: "com.ghoststream.client", category: "LogsVM")
 
     // MARK: - Derived
@@ -241,8 +241,9 @@ final class LogsViewModel {
             if !frames.isEmpty {
                 lastTsUs = frames.map(\.timestampUs).max() ?? lastTsUs
                 allLogs.append(contentsOf: frames)
+                // Trim in 1k chunks: one O(n) shift per ~1k lines, not per poll.
                 if allLogs.count > maxEntries {
-                    allLogs.removeFirst(allLogs.count - maxEntries)
+                    allLogs.removeFirst(allLogs.count - maxEntries + maxEntries / 10)
                 }
             }
         } catch {
