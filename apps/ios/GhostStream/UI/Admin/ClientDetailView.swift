@@ -285,14 +285,17 @@ public struct ClientDetailView: View {
                 Chart {
                     ForEach(vm.stats.indices, id: \.self) { idx in
                         let s = vm.stats[idx]
+                        // Date, not raw unix seconds: a numeric axis starts at
+                        // zero and squeezed the whole hour into the right edge.
+                        let t = Date(timeIntervalSince1970: TimeInterval(s.ts))
                         LineMark(
-                            x: .value("t", s.ts),
+                            x: .value("t", t),
                             y: .value("RX", s.bytesRx),
                             series: .value("series", "RX")
                         )
                         .foregroundStyle(C.signal)
                         LineMark(
-                            x: .value("t", s.ts),
+                            x: .value("t", t),
                             y: .value("TX", s.bytesTx),
                             series: .value("series", "TX")
                         )
