@@ -174,7 +174,9 @@ public final class RoutingRulesManager {
             throw RoutingRulesError.badURL
         }
 
-        let (data, response) = try await session.data(from: url)
+        // 10 s idle timeout instead of 60: this runs on the Connect path,
+        // where a blocked GitHub must not hold the tunnel back for a minute.
+        let (data, response) = try await session.data(for: URLRequest(url: url, timeoutInterval: 10))
         if let http = response as? HTTPURLResponse,
            !(200...299).contains(http.statusCode) {
             throw RoutingRulesError.badStatus(http.statusCode)

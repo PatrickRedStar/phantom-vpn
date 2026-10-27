@@ -103,7 +103,8 @@ public final class VpnTunnelController: ObservableObject {
         providerProfile.splitRouting = effectiveRoutingMode.legacySplitRoutingValue
         let routeRules = try await directRulesForTunnelStart(
             preferences: preferences,
-            routingMode: effectiveRoutingMode
+            routingMode: effectiveRoutingMode,
+            requireCountryRules: false
         )
 
         let settings = TunnelSettings(
@@ -161,6 +162,8 @@ public final class VpnTunnelController: ObservableObject {
             throw VpnTunnelError.saveFailed(error.localizedDescription)
         }
 
+        // «Остановить попытку» cancels the start Task: don't dial after it.
+        try Task.checkCancellation()
         do {
             try manager.connection.startVPNTunnel()
         } catch {
@@ -184,7 +187,8 @@ public final class VpnTunnelController: ObservableObject {
 
         let routeRules = try await directRulesForTunnelStart(
             preferences: preferences,
-            routingMode: effectiveRoutingMode
+            routingMode: effectiveRoutingMode,
+            requireCountryRules: true
         )
         let snapshot = RoutePolicySnapshot(
             mode: effectiveRoutingMode,
@@ -253,9 +257,14 @@ public final class VpnTunnelController: ObservableObject {
         }
     }
 
+    /// `requireCountryRules: false` (Connect): a failed download never
+    /// blocks the tunnel — without VPN raw.githubusercontent.com is often
+    /// unreachable. Cached lists are used; a country without one stays in
+    /// the tunnel (full tunnel for it).
     private func directRulesForTunnelStart(
         preferences: PreferencesStore,
-        routingMode: RoutingMode
+        routingMode: RoutingMode,
+        requireCountryRules: Bool
     ) async throws -> DirectRouteRules {
         var ipv4Cidrs = preferences.manualDirectCidrs
         var ipv6Cidrs = preferences.manualDirectIpv6Cidrs
@@ -271,10 +280,19 @@ public final class VpnTunnelController: ObservableObject {
             )
         }
 
-        try await RoutingRulesManager.shared.ensureCountryRules(countryCodes: preferences.directCountries)
+        do {
+            try await RoutingRulesManager.shared.ensureCountryRules(countryCodes: preferences.directCountries)
+        } catch where !requireCountryRules {
+            log.warning("country rules download failed, using cached: \(error.localizedDescription, privacy: .public)")
+        }
         let countryRules = RoutingRulesManager.shared.mergedCountryRules(
             countryCodes: preferences.directCountries
         )
+        if !countryRules.missingCountryCodes.isEmpty {
+            log.warning(
+                "no country rules for \(countryRules.missingCountryCodes.joined(separator: ","), privacy: .public): their traffic goes through the tunnel"
+            )
+        }
         ipv4Cidrs.append(contentsOf: countryRules.ipv4Cidrs)
         // iOS NetworkExtension cannot reliably apply country-sized IPv6 route
         // tables. RU geoip is ~9k IPv6 CIDRs, which can make tunnel startup
