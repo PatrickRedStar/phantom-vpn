@@ -53,14 +53,20 @@ public struct CreateClientSheet: View {
             .navigationTitle(created ? name.trimmingCharacters(in: .whitespacesAndNewlines) : L("admin.add.title"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // Icon buttons, as in the other sheets: text pills squeezed
+                // the title to «Новый к…» at large text sizes.
                 if created {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button(L("admin.add.done")) { dismiss() }
+                        Button { dismiss() } label: {
+                            Label(L("admin.add.done"), systemImage: "checkmark")
+                        }
                     }
                 } else {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button(L("general.cancel")) {
+                        Button {
                             dismiss()
+                        } label: {
+                            Label(L("general.cancel"), systemImage: "xmark")
                         }
                         .disabled(submitting)
                     }
@@ -71,7 +77,7 @@ public struct CreateClientSheet: View {
                             if submitting {
                                 ProgressView()
                             } else {
-                                Text(L("admin.action.create"))
+                                Label(L("admin.action.create"), systemImage: "checkmark")
                             }
                         }
                         .disabled(!canSubmit || submitting)
