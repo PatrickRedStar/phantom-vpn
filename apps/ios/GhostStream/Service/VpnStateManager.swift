@@ -88,6 +88,10 @@ public final class VpnStateManager {
     /// Starts as `.disconnected` until the first snapshot arrives.
     public private(set) var statusFrame: StatusFrame = .disconnected
 
+    /// Extension memory footprint (MiB), published once a minute; nil when
+    /// the tunnel is down.
+    public private(set) var tunnelMemoryMiB: Double?
+
     private let defaults: UserDefaults
     private let payloadKey = "vpn.state.v1"
     private let payloadUpdatedAtKey = "vpn.state.updatedAt.v1"
@@ -136,6 +140,7 @@ public final class VpnStateManager {
     public func forceDisconnected(clearSnapshot: Bool = true) {
         state = .disconnected
         statusFrame = .disconnected
+        tunnelMemoryMiB = nil
         if clearSnapshot, let url = snapshotURL {
             try? FileManager.default.removeItem(at: url)
         }
@@ -180,6 +185,9 @@ public final class VpnStateManager {
     /// `statusFrame`. If the snapshot is present and parses successfully,
     /// `state` is also reconciled from it.
     private func loadSnapshot() {
+        let mib = defaults.double(forKey: SharedKeys.tunnelMemoryMiB)
+        tunnelMemoryMiB = mib > 0 ? mib : nil
+
         guard let url = snapshotURL,
               let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let snapshotModifiedAt = attrs[.modificationDate] as? Date,

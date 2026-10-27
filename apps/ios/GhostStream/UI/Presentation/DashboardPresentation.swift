@@ -9,6 +9,7 @@ enum DashboardTone: Equatable {
 }
 
 struct DashboardPresentationResult: Equatable {
+    /// State headline («Передача», «Переподключение», …).
     let title: String
     let subtitle: String
     let primaryActionTitle: String
@@ -34,7 +35,7 @@ enum DashboardPresentation {
         switch state {
         case .connected:
             return DashboardPresentationResult(
-                title: L("native.dashboard.protected", "Protected"),
+                title: L("state_transmitting_verb", "Transmitting"),
                 subtitle: "\(profileName) · \(timerText)",
                 primaryActionTitle: L("action_disconnect", "Disconnect"),
                 tone: .success,
@@ -70,7 +71,7 @@ enum DashboardPresentation {
             )
         case .error(let message):
             return DashboardPresentationResult(
-                title: L("native.dashboard.failed", "Connection failed"),
+                title: L("state_lost_verb", "Signal") + " " + L("state_signal_word", "lost"),
                 subtitle: message,
                 primaryActionTitle: L("action_retry", "Retry"),
                 tone: .danger,

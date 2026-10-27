@@ -2,8 +2,9 @@
 //  DashboardView.swift
 //  GhostStream
 //
-//  Primary screen: state headline, session timer, scope chart, stat
-//  cards, mux bars, connect FAB. Implements §3.1 of the iOS UI spec.
+//  «Поток»: brand + profile chip + profile switch, state headline and
+//  session timer, traffic/mux card, KV card. The primary action floats
+//  above the tab bar as tinted glass.
 //
 
 import PhantomKit
@@ -31,48 +32,110 @@ struct DashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                connectionCard
+            VStack(alignment: .leading, spacing: 18) {
+                header
+                stateBlock
                 reconnectBanner
                 healthBanner
                 emptyHint
                 preflightBanner
-                scopeCard
-                muxCard
+                trafficCard
                 detailsCard
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 20)
             .padding(.top, 8)
             .padding(.bottom, 18)
         }
+        .scrollIndicators(.hidden)
         .background(C.bg.ignoresSafeArea())
-        .navigationTitle(L("nav_stream"))
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                toolbarMeta
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .bottom) {
             bottomActionBar
         }
         .onAppear { vm.onAppear() }
     }
 
-    // MARK: - Sections
+    // MARK: - Header
 
-    private var toolbarMeta: some View {
-        HStack(spacing: 6) {
-            if shouldPulse(vm.state) {
-                Circle()
-                    .fill(pulseColor(for: vm.state, colors: C))
-                    .frame(width: 6, height: 6)
+    private var header: some View {
+        HStack(spacing: 8) {
+            (Text("G").foregroundColor(C.signal) + Text("hoststream").foregroundColor(C.bone))
+                .gsFont(.brand)
+            Spacer(minLength: 8)
+            if let profile = profiles.activeProfile {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(stateColor)
+                        .frame(width: 7, height: 7)
+                        .shadow(color: stateColor, radius: 4)
+                    Text(profile.name.uppercased())
+                        .gsFont(.hdrMeta)
+                        .foregroundStyle(C.bone)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 36)
+                .glassBackground(Capsule())
             }
-            Text(headerMetaText)
-                .font(.caption2.monospaced().weight(.semibold))
-                .foregroundStyle(C.textDim)
-                .lineLimit(1)
+            if profiles.profiles.count > 1 {
+                profileMenu
+            }
         }
+        .frame(minHeight: 44)
+    }
+
+    private var profileMenu: some View {
+        Menu {
+            ForEach(profiles.profiles) { profile in
+                Button {
+                    // Switching while connected reconnects to the new profile.
+                    SettingsViewModel().setActiveProfile(id: profile.id)
+                } label: {
+                    if profile.id == profiles.activeId {
+                        Label(profile.name, systemImage: "checkmark")
+                    } else {
+                        Text(profile.name)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(C.bone)
+                .frame(width: 36, height: 36)
+                .glassBackground(Circle())
+        }
+        .accessibilityLabel(L("dashboard.switch.profile"))
+    }
+
+    // MARK: - State
+
+    private var stateBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L("lbl_tunnel_state").uppercased())
+                .gsFont(.labelMono)
+                .foregroundStyle(C.textDim)
+            (Text(dashboardPresentation.title).foregroundColor(stateColor) + Text(".").foregroundColor(C.bone))
+                .gsFont(.stateHeadline)
+                .lineLimit(2)
+                .minimumScaleFactor(0.6)
+            if case .error(let reason) = vm.state {
+                Text(reason)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 12))
+                    .foregroundStyle(C.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text(vm.timerText)
+                    .gsFont(.ticker)
+                    .foregroundStyle(isUp ? C.bone : C.textFaint)
+                Spacer()
+                Text(L(isReconnecting ? "lbl_session_ongoing" : "lbl_session").uppercased())
+                    .gsFont(.labelMono)
+                    .foregroundStyle(C.textDim)
+            }
+        }
+        .padding(.top, 10)
     }
 
     private var bottomActionBar: some View {
@@ -80,6 +143,7 @@ struct DashboardView: View {
             title: dashboardPresentation.primaryActionTitle,
             systemImage: "power",
             tint: primaryTint,
+            prominent: !isTransitioning,
             action: handlePrimaryAction
         )
         .padding(.horizontal, 20)
@@ -87,23 +151,25 @@ struct DashboardView: View {
     }
 
     private var primaryTint: Color {
-        switch dashboardPresentation.tone {
-        case .neutral, .success: return C.signal
-        case .warning:           return C.warn
-        case .danger:            return C.danger
-        }
+        dashboardPresentation.tone == .danger ? C.danger : C.signal
     }
 
-    /// Reconnect banner — visible when `statusFrame.state == .reconnecting`.
+    // MARK: - Banners
+
+    /// Reconnect banner — the core is retrying (ADR 0018), session survives.
     @ViewBuilder
     private var reconnectBanner: some View {
-        if stateMgr.statusFrame.state == .reconnecting {
-            let attempt = stateMgr.statusFrame.reconnectAttempt.map { Int($0) } ?? 0
-            let nextDelay = stateMgr.statusFrame.reconnectNextDelaySecs.map { Int($0) } ?? 0
-            warnBanner(
+        if isReconnecting {
+            let sf = stateMgr.statusFrame
+            banner(
                 icon: "arrow.clockwise",
-                title: L("native.dashboard.reconnecting"),
-                detail: String(format: L("native.dashboard.reconnect.detail.format"), attempt, nextDelay)
+                title: L("native.dashboard.reconnect.title"),
+                detail: String(
+                    format: L("native.dashboard.reconnect.detail.format"),
+                    Int(sf.reconnectAttempt ?? 0),
+                    Int(sf.reconnectNextDelaySecs ?? 0)
+                ),
+                color: C.warn
             )
         }
     }
@@ -113,7 +179,7 @@ struct DashboardView: View {
     @ViewBuilder
     private var healthBanner: some View {
         if let text = healthWarningText {
-            warnBanner(icon: "exclamationmark.triangle", title: text, detail: nil)
+            banner(icon: "exclamationmark.triangle", title: text, detail: nil, color: C.warn)
         }
     }
 
@@ -136,33 +202,36 @@ struct DashboardView: View {
         }
     }
 
-    private func warnBanner(icon: String, title: String, detail: String?) -> some View {
-        HStack(spacing: 10) {
+    private func banner(icon: String, title: String, detail: String?, color: Color) -> some View {
+        HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.callout.weight(.semibold))
-            VStack(alignment: .leading, spacing: 2) {
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(C.warn)
+                    .font(.custom(GsFontName.spaceGroteskBold, size: 15))
+                    .foregroundStyle(C.bone)
                 if let detail {
                     Text(detail)
-                        .font(.footnote)
+                        .font(.custom(GsFontName.jetBrainsMono, size: 11))
                         .foregroundStyle(C.textDim)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(14)
-        .background(C.warn.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(C.warn.opacity(0.4), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(color.opacity(0.35), lineWidth: 1)
         )
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder
     private var emptyHint: some View {
-        if profiles.activeProfile == nil && !isConnected {
+        if profiles.activeProfile == nil && !isUp {
             NativeSectionCard {
                 NativeRow(title: L("native.dashboard.add.profile"), subtitle: L("hint_add_profile"), action: onAddProfile) {
                     Image(systemName: "plus.circle")
@@ -177,171 +246,169 @@ struct DashboardView: View {
         if let warn = vm.preflightWarning {
             HStack(spacing: 10) {
                 Text(warn)
-                    .font(.footnote.weight(.semibold))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 12))
                     .foregroundStyle(C.danger)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Button("×") {
+                Button {
                     vm.dismissPreflight()
+                } label: {
+                    Image(systemName: "xmark")
                 }
                 .foregroundStyle(C.danger)
             }
             .padding(14)
-            .background(C.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(C.danger.opacity(0.10), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(C.danger.opacity(0.4), lineWidth: 1)
             )
         }
     }
 
-    private var scopeCard: some View {
+    // MARK: - Traffic + mux
+
+    private var trafficCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(L("native.dashboard.traffic"))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(C.bone)
-                Spacer()
-                Button {
-                    vm.cycleWindow()
-                } label: {
-                    Text(vm.window.label)
-                        .font(.caption.monospaced().weight(.semibold))
-                        .foregroundStyle(C.textDim)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(C.bgElev2.opacity(0.8), in: Capsule(style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-
-            ScopeChart(
-                rxSamples: vm.rxSamples,
-                txSamples: vm.txSamples,
-                sampleCapacity: vm.window.rawValue
-            )
-            .frame(height: 112)
-        }
-        .padding(16)
-        .background(C.bgElev.opacity(0.92), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(C.hair, lineWidth: 1)
-        )
-    }
-
-    private var connectionCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
-                NativeStatusPill(text: dashboardPresentation.title, tone: dashboardPresentation.tone)
-                Spacer(minLength: 12)
-                Text(dashboardPresentation.routeText)
-                    .font(.caption.monospaced().weight(.semibold))
-                    .foregroundStyle(C.textDim)
-                    .lineLimit(1)
-            }
-
-            Text(profiles.activeProfile?.effectiveServerAddr ?? L("native.dashboard.no.endpoint"))
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(C.bone)
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .padding(.top, 16)
-
-            Text(dashboardPresentation.subtitle)
-                .font(.footnote)
-                .foregroundStyle(C.textDim)
-                .lineLimit(2)
-                .padding(.top, 4)
-
-            Text(vm.timerText)
-                .font(.system(size: 52, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(isConnected ? C.bone : C.textFaint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .padding(.top, 18)
-
-            HStack(spacing: 10) {
-                miniStat(title: L("native.dashboard.download"), value: rxMetricValueText, tint: C.signal)
-                miniStat(title: L("native.dashboard.upload"), value: txMetricValueText, tint: C.warn)
-            }
-            .padding(.top, 18)
-        }
-        .padding(18)
-        .background {
-            ZStack(alignment: .topTrailing) {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(C.bgElev.opacity(0.96))
-                if isConnected {
-                    Circle()
-                        .fill(C.signal.opacity(0.18))
-                        .frame(width: 210, height: 210)
-                        .blur(radius: 34)
-                        .offset(x: 74, y: -92)
-                }
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(isConnected ? C.signal.opacity(0.28) : C.hairBold, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.24), radius: 28, x: 0, y: 18)
-    }
-
-    private func miniStat(title: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(C.textFaint)
-                .lineLimit(1)
-            Text(value)
-                .font(.title3.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(C.bg.opacity(0.32), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(C.hair, lineWidth: 1)
-        )
-    }
-
-    private var muxCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+            if !isReconnecting {
                 HStack {
-                    Text(L("native.dashboard.streams"))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(C.bone)
+                    HStack(spacing: 14) {
+                        legend(color: C.signal, text: "RX \(rate(rxRateBps))")
+                        legend(color: C.warn, text: "TX \(rate(txRateBps))")
+                    }
                     Spacer()
-                    Text(streamCountText)
-                        .font(.caption.monospaced().weight(.semibold))
-                        .foregroundStyle(streamCountColor)
+                    Button {
+                        vm.cycleWindow()
+                    } label: {
+                        Text(vm.window.label.uppercased())
+                            .gsFont(.hdrMeta)
+                            .foregroundStyle(C.textDim)
+                    }
+                    .buttonStyle(.plain)
                 }
-                MuxBars(
-                    active: isConnected,
-                    barCount: streamTotalCount,
-                    activityLevels: streamActivityForMux
+                ScopeChart(
+                    rxSamples: vm.rxSamples,
+                    txSamples: vm.txSamples,
+                    sampleCapacity: vm.window.rawValue
                 )
+                .frame(height: 92)
+                HairlineDivider()
+            }
+            HStack {
+                Text(L("lbl_stream_multiplex").uppercased())
+                    .gsFont(.labelMono)
+                    .foregroundStyle(C.textDim)
+                Spacer()
+                Text(streamCountText)
+                    .gsFont(.labelMono)
+                    .foregroundStyle(streamCountColor)
+            }
+            MuxBars(
+                active: isUp,
+                barCount: streamTotalCount,
+                activityLevels: streamActivityLevels,
+                height: 34
+            )
+            if isReconnecting {
+                Text(L("native.dashboard.reconnect.caption"))
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                    .foregroundStyle(C.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(16)
-        .background(C.bgElev.opacity(0.92), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(C.hair, lineWidth: 1)
-        )
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .gsCardBackground(C)
+    }
+
+    private func legend(color: Color, text: String) -> some View {
+        HStack(spacing: 5) {
+            Capsule().fill(color).frame(width: 12, height: 2)
+            Text(text)
+                .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                .foregroundStyle(C.textDim)
+                .monospacedDigit()
+        }
+    }
+
+    // MARK: - Details
+
+    private var detailsCard: some View {
+        let profile = profiles.activeProfile
+        return VStack(spacing: 0) {
+            if !isReconnecting {
+                kvRow(L("settings.row.dns"), dnsText, valueColor: C.bone, dot: isUp)
+                HairlineDivider()
+                kvRow(L("kv_identity"), profile?.name ?? "—")
+                HairlineDivider()
+            }
+            kvRow(L("kv_route"), routeText, valueColor: isUp ? C.signal : C.bone)
+            if !isReconnecting {
+                HairlineDivider()
+                kvRow(L("kv_assigned"), profile?.tunAddr ?? "—")
+                HairlineDivider()
+                kvRow(L("kv_subscription"), subscriptionValue)
+            }
+            if isUp, let mib = stateMgr.tunnelMemoryMiB {
+                HairlineDivider()
+                kvRow(
+                    L("kv_tunnel_memory"),
+                    String(format: L("kv_tunnel_memory.format"), locale: .current, mib),
+                    valueColor: mib > 40 ? C.warn : C.bone
+                )
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 4)
+        .gsCardBackground(C)
+    }
+
+    private func kvRow(_ label: String, _ value: String, valueColor: Color? = nil, dot: Bool = false) -> some View {
+        HStack(spacing: 12) {
+            Text(label.uppercased())
+                .gsFont(.labelMono)
+                .foregroundStyle(C.textDim)
+            Spacer(minLength: 12)
+            if dot {
+                Circle().fill(C.signal).frame(width: 6, height: 6)
+            }
+            Text(value)
+                .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                .foregroundStyle(valueColor ?? C.bone)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(height: 44)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Derived
+
+    private var dnsText: String {
+        let servers = prefs.dnsServers ?? profiles.activeProfile?.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
+        return servers.joined(separator: " · ")
+    }
+
+    private var routeText: String {
+        guard let profile = profiles.activeProfile else { return "—" }
+        return profile.relayActive
+            ? "\(L("kv_route_relay")) · \(profile.effectiveServerAddr)"
+            : "\(L("kv_route_direct")) · \(profile.serverAddr)"
+    }
+
+    private var subscriptionValue: String {
+        guard let profile = profiles.activeProfile else { return "—" }
+        if profile.cachedEnabled != false, let expiresAt = profile.cachedExpiresAt {
+            let remaining = expiresAt - Int64(Date().timeIntervalSince1970)
+            if remaining > 0 {
+                return String(format: L("kv_subscription.dh.format"), remaining / 86_400, (remaining % 86_400) / 3_600)
+            }
+        }
+        return ProfileEntitlementRefresher.subscriptionText(for: profile) ?? "—"
     }
 
     private var streamCountText: String {
-        let sf = stateMgr.statusFrame
-        guard isConnected else { return L("native.dashboard.streams.empty") }
-        let nStreams = sf.nStreams > 0 ? Int(sf.nStreams) : 8
-        let streamsUp = Int(sf.streamsUp)
-        return String(format: L("native.dashboard.streams.count.format"), streamsUp, nStreams)
+        guard isUp else { return L("native.dashboard.streams.empty") }
+        return "\(streamUpCount) / \(streamTotalCount)"
     }
 
     private var rxRateBps: Double {
@@ -354,19 +421,15 @@ struct DashboardView: View {
         return sf.rateTxBps > 0 ? sf.rateTxBps : (vm.txSamples.last ?? 0)
     }
 
-    private var rxMetricValueText: String {
-        "\(formatMbps(rateBps: rxRateBps)) Mbps"
-    }
-
-    private var txMetricValueText: String {
-        "\(formatMbps(rateBps: txRateBps)) Mbps"
+    /// Bytes/s → «2,41 МБ/с».
+    private func rate(_ bps: Double) -> String {
+        String(format: L("dashboard.rate.mbs.format"), locale: .current, bps / 1_000_000)
     }
 
     private var streamActivityLevels: [Float]? {
         let sf = stateMgr.statusFrame
-        let nStreams = sf.nStreams > 0 ? Int(sf.nStreams) : 8
-        return isConnected && !sf.streamActivity.isEmpty
-            ? Array(sf.streamActivity.prefix(nStreams))
+        return isUp && !sf.streamActivity.isEmpty
+            ? Array(sf.streamActivity.prefix(streamTotalCount))
             : nil
     }
 
@@ -380,12 +443,8 @@ struct DashboardView: View {
     }
 
     private var streamCountColor: Color {
-        guard isConnected else { return C.textFaint }
+        guard isUp else { return C.textFaint }
         return streamUpCount == streamTotalCount ? C.signal : C.warn
-    }
-
-    private var streamActivityForMux: [Float]? {
-        streamActivityLevels
     }
 
     private var dashboardPresentation: DashboardPresentationResult {
@@ -393,69 +452,32 @@ struct DashboardView: View {
             state: vm.state,
             activeProfileName: profiles.activeProfile?.name,
             timerText: vm.timerText,
-            routeIsDirect: routeIsDirect,
-            subscriptionText: subscriptionSummaryText
+            routeIsDirect: profiles.activeProfile?.relayActive != true,
+            subscriptionText: nil
         )
     }
 
-    private var detailsCard: some View {
-        NativeSectionCard {
-            NativeRow(title: L("kv_identity"), subtitle: profiles.activeProfile?.name ?? L("native.dashboard.no.profile"), action: nil) {
-                EmptyView()
-            }
-            HairlineDivider()
-            NativeRow(title: L("kv_route"), subtitle: dashboardPresentation.routeText, action: nil) {
-                EmptyView()
-            }
-            HairlineDivider()
-            NativeRow(title: L("kv_assigned"), subtitle: profiles.activeProfile?.tunAddr ?? "—", action: nil) {
-                EmptyView()
-            }
-            HairlineDivider()
-            NativeRow(title: L("kv_subscription"), subtitle: dashboardPresentation.subscriptionText, action: nil) {
-                EmptyView()
-            }
-        }
+    private var stateColor: Color {
+        pulseColor(for: vm.state, colors: C)
     }
 
-    // MARK: - Derived strings
-
-    private var isConnected: Bool {
-        if case .connected = vm.state { return true }
-        return false
-    }
-
-    private var headerMetaText: String {
+    private var isUp: Bool {
         switch vm.state {
-        case .connected(_, let name): return "\(name) · \(vm.timerText)"
-        case .reconnecting:           return L("native.dashboard.meta.reconnecting")
-        case .connecting:             return L("native.dashboard.meta.connecting")
-        case .disconnecting:          return L("native.dashboard.meta.disconnecting")
-        case .error:                  return L("native.dashboard.meta.error")
-        case .disconnected:           return L("native.dashboard.meta.standby")
-        }
-    }
-
-    private func formatMbps(rateBps: Double) -> String {
-        // bytes/sec → Mbps = bytes * 8 / 1e6
-        let mbps = rateBps * 8.0 / 1_000_000.0
-        return String(format: mbps < 10 ? "%.2f" : "%.1f", mbps)
-    }
-
-    private func shouldPulse(_ state: VpnState) -> Bool {
-        switch state {
-        case .connected, .connecting, .reconnecting, .disconnecting: return true
+        case .connected, .reconnecting: return true
         default: return false
         }
     }
 
-    private var routeIsDirect: Bool {
-        profiles.activeProfile?.relayActive != true
+    private var isReconnecting: Bool {
+        if case .reconnecting = vm.state { return true }
+        return false
     }
 
-    private var subscriptionSummaryText: String? {
-        guard let profile = profiles.activeProfile else { return nil }
-        return ProfileEntitlementRefresher.subscriptionText(for: profile)
+    private var isTransitioning: Bool {
+        switch vm.state {
+        case .connecting, .reconnecting, .disconnecting: return true
+        default: return false
+        }
     }
 
     private func handlePrimaryAction() {

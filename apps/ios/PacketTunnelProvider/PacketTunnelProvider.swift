@@ -64,6 +64,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         Task {
             await PhantomBridge.shared.stop()
+            UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: SharedKeys.tunnelMemoryMiB)
             writeDisconnectedSnapshot()
             completionHandler()
         }
@@ -242,7 +243,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     /// Jetsam watch: iOS kills the extension at ~50 MiB footprint. One line
-    /// a minute in the Logs screen shows how close we run.
+    /// a minute in the Logs screen shows how close we run; the value also
+    /// goes to the App Group for the dashboard («Память туннеля»).
     private func logMemoryFootprint() {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(
@@ -257,6 +259,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let footprint = kr == KERN_SUCCESS ? Double(info.phys_footprint) / mib : -1
         let available = Double(os_proc_available_memory()) / mib
         appendProviderLog(String(format: "memory footprint=%.1fMiB available=%.1fMiB", footprint, available))
+        if footprint > 0 {
+            UserDefaults(suiteName: SharedKeys.appGroup)?.set(footprint, forKey: SharedKeys.tunnelMemoryMiB)
+        }
     }
 
     private func makeNetworkSettings(

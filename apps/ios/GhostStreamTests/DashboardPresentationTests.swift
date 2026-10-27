@@ -28,7 +28,7 @@ final class DashboardPresentationTests: XCTestCase {
             subscriptionText: "5 days remaining"
         )
 
-        XCTAssertEqual(result.title, L("native.dashboard.protected", "Protected"))
+        XCTAssertEqual(result.title, L("state_transmitting_verb", "Transmitting"))
         XCTAssertEqual(result.subtitle, "stockholm-admin · 00:07:42")
         XCTAssertEqual(result.primaryActionTitle, L("action_disconnect", "Disconnect"))
         XCTAssertEqual(result.tone, .success)

@@ -216,7 +216,7 @@
 "native.dashboard.streams.empty" = "— из —";
 "native.dashboard.streams.count.format" = "%d из %d";
 "native.dashboard.reconnecting" = "Переподключение";
-"native.dashboard.reconnect.detail.format" = "Попытка %d · след. через %dс";
+"native.dashboard.reconnect.detail.format" = "Попытка %d · следующая через %d с · трафик ждёт";
 "native.dashboard.health.dead" = "Все потоки упали — переподключение";
 "native.dashboard.health.degraded.format" = "Деградация: живы %d из %d потоков";
 "native.dashboard.health.stale.format" = "Тишина в канале %d с";
@@ -316,3 +316,13 @@
 "settings.rules.downloading.format" = "Загрузка %@…";
 "settings.rules.downloaded.format" = "%@ загружен · правил: %ld";
 "settings.rules.failed.format" = "Не удалось загрузить %@: %@";
+
+// Dashboard (Liquid Glass)
+"dashboard.switch.profile" = "Сменить профиль";
+"dashboard.rate.mbs.format" = "%.2f МБ/с";
+"lbl_session_ongoing" = "Сессия идёт";
+"native.dashboard.reconnect.title" = "Связь прервалась — восстанавливаю";
+"native.dashboard.reconnect.caption" = "Сессия не рвётся: потоки переоткрываются по одному.";
+"kv_tunnel_memory" = "Память туннеля";
+"kv_tunnel_memory.format" = "%.1f / 50 МБ";
+"kv_subscription.dh.format" = "%lld д %lld ч";

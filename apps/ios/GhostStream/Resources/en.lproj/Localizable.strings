@@ -216,7 +216,7 @@
 "native.dashboard.streams.empty" = "— of —";
 "native.dashboard.streams.count.format" = "%d of %d";
 "native.dashboard.reconnecting" = "Reconnecting";
-"native.dashboard.reconnect.detail.format" = "Attempt %d · next in %ds";
+"native.dashboard.reconnect.detail.format" = "Attempt %d · next in %d s · traffic is held";
 "native.dashboard.health.dead" = "All streams down — reconnecting";
 "native.dashboard.health.degraded.format" = "Degraded: %d of %d streams up";
 "native.dashboard.health.stale.format" = "No data from server for %ds";
@@ -316,3 +316,13 @@
 "settings.rules.downloading.format" = "Downloading %@…";
 "settings.rules.downloaded.format" = "%@ downloaded · %ld rules";
 "settings.rules.failed.format" = "Download failed for %@: %@";
+
+// Dashboard (Liquid Glass)
+"dashboard.switch.profile" = "Switch profile";
+"dashboard.rate.mbs.format" = "%.2f MB/s";
+"lbl_session_ongoing" = "Session alive";
+"native.dashboard.reconnect.title" = "Link dropped — restoring";
+"native.dashboard.reconnect.caption" = "The session survives: streams reopen one by one.";
+"kv_tunnel_memory" = "Tunnel memory";
+"kv_tunnel_memory.format" = "%.1f / 50 MB";
+"kv_subscription.dh.format" = "%lldd %lldh";

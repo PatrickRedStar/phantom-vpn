@@ -75,7 +75,6 @@ struct GlassPrimaryButton: View {
                 .frame(height: 40)
         }
         .buttonBorderShape(.capsule)
-        .controlSize(.large)
         .tint(tint)
 
         if #available(iOS 26, *) {

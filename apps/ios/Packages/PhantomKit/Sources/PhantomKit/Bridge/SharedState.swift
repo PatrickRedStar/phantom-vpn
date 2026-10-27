@@ -26,6 +26,15 @@ public struct VpnStatePayload: Codable, Equatable {
     }
 }
 
+// MARK: - SharedKeys
+
+/// App Group keys written by the iOS extension and read by the app.
+public enum SharedKeys {
+    public static let appGroup = "group.com.ghoststream.client"
+    /// Latest extension `phys_footprint`, MiB (iOS jetsam limit is ~50).
+    public static let tunnelMemoryMiB = "tunnel.memory.mib"
+}
+
 // MARK: - DarwinNotifications
 
 /// Namespace for Darwin notification helpers used to coordinate the main
