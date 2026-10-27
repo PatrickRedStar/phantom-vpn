@@ -1,0 +1,29 @@
+/* App Intents / App Shortcuts */
+"intent.connect.title" = "Подключить VPN";
+"intent.connect.description" = "Подключает GhostStream с активным профилем.";
+"intent.disconnect.title" = "Отключить VPN";
+"intent.disconnect.description" = "Отключает GhostStream.";
+"intent.toggle.title" = "VPN GhostStream";
+"intent.toggle.value" = "Включён";
+"intent.error.no.profile" = "Нет профиля с сертификатом — добавьте его в приложении.";
+"shortcut.connect" = "Подключить";
+"shortcut.disconnect" = "Отключить";
+
+/* Виджет, Пункт управления, Live Activity */
+"widget.name" = "GhostStream";
+"widget.description" = "Состояние VPN и кнопка подключения.";
+"widget.connect" = "Подключить";
+"widget.disconnect" = "Отключить";
+"control.name" = "VPN GhostStream";
+"control.description" = "Подключает и отключает VPN.";
+"control.no.profile" = "Нет профиля";
+"activity.disconnect" = "Отключить VPN";
+"activity.rates %@ %@ %lld %lld" = "↓ %1$@ МБ/с · ↑ %2$@ МБ/с · %3$lld/%4$lld";
+
+/* Заголовки состояний — как на главном экране приложения */
+"state.connected" = "Передача";
+"state.reconnecting" = "Переподключение";
+"state.connecting" = "Настройка";
+"state.disconnecting" = "Отключение";
+"state.disconnected" = "Покой";
+"state.error" = "Обрыв";

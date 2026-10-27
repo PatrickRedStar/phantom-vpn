@@ -31,6 +31,8 @@ targets:
       - path: GhostStream
         excludes:
           - "**/.gitkeep"
+      # Intents + Live Activity model, compiled into the app and GhostStreamWidgets.
+      - path: Shared
     resources:
       - path: GhostStream/Assets.xcassets
       - path: GhostStream/Theme/Fonts

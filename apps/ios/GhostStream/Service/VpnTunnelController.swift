@@ -395,6 +395,11 @@ public final class VpnTunnelController: ObservableObject {
     public func stopAndWait() async {
         do {
             try await loadFromPreferences()
+            // A user stop must stick: with on-demand left on, iOS restarts the tunnel.
+            if let manager, manager.isOnDemandEnabled {
+                manager.isOnDemandEnabled = false
+                try await manager.saveToPreferences()
+            }
             manager?.connection.stopVPNTunnel()
             lastError = nil
         } catch {

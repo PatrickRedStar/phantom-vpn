@@ -1,0 +1,29 @@
+/* App Intents / App Shortcuts */
+"intent.connect.title" = "Connect VPN";
+"intent.connect.description" = "Connects GhostStream with the active profile.";
+"intent.disconnect.title" = "Disconnect VPN";
+"intent.disconnect.description" = "Disconnects GhostStream.";
+"intent.toggle.title" = "GhostStream VPN";
+"intent.toggle.value" = "On";
+"intent.error.no.profile" = "No profile with a certificate — add one in the app.";
+"shortcut.connect" = "Connect";
+"shortcut.disconnect" = "Disconnect";
+
+/* Widget, Control Center, Live Activity */
+"widget.name" = "GhostStream";
+"widget.description" = "VPN status and connect button.";
+"widget.connect" = "Connect";
+"widget.disconnect" = "Disconnect";
+"control.name" = "GhostStream VPN";
+"control.description" = "Connects and disconnects the VPN.";
+"control.no.profile" = "No profile";
+"activity.disconnect" = "Disconnect VPN";
+"activity.rates %@ %@ %lld %lld" = "↓ %1$@ MB/s · ↑ %2$@ MB/s · %3$lld/%4$lld";
+
+/* State headlines — same words as the app's main screen */
+"state.connected" = "Transmitting";
+"state.reconnecting" = "Reconnecting";
+"state.connecting" = "Tuning";
+"state.disconnecting" = "Stopping";
+"state.disconnected" = "Standby";
+"state.error" = "Severed";

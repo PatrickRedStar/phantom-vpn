@@ -1,0 +1,5 @@
+/* Фразы App Shortcuts (ключи — фразы из AppShortcuts.swift). */
+"Connect ${applicationName}" = "Подключи ${applicationName}";
+"Turn on ${applicationName}" = "Включи ${applicationName}";
+"Disconnect ${applicationName}" = "Отключи ${applicationName}";
+"Turn off ${applicationName}" = "Выключи ${applicationName}";

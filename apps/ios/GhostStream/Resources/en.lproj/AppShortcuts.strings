@@ -1,0 +1,5 @@
+/* App Shortcuts phrases (keys are the phrases in AppShortcuts.swift). */
+"Connect ${applicationName}" = "Connect ${applicationName}";
+"Turn on ${applicationName}" = "Turn on ${applicationName}";
+"Disconnect ${applicationName}" = "Disconnect ${applicationName}";
+"Turn off ${applicationName}" = "Turn off ${applicationName}";
