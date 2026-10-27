@@ -536,19 +536,6 @@ struct DashboardView: View {
     }
 }
 
-private extension View {
-    /// Two-line headline on 56 pt lines, as in the mockup. Before iOS 26
-    /// SwiftUI has no exact line height — the font's own stays.
-    @ViewBuilder
-    func headlineLineHeight() -> some View {
-        if #available(iOS 26, *) {
-            lineHeight(.exact(points: 56))
-        } else {
-            self
-        }
-    }
-}
-
 // MARK: - Preview
 
 #Preview("Dashboard — Disconnected") {

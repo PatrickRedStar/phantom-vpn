@@ -355,18 +355,27 @@ JetBrains Mono) остаётся; стекло — только на слое у
 
 - **Нативные контролы**: `TabView` без своего фона (на iOS 26 — плавающий
   стеклянный таб-бар), тулбары `NavigationStack` с `ToolbarItem` (на iOS 26 —
-  стеклянные кружки), sheet'ы с `cancellationAction` / `confirmationAction`,
+  стеклянные кружки), sheet'ы с `cancellationAction` / `confirmationAction`
+  (иконки ✕ / ✓ — текстовые кнопки зажимали заголовок шторки),
   поиск журнала `.searchable` (на iOS 26 — `searchToolbarBehavior(.minimize)`).
 - **Главное действие** («Подключить/Отключить», «Новый клиент») —
   `GlassPrimaryButton`: `.glassProminent` с цветом сигнала, плавает над
-  таб-баром через `safeAreaInset` без подложки; во время переходов —
-  обычное `.glass`.
+  таб-баром через `safeAreaInset`; во время переходов — обычное `.glass`.
+  Под ним `bottomActionFade`: 24 pt затухания контента, за кнопкой —
+  сплошной фон (прозрачное `.glass` иначе ложится на текст).
+- **Крупный шрифт (Accessibility-размеры)**: строки «ключ · значение»
+  (KV дашборда, закрытые поля профиля, строки настроек) переключаются
+  `AnyLayout` по `dynamicTypeSize.isAccessibilitySize` — значение под
+  ключом; короткие заголовки и подписи из одного слова —
+  `lineLimit(1)` + `minimumScaleFactor`, иначе SwiftUI ломает слово по
+  буквам; баннеры дашборда ограничены AX2. Проверка — AX5 на SE.
 - **Контент непрозрачный**: карточки `bgElev` + hairline, радиус 26
   (`gsCardBackground`, `NativeSectionCard`).
 - **Deployment target iOS 17**: все iOS 26 API — только в
   `UI/Components/Glass.swift` под `#available(iOS 26, *)`; на 17–18
   фолбэк сохраняет прежний вид (непрозрачный таб-бар, `.ultraThinMaterial`
-  у чипов, `.borderedProminent` у кнопки).
+  у чипов, `.borderedProminent` у кнопки, своя высота строки у
+  заголовка дашборда вместо `lineHeight(.exact(56))`).
 - **Шрифты**: PhantomUI регистрирует их из своего бандла
   (`PhantomUIResources.registerFonts`). На iOS SwiftPM кладёт ресурсы в
   корень бандла — до 2026-10-27 поиск в подпапке `Fonts` возвращал пустой

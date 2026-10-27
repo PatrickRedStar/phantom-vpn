@@ -58,6 +58,17 @@ extension View {
         }
     }
 
+    /// Dashboard headline on 56 pt lines, as in the mockup. Before iOS 26
+    /// SwiftUI has no exact line height — the font's own stays.
+    @ViewBuilder
+    func headlineLineHeight() -> some View {
+        if #available(iOS 26, *) {
+            lineHeight(.exact(points: 56))
+        } else {
+            self
+        }
+    }
+
     /// Opaque content card: elevated background, hairline, 26 pt corners.
     func gsCardBackground(_ C: GsColorSet, radius: CGFloat = 26) -> some View {
         background(C.bgElev, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
