@@ -136,12 +136,13 @@ public final class SettingsViewModel {
         guard let existing = profilesStore.profiles.first(where: { $0.id == id }) else {
             throw SettingsImportError.invalidConnString
         }
-        guard let parsed = PhantomBridge.parseConnString(
-            rawConnString.trimmingCharacters(in: .whitespacesAndNewlines)
-        ) else {
+        let trimmed = rawConnString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = PhantomBridge.parseConnString(trimmed) else {
             throw SettingsImportError.invalidConnString
         }
         var updated = existing
+        // The tunnel dials connString first — a stale one would keep the old cert.
+        updated.connString = trimmed
         updated.serverAddr = parsed.serverAddr
         updated.serverName = parsed.serverName
         updated.certPem = parsed.certPem
