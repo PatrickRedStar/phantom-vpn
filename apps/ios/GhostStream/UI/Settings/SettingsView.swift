@@ -33,6 +33,7 @@ public struct SettingsView: View {
     @State private var languageSelection = "system"
 
     @Environment(\.gsColors) private var C
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     /// Set by the Dashboard's empty-state row: open the add-profile dialog.
     @Binding private var addProfileRequest: Bool
@@ -216,6 +217,14 @@ public struct SettingsView: View {
 
     private func profileRow(_ profile: VpnProfile) -> some View {
         let isActive = profile.id == model.activeId
+        // Accessibility sizes: the days badge goes under the name, which
+        // otherwise collapsed to «Н…».
+        let large = typeSize.isAccessibilitySize
+        let days = daysBadge(profile).map { days in
+            Text(days.text)
+                .gsFont(.labelMonoSmall)
+                .foregroundStyle(days.color)
+        }
         return HStack(spacing: 12) {
             Button {
                 model.setActiveProfile(id: profile.id)
@@ -247,18 +256,16 @@ public struct SettingsView: View {
                             .font(.custom(GsFontName.spaceGroteskBold, size: 17))
                             .foregroundStyle(C.bone)
                             .lineLimit(1)
+                            .minimumScaleFactor(large ? 0.5 : 1)
                         Text(routeSubtitle(profile))
                             .font(.custom(GsFontName.jetBrainsMono, size: 10))
                             .foregroundStyle(C.textDim)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                        if large { days }
                     }
                     Spacer(minLength: 8)
-                    if let days = daysBadge(profile) {
-                        Text(days.text)
-                            .gsFont(.labelMonoSmall)
-                            .foregroundStyle(days.color)
-                    }
+                    if !large { days }
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(C.textDim)
