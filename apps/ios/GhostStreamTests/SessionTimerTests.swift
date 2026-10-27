@@ -29,12 +29,6 @@ final class SessionTimerTests: XCTestCase {
             .connected(since: later, serverName: "nl")
         )
     }
-
-    func testReadsSessionStartedAtFromJSON() {
-        let json = Data(#"{"kind":"connected","since":1,"session_started_at":1799990000.5}"#.utf8)
-        XCTAssertEqual(VpnStateManager.sessionStartedAt(in: json), 1_799_990_000.5)
-        XCTAssertNil(VpnStateManager.sessionStartedAt(in: Data(#"{"kind":"connected"}"#.utf8)))
-    }
 }
 
 @MainActor

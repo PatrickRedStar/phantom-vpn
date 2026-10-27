@@ -48,13 +48,6 @@ public enum VpnState: Equatable {
     }
 }
 
-/// `session_started_at` (unix seconds) — the wall-clock session start the
-/// extension adds to its payload / snapshot.
-private struct SessionStartProbe: Decodable {
-    let sessionStartedAt: Double?
-    enum CodingKeys: String, CodingKey { case sessionStartedAt = "session_started_at" }
-}
-
 // VpnStatePayload and DarwinNotifications are now in PhantomKit
 // (SharedState.swift) so both the host app and PacketTunnelProvider
 // extension can access them.
@@ -120,7 +113,6 @@ public final class VpnStateManager {
     private let payloadKey = "vpn.state.v1"
     private let payloadUpdatedAtKey = "vpn.state.updatedAt.v1"
     private var stateUpdatedAt = Date.distantPast
-    @ObservationIgnored private var payloadSessionStartedAt: Double?
     /// Local Disconnect: the extension keeps publishing the live session
     /// until it actually stops — those frames must not flip the UI back.
     @ObservationIgnored private var disconnectRequestedAt: Date?
@@ -264,10 +256,6 @@ public final class VpnStateManager {
         return next.withSince(old)
     }
 
-    static func sessionStartedAt(in json: Data) -> Double? {
-        (try? JSONDecoder().decode(SessionStartProbe.self, from: json))?.sessionStartedAt
-    }
-
     // MARK: - Internal
 
     private func setState(_ next: VpnState) {
@@ -312,9 +300,8 @@ public final class VpnStateManager {
         case .disconnecting:
             break
         }
-        payloadSessionStartedAt = Self.sessionStartedAt(in: data)
-        let next = payload.asState
-        setState(payloadSessionStartedAt.map { next.withSince(Date(timeIntervalSince1970: $0)) } ?? next)
+        // The extension writes the session start as `since`.
+        setState(payload.asState)
     }
 
     /// Reads snapshot.json from the App Group container and updates
@@ -353,7 +340,7 @@ public final class VpnStateManager {
             setState(.connecting)
         case .connected, .reconnecting:
             let since = Self.sessionStart(
-                startedAt: Self.sessionStartedAt(in: data) ?? payloadSessionStartedAt,
+                startedAt: frame.sessionStartedAt,
                 sessionSecs: frame.sessionSecs,
                 now: Date()
             )
