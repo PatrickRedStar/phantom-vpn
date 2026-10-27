@@ -305,7 +305,7 @@ Departure Mono, JetBrains Mono вшиты в расширение (`UIAppFonts`)
   старту activity может идти уже сутки) — резерв «ЧЧ:ММ:СС». В компактном
   виде таймер без рамки занимает всю ширину острова, поэтому там рамка
   56 pt и `minimumScaleFactor` для сессий от 100 ч.
-- **Тумблер «Dynamic Island»** (Настройки → Приложение, `live_activity` в App
+- **Тумблер «Live Activity»** (Настройки → Приложение, `live_activity` в App
   Group, по умолчанию вкл.): выкл. — activity не стартует, идущая
   завершается сразу (`SystemSurfaces.showLiveActivity`, общий для приложения
   и intent'ов); вкл. при подключённом VPN — стартует тут же. Отдельного
