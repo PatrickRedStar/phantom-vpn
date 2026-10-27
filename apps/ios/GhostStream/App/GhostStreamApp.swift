@@ -44,6 +44,8 @@ struct GhostStreamApp: App {
         #if DEBUG
         DebugDemo.startIfRequested()
         #endif
+        // Starts reloading the widget / control when their labels change.
+        _ = SystemSurfaces.shared
     }
 
     var body: some Scene {

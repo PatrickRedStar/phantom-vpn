@@ -7,9 +7,13 @@
 // disconnect. ActivityKit is driven only from the app process — the tunnel
 // extension cannot see the app's activities. While the app is suspended the
 // content freezes, so it carries nothing that changes on its own (no rates).
+//
+// Widget / control labels (profile name, route, language) are reloaded when
+// they change too — created at launch (GhostStreamApp) for that.
 
 import ActivityKit
 import Foundation
+import Observation
 import PhantomKit
 import WidgetKit
 
@@ -18,16 +22,18 @@ final class SystemSurfaces {
     static let shared = SystemSurfaces()
 
     private var lastKind: VpnStatePayload.Kind?
+    private var lastLabel: String?
+
+    private init() {
+        observeLabel()
+    }
 
     func sync() {
         let state = VpnStateManager.shared.state
         let kind = VpnStatePayload.from(state).kind
         if kind != lastKind {
             lastKind = kind
-            WidgetCenter.shared.reloadAllTimelines()
-            if #available(iOS 18.0, *) {
-                ControlCenter.shared.reloadAllControls()
-            }
+            reloadWidgets()
         }
 
         switch state {
@@ -40,6 +46,27 @@ final class SystemSurfaces {
         case .connecting, .disconnecting:
             break
         }
+    }
+
+    private func reloadWidgets() {
+        WidgetCenter.shared.reloadAllTimelines()
+        if #available(iOS 18.0, *) {
+            ControlCenter.shared.reloadAllControls()
+        }
+    }
+
+    /// The control shows the active profile's name, the widget also its
+    /// route, both in the app's language — none of that is a state change.
+    private func observeLabel() {
+        let label = withObservationTracking {
+            let profile = ProfilesStore.shared.activeProfile
+            return [profile?.name, profile?.effectiveServerAddr, PreferencesStore.shared.languageOverride]
+                .map { $0 ?? "" }.joined(separator: "|")
+        } onChange: {
+            Task { @MainActor in SystemSurfaces.shared.observeLabel() }
+        }
+        if let lastLabel, lastLabel != label { reloadWidgets() }
+        lastLabel = label
     }
 
     /// Tunnel session start the extension writes as `session_started_at`
@@ -75,10 +102,18 @@ final class SystemSurfaces {
             staleDate: nil
         )
 
-        // `since` is recomputed from session_secs on every snapshot and
-        // jitters by a second; a bigger gap means a new session.
-        if let activity = Activity<GhostActivityAttributes>.activities.first,
-           abs(activity.attributes.sessionStart.timeIntervalSince(since)) < 5 {
+        // One activity per tunnel session, keyed by the tunnel's own
+        // `session_started_at`. Without it (older extension) by `since`,
+        // recomputed from session_secs on every snapshot: it jitters by a
+        // second, a bigger gap means a new session. Ended / dismissed
+        // activities linger in `activities` and can't be updated.
+        let started = Self.sessionStartedAt()
+        let sessionStart = started ?? since
+        let tolerance: TimeInterval = started == nil ? 5 : 1
+        if let activity = Activity<GhostActivityAttributes>.activities.first(where: {
+            ($0.activityState == .active || $0.activityState == .stale)
+                && abs($0.attributes.sessionStart.timeIntervalSince(sessionStart)) < tolerance
+        }) {
             if activity.content.state.reconnecting != reconnecting {
                 Task { await activity.update(content) }
             }
@@ -91,7 +126,7 @@ final class SystemSurfaces {
         let attributes = GhostActivityAttributes(
             profileName: profile?.name ?? "",
             relayHost: relay.map { SettingsViewModel.parseHostPort($0)?.0 ?? $0 },
-            sessionStart: since
+            sessionStart: sessionStart
         )
         // Fails in the background outside a LiveActivityIntent — the next
         // foreground sync starts it.
