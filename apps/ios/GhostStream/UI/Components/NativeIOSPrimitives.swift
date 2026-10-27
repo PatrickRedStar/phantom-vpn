@@ -7,16 +7,25 @@ struct NativeSectionCard<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0, content: content)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(C.bgElev.opacity(0.92))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(C.hair, lineWidth: 1)
-                    )
-            )
+            .gsCardBackground(C)
+    }
+}
+
+/// Caption above a card: «ПРОФИЛИ · 2».
+struct SectionLabel: View {
+    let text: String
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        Text(text.uppercased())
+            .gsFont(.labelMono)
+            .foregroundStyle(C.textDim)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -50,11 +59,11 @@ struct NativeRow<Trailing: View>: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
-                        .font(.body.weight(.semibold))
+                        .font(.custom(GsFontName.jetBrainsMono, size: 13))
                         .foregroundStyle(role == .destructive ? C.danger : C.bone)
                     if let subtitle {
                         Text(subtitle)
-                            .font(.footnote)
+                            .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
                             .foregroundStyle(C.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -80,31 +89,6 @@ extension NativeRow where Trailing == Image {
     ) {
         self.init(title: title, subtitle: subtitle, role: role, action: action) {
             Image(systemName: "chevron.right")
-        }
-    }
-}
-
-struct NativeStatusPill: View {
-    let text: String
-    let tone: DashboardTone
-
-    @Environment(\.gsColors) private var C
-
-    var body: some View {
-        Text(text)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .foregroundStyle(color)
-            .background(color.opacity(0.12), in: Capsule(style: .continuous))
-    }
-
-    private var color: Color {
-        switch tone {
-        case .neutral: return C.textDim
-        case .success: return C.signal
-        case .warning: return C.warn
-        case .danger:  return C.danger
         }
     }
 }

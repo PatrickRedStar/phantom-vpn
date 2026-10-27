@@ -2,24 +2,25 @@
 //  SettingsView.swift
 //  GhostStream
 //
+//  «Настройки»: profiles (tap the circle = make active, the row = editor
+//  sheet), server control for admin profiles, routing, app. Adding a
+//  profile lives in the «+» toolbar menu.
+//
 
 import PhantomKit
 import PhantomUI
 import SwiftUI
+import UIKit
 
 /// Root SwiftUI view for the Settings tab.
 public struct SettingsView: View {
 
     @State private var model = SettingsViewModel()
     @State private var showAddDialog = false
-    @State private var showPasteDialog = false
     @State private var showDNSDialog = false
     @State private var showSplitDialog = false
     @State private var showQRSheet = false
-    @State private var pasteDraft = ""
-    @State private var selectedProfileId: String? = nil
     @State private var editorProfileId: String? = nil
-    @State private var deleteProfileId: String? = nil
     @State private var importErrorText: String? = nil
     @State private var adminProfile: VpnProfile? = nil
     @State private var dnsDraft: [String] = []
@@ -41,15 +42,17 @@ public struct SettingsView: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                endpointsSection
-                routingSection
-                appearanceSection
-                diagnosticSection
-                aboutSection
+            VStack(alignment: .leading, spacing: 10) {
+                SectionLabel(text: "\(L("settings.profiles")) · \(model.profiles.count)")
+                profilesCard
+                serverSection
+                SectionLabel(text: L("settings.section.routing"))
+                routingCard
+                SectionLabel(text: L("settings.section.app"))
+                appCard
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 8)
+            .padding(.horizontal, 20)
+            .padding(.top, 4)
             .padding(.bottom, 28)
         }
         .scrollIndicators(.hidden)
@@ -57,39 +60,12 @@ public struct SettingsView: View {
         .navigationTitle(L("nav_settings"))
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(buildMeta)
-                    .font(.caption2.monospaced().weight(.semibold))
-                    .foregroundStyle(C.textDim)
-                    .lineLimit(1)
-            }
-        }
-        .navigationDestination(isPresented: Binding(
-            get: { selectedProfileId != nil },
-            set: { if !$0 { selectedProfileId = nil } }
-        )) {
-            if let id = selectedProfileId,
-               let profile = model.profiles.first(where: { $0.id == id }) {
-                ProfileDetailView(
-                    profile: profile,
-                    isActive: profile.id == model.activeId,
-                    pingMs: model.pingResults[profile.id],
-                    onSetActive: {
-                        model.setActiveProfile(id: profile.id)
-                        selectedProfileId = nil
-                    },
-                    onEdit: {
-                        editorProfileId = profile.id
-                    },
-                    onDelete: {
-                        deleteProfileId = profile.id
-                        selectedProfileId = nil
-                    },
-                    onOpenAdmin: {
-                        guard profile.cachedIsAdmin == true else { return }
-                        adminProfile = profile
-                    }
-                )
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    addProfileActions
+                } label: {
+                    Label(L("settings.add.profile"), systemImage: "plus")
+                }
             }
         }
         .navigationDestination(isPresented: Binding(
@@ -115,29 +91,8 @@ public struct SettingsView: View {
             showAddDialog = true
         }
         .confirmationDialog(L("settings.add.profile"), isPresented: $showAddDialog, titleVisibility: .visible) {
-            Button(L("settings.scan.qr")) {
-                showQRSheet = true
-            }
-            Button(L("settings.paste.connection")) {
-                showPasteDialog = true
-            }
+            addProfileActions
             Button(L("general.cancel"), role: .cancel) {}
-        }
-        .confirmationDialog(L("settings.delete.profile.title"), isPresented: Binding(
-            get: { deleteProfileId != nil },
-            set: { if !$0 { deleteProfileId = nil } }
-        ), titleVisibility: .visible) {
-            Button(L("general.delete"), role: .destructive) {
-                if let deleteProfileId {
-                    model.deleteProfile(id: deleteProfileId)
-                    self.deleteProfileId = nil
-                }
-            }
-            Button(L("general.cancel"), role: .cancel) {
-                deleteProfileId = nil
-            }
-        } message: {
-            Text(L("settings.delete.profile.message"))
         }
         .sheet(isPresented: $showQRSheet) {
             QRScannerView(
@@ -148,18 +103,6 @@ public struct SettingsView: View {
                 onCancel: { showQRSheet = false }
             )
             .ignoresSafeArea()
-        }
-        .sheet(isPresented: $showPasteDialog) {
-            PasteConnStringDialog(
-                text: $pasteDraft,
-                onSubmit: { raw in
-                    importConnString(raw)
-                    pasteDraft = ""
-                    showPasteDialog = false
-                },
-                onDismiss: { showPasteDialog = false }
-            )
-            .presentationDetents([.medium])
         }
         .sheet(isPresented: $showDNSDialog) {
             DNSDialog(
@@ -232,387 +175,285 @@ public struct SettingsView: View {
         }
     }
 
-    private var buildMeta: String {
-        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.0"
-        let build = (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "0"
-        return String(format: L("settings.version.format"), version, build)
-    }
-
-    private var endpointsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(L("settings.section.endpoints"), right: String(format: "%02d", model.profiles.count))
-
-            NativeSectionCard {
-                if model.profiles.isEmpty {
-                    addProfileRow
-                } else {
-                    ForEach(Array(model.profiles.enumerated()), id: \.element.id) { idx, profile in
-                        profileRow(profile)
-                        if idx < model.profiles.count - 1 {
-                            HairlineDivider()
-                        }
-                    }
-                    HairlineDivider()
-                    addProfileRow
-                }
-            }
-        }
-    }
-
-    private var routingSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(L("settings.section.routing"))
-            NativeSectionCard {
-                VStack(spacing: 0) {
-                    settingRow(
-                        title: L("settings.row.dns"),
-                        subtitle: dnsDraft.isEmpty ? L("settings.value.system") : dnsDraft.joined(separator: " · "),
-                        value: dnsDraft.isEmpty ? L("settings.value.system") : "\(dnsDraft.count)",
-                        action: { showDNSDialog = true }
-                    )
-                    HairlineDivider()
-                    splitRoutingRow
-                    HairlineDivider()
-                    routeRulesRow
-                    HairlineDivider()
-                    disabledPlatformRow(
-                        title: L("settings.row.always.on"),
-                        subtitle: L("settings.ios.always.on.unavailable")
-                    )
-                }
-            }
-        }
-    }
-
-    private var splitRoutingRow: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L("settings.row.split.tunnel"))
-                    .font(.body.weight(.semibold))
-                    .foregroundColor(C.bone)
-                Text(splitOn ? L("settings.split.bypass.summary") : L("settings.split.all.summary"))
-                    .font(.footnote)
-                    .foregroundColor(C.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Toggle("", isOn: Binding(
-                get: { splitOn },
-                set: {
-                    splitOn = $0
-                    model.setSplitRouting($0)
-                }
-            ))
-            .labelsHidden()
-            .tint(C.signal)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            hydrateRouteDrafts()
-            showSplitDialog = true
-        }
-        .padding(.vertical, 12)
-    }
-
-    private var routeRulesRow: some View {
-        NativeRow(
-            title: L("settings.row.route.rules"),
-            subtitle: routePolicySubtitle,
-            action: {
-                hydrateRouteDrafts()
-                showSplitDialog = true
-            }
-        ) {
-            HStack(spacing: 12) {
-                Text(routeRulesValue)
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(splitOn ? C.signal : C.textFaint)
-                    .lineLimit(1)
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundColor(C.textFaint)
-            }
-        }
-    }
-
-    private var addProfileRow: some View {
+    @ViewBuilder
+    private var addProfileActions: some View {
         Button {
-            showAddDialog = true
+            showQRSheet = true
         } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(C.signal)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L("settings.add.profile"))
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(C.bone)
-                    Text(L("settings.profile.add.cta"))
-                        .font(.footnote)
-                        .foregroundStyle(C.textDim)
-                }
-                Spacer(minLength: 12)
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(C.textFaint)
-            }
-            .padding(.vertical, 12)
+            Label(L("settings.scan.qr"), systemImage: "qrcode.viewfinder")
         }
-        .buttonStyle(.plain)
+        Button {
+            pasteFromClipboard()
+        } label: {
+            Label(L("settings.paste.clipboard"), systemImage: "doc.on.clipboard")
+        }
+    }
+
+    // MARK: - Profiles
+
+    private var profilesCard: some View {
+        NativeSectionCard {
+            if model.profiles.isEmpty {
+                NativeRow(
+                    title: L("settings.add.profile"),
+                    subtitle: L("settings.profile.add.cta"),
+                    action: { showAddDialog = true }
+                )
+            } else {
+                ForEach(Array(model.profiles.enumerated()), id: \.element.id) { idx, profile in
+                    profileRow(profile)
+                    if idx < model.profiles.count - 1 {
+                        HairlineDivider()
+                    }
+                }
+            }
+        }
     }
 
     private func profileRow(_ profile: VpnProfile) -> some View {
-        Button {
-            selectedProfileId = profile.id
-        } label: {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(profile.name)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(C.bone)
-                        .lineLimit(1)
-                    Text(profileSubtitle(profile))
-                        .font(.footnote)
-                        .foregroundStyle(C.textDim)
-                        .lineLimit(2)
+        let isActive = profile.id == model.activeId
+        return HStack(spacing: 12) {
+            Button {
+                model.setActiveProfile(id: profile.id)
+            } label: {
+                ZStack {
+                    if isActive {
+                        Circle().fill(C.signal)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .heavy))
+                            .foregroundStyle(C.bg)
+                    } else {
+                        Circle().strokeBorder(C.textFaint, lineWidth: 1.5)
+                    }
                 }
+                .frame(width: 22, height: 22)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, -11)
+            .accessibilityLabel(L(isActive ? "settings.profile.active" : "settings.profile.make.active"))
+
+            Button {
+                editorProfileId = profile.id
+            } label: {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(profile.name)
+                            .font(.custom(GsFontName.spaceGroteskBold, size: 17))
+                            .foregroundStyle(C.bone)
+                            .lineLimit(1)
+                        Text(routeSubtitle(profile))
+                            .font(.custom(GsFontName.jetBrainsMono, size: 10))
+                            .foregroundStyle(C.textDim)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 8)
+                    if let days = daysBadge(profile) {
+                        Text(days.text)
+                            .gsFont(.labelMonoSmall)
+                            .foregroundStyle(days.color)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(C.textDim)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func routeSubtitle(_ profile: VpnProfile) -> String {
+        profile.relayActive
+            ? "\(L("kv_route_relay")) · \(profile.effectiveServerAddr)"
+            : "\(L("kv_route_direct")) · \(profile.serverAddr)"
+    }
+
+    /// «167 Д» — lime, under two weeks orange, expired / disabled red.
+    private func daysBadge(_ profile: VpnProfile) -> (text: String, color: Color)? {
+        if profile.cachedEnabled == false {
+            return (L("admin.tag.off").uppercased(), C.danger)
+        }
+        guard let expiresAt = profile.cachedExpiresAt else {
+            return profile.cachedEnabled != nil ? ("∞", C.textDim) : nil
+        }
+        let remaining = expiresAt - Int64(Date().timeIntervalSince1970)
+        guard remaining > 0 else {
+            return (L("profile.subscription.expired").uppercased(), C.danger)
+        }
+        let days = remaining / 86_400
+        return (String(format: L("settings.profile.days.format"), days).uppercased(), days < 14 ? C.warn : C.signal)
+    }
+
+    /// Admin console stays in Settings and only for admin profiles.
+    @ViewBuilder
+    private var serverSection: some View {
+        let admins = model.profiles.filter { $0.cachedIsAdmin == true }
+        if !admins.isEmpty {
+            SectionLabel(text: L("settings.section.server"))
+            NativeSectionCard {
+                ForEach(Array(admins.enumerated()), id: \.element.id) { idx, profile in
+                    NativeRow(
+                        title: L("native.profile.server.control"),
+                        subtitle: profile.name,
+                        action: { adminProfile = profile }
+                    )
+                    if idx < admins.count - 1 {
+                        HairlineDivider()
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Routing
+
+    private var routingCard: some View {
+        NativeSectionCard {
+            valueRow(
+                title: L("settings.row.dns"),
+                value: dnsDraft.isEmpty ? L("settings.value.system") : dnsDraft.joined(separator: " · "),
+                action: { showDNSDialog = true }
+            )
+            HairlineDivider()
+            valueRow(title: L("settings.row.split.tunnel"), value: splitValue) {
+                hydrateRouteDrafts()
+                showSplitDialog = true
+            }
+        }
+    }
+
+    private var splitValue: String {
+        guard splitOn else { return L("settings.value.off") }
+        guard !directCountrySelections.isEmpty else { return L("settings.split.bypass.summary") }
+        let codes = directCountrySelections.sorted().map { $0.uppercased() }.joined(separator: ", ")
+        return String(format: L("settings.split.value.format"), codes)
+    }
+
+    // MARK: - App
+
+    private var appCard: some View {
+        NativeSectionCard {
+            pickerRow(L("settings.row.theme"), value: themeTitle(themeSelection)) {
+                Picker(L("settings.row.theme"), selection: $themeSelection) {
+                    ForEach(ThemeOverride.allCases, id: \.self) { Text(themeTitle($0)).tag($0) }
+                }
+            }
+            .onChange(of: themeSelection) { _, next in
+                model.setTheme(next)
+            }
+            HairlineDivider()
+            pickerRow(L("settings.row.language"), value: languageTitle(languageSelection)) {
+                Picker(L("settings.row.language"), selection: $languageSelection) {
+                    ForEach(["system", "ru", "en"], id: \.self) { Text(languageTitle($0)).tag($0) }
+                }
+            }
+            .onChange(of: languageSelection) { _, next in
+                model.setLanguage(next == "system" ? nil : next)
+            }
+            HairlineDivider()
+            ShareLink(item: debugReportText) {
+                HStack(spacing: 12) {
+                    rowTitle(L("settings.row.share.debug"))
+                    Spacer()
+                    Image(systemName: "square.and.arrow.up")
+                        .foregroundStyle(C.signal)
+                }
+                .frame(minHeight: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            HairlineDivider()
+            HStack(spacing: 12) {
+                rowTitle(L("settings.about.version"))
+                Spacer()
+                Text(versionText)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(minHeight: 48)
+        }
+    }
+
+    private var versionText: String {
+        let info = Bundle.main.infoDictionary
+        let version = (info?["CFBundleShortVersionString"] as? String) ?? "—"
+        let build = (info?["CFBundleVersion"] as? String) ?? "—"
+        let sha = (info?["GitCommitSHA"] as? String) ?? "—"
+        return "\(version) (\(build)) · \(sha)"
+    }
+
+    // MARK: - Row helpers
+
+    private func rowTitle(_ text: String) -> some View {
+        Text(text)
+            .font(.custom(GsFontName.jetBrainsMono, size: 13))
+            .foregroundStyle(C.bone)
+    }
+
+    private func valueRow(title: String, value: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                rowTitle(title)
                 Spacer(minLength: 12)
-                profileBadge(profile)
+                Text(value)
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(C.textFaint)
+                    .foregroundStyle(C.textDim)
             }
+            .frame(minHeight: 48)
             .contentShape(Rectangle())
-            .padding(.vertical, 12)
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            ForEach(profileActions(for: profile)) { action in
-                Button(role: action.role) {
-                    action.action()
-                } label: {
-                    Label(action.label, systemImage: action.systemImage)
-                }
-                .disabled(!action.isEnabled)
-            }
-        }
     }
 
-    private func profileSubtitle(_ profile: VpnProfile) -> String {
-        var parts: [String] = []
-        if profile.id == model.activeId { parts.append(L("settings.profile.active")) }
-        if let ping = model.pingResults[profile.id] { parts.append("\(ping) ms") }
-        parts.append(profile.cachedIsAdmin == true ? L("native.profile.server.control") : L("native.profile.identity"))
-        if !profile.serverAddr.isEmpty { parts.append(profile.serverAddr) }
-        return parts.joined(separator: " · ")
-    }
-
-    private func profileBadge(_ profile: VpnProfile) -> some View {
-        let isActive = profile.id == model.activeId
-        let text = profile.cachedIsAdmin == true
-            ? L("settings.profile.admin")
-            : (isActive ? L("settings.profile.active") : L("settings.profile.user"))
-        let color = isActive || profile.cachedIsAdmin == true ? C.signal : C.textDim
-        return Text(text)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(color.opacity(0.12), in: Capsule(style: .continuous))
-            .lineLimit(1)
-    }
-
-    private var appearanceSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(L("settings.section.appearance"))
-            NativeSectionCard {
-                VStack(spacing: 0) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(L("settings.row.language"))
-                            .font(.body.weight(.semibold))
-                            .foregroundColor(C.bone)
-                        Picker(L("settings.row.language"), selection: $languageSelection) {
-                            Text(L("settings.language.system")).tag("system")
-                            Text(L("settings.language.ru")).tag("ru")
-                            Text(L("settings.language.en")).tag("en")
-                        }
-                        .pickerStyle(.segmented)
-                        .tint(C.signal)
-                        .onChange(of: languageSelection) { _, next in
-                            model.setLanguage(next == "system" ? nil : next)
-                        }
-                    }
-                    .padding(.vertical, 12)
-
-                    HairlineDivider()
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(L("settings.row.theme"))
-                            .font(.body.weight(.semibold))
-                            .foregroundColor(C.bone)
-                        Picker(L("settings.row.theme"), selection: $themeSelection) {
-                            Text(L("settings.theme.system")).tag(ThemeOverride.system)
-                            Text(L("settings.theme.dark")).tag(ThemeOverride.dark)
-                            Text(L("settings.theme.light")).tag(ThemeOverride.light)
-                        }
-                        .pickerStyle(.segmented)
-                        .tint(C.signal)
-                        .onChange(of: themeSelection) { _, next in
-                            model.setTheme(next)
-                        }
-                    }
-                    .padding(.vertical, 12)
-
-                    HairlineDivider()
-
-                    disabledPlatformRow(
-                        title: L("settings.row.app.icon"),
-                        subtitle: L("settings.ios.app.icon.unavailable")
-                    )
-                }
-            }
-        }
-    }
-
-    private var diagnosticSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(L("settings.section.diagnostic"))
-            NativeSectionCard {
-                ShareLink(item: debugReportText) {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(L("settings.row.share.debug"))
-                                .font(.body.weight(.semibold))
-                                .foregroundColor(C.bone)
-                            Text(L("settings.debug.subtitle"))
-                                .font(.footnote)
-                                .foregroundColor(C.textDim)
-                        }
-                        Spacer()
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.body.weight(.semibold))
-                            .foregroundColor(C.signal)
-                    }
-                    .padding(.vertical, 12)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private var aboutSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionHeader(L("settings.section.about"))
-            NativeSectionCard {
-                VStack(alignment: .leading, spacing: 0) {
-                    kvRow(L("settings.about.version"), (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—")
-                    HairlineDivider()
-                    kvRow(L("settings.about.build"), (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "—")
-                    HairlineDivider()
-                    kvRow(L("settings.about.commit"), (Bundle.main.infoDictionary?["GitCommitSHA"] as? String) ?? "—")
-                }
-                .padding(.vertical, 2)
-            }
-        }
-    }
-
-    private func settingRow(
-        title: String,
-        subtitle: String,
-        value: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        NativeRow(title: title, subtitle: subtitle, action: action) {
+    /// Row with the current value; tapping opens a native menu picker.
+    private func pickerRow<P: View>(_ title: String, value: String, @ViewBuilder picker: () -> P) -> some View {
+        Menu {
+            picker()
+        } label: {
             HStack(spacing: 12) {
+                rowTitle(title)
+                Spacer(minLength: 12)
                 Text(value)
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(C.signal)
-                    .lineLimit(1)
-                Image(systemName: "chevron.right")
+                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                    .foregroundStyle(C.textDim)
+                Image(systemName: "chevron.up.chevron.down")
                     .font(.footnote.weight(.semibold))
-                    .foregroundColor(C.textFaint)
+                    .foregroundStyle(C.textDim)
             }
+            .frame(minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func themeTitle(_ theme: ThemeOverride) -> String {
+        switch theme {
+        case .system: return L("settings.theme.system")
+        case .dark:   return L("settings.theme.dark")
+        case .light:  return L("settings.theme.light")
         }
     }
 
-    private func disabledPlatformRow(title: String, subtitle: String) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.body.weight(.semibold))
-                    .foregroundColor(C.bone)
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundColor(C.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Text(L("settings.value.unavailable"))
-                .font(.caption.weight(.semibold))
-                .foregroundColor(C.textFaint)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(C.textFaint.opacity(0.10), in: Capsule(style: .continuous))
+    private func languageTitle(_ code: String) -> String {
+        switch code {
+        case "ru": return L("settings.language.ru")
+        case "en": return L("settings.language.en")
+        default:   return L("settings.language.system")
         }
-        .padding(.vertical, 12)
-        .opacity(0.72)
     }
 
-    private func sectionHeader(_ title: String, right: String? = nil) -> some View {
-        HStack {
-            Text(title)
-                .font(.footnote.weight(.semibold))
-                .foregroundColor(C.textDim)
-            if let right {
-                Text(right)
-                    .font(.footnote.monospacedDigit().weight(.semibold))
-                    .foregroundColor(C.textFaint)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 2)
-    }
-
-    private func kvRow(_ k: String, _ v: String) -> some View {
-        HStack(spacing: 12) {
-            Text(k)
-                .font(.body.weight(.semibold))
-                .foregroundColor(C.bone)
-            Spacer()
-            Text(v)
-                .font(.body.monospacedDigit())
-                .foregroundColor(C.textDim)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.vertical, 12)
-    }
-
-    private func profileActions(for profile: VpnProfile) -> [ProfileCardAction] {
-        let isActive = profile.id == model.activeId
-        return [
-            ProfileCardAction(
-                label: isActive ? L("settings.profile.active") : L("settings.profile.make.active"),
-                systemImage: isActive ? "checkmark.circle.fill" : "checkmark.circle",
-                isEnabled: !isActive
-            ) {
-                model.setActiveProfile(id: profile.id)
-            },
-            ProfileCardAction(label: L("settings.profile.ping"), systemImage: "speedometer") {
-                Task { _ = await model.pingProfile(profile) }
-            },
-            ProfileCardAction(label: L("general.edit"), systemImage: "pencil") {
-                editorProfileId = profile.id
-            },
-            ProfileCardAction(
-                label: L("general.delete"),
-                systemImage: "trash",
-                role: .destructive
-            ) {
-                deleteProfileId = profile.id
-            }
-        ]
-    }
+    // MARK: - Actions
 
     private func hydrate() {
         dnsDraft = model.dnsServers
@@ -626,6 +467,14 @@ public struct SettingsView: View {
         directCountrySelections = Set(model.directCountries)
         manualDirectCidrsText = model.manualDirectCidrsText
         customDirectDomainsText = model.customDirectDomainsText
+    }
+
+    private func pasteFromClipboard() {
+        guard let raw = UIPasteboard.general.string, !raw.isEmpty else {
+            importErrorText = L("settings.import.clipboard.empty")
+            return
+        }
+        importConnString(raw)
     }
 
     private func importConnString(_ raw: String) {
@@ -648,84 +497,12 @@ public struct SettingsView: View {
             "dns=\(model.dnsServers.isEmpty ? "system" : model.dnsServers.joined(separator: ","))",
             "split_routing=\(model.splitRouting)",
             "direct_countries=\(directCountrySelections.sorted().joined(separator: ","))",
-            "manual_direct_cidrs=\(normalizedManualCidrs.joined(separator: ","))",
-            "manual_direct_ipv6_cidrs=\(normalizedManualIpv6Cidrs.joined(separator: ","))",
-            "custom_direct_domains=\(normalizedCustomDomains.joined(separator: ","))",
+            "manual_direct_cidrs=\(RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).valid.joined(separator: ","))",
+            "manual_direct_ipv6_cidrs=\(RoutePolicySnapshot.normalizedIPv6Cidrs(from: manualDirectCidrsText).valid.joined(separator: ","))",
+            "custom_direct_domains=\(PreferencesStore.normalizedHostnames(from: customDirectDomainsText).joined(separator: ","))",
             "language=\(model.languageOverride ?? "system")",
             "last_logs=unavailable from Settings on iOS"
         ].joined(separator: "\n")
-    }
-
-    private var normalizedManualCidrs: [String] {
-        RoutePolicySnapshot.normalizedCidrs(from: manualDirectCidrsText).valid
-    }
-
-    private var normalizedManualIpv6Cidrs: [String] {
-        RoutePolicySnapshot.normalizedIPv6Cidrs(from: manualDirectCidrsText).valid
-    }
-
-    private var normalizedCustomDomains: [String] {
-        PreferencesStore.normalizedHostnames(from: customDirectDomainsText)
-    }
-
-    private var routePolicySubtitle: String {
-        guard splitOn else {
-            return L("settings.split.all.summary")
-        }
-        return String(
-            format: L("settings.route.rules.summary"),
-            directCountrySelections.count,
-            normalizedManualCidrs.count + normalizedManualIpv6Cidrs.count,
-            normalizedCustomDomains.count
-        )
-    }
-
-    private var routeRulesValue: String {
-        guard splitOn else { return L("settings.value.off") }
-        return "\(directCountrySelections.count + normalizedManualCidrs.count + normalizedManualIpv6Cidrs.count + normalizedCustomDomains.count)"
-    }
-}
-
-private struct PasteConnStringDialog: View {
-    @Binding var text: String
-    let onSubmit: (String) -> Void
-    let onDismiss: () -> Void
-
-    @Environment(\.gsColors) private var C
-
-    var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(L("settings.import.subtitle"))
-                    .font(.body)
-                    .foregroundColor(C.textDim)
-
-                TextField("ghs://...", text: $text, axis: .vertical)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .font(.body.monospaced())
-                    .lineLimit(4...8)
-                    .padding(12)
-                    .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-                Spacer(minLength: 0)
-            }
-            .padding(18)
-            .background(C.bg.ignoresSafeArea())
-            .navigationTitle(L("settings.import.title"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(L("general.cancel"), action: onDismiss)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(L("settings.import.action")) {
-                        onSubmit(text)
-                    }
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-        }
     }
 }
 

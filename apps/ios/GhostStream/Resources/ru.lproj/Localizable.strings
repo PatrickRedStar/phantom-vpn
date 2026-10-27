@@ -326,3 +326,11 @@
 "kv_tunnel_memory" = "Память туннеля";
 "kv_tunnel_memory.format" = "%.1f / 50 МБ";
 "kv_subscription.dh.format" = "%lld д %lld ч";
+
+// Settings (Liquid Glass)
+"settings.section.app" = "Приложение";
+"settings.section.server" = "Сервер";
+"settings.paste.clipboard" = "Вставить из буфера";
+"settings.import.clipboard.empty" = "В буфере обмена нет ссылки ghs://";
+"settings.profile.days.format" = "%lld д";
+"settings.split.value.format" = "%@ напрямую";

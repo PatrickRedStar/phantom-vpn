@@ -326,3 +326,11 @@
 "kv_tunnel_memory" = "Tunnel memory";
 "kv_tunnel_memory.format" = "%.1f / 50 MB";
 "kv_subscription.dh.format" = "%lldd %lldh";
+
+// Settings (Liquid Glass)
+"settings.section.app" = "App";
+"settings.section.server" = "Server";
+"settings.paste.clipboard" = "Paste from clipboard";
+"settings.import.clipboard.empty" = "No ghs:// link on the clipboard";
+"settings.profile.days.format" = "%lldd";
+"settings.split.value.format" = "%@ direct";
