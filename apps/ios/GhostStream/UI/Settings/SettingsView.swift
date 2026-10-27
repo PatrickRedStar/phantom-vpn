@@ -484,6 +484,7 @@ public struct SettingsView: View {
     }
 
     private func hydrateRouteDrafts() {
+        model.refreshDownloadedRoutingRules()
         splitOn = model.splitRouting
         directCountrySelections = Set(model.directCountries)
         manualDirectCidrsText = model.manualDirectCidrsText

@@ -68,7 +68,8 @@ public final class SettingsViewModel {
         self.profilesStore = profilesStore
         self.preferencesStore = preferencesStore
         self.tunnelController = tunnelController ?? VpnTunnelController()
-        refreshDownloadedRoutingRules()
+        // No disk reads here: SwiftUI builds a new instance whenever
+        // SettingsView's struct is rebuilt — the view hydrates in `.task`.
     }
 
     // MARK: - Convenience accessors (pass-through to stores)

@@ -52,7 +52,10 @@ struct DashboardView: View {
         .safeAreaInset(edge: .bottom) {
             bottomActionBar
         }
-        .onAppear { vm.onAppear() }
+        .task { await vm.run() }
+        .task(id: isConnected) {
+            if isConnected { await vm.refreshEntitlements() }
+        }
     }
 
     // MARK: - Header
@@ -466,6 +469,11 @@ struct DashboardView: View {
         case .connected, .reconnecting: return true
         default: return false
         }
+    }
+
+    private var isConnected: Bool {
+        if case .connected = vm.state { return true }
+        return false
     }
 
     private var isReconnecting: Bool {

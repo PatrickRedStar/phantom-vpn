@@ -22,29 +22,30 @@ struct StatSample: Equatable {
     let bytesTx: Int64
 }
 
+/// SwiftUI builds a new instance every time `DashboardView`'s struct is
+/// rebuilt and keeps only the first, so `init` must stay free of side
+/// effects: no observers, no loops, no reads of observable state (a read
+/// there made the parent body depend on it). Work runs from the view's
+/// `.task`s and stops when the screen goes away.
 @MainActor
 @Observable
 final class DashboardViewModel {
 
     // MARK: - Observable state
 
-    private(set) var state: VpnState = .disconnected
     private(set) var samples: [StatSample] = []
     var window: ScopeWindow = .m1
     private(set) var timerText: String = "--:--:--"
-    private(set) var subscriptionText: String?
     var preflightWarning: String?
+
+    /// App-wide state; views reading it re-render on its changes.
+    var state: VpnState { VpnStateManager.shared.state }
 
     // MARK: - Dependencies
 
     private let tunnel = VpnTunnelController()
     private let log = Logger(subsystem: "com.ghoststream.client", category: "DashboardVM")
     private let maxSamples = 3600
-
-    nonisolated(unsafe) private var sampleTask: Task<Void, Never>?
-    nonisolated(unsafe) private var timerTask: Task<Void, Never>?
-    nonisolated(unsafe) private var subscriptionTask: Task<Void, Never>?
-    private var stopped = false
 
     // MARK: - Derived samples for the chart
 
@@ -59,26 +60,24 @@ final class DashboardViewModel {
 
     // MARK: - Lifecycle
 
-    init() {
-        self.state = VpnStateManager.shared.state
-        observeState()
-        restart(for: state)
-        Task { @MainActor in
-            await reconcileSystemStatus()
+    /// While the screen is visible: session timer and scope samples, 1 Hz.
+    func run() async {
+        tick()
+        await VpnStateManager.shared.reconcileWithSystem()
+        while !Task.isCancelled {
+            tick()
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
     }
 
-    deinit {
-        sampleTask?.cancel()
-        timerTask?.cancel()
-        subscriptionTask?.cancel()
-    }
-
-    func onAppear() {
-        state = VpnStateManager.shared.state
-        restart(for: state)
-        Task { @MainActor in
-            await reconcileSystemStatus()
+    /// While connected and visible: /api/me now and every 5 minutes.
+    func refreshEntitlements() async {
+        // Asked once by iOS: the extension notifies on a fatal stop
+        // (revoked / expired access, clock).
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        while !Task.isCancelled {
+            _ = await ProfileEntitlementRefresher.refreshActiveProfileIfConnected(profilesStore: .shared)
+            try? await Task.sleep(nanoseconds: 300_000_000_000)
         }
     }
 
@@ -117,7 +116,7 @@ final class DashboardViewModel {
         Task { @MainActor in
             await tunnel.stopAndWait()
             try? await Task.sleep(nanoseconds: 750_000_000)
-            await reconcileSystemStatus()
+            await VpnStateManager.shared.reconcileWithSystem()
         }
     }
 
@@ -126,150 +125,32 @@ final class DashboardViewModel {
 
     // MARK: - Internals
 
-    private func observeState() {
-        DarwinNotifications.observe(DarwinNotifications.stateChanged) { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                let next = VpnStateManager.shared.state
-                let prev = self.state
-                self.state = next
-                if !Self.sameKind(prev, next) {
-                    self.restart(for: next)
-                }
-            }
-        }
-    }
-
-    private func reconcileSystemStatus() async {
-        let status = await tunnel.currentStatus()
-        switch status {
-        case .invalid, .disconnected:
-            // A fatal error from the core (revoked access, certificate,
-            // clock) stays on screen until the next connect attempt.
-            if case .error = VpnStateManager.shared.state { break }
-            VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
-        case .connecting:
-            VpnStateManager.shared.update(.connecting)
-        case .reasserting:
-            // The core is reconnecting; the extension's snapshot keeps the session.
-            if case .reconnecting = VpnStateManager.shared.state { break }
-            VpnStateManager.shared.update(.connecting)
-        case .disconnecting:
-            VpnStateManager.shared.update(.disconnecting)
-        case .connected:
-            switch VpnStateManager.shared.state {
-            case .connected, .reconnecting, .disconnecting:
-                break
-            default:
-                let profile = ProfilesStore.shared.activeProfile
-                VpnStateManager.shared.update(
-                    .connected(
-                        since: Date(),
-                        serverName: profile?.serverName ?? profile?.serverAddr ?? ""
-                    )
-                )
-            }
-        @unknown default:
-            VpnStateManager.shared.forceDisconnected(clearSnapshot: true)
-        }
-
-        let next = VpnStateManager.shared.state
-        let prev = state
-        state = next
-        if !Self.sameKind(prev, next) {
-            restart(for: next)
-        }
-    }
-
-    private static func sameKind(_ a: VpnState, _ b: VpnState) -> Bool {
-        switch (a, b) {
-        case (.disconnected, .disconnected),
-             (.connecting, .connecting),
-             (.disconnecting, .disconnecting):
-            return true
-        case (.connected, .connected): return true
-        case (.reconnecting, .reconnecting): return true
-        case (.error, .error): return true
-        default: return false
-        }
-    }
-
-    private func restart(for state: VpnState) {
-        sampleTask?.cancel(); sampleTask = nil
-        timerTask?.cancel(); timerTask = nil
-        subscriptionTask?.cancel(); subscriptionTask = nil
-
+    private func tick() {
         switch state {
-        case .connected(let since, _):
-            startSampleLoop()
-            startTimerLoop(since: since)
-            startSubscriptionLoop()
-            // Asked once by iOS: the extension notifies on a fatal stop
-            // (revoked / expired access, clock).
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        case .reconnecting(let since, _):
-            // Same session — the timer keeps running.
-            startSampleLoop()
-            startTimerLoop(since: since)
+        case .connected(let since, _), .reconnecting(let since, _):
+            timerText = Self.format(duration: Date().timeIntervalSince(since))
+            appendSample()
         case .connecting:
             timerText = "--:--:--"
-            startSampleLoop()
-            startSubscriptionLoop()
+            appendSample()
         case .disconnected, .error, .disconnecting:
             timerText = "--:--:--"
-            samples.removeAll()
+            if !samples.isEmpty { samples.removeAll() }
         }
     }
 
-    /// Samples StatusFrame every 1s to build the scope chart.
-    private func startSampleLoop() {
-        sampleTask = Task { @MainActor [weak self] in
-            while let self, !self.stopped, !Task.isCancelled {
-                let sf = VpnStateManager.shared.statusFrame
-                let sample = StatSample(
-                    at: Date(),
-                    rxRate: sf.rateRxBps,
-                    txRate: sf.rateTxBps,
-                    bytesRx: Int64(sf.bytesRx),
-                    bytesTx: Int64(sf.bytesTx)
-                )
-                self.samples.append(sample)
-                if self.samples.count > self.maxSamples {
-                    self.samples.removeFirst(self.samples.count - self.maxSamples)
-                }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
+    private func appendSample() {
+        let sf = VpnStateManager.shared.statusFrame
+        samples.append(StatSample(
+            at: Date(),
+            rxRate: sf.rateRxBps,
+            txRate: sf.rateTxBps,
+            bytesRx: Int64(sf.bytesRx),
+            bytesTx: Int64(sf.bytesTx)
+        ))
+        if samples.count > maxSamples {
+            samples.removeFirst(samples.count - maxSamples)
         }
-    }
-
-    private func startTimerLoop(since: Date) {
-        timerTask = Task { @MainActor [weak self] in
-            while let self, !self.stopped, !Task.isCancelled {
-                self.timerText = Self.format(duration: Date().timeIntervalSince(since))
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-    }
-
-    private func startSubscriptionLoop() {
-        subscriptionTask = Task { @MainActor [weak self] in
-            while let self, !self.stopped, !Task.isCancelled {
-                let refreshed = await ProfileEntitlementRefresher.refreshActiveProfileIfConnected(
-                    profilesStore: .shared
-                )
-                self.refreshSubscriptionFromCache()
-                let retryDelay: UInt64 = refreshed == nil ? 5_000_000_000 : 60_000_000_000
-                try? await Task.sleep(nanoseconds: retryDelay)
-            }
-        }
-    }
-
-    private func refreshSubscriptionFromCache() {
-        guard let profile = ProfilesStore.shared.activeProfile else {
-            subscriptionText = nil
-            return
-        }
-        subscriptionText = ProfileEntitlementRefresher.subscriptionText(for: profile)
     }
 
     static func format(duration: TimeInterval) -> String {

@@ -70,8 +70,8 @@ final class LogsViewModel {
     /// `true` while the view wants live polling.
     private(set) var polling = false
 
-    /// Last VPN state observed from the shared state bridge.
-    private(set) var tunnelState: VpnState = VpnStateManager.shared.state
+    /// App-wide VPN state; views reading it re-render on its changes.
+    var tunnelState: VpnState { VpnStateManager.shared.state }
 
     /// Last IPC failure seen while asking the provider for logs.
     private(set) var lastIpcError: String?
@@ -88,9 +88,11 @@ final class LogsViewModel {
         .containerURL(forSecurityApplicationGroupIdentifier: SharedKeys.appGroup)?
         .appendingPathComponent("logs.jsonl")
 
-    init() {
-        loadHistory()
-    }
+    @ObservationIgnored private var historyLoaded = false
+
+    /// No side effects: SwiftUI builds a new instance every time
+    /// `LogsView`'s struct is rebuilt and keeps only the first.
+    init() {}
 
     // MARK: - Derived
 
@@ -149,14 +151,9 @@ final class LogsViewModel {
         guard !polling else { return }
         polling = true
         pollTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.refreshTunnelState()
-            if self.shouldAttemptIpc {
-                await self.setupIpc()
-            }
-            while self.polling, !Task.isCancelled {
-                self.refreshTunnelState()
-                await self.drainNewEntries()
+            await self?.loadHistory()
+            while !Task.isCancelled, self != nil {
+                await self?.drainNewEntries()
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
@@ -267,15 +264,25 @@ final class LogsViewModel {
 
     // MARK: - History file
 
-    private func loadHistory() {
-        guard let historyURL, let data = try? Data(contentsOf: historyURL) else { return }
-        let decoder = JSONDecoder()
-        let frames = data.split(separator: UInt8(ascii: "\n")).compactMap {
-            try? decoder.decode(LogFrame.self, from: Data($0))
-        }
+    /// Once, off the main thread: up to 10k JSON lines.
+    private func loadHistory() async {
+        guard !historyLoaded, let historyURL else { return }
+        historyLoaded = true
+        let frames = await Task.detached(priority: .utility) {
+            Self.readFrames(historyURL)
+        }.value
         allLogs = Array(frames.suffix(maxEntries))
         // The extension's ring still holds these — don't fetch them twice.
         lastTsUs = allLogs.map(\.timestampUs).max() ?? 0
+    }
+
+    /// JSON Lines of `LogFrame`; unreadable lines are skipped.
+    nonisolated static func readFrames(_ url: URL) -> [LogFrame] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let decoder = JSONDecoder()
+        return data.split(separator: UInt8(ascii: "\n")).compactMap {
+            try? decoder.decode(LogFrame.self, from: Data($0))
+        }
     }
 
     private func writeHistory(_ frames: [LogFrame], append: Bool) {
@@ -303,10 +310,6 @@ final class LogsViewModel {
         case .disconnected, .disconnecting, .error:
             return false
         }
-    }
-
-    private func refreshTunnelState() {
-        tunnelState = VpnStateManager.shared.state
     }
 
     private func selectTunnelManager(from managers: [NETunnelProviderManager]) -> NETunnelProviderManager? {

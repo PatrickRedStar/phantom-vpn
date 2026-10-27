@@ -12,6 +12,7 @@
 // both and exposes an @Observable `state` for SwiftUI.
 
 import Foundation
+import NetworkExtension
 import Observation
 // PhantomKit is the package that provides StatusFrame and ConnState.
 // If PhantomKit is not yet linked to this target, replace the import with
@@ -146,6 +147,40 @@ public final class VpnStateManager {
         }
         writePayload(VpnStatePayload(kind: .disconnected))
         DarwinNotifications.post(DarwinNotifications.stateChanged)
+    }
+
+    /// Squares the shown state with the system VPN status — a snapshot or
+    /// payload can outlive the extension that wrote it.
+    public func reconcileWithSystem() async {
+        let status = await VpnTunnelController().currentStatus()
+        switch status {
+        case .invalid, .disconnected:
+            // A fatal error from the core (revoked access, certificate,
+            // clock) stays on screen until the next connect attempt.
+            if case .error = state { break }
+            forceDisconnected(clearSnapshot: true)
+        case .connecting:
+            update(.connecting)
+        case .reasserting:
+            // The core is reconnecting; the extension's snapshot keeps the session.
+            if case .reconnecting = state { break }
+            update(.connecting)
+        case .disconnecting:
+            update(.disconnecting)
+        case .connected:
+            switch state {
+            case .connected, .reconnecting, .disconnecting:
+                break
+            default:
+                let profile = ProfilesStore.shared.activeProfile
+                update(.connected(
+                    since: Date(),
+                    serverName: profile?.serverName ?? profile?.serverAddr ?? ""
+                ))
+            }
+        @unknown default:
+            forceDisconnected(clearSnapshot: true)
+        }
     }
 
     // MARK: - Internal
