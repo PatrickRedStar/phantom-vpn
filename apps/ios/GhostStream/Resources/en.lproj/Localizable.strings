@@ -340,6 +340,8 @@
 "settings.row.kill.switch" = "No VPN — no network";
 "settings.kill.switch.subtitle" = "Block traffic while the tunnel is down. Local network stays reachable. From the next Connect";
 "settings.kill.switch.split" = "Full tunnel only — unavailable with split tunnel";
+"settings.row.live.activity" = "Dynamic Island";
+"settings.live.activity.subtitle" = "Session timer in the Dynamic Island and on the Lock Screen — iOS shows them only together. To hide it from the Lock Screen for all apps: Settings → Face ID & Passcode";
 
 // Profile editor (sheet)
 "profile.editor.name" = "Name";

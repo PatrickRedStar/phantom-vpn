@@ -49,6 +49,11 @@ final class SystemSurfaces {
     }
 
     private func showLiveActivity(since: Date, reconnecting: Bool) {
+        // Settings → «Dynamic Island» off: no activity, end a running one.
+        guard PreferencesStore.shared.liveActivity else {
+            Task { await endLiveActivity() }
+            return
+        }
         let content = ActivityContent(
             state: GhostActivityAttributes.ContentState(reconnecting: reconnecting),
             staleDate: nil
