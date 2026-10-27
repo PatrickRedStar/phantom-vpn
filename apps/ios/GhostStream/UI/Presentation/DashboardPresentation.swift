@@ -90,6 +90,11 @@ enum DashboardPresentation {
         }
     }
 
+    /// `StatusFrame.rate_*_bps` is bits per second; the UI shows MB/s.
+    static func megabytesPerSecond(bitsPerSecond: Double) -> Double {
+        TelemetryDisplayHelpers.bytesPerSecondFromBitsPerSecond(bitsPerSecond) / 1_000_000
+    }
+
     private static func L(_ key: String, _ fallback: String) -> String {
         AppStrings.localized(key, fallback: fallback)
     }

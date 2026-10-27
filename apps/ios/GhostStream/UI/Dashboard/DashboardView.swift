@@ -424,9 +424,10 @@ struct DashboardView: View {
         return sf.rateTxBps > 0 ? sf.rateTxBps : (vm.txSamples.last ?? 0)
     }
 
-    /// Bytes/s → «2,41 МБ/с».
+    /// StatusFrame bits/s → «2,41 МБ/с».
     private func rate(_ bps: Double) -> String {
-        String(format: L("dashboard.rate.mbs.format"), locale: .current, bps / 1_000_000)
+        String(format: L("dashboard.rate.mbs.format"), locale: .current,
+               DashboardPresentation.megabytesPerSecond(bitsPerSecond: bps))
     }
 
     private var streamActivityLevels: [Float]? {

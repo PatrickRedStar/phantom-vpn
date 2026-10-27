@@ -65,4 +65,9 @@ final class DashboardPresentationTests: XCTestCase {
     private func L(_ key: String, _ fallback: String) -> String {
         AppStrings.localized(key, fallback: fallback)
     }
+
+    func testRateIsBitsPerSecondShownAsMegabytes() {
+        XCTAssertEqual(DashboardPresentation.megabytesPerSecond(bitsPerSecond: 8_000_000), 1, accuracy: 1e-9)
+        XCTAssertEqual(DashboardPresentation.megabytesPerSecond(bitsPerSecond: 0), 0)
+    }
 }
