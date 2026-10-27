@@ -30,6 +30,29 @@ public enum VpnState: Equatable {
     case reconnecting(since: Date, serverName: String)
     case disconnecting
     case error(String)
+
+    /// Session start while the tunnel is up.
+    var since: Date? {
+        switch self {
+        case .connected(let since, _), .reconnecting(let since, _): return since
+        default: return nil
+        }
+    }
+
+    func withSince(_ date: Date) -> VpnState {
+        switch self {
+        case .connected(_, let name): return .connected(since: date, serverName: name)
+        case .reconnecting(_, let name): return .reconnecting(since: date, serverName: name)
+        default: return self
+        }
+    }
+}
+
+/// `session_started_at` (unix seconds) — the wall-clock session start the
+/// extension adds to its payload / snapshot.
+private struct SessionStartProbe: Decodable {
+    let sessionStartedAt: Double?
+    enum CodingKeys: String, CodingKey { case sessionStartedAt = "session_started_at" }
 }
 
 // VpnStatePayload and DarwinNotifications are now in PhantomKit
@@ -97,6 +120,7 @@ public final class VpnStateManager {
     private let payloadKey = "vpn.state.v1"
     private let payloadUpdatedAtKey = "vpn.state.updatedAt.v1"
     private var stateUpdatedAt = Date.distantPast
+    @ObservationIgnored private var payloadSessionStartedAt: Double?
 
     /// App Group container URL — used to locate snapshot.json.
     private var containerURL: URL? {
@@ -183,7 +207,37 @@ public final class VpnStateManager {
         }
     }
 
+    // MARK: - Session timer
+
+    /// Session start for the timer. The extension's `session_started_at`
+    /// wins: wall clock, survives core reconnects and device sleep. Without
+    /// it — `session_secs`, which restarts on every full reconnect and
+    /// stops while the device sleeps.
+    static func sessionStart(startedAt: Double?, sessionSecs: UInt64, now: Date) -> Date {
+        if let startedAt { return Date(timeIntervalSince1970: startedAt) }
+        return now.addingTimeInterval(-Double(sessionSecs))
+    }
+
+    /// `next` keeping the current session start when they differ by < 2 s:
+    /// a start derived from whole `session_secs` jitters on every frame, and
+    /// a changing `state` re-renders every view that reads it.
+    static func steady(_ next: VpnState, current: VpnState) -> VpnState {
+        guard let old = current.since, let new = next.since,
+              abs(old.timeIntervalSince(new)) < 2
+        else { return next }
+        return next.withSince(old)
+    }
+
+    static func sessionStartedAt(in json: Data) -> Double? {
+        (try? JSONDecoder().decode(SessionStartProbe.self, from: json))?.sessionStartedAt
+    }
+
     // MARK: - Internal
+
+    private func setState(_ next: VpnState) {
+        let next = Self.steady(next, current: state)
+        if next != state { state = next }
+    }
 
     private func observeDarwinNotifications() {
         DarwinNotifications.observe(DarwinNotifications.stateChanged) { [weak self] in
@@ -214,7 +268,9 @@ public final class VpnStateManager {
         guard let data = defaults.data(forKey: payloadKey),
               let payload = try? JSONDecoder().decode(VpnStatePayload.self, from: data)
         else { return }
-        state = payload.asState
+        payloadSessionStartedAt = Self.sessionStartedAt(in: data)
+        let next = payload.asState
+        setState(payloadSessionStartedAt.map { next.withSince(Date(timeIntervalSince1970: $0)) } ?? next)
     }
 
     /// Reads snapshot.json from the App Group container and updates
@@ -242,18 +298,21 @@ public final class VpnStateManager {
         // Reconcile the legacy VpnState enum from the rich frame.
         switch frame.state {
         case .disconnected:
-            state = .disconnected
+            setState(.disconnected)
         case .connecting:
-            state = .connecting
+            setState(.connecting)
         case .connected, .reconnecting:
-            // sessionSecs keeps counting across core reconnects.
-            let since = Date().addingTimeInterval(-Double(frame.sessionSecs))
+            let since = Self.sessionStart(
+                startedAt: Self.sessionStartedAt(in: data) ?? payloadSessionStartedAt,
+                sessionSecs: frame.sessionSecs,
+                now: Date()
+            )
             let serverName = frame.sni ?? frame.serverAddr ?? ""
-            state = frame.state == .connected
+            setState(frame.state == .connected
                 ? .connected(since: since, serverName: serverName)
-                : .reconnecting(since: since, serverName: serverName)
+                : .reconnecting(since: since, serverName: serverName))
         case .error:
-            state = .error(frame.lastError ?? "unknown")
+            setState(.error(frame.lastError ?? "unknown"))
         }
     }
 }
