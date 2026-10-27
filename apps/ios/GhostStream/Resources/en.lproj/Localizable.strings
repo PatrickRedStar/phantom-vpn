@@ -314,6 +314,8 @@
 "profile.editor.danger" = "Danger zone";
 
 "qr.camera.denied" = "Camera access is denied.\nAllow it in Settings.";
+"qr.camera.unavailable" = "Camera is unavailable.";
+"qr.open.settings" = "Open Settings";
 "dashboard.preflight.no.profile" = "No active profile — add one in Settings";
 "dashboard.preflight.no.certs" = "Certificates not found — re-import the ghs:// link";
 "settings.import.invalid" = "Couldn't recognize the connection string. Check the ghs://… link";

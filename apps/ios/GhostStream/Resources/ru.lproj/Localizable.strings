@@ -314,6 +314,8 @@
 "profile.editor.danger" = "Опасная зона";
 
 "qr.camera.denied" = "Доступ к камере запрещён.\nРазрешите в настройках.";
+"qr.camera.unavailable" = "Камера недоступна.";
+"qr.open.settings" = "Открыть настройки";
 "dashboard.preflight.no.profile" = "Нет активного профиля — добавьте его в Настройках";
 "dashboard.preflight.no.certs" = "Сертификаты не найдены — переимпортируйте ghs://-ссылку";
 "settings.import.invalid" = "Не удалось распознать строку подключения. Проверьте ghs://…";

@@ -56,7 +56,6 @@ public final class QRScannerViewController: UIViewController, AVCaptureMetadataO
     private let session = AVCaptureSession()
     private var previewLayer: AVCaptureVideoPreviewLayer?
     private var didReportResult = false
-    private var permissionLabel: UILabel?
 
     public override func viewDidLoad() {
         super.viewDidLoad()
@@ -92,13 +91,17 @@ public final class QRScannerViewController: UIViewController, AVCaptureMetadataO
         let btn = UIButton(type: .system)
         btn.setTitle(AppStrings.localized("general.cancel").uppercased(), for: .normal)
         btn.setTitleColor(.white, for: .normal)
-        btn.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        btn.titleLabel?.font = UIFont.preferredFont(forTextStyle: .headline)
+        btn.titleLabel?.adjustsFontForContentSizeCategory = true
         btn.translatesAutoresizingMaskIntoConstraints = false
         btn.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         view.addSubview(btn)
         NSLayoutConstraint.activate([
-            btn.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            btn.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 2),
             btn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            // 44 pt tap target; the bare title was ~30 pt.
+            btn.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            btn.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
     }
 
@@ -116,37 +119,58 @@ public final class QRScannerViewController: UIViewController, AVCaptureMetadataO
                 DispatchQueue.main.async {
                     guard let self else { return }
                     if granted { self.configureSession() }
-                    else { self.showPermissionDenied() }
+                    else { self.showCameraMessage(denied: true) }
                 }
             }
-        case .denied, .restricted:
-            showPermissionDenied()
-        @unknown default:
-            showPermissionDenied()
+        case .denied:
+            showCameraMessage(denied: true)
+        default:
+            // .restricted (Screen Time / MDM) — Settings can't fix it here.
+            showCameraMessage(denied: false)
         }
     }
 
-    private func showPermissionDenied() {
+    /// Denied → say so and offer Settings; no camera / restricted / broken
+    /// input → just «camera unavailable».
+    private func showCameraMessage(denied: Bool) {
         let label = UILabel()
-        label.text = AppStrings.localized("qr.camera.denied")
+        label.text = AppStrings.localized(denied ? "qr.camera.denied" : "qr.camera.unavailable")
         label.textColor = .white
         label.numberOfLines = 0
         label.textAlignment = .center
-        label.font = UIFont.systemFont(ofSize: 16, weight: .regular)
-        label.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(label)
+        label.font = UIFont.preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+
+        let stack = UIStackView(arrangedSubviews: [label])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 16
+        if denied {
+            let open = UIButton(type: .system)
+            open.setTitle(AppStrings.localized("qr.open.settings"), for: .normal)
+            open.tintColor = signalLime
+            open.titleLabel?.font = UIFont.preferredFont(forTextStyle: .headline)
+            open.titleLabel?.adjustsFontForContentSizeCategory = true
+            open.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            open.addAction(UIAction { _ in
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }, for: .touchUpInside)
+            stack.addArrangedSubview(open)
+        }
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
         NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            label.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
-            label.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
         ])
-        permissionLabel = label
     }
 
     private func configureSession() {
         guard let device = AVCaptureDevice.default(for: .video) else {
-            showPermissionDenied()
+            showCameraMessage(denied: false)
             return
         }
         do {
@@ -173,16 +197,14 @@ public final class QRScannerViewController: UIViewController, AVCaptureMetadataO
                 self?.session.startRunning()
             }
         } catch {
-            showPermissionDenied()
+            showCameraMessage(denied: false)
         }
     }
 
     private func installCrosshair() {
         let overlay = QRCrosshairView()
         overlay.translatesAutoresizingMaskIntoConstraints = false
-        // signal lime — match the dark palette signal directly (the
-        // SwiftUI palette isn't available inside the UIKit layer).
-        overlay.strokeColor = UIColor(red: 0xC4/255.0, green: 0xFF/255.0, blue: 0x3E/255.0, alpha: 1)
+        overlay.strokeColor = signalLime
         view.addSubview(overlay)
         NSLayoutConstraint.activate([
             overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -213,6 +235,10 @@ public final class QRScannerViewController: UIViewController, AVCaptureMetadataO
         }
     }
 }
+
+/// Signal lime — the dark palette's `signal` directly (the SwiftUI palette
+/// isn't available inside the UIKit layer).
+private let signalLime = UIColor(red: 0xC4/255.0, green: 0xFF/255.0, blue: 0x3E/255.0, alpha: 1)
 
 // MARK: - Crosshair overlay
 
