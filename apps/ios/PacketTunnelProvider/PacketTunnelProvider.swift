@@ -49,8 +49,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             do {
                 try await self.startTunnelAsync(completionHandler: completionHandler)
             } catch {
-                self.log.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
+                self.appendProviderLog("startTunnel failed: \(error.localizedDescription)", level: "ERR")
                 self.writeErrorSnapshot(error.localizedDescription)
+                // A fatal-marker refusal (On-Demand retry) adds nothing:
+                // keep the tail of the session that actually failed.
+                if case ProviderError.fatalStop = error {} else { self.persistLogTail() }
                 completionHandler(error)
             }
         }
@@ -60,7 +63,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
+        appendProviderLog("stopTunnel reason=\(reason.rawValue)")
         outboundTask?.cancel()
         outboundTask = nil
         memoryTask?.cancel()
@@ -69,6 +72,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         Task {
             await PhantomBridge.shared.stop()
             withStateLock { sessionClock.reset() }
+            persistLogTail()
             UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: SharedKeys.tunnelMemoryMiB)
             writeDisconnectedSnapshot()
             completionHandler()
@@ -162,7 +166,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         appendProviderLog(
             "tunnel start relay=\(relayOn ? "on" : "off") target=\(profile.serverAddr) sni=\(profile.serverName)"
                 + " mtu=\(networkSettings.mtu?.intValue ?? 0)"
-                + " excludedRoutes=\(networkSettings.ipv4Settings?.excludedRoutes?.count ?? 0)"
+                + " excludedRoutes=\(networkSettings.ipv4Settings?.excludedRoutes?.count ?? 0)",
+            isPublic: false
         )
 
         // Read and set only under `stateLock`: the status callback and the
@@ -198,6 +203,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     if broadcast {
                         self.writeSnapshot(frame)
                     }
+                    if frame.state != previousState {
+                        self.appendProviderLog(
+                            "state \(previousState.rawValue) → \(frame.state.rawValue)"
+                                + " streams=\(frame.streamsUp)/\(frame.nStreams)"
+                        )
+                    }
 
                     // Signal connected to NEPacketTunnelProvider on first .connected
                     if frame.state == .connected && claimCompletion() {
@@ -226,6 +237,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                             forKey: SharedKeys.fatalStop
                         )
                         self.notifyFatalStop(err.localizedDescription, profileName: profileName)
+                        self.persistLogTail()
                         if claimCompletion() {
                             completionHandler(err)
                             Task { await PhantomBridge.shared.stop() }
@@ -235,7 +247,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     }
                 },
                 onLog: { [weak self] frame in
-                    self?.appendLogFrame(frame)
+                    self?.appendCoreLog(frame)
                 },
                 onInbound: { [weak self] data in
                     guard let self else { return }
@@ -598,8 +610,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // cap or unparsable. Split routes of just the admin /32 would send
         // everything else outside the tunnel — take the full tunnel instead.
         guard !routes.isEmpty else {
-            log.error(
-                "split routing: no routes computed for \(directCidrs.count, privacy: .public) direct CIDRs; using full tunnel"
+            appendProviderLog(
+                "split routing: no routes computed for \(directCidrs.count) direct CIDRs; using full tunnel",
+                level: "ERR"
             )
             applyFullTunnel()
             return
@@ -768,10 +781,57 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Provider-side INFO line next to the core's logs.
-    private func appendProviderLog(_ msg: String) {
-        appendLogFrame(.structured(level: "INF", category: "tunnel", msg: msg))
-        log.info("\(msg, privacy: .private)")
+    /// Provider-side line next to the core's logs, mirrored to os_log at
+    /// default level (persisted on device). `isPublic: false` for lines
+    /// that carry the server / relay address.
+    private func appendProviderLog(_ msg: String, level: String = "INF", isPublic: Bool = true) {
+        appendLogFrame(.structured(level: level, category: "tunnel", msg: msg))
+        let type: OSLogType = level == "ERR" ? .error : .default
+        if isPublic {
+            log.log(level: type, "\(msg, privacy: .public)")
+        } else {
+            log.log(level: type, "\(msg, privacy: .private)")
+        }
+    }
+
+    /// Core frames: the ring for the Logs screen; WRN/ERR also to os_log,
+    /// public — core messages carry errors and addresses, never the key or
+    /// the conn string.
+    private func appendCoreLog(_ frame: LogFrame) {
+        appendLogFrame(frame)
+        let type: OSLogType
+        switch frame.level {
+        case "ERR": type = .error
+        case "WRN": type = .default
+        default: return
+        }
+        let fields = (frame.fields ?? [:]).sorted { $0.key < $1.key }
+            .map { " \($0.key)=\($0.value)" }.joined()
+        log.log(
+            level: type,
+            "core \(frame.level, privacy: .public) [\(frame.category ?? "-", privacy: .public)] \(frame.msg, privacy: .public)\(fields, privacy: .public)"
+        )
+    }
+
+    /// The ring dies with the process, and failures happen while the Logs
+    /// screen is closed: keep the last 200 frames in the App Group
+    /// (`ext-tail.jsonl`, one `LogFrame` JSON per line, as `logs.jsonl`)
+    /// for the app to import.
+    private func persistLogTail() {
+        let tail = withStateLock { Array(recentLogFrames.suffix(200)) }
+        guard !tail.isEmpty,
+              let url = FileManager.default
+                .containerURL(forSecurityApplicationGroupIdentifier: SharedKeys.appGroup)?
+                .appendingPathComponent("ext-tail.jsonl")
+        else { return }
+        let encoder = JSONEncoder()
+        var data = Data()
+        for frame in tail {
+            guard let line = try? encoder.encode(frame) else { continue }
+            data.append(line)
+            data.append(0x0A)
+        }
+        try? data.write(to: url, options: .atomic)
     }
 
     // MARK: - Fatal stop notification
