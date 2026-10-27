@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-27
 status: accepted
 ---
 
@@ -76,6 +76,11 @@ providerProfile.serverAddr = profile.effectiveServerAddr
 `proto.serverAddress`, extension'овский `ConnStringBuilder`) видит уже
 фактическую точку входа. **Extension и Rust-рантайм не меняются** — для них
 relay это просто другой `serverAddr`.
+
+**iOS** (2026-10): там в `providerConfiguration` едет только `profileId`,
+extension читает профиль из App Group сам, поэтому подмена — в extension:
+`VpnProfile.withRelayEndpoint` (PhantomKit) меняет `serverAddr` и authority
+`ghs://` на relay, SNI не трогает.
 
 **SNI (`serverName`) НЕ подменяется** — relay форвардит сырой TLS по SNI
 (passthrough), сквозное шифрование терминируется на exit-сервере. ClientHello

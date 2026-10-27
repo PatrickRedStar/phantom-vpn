@@ -12,7 +12,7 @@ updated: 2026-10-27
   models + storage + FFI-bridge, shared между host app и extension
 - **Rust core:** `crates/client-apple/` → `PhantomCore.xcframework`
 - **Unified tunnel runtime:** `crates/client-core-runtime/` с `TunIo::Callback(Arc<dyn PacketIo>)`
-- **`i18n`:** `Localizable.strings` — RU baseline + EN placeholder
+- **`i18n`:** `Localizable.strings` — RU baseline + EN, `ru.lproj/InfoPlist.strings`
 
 Зрелость: **full parity с Android** (v0.22.0, 2026-04-17) — ADR [0005](../decisions/0005-client-core-runtime.md).
 
@@ -22,7 +22,8 @@ updated: 2026-10-27
 Packages/PhantomKit/           # Swift package (shared code)
   Sources/PhantomKit/
     FFI/                       # PhantomBridge.swift, PhantomCore-Bridging.h
-    Bridge/                    # TunnelIpcBridge.swift (host↔ext sendProviderMessage)
+    Bridge/                    # TunnelIpcBridge (host↔ext sendProviderMessage),
+                               # SharedState (App Group), ConnStringBuilder
     Models/                    # StatusFrame, ConnState, LogFrame,
                                # TunnelSettings, ConnectProfile, VpnProfile
     Storage/                   # ProfilesStore, PreferencesStore, Keychain
@@ -34,9 +35,8 @@ GhostStream/                   # SwiftUI host app
   Info.plist
 
 PacketTunnelProvider/          # NE extension
-  PacketTunnelProvider.swift   # entry point
-  PhantomBridge.swift          # FFI → Rust runtime
-  SharedState.swift            # App Group shared state
+  PacketTunnelProvider.swift   # entry point (FFI — PhantomBridge из PhantomKit)
+  PrivacyInfo.xcprivacy        # у приложения — свой в GhostStream/
   PacketTunnelProvider.entitlements
 
 Frameworks/                    # собранный PhantomCore.xcframework
@@ -107,6 +107,10 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   `wake()` macOS-провайдер только пишет событие. Смена сети (NWPathMonitor,
   только macOS) перезапускает рантайм, лишь когда ядро не в `connected`, —
   это срезает паузу бэкоффа, живую сессию не рвёт.
+- **`reconnecting` — отдельное состояние** и на iOS: провайдер ставит
+  `reasserting = true` на время переподключения ядра (системный статус —
+  «Переподключение»), дашборд показывает «Переподключение», таймер сессии
+  не сбрасывается — `session_secs` ядра идёт через переподключения.
 - **`error` = фатальная причина** (отзыв доступа, истёкший доступ, неверные
   часы, кривой профиль). Провайдер останавливает туннель, error-кадр остаётся в
   снапшоте, и хост показывает `last_error` до следующего Connect. Неудачный
@@ -119,6 +123,22 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
 - **Подписка и флаг админа** берутся из `/api/me` (`expires_at`, `enabled`,
   `is_admin`) и кладутся в кэш профиля до запросов админки — срок видят и
   не-админы. Старый сервер без этих полей кэш не трогает.
+
+## Маршруты, relay, MTU
+
+- **Relay** ([ADR 0013](../decisions/0013-macos-admin-relay-parity.md)):
+  на iOS в `providerConfiguration` едет только `profileId`, поэтому подмена
+  адреса — в extension: `VpnProfile.withRelayEndpoint` ставит relay в
+  `serverAddr` и в authority `ghs://`, SNI остаётся exit'ом. В редакторе
+  профиля — тумблер Relay и `host:port` (без порта — порт exit'а).
+- **Полный туннель пропускает LAN** ([ADR 0019](../decisions/0019-owner-decisions-audit-2026-10.md)):
+  `excludedRoutes` = те же диапазоны, что Android `SPECIAL_RANGES` (0/8,
+  10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.168/16, 224/4, 240/4);
+  подсеть туннеля из `tunAddr` — в `includedRoutes` (admin API). Свой /32
+  сервера/реле не нужен: сокеты NE-провайдера мимо туннеля.
+- **MTU 1300**, как на Android.
+- На старте туннеля в журнал (экран «Журнал») пишется строка
+  `tunnel start relay=on|off target=… sni=… mtu=… excludedRoutes=N`.
 
 ## IPv6 killswitch
 
@@ -143,9 +163,14 @@ iOS sandbox разделяет host app и NE extension. Для обмена —
   storages: Keychain + `UserDefaults` в App Group container. `ProfilesStore` и
   `PreferencesStore` читают оттуда оба процесса.
 - **Host↔extension IPC** — через `sendProviderMessage` (обёрнуто в `TunnelIpcBridge`).
-- **Background limits** — NE extension лимитирован по CPU и памяти (~50 МБ).
-  Heavy compute (TLS, batching) держать в Rust runtime, I/O — async; очереди
-  ядра под iOS меньше (256 / 1024), число стримов не трогается.
+- **Background limits** — NE extension лимитирован по CPU и памяти (~50 МБ,
+  jetsam). Heavy compute (TLS, batching) держать в Rust runtime, I/O — async;
+  очереди ядра под iOS меньше (256 / 1024), число стримов не трогается.
+  Колбэки Rust (status, логи, пакеты) `PhantomBridge` выполняет синхронно на
+  потоке форвардера в `autoreleasepool` — без Task на кадр, медленный
+  потребитель упирается в ограниченный канал ядра. Раз в 60 с провайдер
+  пишет в журнал `memory footprint=… available=…` (`phys_footprint` и
+  `os_proc_available_memory()`) — видно, сколько до лимита.
 - **Потокобезопасность провайдера** — буферы статуса/логов, gate снапшотов и
   флаг completion `startTunnel` под `stateLock`, как на macOS (двойной
   completion ронял бы экстеншен).
@@ -180,6 +205,12 @@ cd apps/ios
 xcodegen generate      # если project.yml менялся
 open GhostStream.xcodeproj
 ```
+
+CI: `.github/workflows/ios-ci.yml` — xcframework, `swift test` PhantomKit,
+симуляторная сборка + GhostStreamTests (без подписи). Версия — в
+`project.yml` (`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`), SHA коммита
+кладётся в `GitCommitSHA` Info.plist пост-сборочным шагом. Манифесты
+приватности — `PrivacyInfo.xcprivacy` у приложения и extension.
 
 Archive + upload — через Xcode Organizer (manual code signing, App Store distribution).
 Отдельная таблица `versionCode` не ведётся — App Store требует только `CFBundleVersion`
