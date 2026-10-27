@@ -62,7 +62,7 @@ public struct ProfileEditorView: View {
         ZStack {
             VStack(spacing: 0) {
                 ScreenHeader(
-                    brand: "ПРОФИЛЬ",
+                    brand: L("profile.editor.title").uppercased(),
                     meta: profile?.name ?? "OFFLINE",
                     leadingLabel: "✕",
                     leadingAction: { close() }
@@ -75,10 +75,10 @@ public struct ProfileEditorView: View {
                             endpointSection(profile: profile)
                             relaySection()
                             reimportSection()
-                            GhostButton("СОХРАНИТЬ", action: { save(); close() })
+                            GhostButton(L("general.save").uppercased(), action: { save(); close() })
                             dangerSection()
                         } else {
-                            Text("Профиль не найден")
+                            Text(L("profile.editor.not.found"))
                                 .gsFont(.body)
                                 .foregroundColor(C.textDim)
                                 .padding()
@@ -91,9 +91,9 @@ public struct ProfileEditorView: View {
 
             if let errorMessage {
                 GhostDialog(
-                    title: "ОШИБКА",
+                    title: L("admin.error").uppercased(),
                     message: errorMessage,
-                    primaryTitle: "OK",
+                    primaryTitle: L("general.ok"),
                     primaryAction: { self.errorMessage = nil }
                 ) {
                     EmptyView()
@@ -102,10 +102,10 @@ public struct ProfileEditorView: View {
 
             if showDeleteConfirm {
                 GhostDialog(
-                    title: "УДАЛИТЬ ПРОФИЛЬ?",
-                    message: "Это действие нельзя отменить. Сертификаты и ключи будут удалены.",
-                    primaryTitle: "УДАЛИТЬ",
-                    secondaryTitle: "ОТМЕНА",
+                    title: L("settings.delete.profile.title").uppercased(),
+                    message: L("profile.editor.delete.message"),
+                    primaryTitle: L("general.delete").uppercased(),
+                    secondaryTitle: L("general.cancel").uppercased(),
                     primaryAction: {
                         if let profile { model.deleteProfile(id: profile.id) }
                         showDeleteConfirm = false
@@ -126,11 +126,11 @@ public struct ProfileEditorView: View {
     private func idSection(profile: VpnProfile) -> some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("ИДЕНТИЧНОСТЬ")
+                Text(L("native.profile.identity").uppercased())
                     .gsFont(.labelMono)
                     .foregroundColor(C.textFaint)
                 GhostTextField(
-                    "Имя профиля",
+                    L("profile.editor.name.placeholder"),
                     text: $name,
                     autocapitalization: .sentences
                 )
@@ -144,7 +144,7 @@ public struct ProfileEditorView: View {
     private func endpointSection(profile: VpnProfile) -> some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 8) {
-                Text("ТОЧКА ВХОДА")
+                Text(L("profile.editor.endpoint").uppercased())
                     .gsFont(.labelMono)
                     .foregroundColor(C.textFaint)
                 kvRow("SERVER", profile.serverAddr)
@@ -181,18 +181,18 @@ public struct ProfileEditorView: View {
     private func reimportSection() -> some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("ПЕРЕИМПОРТ СТРОКИ ПОДКЛЮЧЕНИЯ")
+                Text(L("profile.editor.reimport").uppercased())
                     .gsFont(.labelMono)
                     .foregroundColor(C.textFaint)
                 GhostTextField("ghs://…", text: $connStringDraft)
-                GhostButton("ПРИМЕНИТЬ", variant: .secondary) {
+                GhostButton(L("profile.editor.apply").uppercased(), variant: .secondary) {
                     guard !connStringDraft.isEmpty else { return }
                     do {
                         try model.reimport(id: profileId, rawConnString: connStringDraft)
                         connStringDraft = ""
                     } catch {
                         errorMessage = (error as? LocalizedError)?.errorDescription
-                            ?? "Не удалось разобрать строку"
+                            ?? L("profile.editor.parse.failed")
                     }
                 }
             }
@@ -203,10 +203,10 @@ public struct ProfileEditorView: View {
     private func dangerSection() -> some View {
         GhostCard {
             VStack(alignment: .leading, spacing: 10) {
-                Text("ОПАСНАЯ ЗОНА")
+                Text(L("profile.editor.danger").uppercased())
                     .gsFont(.labelMono)
                     .foregroundColor(C.danger)
-                GhostButton("УДАЛИТЬ ПРОФИЛЬ", variant: .secondary) {
+                GhostButton(L("profile.delete").uppercased(), variant: .secondary) {
                     showDeleteConfirm = true
                 }
             }

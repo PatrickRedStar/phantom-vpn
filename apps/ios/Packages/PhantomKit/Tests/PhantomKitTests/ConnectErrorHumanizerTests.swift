@@ -46,6 +46,14 @@ final class ConnectErrorHumanizerTests: XCTestCase {
         XCTAssertTrue(out.contains("Weird Rust panic 0xdeadbeef"))
     }
 
+    func testEnglishVariant() {
+        XCTAssertTrue(ConnectErrorHumanizer.humanize("Network is down", english: true).contains("No network"))
+        XCTAssertTrue(
+            ConnectErrorHumanizer.humanize("Weird Rust panic 0xdeadbeef", english: true)
+                .hasSuffix("Weird Rust panic 0xdeadbeef")
+        )
+    }
+
     func testEmptyErrorFallsBack() {
         XCTAssertEqual(
             ConnectErrorHumanizer.humanize("   "),

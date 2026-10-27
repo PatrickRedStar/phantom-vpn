@@ -21,7 +21,7 @@ public enum SettingsImportError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidConnString:
-            return "Не удалось распознать строку подключения. Проверьте ghs://…"
+            return AppStrings.localized("settings.import.invalid")
         }
     }
 }
@@ -214,14 +214,14 @@ public final class SettingsViewModel {
         manualCidrsText: String,
         directDomainsText: String
     ) async {
-        routingDownloadStatus = "Saving route policy..."
+        routingDownloadStatus = AppStrings.localized("settings.route.saving")
         preferencesStore.splitRouting = splitOn
         preferencesStore.directCountries = selectedCountries
         preferencesStore.manualDirectCidrsText = manualCidrsText
         preferencesStore.customDirectDomainsText = directDomainsText
 
         guard let activeProfile else {
-            routingDownloadStatus = "Route policy saved"
+            routingDownloadStatus = AppStrings.localized("settings.route.saved")
             refreshDownloadedRoutingRules()
             return
         }
@@ -231,10 +231,14 @@ public final class SettingsViewModel {
             refreshDownloadedRoutingRules()
             let ipv4Count = preferencesStore.manualDirectCidrs.count
             let ipv6Count = preferencesStore.manualDirectIpv6Cidrs.count
-            routingDownloadStatus = "Route policy applied · \(ipv4Count) IPv4 · \(ipv6Count) IPv6 manual rules"
+            routingDownloadStatus = String(
+                format: AppStrings.localized("settings.route.applied.format"), ipv4Count, ipv6Count
+            )
         } catch {
             refreshDownloadedRoutingRules()
-            routingDownloadStatus = "Route policy update failed: \(error.localizedDescription)"
+            routingDownloadStatus = String(
+                format: AppStrings.localized("settings.route.failed.format"), error.localizedDescription
+            )
             log.error("route policy update failed: \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -246,7 +250,7 @@ public final class SettingsViewModel {
     public func downloadRulePreset(_ preset: RoutingRulePreset) async {
         guard !downloadingRoutingRuleIds.contains(preset.id) else { return }
         downloadingRoutingRuleIds.insert(preset.id)
-        routingDownloadStatus = "Downloading \(preset.code)…"
+        routingDownloadStatus = String(format: AppStrings.localized("settings.rules.downloading.format"), preset.code)
         defer {
             downloadingRoutingRuleIds.remove(preset.id)
             refreshDownloadedRoutingRules()
@@ -254,9 +258,13 @@ public final class SettingsViewModel {
 
         do {
             let info = try await RoutingRulesManager.shared.downloadRuleList(preset)
-            routingDownloadStatus = "\(preset.code) downloaded · \(info.ruleCount) rules"
+            routingDownloadStatus = String(
+                format: AppStrings.localized("settings.rules.downloaded.format"), preset.code, info.ruleCount
+            )
         } catch {
-            routingDownloadStatus = "Download failed for \(preset.code): \(error.localizedDescription)"
+            routingDownloadStatus = String(
+                format: AppStrings.localized("settings.rules.failed.format"), preset.code, error.localizedDescription
+            )
             log.error("routing rule download failed \(preset.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }

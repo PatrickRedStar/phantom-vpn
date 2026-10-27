@@ -295,3 +295,24 @@
 // Profile editor
 "profile.relay.toggle" = "Relay";
 "profile.relay.desc" = "Route the connection through an extra hop before the exit server (SNI passthrough, end-to-end encryption). Useful when the direct address is blocked.";
+"profile.editor.title" = "Profile";
+"profile.editor.not.found" = "Profile not found";
+"profile.editor.delete.message" = "This can't be undone. Certificates and keys will be deleted.";
+"profile.editor.name.placeholder" = "Profile name";
+"profile.editor.endpoint" = "Endpoint";
+"profile.editor.reimport" = "Re-import connection string";
+"profile.editor.apply" = "Apply";
+"profile.editor.parse.failed" = "Couldn't parse the string";
+"profile.editor.danger" = "Danger zone";
+
+"qr.camera.denied" = "Camera access is denied.\nAllow it in Settings.";
+"dashboard.preflight.no.profile" = "No active profile — add one in Settings";
+"dashboard.preflight.no.certs" = "Certificates not found — re-import the ghs:// link";
+"settings.import.invalid" = "Couldn't recognize the connection string. Check the ghs://… link";
+"settings.route.saving" = "Saving route policy…";
+"settings.route.saved" = "Route policy saved";
+"settings.route.applied.format" = "Route policy applied · %ld IPv4 · %ld IPv6 manual rules";
+"settings.route.failed.format" = "Route policy update failed: %@";
+"settings.rules.downloading.format" = "Downloading %@…";
+"settings.rules.downloaded.format" = "%@ downloaded · %ld rules";
+"settings.rules.failed.format" = "Download failed for %@: %@";

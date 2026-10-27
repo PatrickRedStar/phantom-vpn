@@ -295,3 +295,24 @@
 // Profile editor
 "profile.relay.toggle" = "Relay";
 "profile.relay.desc" = "Пускать подключение через дополнительный хоп перед exit-сервером (SNI-passthrough, шифрование end-to-end). Помогает, когда прямой адрес заблокирован.";
+"profile.editor.title" = "Профиль";
+"profile.editor.not.found" = "Профиль не найден";
+"profile.editor.delete.message" = "Это действие нельзя отменить. Сертификаты и ключи будут удалены.";
+"profile.editor.name.placeholder" = "Имя профиля";
+"profile.editor.endpoint" = "Точка входа";
+"profile.editor.reimport" = "Переимпорт строки подключения";
+"profile.editor.apply" = "Применить";
+"profile.editor.parse.failed" = "Не удалось разобрать строку";
+"profile.editor.danger" = "Опасная зона";
+
+"qr.camera.denied" = "Доступ к камере запрещён.\nРазрешите в настройках.";
+"dashboard.preflight.no.profile" = "Нет активного профиля — добавьте его в Настройках";
+"dashboard.preflight.no.certs" = "Сертификаты не найдены — переимпортируйте ghs://-ссылку";
+"settings.import.invalid" = "Не удалось распознать строку подключения. Проверьте ghs://…";
+"settings.route.saving" = "Сохраняю маршруты…";
+"settings.route.saved" = "Маршруты сохранены";
+"settings.route.applied.format" = "Маршруты применены · %ld IPv4 · %ld IPv6 ручных правил";
+"settings.route.failed.format" = "Не удалось обновить маршруты: %@";
+"settings.rules.downloading.format" = "Загрузка %@…";
+"settings.rules.downloaded.format" = "%@ загружен · правил: %ld";
+"settings.rules.failed.format" = "Не удалось загрузить %@: %@";

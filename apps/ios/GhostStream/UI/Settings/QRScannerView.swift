@@ -90,7 +90,7 @@ public final class QRScannerViewController: UIViewController, AVCaptureMetadataO
 
     private func setupCancelButton() {
         let btn = UIButton(type: .system)
-        btn.setTitle("ОТМЕНА", for: .normal)
+        btn.setTitle(AppStrings.localized("general.cancel").uppercased(), for: .normal)
         btn.setTitleColor(.white, for: .normal)
         btn.titleLabel?.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
         btn.translatesAutoresizingMaskIntoConstraints = false
@@ -128,7 +128,7 @@ public final class QRScannerViewController: UIViewController, AVCaptureMetadataO
 
     private func showPermissionDenied() {
         let label = UILabel()
-        label.text = "Доступ к камере запрещён.\nРазрешите в настройках."
+        label.text = AppStrings.localized("qr.camera.denied")
         label.textColor = .white
         label.numberOfLines = 0
         label.textAlignment = .center

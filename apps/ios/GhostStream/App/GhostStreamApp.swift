@@ -70,12 +70,22 @@ enum AppStrings {
     private static let languageKey = "language_override"
     private static let appGroup = "group.com.ghoststream.client"
 
-    static func localized(_ key: String, fallback: String? = nil) -> String {
-        let override = UserDefaults(suiteName: appGroup)?
-            .string(forKey: languageKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// UI language is English — for text built in code (ConnectErrorHumanizer).
+    static var isEnglish: Bool {
+        (languageOverride ?? Bundle.main.preferredLocalizations.first ?? "ru").hasPrefix("en")
+    }
 
-        let bundle = localizedBundle(for: override)
+    private static var languageOverride: String? {
+        guard let code = UserDefaults(suiteName: appGroup)?
+            .string(forKey: languageKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !code.isEmpty, code != "system"
+        else { return nil }
+        return code
+    }
+
+    static func localized(_ key: String, fallback: String? = nil) -> String {
+        let bundle = localizedBundle(for: languageOverride)
         return NSLocalizedString(
             key,
             tableName: nil,
@@ -87,8 +97,6 @@ enum AppStrings {
 
     private static func localizedBundle(for override: String?) -> Bundle {
         guard let override,
-              !override.isEmpty,
-              override != "system",
               let path = Bundle.main.path(forResource: override, ofType: "lproj"),
               let bundle = Bundle(path: path)
         else {

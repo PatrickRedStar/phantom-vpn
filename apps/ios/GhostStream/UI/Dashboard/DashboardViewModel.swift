@@ -85,12 +85,12 @@ final class DashboardViewModel {
 
     func start(profile: VpnProfile?, preferences: PreferencesStore) {
         guard let profile else {
-            preflightWarning = "No active profile — add one from Settings"
+            preflightWarning = AppStrings.localized("dashboard.preflight.no.profile")
             return
         }
         guard let certPem = profile.certPem, let keyPem = profile.keyPem,
               !certPem.isEmpty, !keyPem.isEmpty else {
-            preflightWarning = "Certificates not found"
+            preflightWarning = AppStrings.localized("dashboard.preflight.no.certs")
             return
         }
         preflightWarning = nil
@@ -103,7 +103,10 @@ final class DashboardViewModel {
                 try await tunnel.installAndStart(profile: p, preferences: preferences)
             } catch {
                 log.error("start failed: \(error.localizedDescription, privacy: .public)")
-                VpnStateManager.shared.update(.error(error.localizedDescription))
+                VpnStateManager.shared.update(.error(ConnectErrorHumanizer.humanize(
+                    error.localizedDescription,
+                    english: AppStrings.isEnglish
+                )))
             }
         }
     }
