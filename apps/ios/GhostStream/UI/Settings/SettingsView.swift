@@ -437,20 +437,7 @@ public struct SettingsView: View {
 
     private func valueRow(title: String, value: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                rowTitle(title)
-                Spacer(minLength: 12)
-                Text(value)
-                    .font(.custom(GsFontName.jetBrainsMono, size: 11))
-                    .foregroundStyle(C.textDim)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(C.textDim)
-            }
-            .frame(minHeight: 48)
-            .contentShape(Rectangle())
+            titleValue(title, value, icon: "chevron.right")
         }
         .buttonStyle(.plain)
     }
@@ -460,20 +447,35 @@ public struct SettingsView: View {
         Menu {
             picker()
         } label: {
+            titleValue(title, value, icon: "chevron.up.chevron.down")
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Title · value; at accessibility sizes the value goes under the title,
+    /// which then wraps by words («Раздел / ьный» before).
+    private func titleValue(_ title: String, _ value: String, icon: String) -> some View {
+        let stacked = typeSize.isAccessibilitySize
+        let row = stacked
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 12))
+        return row {
+            rowTitle(title)
+            if !stacked { Spacer(minLength: 12) }
             HStack(spacing: 12) {
-                rowTitle(title)
-                Spacer(minLength: 12)
                 Text(value)
                     .font(.custom(GsFontName.jetBrainsMono, size: 11))
                     .foregroundStyle(C.textDim)
-                Image(systemName: "chevron.up.chevron.down")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: icon)
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(C.textDim)
             }
-            .frame(minHeight: 48)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+        .padding(.vertical, stacked ? 8 : 0)
+        .contentShape(Rectangle())
     }
 
     private func themeTitle(_ theme: ThemeOverride) -> String {
