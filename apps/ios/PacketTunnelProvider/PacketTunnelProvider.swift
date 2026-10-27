@@ -13,6 +13,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = Logger(subsystem: "com.ghoststream.client.PacketTunnel", category: "tunnel")
 
     private var outboundTask: Task<Void, Never>?
+    private var memoryTask: Task<Void, Never>?
 
     // MARK: - In-process state
 
@@ -58,6 +59,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
         outboundTask?.cancel()
         outboundTask = nil
+        memoryTask?.cancel()
+        memoryTask = nil
 
         Task {
             await PhantomBridge.shared.stop()
@@ -110,6 +113,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         case .disconnect:
             outboundTask?.cancel()
+            memoryTask?.cancel()
             Task {
                 await PhantomBridge.shared.stop()
                 writeDisconnectedSnapshot()
@@ -227,6 +231,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         outboundTask = Task.detached { [weak self] in
             await self?.outboundLoop()
         }
+
+        memoryTask?.cancel()
+        memoryTask = Task.detached { [weak self] in
+            while !Task.isCancelled {
+                self?.logMemoryFootprint()
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
+    }
+
+    /// Jetsam watch: iOS kills the extension at ~50 MiB footprint. One line
+    /// a minute in the Logs screen shows how close we run.
+    private func logMemoryFootprint() {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
+        )
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        let mib = 1_048_576.0
+        let footprint = kr == KERN_SUCCESS ? Double(info.phys_footprint) / mib : -1
+        let available = Double(os_proc_available_memory()) / mib
+        appendProviderLog(String(format: "memory footprint=%.1fMiB available=%.1fMiB", footprint, available))
     }
 
     private func makeNetworkSettings(

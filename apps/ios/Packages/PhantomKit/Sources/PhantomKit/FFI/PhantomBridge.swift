@@ -80,7 +80,6 @@ public enum BridgeError: Error {
 // MARK: - Context box (retains the actor across C callbacks)
 
 private final class BridgeContext: @unchecked Sendable {
-    let bridge: PhantomBridge
     /// Горячий путь: inbound-пакеты доставляются Swift-стороне НАПРЯМУЮ
     /// с Rust-потока форвардера, без прыжка на актор. Прежний вариант
     /// (`Task { await bridge.handleInbound(...) }`) ставил каждый пакет в
@@ -90,9 +89,44 @@ private final class BridgeContext: @unchecked Sendable {
     /// thread-safe: оба провайдера зовут только `packetFlow.writePackets`
     /// (потокобезопасен по контракту NE).
     let onInbound: (Data) -> Void
-    init(bridge: PhantomBridge, onInbound: @escaping (Data) -> Void) {
-        self.bridge = bridge
+
+    /// Status and logs are delivered the same way — synchronously on the
+    /// Rust forwarder thread. A slow consumer back-pressures Rust's bounded
+    /// channels (logs: 256, dropped on overflow; status: watch, latest
+    /// frame only) instead of piling up one Swift Task per frame in the
+    /// extension's ~50 MiB. `invalidate()` on stop: a context Rust leaked
+    /// (see `PhantomBridge.stop`) delivers nothing into the next session.
+    private let lock = NSLock()
+    private var onStatus: PhantomBridge.StatusCallback?
+    private var onLog: PhantomBridge.LogCallback?
+
+    init(
+        onStatus: @escaping PhantomBridge.StatusCallback,
+        onLog: @escaping PhantomBridge.LogCallback,
+        onInbound: @escaping (Data) -> Void
+    ) {
+        self.onStatus = onStatus
+        self.onLog = onLog
         self.onInbound = onInbound
+    }
+
+    func deliverStatus(_ data: Data) {
+        guard let handler = lock.withLock({ onStatus }),
+              let frame = try? JSONDecoder().decode(StatusFrame.self, from: data) else { return }
+        handler(frame)
+    }
+
+    func deliverLog(_ data: Data) {
+        guard let handler = lock.withLock({ onLog }),
+              let frame = try? JSONDecoder().decode(LogFrame.self, from: data) else { return }
+        handler(frame)
+    }
+
+    func invalidate() {
+        lock.withLock {
+            onStatus = nil
+            onLog = nil
+        }
     }
 }
 
@@ -101,9 +135,8 @@ private final class BridgeContext: @unchecked Sendable {
 /// Single actor-isolated bridge to the PhantomCore Rust FFI.
 ///
 /// Call `start(profile:settings:onStatus:onLog:onInbound:)` to launch the
-/// tunnel. The three callbacks are invoked on an unspecified thread from the
-/// Rust side; the actor re-dispatches them onto itself so all state access is
-/// serialised.
+/// tunnel. The three callbacks run synchronously on Rust threads (each in
+/// its own autorelease pool) and must be thread-safe.
 ///
 /// Both the host app and `PacketTunnelProvider` import this from PhantomKit —
 /// there is no longer a duplicated `PhantomBridge.swift` in each target.
@@ -114,12 +147,9 @@ public actor PhantomBridge {
     public typealias LogCallback     = (LogFrame) -> Void
     public typealias InboundCallback = (Data) -> Void
 
-    private var statusHandler:  StatusCallback?
-    private var logHandler:     LogCallback?
-
     /// Retained across the tunnel lifetime to prevent the context from
     /// being deallocated while Rust still holds a raw pointer to it.
-    private var contextBox: AnyObject?
+    private var contextBox: BridgeContext?
 
     /// Opaque pointer handed to Rust via `Unmanaged.passRetained.toOpaque`.
     /// Kept here purely for diagnostics — the actual release is performed
@@ -157,9 +187,6 @@ public actor PhantomBridge {
         // via the `let releaseCtxInstaller: Void` constant — first access
         // performs the registration, subsequent accesses are zero-cost.
         _ = releaseCtxInstaller
-
-        statusHandler  = onStatus
-        logHandler     = onLog
 
         guard let connStr = profile.connString ?? ConnStringBuilder.build(from: profile),
               !connStr.isEmpty
@@ -206,7 +233,7 @@ public actor PhantomBridge {
             throw BridgeError.encoding
         }
 
-        let box = BridgeContext(bridge: self, onInbound: onInbound)
+        let box = BridgeContext(onStatus: onStatus, onLog: onLog, onInbound: onInbound)
         // FFI-C1: keep a Swift-side strong ref so the box stays alive even
         // if Rust somehow returned without invoking release_ctx. The
         // `passRetained` below bumps the Unmanaged retain count to +1; the
@@ -222,24 +249,30 @@ public actor PhantomBridge {
                     cfgPtr,
                     setPtr,
                     verboseLog,
+                    // Tokio threads have no autorelease pool: without one,
+                    // objects autoreleased by NE/Foundation (writePackets,
+                    // JSON decoding) pile up for the whole session.
                     { buf, len, ctx in
                         guard let ctx, let buf, len > 0 else { return }
-                        let data = Data(bytes: buf, count: len)
-                        let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
-                        Task { await box.bridge.handleStatus(data: data, from: box) }
+                        autoreleasepool {
+                            let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
+                            box.deliverStatus(Data(bytes: buf, count: len))
+                        }
                     },
                     { buf, len, ctx in
                         guard let ctx, let buf, len > 0 else { return }
-                        let data = Data(bytes: buf, count: len)
-                        let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
-                        Task { await box.bridge.handleLog(data: data, from: box) }
+                        autoreleasepool {
+                            let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
+                            box.deliverLog(Data(bytes: buf, count: len))
+                        }
                     },
                     { buf, len, ctx in
                         guard let ctx, let buf, len > 0 else { return }
-                        let data = Data(bytes: buf, count: len)
-                        let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
-                        // Прямая доставка с Rust-потока — см. BridgeContext.onInbound.
-                        box.onInbound(data)
+                        autoreleasepool {
+                            let box = Unmanaged<BridgeContext>.fromOpaque(ctx).takeUnretainedValue()
+                            // Прямая доставка с Rust-потока — см. BridgeContext.onInbound.
+                            box.onInbound(Data(bytes: buf, count: len))
+                        }
                     },
                     ctx
                 )
@@ -283,11 +316,10 @@ public actor PhantomBridge {
     /// balance the `passRetained` we did in `start()`. If the runtime could
     /// not be joined cleanly Rust skips the release: the box stays alive on
     /// its Unmanaged retain (a deliberate leak), so late callbacks hit valid
-    /// memory and are dropped by the `contextBox` identity check.
+    /// memory and deliver nothing (`BridgeContext.invalidate`).
     public func stop() {
         _ = c_phantom_runtime_stop()
-        statusHandler  = nil
-        logHandler     = nil
+        contextBox?.invalidate()
         // The release trampoline (installed once at module load) has
         // already balanced our `passRetained` retain by the time
         // `c_phantom_runtime_stop` returned. Clear our Swift-side strong
@@ -321,22 +353,6 @@ public actor PhantomBridge {
         return (try? JSONDecoder().decode([IPRoute].self, from: data)) ?? []
     }
 
-    // MARK: - Private callback dispatchers
-
-    // `box !== contextBox` — колбэк от прошлой сессии, контекст которой Rust
-    // не смог дожать на stop и оставил утечкой: в текущую сессию не пускаем.
-
-    private func handleStatus(data: Data, from box: BridgeContext) {
-        guard box === contextBox,
-              let frame = try? JSONDecoder().decode(StatusFrame.self, from: data) else { return }
-        statusHandler?(frame)
-    }
-
-    private func handleLog(data: Data, from box: BridgeContext) {
-        guard box === contextBox,
-              let frame = try? JSONDecoder().decode(LogFrame.self, from: data) else { return }
-        logHandler?(frame)
-    }
 }
 
 // MARK: - Supporting types
