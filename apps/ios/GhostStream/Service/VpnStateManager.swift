@@ -12,6 +12,7 @@
 // both and exposes an @Observable `state` for SwiftUI.
 
 import Foundation
+import NetworkExtension
 import Observation
 // PhantomKit is the package that provides StatusFrame and ConnState.
 // If PhantomKit is not yet linked to this target, replace the import with
@@ -29,6 +30,22 @@ public enum VpnState: Equatable {
     case reconnecting(since: Date, serverName: String)
     case disconnecting
     case error(String)
+
+    /// Session start while the tunnel is up.
+    var since: Date? {
+        switch self {
+        case .connected(let since, _), .reconnecting(let since, _): return since
+        default: return nil
+        }
+    }
+
+    func withSince(_ date: Date) -> VpnState {
+        switch self {
+        case .connected(_, let name): return .connected(since: date, serverName: name)
+        case .reconnecting(_, let name): return .reconnecting(since: date, serverName: name)
+        default: return self
+        }
+    }
 }
 
 // VpnStatePayload and DarwinNotifications are now in PhantomKit
@@ -96,6 +113,9 @@ public final class VpnStateManager {
     private let payloadKey = "vpn.state.v1"
     private let payloadUpdatedAtKey = "vpn.state.updatedAt.v1"
     private var stateUpdatedAt = Date.distantPast
+    /// Local Disconnect: the extension keeps publishing the live session
+    /// until it actually stops — those frames must not flip the UI back.
+    @ObservationIgnored private var disconnectRequestedAt: Date?
 
     /// App Group container URL — used to locate snapshot.json.
     private var containerURL: URL? {
@@ -124,12 +144,14 @@ public final class VpnStateManager {
         self.loadPayload()
         self.loadSnapshot()
         self.observeDarwinNotifications()
+        self.observeSystemStatus()
     }
 
     /// Updates the state locally, writes a payload to App Group
     /// UserDefaults, and posts the Darwin notification so the other
     /// process can re-read.
     public func update(_ newState: VpnState) {
+        disconnectRequestedAt = newState == .disconnecting ? Date() : nil
         state = newState
         writePayload(VpnStatePayload.from(newState))
         DarwinNotifications.post(DarwinNotifications.stateChanged)
@@ -138,6 +160,7 @@ public final class VpnStateManager {
     /// Forces the host UI back to a clean disconnected state and removes
     /// stale extension snapshots that can otherwise outlive the tunnel.
     public func forceDisconnected(clearSnapshot: Bool = true) {
+        disconnectRequestedAt = nil
         state = .disconnected
         statusFrame = .disconnected
         tunnelMemoryMiB = nil
@@ -148,7 +171,97 @@ public final class VpnStateManager {
         DarwinNotifications.post(DarwinNotifications.stateChanged)
     }
 
+    /// Squares the shown state with the system VPN status — a snapshot or
+    /// payload can outlive the extension that wrote it.
+    public func reconcileWithSystem() async {
+        reconcile(with: await VpnTunnelController().currentStatus())
+    }
+
+    private func reconcile(with status: NEVPNStatus) {
+        // The extension may have written a final frame (error, disconnected).
+        loadPayload()
+        loadSnapshot()
+        switch status {
+        case .invalid, .disconnected:
+            // A fatal error from the core (revoked access, certificate,
+            // clock) stays on screen until the next connect attempt.
+            if case .error = state { break }
+            forceDisconnected(clearSnapshot: true)
+        case .disconnecting:
+            if state != .disconnecting { update(.disconnecting) }
+        case .connecting, .reasserting, .connected:
+            switch state {
+            case .connecting, .connected, .reconnecting:
+                break
+            case .disconnecting where disconnectInFlight:
+                break
+            default:
+                // NE says connected as soon as the provider calls its start
+                // completion — the handshake may still run; frames from the
+                // extension promote this to connected.
+                update(.connecting)
+            }
+        @unknown default:
+            forceDisconnected(clearSnapshot: true)
+        }
+    }
+
+    private var disconnectInFlight: Bool {
+        disconnectRequestedAt.map { Date().timeIntervalSince($0) < 5 } ?? false
+    }
+
+    /// An extension killed by jetsam or a crash never writes a final frame;
+    /// the system status is the only signal that the tunnel is gone.
+    private func observeSystemStatus() {
+        let providerId = (Bundle.main.bundleIdentifier ?? "") + ".tunnel"
+        NotificationCenter.default.addObserver(
+            forName: .NEVPNStatusDidChange, object: nil, queue: .main
+        ) { note in
+            guard let connection = note.object as? NEVPNConnection,
+                  (connection.manager.protocolConfiguration as? NETunnelProviderProtocol)?
+                    .providerBundleIdentifier == providerId,
+                  connection.status == .disconnected || connection.status == .invalid
+            else { return }
+            let status = connection.status
+            MainActor.assumeIsolated {
+                let shared = VpnStateManager.shared
+                switch shared.state {
+                case .connected, .reconnecting, .disconnecting:
+                    shared.reconcile(with: status)
+                case .disconnected, .connecting, .error:
+                    break
+                }
+            }
+        }
+    }
+
+    // MARK: - Session timer
+
+    /// Session start for the timer. The extension's `session_started_at`
+    /// wins: wall clock, survives core reconnects and device sleep. Without
+    /// it — `session_secs`, which restarts on every full reconnect and
+    /// stops while the device sleeps.
+    static func sessionStart(startedAt: Double?, sessionSecs: UInt64, now: Date) -> Date {
+        if let startedAt { return Date(timeIntervalSince1970: startedAt) }
+        return now.addingTimeInterval(-Double(sessionSecs))
+    }
+
+    /// `next` keeping the current session start when they differ by < 2 s:
+    /// a start derived from whole `session_secs` jitters on every frame, and
+    /// a changing `state` re-renders every view that reads it.
+    static func steady(_ next: VpnState, current: VpnState) -> VpnState {
+        guard let old = current.since, let new = next.since,
+              abs(old.timeIntervalSince(new)) < 2
+        else { return next }
+        return next.withSince(old)
+    }
+
     // MARK: - Internal
+
+    private func setState(_ next: VpnState) {
+        let next = Self.steady(next, current: state)
+        if next != state { state = next }
+    }
 
     private func observeDarwinNotifications() {
         DarwinNotifications.observe(DarwinNotifications.stateChanged) { [weak self] in
@@ -179,7 +292,16 @@ public final class VpnStateManager {
         guard let data = defaults.data(forKey: payloadKey),
               let payload = try? JSONDecoder().decode(VpnStatePayload.self, from: data)
         else { return }
-        state = payload.asState
+        switch payload.kind {
+        case .connecting, .connected, .reconnecting:
+            if disconnectInFlight { return }
+        case .disconnected, .error:
+            disconnectRequestedAt = nil
+        case .disconnecting:
+            break
+        }
+        // The extension writes the session start as `since`.
+        setState(payload.asState)
     }
 
     /// Reads snapshot.json from the App Group container and updates
@@ -201,24 +323,33 @@ public final class VpnStateManager {
         if snapshotModifiedAt.addingTimeInterval(1) < stateUpdatedAt {
             return
         }
+        switch frame.state {
+        case .connecting, .connected, .reconnecting:
+            if disconnectInFlight { return }
+        case .disconnected, .error:
+            disconnectRequestedAt = nil
+        }
 
         statusFrame = frame
 
         // Reconcile the legacy VpnState enum from the rich frame.
         switch frame.state {
         case .disconnected:
-            state = .disconnected
+            setState(.disconnected)
         case .connecting:
-            state = .connecting
+            setState(.connecting)
         case .connected, .reconnecting:
-            // sessionSecs keeps counting across core reconnects.
-            let since = Date().addingTimeInterval(-Double(frame.sessionSecs))
+            let since = Self.sessionStart(
+                startedAt: frame.sessionStartedAt,
+                sessionSecs: frame.sessionSecs,
+                now: Date()
+            )
             let serverName = frame.sni ?? frame.serverAddr ?? ""
-            state = frame.state == .connected
+            setState(frame.state == .connected
                 ? .connected(since: since, serverName: serverName)
-                : .reconnecting(since: since, serverName: serverName)
+                : .reconnecting(since: since, serverName: serverName))
         case .error:
-            state = .error(frame.lastError ?? "unknown")
+            setState(.error(frame.lastError ?? "unknown"))
         }
     }
 }

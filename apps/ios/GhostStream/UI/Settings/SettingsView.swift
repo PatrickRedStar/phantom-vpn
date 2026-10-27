@@ -25,6 +25,7 @@ public struct SettingsView: View {
     @State private var adminProfile: VpnProfile? = nil
     @State private var dnsDraft: [String] = []
     @State private var splitOn = false
+    @State private var splitSaveError: String?
     @State private var directCountrySelections: Set<String> = []
     @State private var manualDirectCidrsText = ""
     @State private var customDirectDomainsText = ""
@@ -106,7 +107,8 @@ public struct SettingsView: View {
             )
             .ignoresSafeArea()
         }
-        .sheet(isPresented: $showDNSDialog) {
+        // Swipe-down skips Cancel: drafts go back to what is saved.
+        .sheet(isPresented: $showDNSDialog, onDismiss: { dnsDraft = model.dnsServers }) {
             DNSDialog(
                 draft: $dnsDraft,
                 onSave: {
@@ -114,18 +116,18 @@ public struct SettingsView: View {
                     showDNSDialog = false
                 },
                 onDismiss: {
-                    dnsDraft = model.dnsServers
                     showDNSDialog = false
                 }
             )
             .presentationDetents([.medium, .large])
         }
-        .sheet(isPresented: $showSplitDialog) {
+        .sheet(isPresented: $showSplitDialog, onDismiss: hydrateRouteDrafts) {
             SplitTunnelDialog(
                 splitOn: $splitOn,
                 selectedCountries: $directCountrySelections,
                 manualCidrsText: $manualDirectCidrsText,
                 directDomainsText: $customDirectDomainsText,
+                saveError: $splitSaveError,
                 downloadedRules: model.downloadedRoutingRules,
                 downloadingRuleIds: model.downloadingRoutingRuleIds,
                 downloadStatus: model.routingDownloadStatus,
@@ -137,17 +139,17 @@ public struct SettingsView: View {
                 },
                 onSave: {
                     Task {
-                        await model.saveRoutingSettings(
+                        // On failure the sheet stays open with the reason.
+                        splitSaveError = await model.saveRoutingSettings(
                             splitOn: splitOn,
                             selectedCountries: Array(directCountrySelections).sorted(),
                             manualCidrsText: manualDirectCidrsText,
                             directDomainsText: customDirectDomainsText
                         )
-                        showSplitDialog = false
+                        if splitSaveError == nil { showSplitDialog = false }
                     }
                 },
                 onDismiss: {
-                    hydrateRouteDrafts()
                     showSplitDialog = false
                 }
             )
@@ -336,7 +338,9 @@ public struct SettingsView: View {
         NativeSectionCard {
             valueRow(
                 title: L("settings.row.dns"),
-                value: dnsDraft.isEmpty ? L("settings.value.system") : dnsDraft.joined(separator: " · "),
+                value: (dnsDraft.isEmpty
+                    ? model.activeProfile?.dnsServers ?? SettingsViewModel.defaultDnsServers
+                    : dnsDraft).joined(separator: " · "),
                 action: { showDNSDialog = true }
             )
             HairlineDivider()
@@ -490,6 +494,7 @@ public struct SettingsView: View {
     }
 
     private func hydrateRouteDrafts() {
+        model.refreshDownloadedRoutingRules()
         splitOn = model.splitRouting
         directCountrySelections = Set(model.directCountries)
         manualDirectCidrsText = model.manualDirectCidrsText
@@ -572,6 +577,12 @@ private struct DNSDialog: View {
                             .lineLimit(2...5)
                             .padding(12)
                             .background(C.bgElev2, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        if !invalidEntries.isEmpty {
+                            Text(String(format: L("settings.dns.invalid.format"), invalidEntries.joined(separator: ", ")))
+                                .font(.footnote)
+                                .foregroundColor(C.danger)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .padding(18)
@@ -585,16 +596,18 @@ private struct DNSDialog: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L("general.save")) {
-                        draft = customText
-                            .split { $0 == "," || $0 == " " || $0 == "\n" }
-                            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                            .filter { !$0.isEmpty }
+                        draft = SettingsViewModel.dnsEntries(customText)
                         onSave()
                     }
+                    .disabled(!invalidEntries.isEmpty)
                 }
             }
         }
         .onAppear { customText = draft.joined(separator: ", ") }
+    }
+
+    private var invalidEntries: [String] {
+        SettingsViewModel.dnsEntries(customText).filter { !SettingsViewModel.isValidDnsServer($0) }
     }
 
     private func presetRow(name: String, servers: [String]) -> some View {
@@ -622,6 +635,7 @@ private struct SplitTunnelDialog: View {
     @Binding var selectedCountries: Set<String>
     @Binding var manualCidrsText: String
     @Binding var directDomainsText: String
+    @Binding var saveError: String?
     let downloadedRules: [String: RoutingRuleInfo]
     let downloadingRuleIds: Set<String>
     let downloadStatus: String?
@@ -692,6 +706,14 @@ private struct SplitTunnelDialog: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L("general.save"), action: onSave)
                 }
+            }
+            .alert(
+                L("admin.error"),
+                isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })
+            ) {
+                Button(L("general.ok"), role: .cancel) {}
+            } message: {
+                Text(saveError ?? "")
             }
         }
     }

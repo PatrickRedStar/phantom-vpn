@@ -65,4 +65,15 @@ final class DashboardPresentationTests: XCTestCase {
     private func L(_ key: String, _ fallback: String) -> String {
         AppStrings.localized(key, fallback: fallback)
     }
+
+    func testRateIsBitsPerSecondShownAsMegabytes() {
+        XCTAssertEqual(DashboardPresentation.megabytesPerSecond(bitsPerSecond: 8_000_000), 1, accuracy: 1e-9)
+        XCTAssertEqual(DashboardPresentation.megabytesPerSecond(bitsPerSecond: 0), 0)
+    }
+
+    func testObservedDnsLabelMarksDoT() {
+        XCTAssertEqual(DashboardPresentation.dnsLabel(observed: "1.1.1.1:853"), "1.1.1.1 · DoT")
+        XCTAssertEqual(DashboardPresentation.dnsLabel(observed: "8.8.8.8:53"), "8.8.8.8")
+        XCTAssertEqual(DashboardPresentation.dnsLabel(observed: "2606:4700::1111:53"), "2606:4700::1111")
+    }
 }

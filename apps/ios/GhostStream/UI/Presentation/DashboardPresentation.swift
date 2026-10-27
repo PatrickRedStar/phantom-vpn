@@ -90,6 +90,18 @@ enum DashboardPresentation {
         }
     }
 
+    /// `"1.1.1.1:853"` → `"1.1.1.1 · DoT"`, `"8.8.8.8:53"` → `"8.8.8.8"`.
+    static func dnsLabel(observed: String) -> String {
+        guard let colon = observed.lastIndex(of: ":") else { return observed }
+        let ip = String(observed[..<colon])
+        return observed[observed.index(after: colon)...] == "853" ? "\(ip) · DoT" : ip
+    }
+
+    /// `StatusFrame.rate_*_bps` is bits per second; the UI shows MB/s.
+    static func megabytesPerSecond(bitsPerSecond: Double) -> Double {
+        TelemetryDisplayHelpers.bytesPerSecondFromBitsPerSecond(bitsPerSecond) / 1_000_000
+    }
+
     private static func L(_ key: String, _ fallback: String) -> String {
         AppStrings.localized(key, fallback: fallback)
     }

@@ -47,6 +47,7 @@ struct AppNavigation: View {
     @Environment(\.gsColors) private var C
     @Environment(ProfilesStore.self) private var profiles
     @Environment(PreferencesStore.self) private var prefs
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selection: AppTab = Self.launchTab
     @State private var addProfileRequest = false
     @State private var routePolicyReconciled = false
@@ -101,6 +102,15 @@ struct AppNavigation: View {
         .legacyTabBarBackground(C.bg)
         .task {
             await reconcileRoutePolicyOnLaunch()
+        }
+        .task {
+            await LogsViewModel.shared.collect()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // The tunnel may have died while the app slept.
+            if phase == .active {
+                Task { await VpnStateManager.shared.reconcileWithSystem() }
+            }
         }
     }
 

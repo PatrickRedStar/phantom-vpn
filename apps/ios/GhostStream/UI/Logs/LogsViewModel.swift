@@ -2,10 +2,12 @@
 //  LogsViewModel.swift
 //  GhostStream
 //
-//  Polls the PacketTunnelProvider via TunnelIpcBridge every 500ms for
-//  LogFrame entries. Keeps a rolling buffer of up to 10 000 entries (as
-//  Android), mirrored to logs.jsonl in the App Group so the journal
-//  survives app restarts, and exposes a hierarchical level filter.
+//  App-wide journal: while the app runs, pulls LogFrame entries from the
+//  PacketTunnelProvider via TunnelIpcBridge once a second when the tunnel
+//  is up (whatever tab is open), and imports the tail the extension saves
+//  on stop (`ext-tail.jsonl`) when it is down. Keeps a rolling buffer of
+//  up to 10 000 entries (as Android), mirrored to logs.jsonl in the App
+//  Group so the journal survives app restarts.
 
 import Foundation
 import NetworkExtension
@@ -55,6 +57,9 @@ enum LogFilter: String, CaseIterable, Hashable {
 @Observable
 final class LogsViewModel {
 
+    /// One journal for the app: failures happen while the Logs tab is closed.
+    static let shared = LogsViewModel()
+
     // MARK: - Observable state
 
     /// Rolling buffer of log frames, in emission order (oldest first).
@@ -67,30 +72,30 @@ final class LogsViewModel {
     /// Native search field text. Applied client-side by `LogsPresentation`.
     var searchText: String = ""
 
-    /// `true` while the view wants live polling.
-    private(set) var polling = false
-
-    /// Last VPN state observed from the shared state bridge.
-    private(set) var tunnelState: VpnState = VpnStateManager.shared.state
+    /// App-wide VPN state; views reading it re-render on its changes.
+    var tunnelState: VpnState { VpnStateManager.shared.state }
 
     /// Last IPC failure seen while asking the provider for logs.
     private(set) var lastIpcError: String?
 
     // MARK: - Private
 
-    private var lastTsUs: UInt64 = 0
-    private var pollTask: Task<Void, Never>?
-    private var ipc: TunnelIpcBridge?
+    @ObservationIgnored private var lastTsUs: UInt64 = 0
+    @ObservationIgnored private var ipc: TunnelIpcBridge?
+    @ObservationIgnored private var collecting = false
     private let maxEntries = 10_000
     private let log = Logger(subsystem: "com.ghoststream.client", category: "LogsVM")
     /// One JSON LogFrame per line; the app is the only writer.
     private let historyURL = FileManager.default
         .containerURL(forSecurityApplicationGroupIdentifier: SharedKeys.appGroup)?
         .appendingPathComponent("logs.jsonl")
+    /// Last frames the extension saved when it stopped (A8).
+    private let tailURL = FileManager.default
+        .containerURL(forSecurityApplicationGroupIdentifier: SharedKeys.appGroup)?
+        .appendingPathComponent("ext-tail.jsonl")
+    @ObservationIgnored private var tailImportedAt: Date?
 
-    init() {
-        loadHistory()
-    }
+    private init() {}
 
     // MARK: - Derived
 
@@ -144,29 +149,24 @@ final class LogsViewModel {
 
     // MARK: - Lifecycle
 
-    /// Starts the 500ms polling loop. Idempotent.
-    func startPolling() {
-        guard !polling else { return }
-        polling = true
-        pollTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.refreshTunnelState()
-            if self.shouldAttemptIpc {
-                await self.setupIpc()
+    /// Runs for the app's lifetime (root `.task`): saved journal first,
+    /// then once a second — new lines over IPC while the tunnel is up,
+    /// the extension's saved tail while it is down.
+    func collect() async {
+        guard !collecting else { return }
+        collecting = true
+        defer { collecting = false }
+        await loadHistory()
+        while !Task.isCancelled {
+            if shouldAttemptIpc {
+                await drainNewEntries()
+            } else {
+                ipc = nil
+                if lastIpcError != nil { lastIpcError = nil }
+                importExtensionTail()
             }
-            while self.polling, !Task.isCancelled {
-                self.refreshTunnelState()
-                await self.drainNewEntries()
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-    }
-
-    /// Stops the polling loop.
-    func stopPolling() {
-        polling = false
-        pollTask?.cancel()
-        pollTask = nil
     }
 
     // MARK: - Actions
@@ -178,11 +178,11 @@ final class LogsViewModel {
         if let historyURL { try? FileManager.default.removeItem(at: historyURL) }
     }
 
-    /// Writes the last `range` entries (newest first in file) to a temp
-    /// `.txt` file and returns its URL for presentation in a share sheet.
-    /// Returns `nil` on I/O failure.
+    /// Writes the last `range` entries shown (filter + search applied),
+    /// oldest first, to a temp `.txt` file for the share sheet. Returns
+    /// `nil` on I/O failure.
     func shareFileURL(range: Int = 500) -> URL? {
-        let tail = allLogs.suffix(range)
+        let tail = visibleLogs.prefix(range).reversed()
         let lines = tail.map { Self.format($0) }
         let body = lines.joined(separator: "\n")
 
@@ -224,12 +224,6 @@ final class LogsViewModel {
 
     /// Fetches new log entries from the extension via IPC.
     private func drainNewEntries() async {
-        guard shouldAttemptIpc else {
-            ipc = nil
-            lastIpcError = nil
-            return
-        }
-
         if ipc == nil {
             await setupIpc()
         }
@@ -247,35 +241,58 @@ final class LogsViewModel {
                 return
             }
 
-            lastIpcError = nil
-            if !frames.isEmpty {
-                lastTsUs = frames.map(\.timestampUs).max() ?? lastTsUs
-                allLogs.append(contentsOf: frames)
-                // Trim in 1k chunks: one O(n) shift per ~1k lines, not per poll.
-                if allLogs.count > maxEntries {
-                    allLogs.removeFirst(allLogs.count - maxEntries + maxEntries / 10)
-                    writeHistory(allLogs, append: false)
-                } else {
-                    writeHistory(frames, append: true)
-                }
-            }
+            if lastIpcError != nil { lastIpcError = nil }
+            append(frames)
         } catch {
             ipc = nil
             recordIpcError(error.localizedDescription)
         }
     }
 
+    /// Lines the stopped extension left behind; only those newer than the
+    /// cursor, so what IPC already delivered is not added twice.
+    private func importExtensionTail() {
+        guard let tailURL,
+              let modified = (try? FileManager.default.attributesOfItem(atPath: tailURL.path))?[.modificationDate] as? Date,
+              modified != tailImportedAt
+        else { return }
+        tailImportedAt = modified
+        append(Self.readFrames(tailURL).filter { $0.timestampUs > lastTsUs })
+    }
+
+    private func append(_ frames: [LogFrame]) {
+        guard !frames.isEmpty else { return }
+        lastTsUs = max(lastTsUs, frames.map(\.timestampUs).max() ?? 0)
+        allLogs.append(contentsOf: frames)
+        // Trim in 1k chunks: one O(n) shift per ~1k lines, not per poll.
+        if allLogs.count > maxEntries {
+            allLogs.removeFirst(allLogs.count - maxEntries + maxEntries / 10)
+            writeHistory(allLogs, append: false)
+        } else {
+            writeHistory(frames, append: true)
+        }
+    }
+
     // MARK: - History file
 
-    private func loadHistory() {
-        guard let historyURL, let data = try? Data(contentsOf: historyURL) else { return }
-        let decoder = JSONDecoder()
-        let frames = data.split(separator: UInt8(ascii: "\n")).compactMap {
-            try? decoder.decode(LogFrame.self, from: Data($0))
-        }
+    /// Off the main thread: up to 10k JSON lines.
+    private func loadHistory() async {
+        guard let historyURL else { return }
+        let frames = await Task.detached(priority: .utility) {
+            Self.readFrames(historyURL)
+        }.value
         allLogs = Array(frames.suffix(maxEntries))
         // The extension's ring still holds these — don't fetch them twice.
         lastTsUs = allLogs.map(\.timestampUs).max() ?? 0
+    }
+
+    /// JSON Lines of `LogFrame`; unreadable lines are skipped.
+    nonisolated static func readFrames(_ url: URL) -> [LogFrame] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let decoder = JSONDecoder()
+        return data.split(separator: UInt8(ascii: "\n")).compactMap {
+            try? decoder.decode(LogFrame.self, from: Data($0))
+        }
     }
 
     private func writeHistory(_ frames: [LogFrame], append: Bool) {
@@ -303,10 +320,6 @@ final class LogsViewModel {
         case .disconnected, .disconnecting, .error:
             return false
         }
-    }
-
-    private func refreshTunnelState() {
-        tunnelState = VpnStateManager.shared.state
     }
 
     private func selectTunnelManager(from managers: [NETunnelProviderManager]) -> NETunnelProviderManager? {

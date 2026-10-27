@@ -32,6 +32,10 @@ public enum SettingsImportError: LocalizedError {
 @Observable
 public final class SettingsViewModel {
 
+    /// DNS the tunnel uses when neither the settings nor the profile set
+    /// any (PacketTunnelProvider's fallback).
+    public static let defaultDnsServers = ["1.1.1.1", "8.8.8.8"]
+
     // MARK: - Dependencies
 
     private let profilesStore: ProfilesStore
@@ -68,7 +72,8 @@ public final class SettingsViewModel {
         self.profilesStore = profilesStore
         self.preferencesStore = preferencesStore
         self.tunnelController = tunnelController ?? VpnTunnelController()
-        refreshDownloadedRoutingRules()
+        // No disk reads here: SwiftUI builds a new instance whenever
+        // SettingsView's struct is rebuilt — the view hydrates in `.task`.
     }
 
     // MARK: - Convenience accessors (pass-through to stores)
@@ -93,11 +98,22 @@ public final class SettingsViewModel {
     // MARK: - Profile mutations
 
     /// Parses a connection string (ghs://…) via `PhantomBridge` and adds the
-    /// resulting profile to `ProfilesStore`.
+    /// resulting profile to `ProfilesStore` — or refreshes the profile it
+    /// already belongs to (same link scanned twice, re-issued client).
     /// - Throws: `SettingsImportError.invalidConnString` on parse failure.
     @discardableResult
     public func importFromString(_ raw: String) throws -> VpnProfile {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let parsed = PhantomBridge.parseConnString(trimmed),
+           let existing = Self.matchingProfile(
+               in: profilesStore.profiles,
+               certPem: parsed.certPem,
+               tunAddr: parsed.tunAddr,
+               serverAddr: parsed.serverAddr
+           ) {
+            try reimport(id: existing.id, rawConnString: trimmed)
+            return profilesStore.profiles.first { $0.id == existing.id } ?? existing
+        }
         do {
             return try profilesStore.importFromConnString(trimmed)
         } catch {
@@ -106,14 +122,36 @@ public final class SettingsViewModel {
         }
     }
 
+    /// Same client certificate, or the same tunnel address on the same server.
+    static func matchingProfile(
+        in profiles: [VpnProfile],
+        certPem: String,
+        tunAddr: String,
+        serverAddr: String
+    ) -> VpnProfile? {
+        profiles.first { $0.certPem == certPem }
+            ?? profiles.first { $0.tunAddr == tunAddr && $0.serverAddr == serverAddr }
+    }
+
     /// Thin wrapper used by the QR scanner completion handler.
     @discardableResult
     public func importFromQRResult(_ payload: String) throws -> VpnProfile {
         try importFromString(payload)
     }
 
-    /// Deletes a profile by id.
+    /// Deletes a profile by id. The tunnel running on it is stopped first —
+    /// its keys go with the profile.
     public func deleteProfile(id: String) {
+        if id == profilesStore.activeId {
+            switch VpnStateManager.shared.state {
+            case .connecting, .connected, .reconnecting:
+                VpnStateManager.shared.update(.disconnecting)
+                let tunnel = tunnelController
+                Task { await tunnel.stopAndWait() }
+            case .disconnected, .disconnecting, .error:
+                break
+            }
+        }
         profilesStore.remove(id: id)
         pingResults.removeValue(forKey: id)
         pinging.remove(id)
@@ -139,7 +177,15 @@ public final class SettingsViewModel {
         case .connecting, .connected, .reconnecting:
             Task { await restartTunnel(with: profile) }
         case .disconnected, .disconnecting, .error:
-            break
+            // On-Demand, Control Center and the Settings app start the saved
+            // configuration — point it at the new profile.
+            Task {
+                do {
+                    try await tunnelController.applyRoutePolicy(profile: profile, preferences: preferencesStore)
+                } catch {
+                    log.error("profile switch config update failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 
@@ -181,17 +227,35 @@ public final class SettingsViewModel {
         updated.certPem = parsed.certPem
         updated.keyPem = parsed.keyPem
         updated.tunAddr = parsed.tunAddr
+        // New link, maybe a new server: pin the admin server cert afresh.
+        updated.cachedAdminServerCertFp = nil
         profilesStore.update(updated)
     }
 
     // MARK: - Preferences
 
-    /// Updates the global DNS server list (nil / empty → system default).
+    /// Updates the global DNS server list (nil / empty → the default).
     public func setDnsServers(_ servers: [String]) {
         let cleaned = servers
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+            .filter(Self.isValidDnsServer)
         preferencesStore.dnsServers = cleaned.isEmpty ? nil : cleaned
+    }
+
+    /// Entries of the custom DNS field (commas, spaces, new lines).
+    public static func dnsEntries(_ text: String) -> [String] {
+        text.split { $0 == "," || $0.isWhitespace }.map(String.init)
+    }
+
+    /// IP literals only: NEDNSSettings takes no host names, and a typo would
+    /// leave the tunnel without DNS. IPv4 needs all four parts and no
+    /// leading zeros (inet_aton reads "1.1" and octal "010").
+    public static func isValidDnsServer(_ s: String) -> Bool {
+        if s.contains(":") { return !s.contains("%") && IPv6Address(s) != nil }
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4
+            && parts.allSatisfy { $0 == "0" || !$0.hasPrefix("0") }
+            && IPv4Address(s) != nil
     }
 
     /// Toggles global split-routing.
@@ -211,12 +275,14 @@ public final class SettingsViewModel {
         preferencesStore.customDirectDomainsText = text
     }
 
+    /// Returns the error text when the tunnel config could not be updated.
+    @discardableResult
     public func saveRoutingSettings(
         splitOn: Bool,
         selectedCountries: [String],
         manualCidrsText: String,
         directDomainsText: String
-    ) async {
+    ) async -> String? {
         routingDownloadStatus = AppStrings.localized("settings.route.saving")
         preferencesStore.splitRouting = splitOn
         preferencesStore.directCountries = selectedCountries
@@ -226,7 +292,7 @@ public final class SettingsViewModel {
         guard let activeProfile else {
             routingDownloadStatus = AppStrings.localized("settings.route.saved")
             refreshDownloadedRoutingRules()
-            return
+            return nil
         }
 
         do {
@@ -237,12 +303,14 @@ public final class SettingsViewModel {
             routingDownloadStatus = String(
                 format: AppStrings.localized("settings.route.applied.format"), ipv4Count, ipv6Count
             )
+            return nil
         } catch {
             refreshDownloadedRoutingRules()
             routingDownloadStatus = String(
                 format: AppStrings.localized("settings.route.failed.format"), error.localizedDescription
             )
             log.error("route policy update failed: \(error.localizedDescription, privacy: .public)")
+            return routingDownloadStatus
         }
     }
 
@@ -311,11 +379,12 @@ public final class SettingsViewModel {
 
     // MARK: - Ping
 
-    /// Measures TCP connect latency to the profile's `serverAddr`. Returns
-    /// nil on invalid address; a negative value for unreachable.
+    /// Measures TCP connect latency to where the tunnel dials (the relay
+    /// when it is on). Returns nil on invalid address; a negative value for
+    /// unreachable.
     /// Updates `pingResults` and `pinging` as a side effect.
     public func pingProfile(_ p: VpnProfile) async -> Int? {
-        guard let (host, port) = Self.parseHostPort(p.serverAddr) else {
+        guard let (host, port) = Self.parseHostPort(p.effectiveServerAddr) else {
             return nil
         }
         pinging.insert(p.id)

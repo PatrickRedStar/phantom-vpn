@@ -16,7 +16,7 @@ import UIKit
 struct LogsView: View {
 
     @Environment(\.gsColors) private var C
-    @State private var vm = LogsViewModel()
+    @Bindable private var vm = LogsViewModel.shared
     @State private var shareItem: ShareItem?
     @State private var showClearConfirmation = false
     @State private var userPinnedScroll = false
@@ -28,7 +28,14 @@ struct LogsView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    // Newest lines are on top: following = the top is in view.
                     Color.clear.frame(height: 0).id("__head__")
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(
+                                key: HeadOffsetKey.self,
+                                value: geo.frame(in: .named("logsScroll")).minY
+                            )
+                        })
                     filterRow
                     statusBanner
                     logCard
@@ -42,17 +49,16 @@ struct LogsView: View {
                 .padding(.bottom, 24)
             }
             .scrollIndicators(.hidden)
+            .coordinateSpace(name: "logsScroll")
+            .onPreferenceChange(HeadOffsetKey.self) { y in
+                userPinnedScroll = y < -40
+            }
             .onChange(of: vm.visibleLogs.count) { _, _ in
                 guard !userPinnedScroll else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
                     proxy.scrollTo("__head__", anchor: .top)
                 }
             }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 6).onChanged { _ in
-                    userPinnedScroll = true
-                }
-            )
         }
         .background(C.bg.ignoresSafeArea())
         .navigationTitle(L("nav_logs"))
@@ -88,8 +94,6 @@ struct LogsView: View {
         } message: {
             Text(L("native.logs.clear.confirm.message"))
         }
-        .onAppear { vm.startPolling() }
-        .onDisappear { vm.stopPolling() }
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
@@ -202,6 +206,11 @@ private extension View {
     }
 }
 
+private struct HeadOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 // MARK: - LogLineRow
 
 private struct LogLineRow: View {
@@ -265,13 +274,7 @@ private struct ActivityView: UIViewControllerRepresentable {
 
 // MARK: - Preview
 
-#Preview("Logs — Populated") {
-    let vm = LogsViewModel()
-    // Seed synthetic entries for preview (no Rust bridge calls in canvas).
-    // The real VM will keep polling; the preview is frozen.
-    return NavigationStack { LogsView() }
+#Preview("Logs") {
+    NavigationStack { LogsView() }
         .gsTheme(override: .dark)
-        .onAppear {
-            _ = vm // silence unused
-        }
 }

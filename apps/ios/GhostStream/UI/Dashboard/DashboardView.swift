@@ -52,7 +52,10 @@ struct DashboardView: View {
         .safeAreaInset(edge: .bottom) {
             bottomActionBar
         }
-        .onAppear { vm.onAppear() }
+        .task { await vm.run() }
+        .task(id: isConnected) {
+            if isConnected { await vm.refreshEntitlements() }
+        }
     }
 
     // MARK: - Header
@@ -164,11 +167,9 @@ struct DashboardView: View {
             banner(
                 icon: "arrow.clockwise",
                 title: L("native.dashboard.reconnect.title"),
-                detail: String(
-                    format: L("native.dashboard.reconnect.detail.format"),
-                    Int(sf.reconnectAttempt ?? 0),
-                    Int(sf.reconnectNextDelaySecs ?? 0)
-                ),
+                detail: vm.retryIn.map {
+                    String(format: L("native.dashboard.reconnect.detail.format"), Int(sf.reconnectAttempt ?? 0), $0)
+                } ?? String(format: L("native.dashboard.reconnect.dialing.format"), Int(sf.reconnectAttempt ?? 0)),
                 color: C.warn
             )
         }
@@ -336,7 +337,7 @@ struct DashboardView: View {
         let profile = profiles.activeProfile
         return VStack(spacing: 0) {
             if !isReconnecting {
-                kvRow(L("settings.row.dns"), dnsText, valueColor: C.bone, dot: isUp)
+                kvRow(L("settings.row.dns"), dnsText, valueColor: C.bone, dot: isUp && stateMgr.statusFrame.dnsQueries > 0)
                 HairlineDivider()
                 kvRow(L("kv_identity"), profile?.name ?? "—")
                 HairlineDivider()
@@ -383,8 +384,13 @@ struct DashboardView: View {
 
     // MARK: - Derived
 
+    /// Where the tunnel saw DNS go; before the first query — the servers
+    /// it was given (same fallback as the extension).
     private var dnsText: String {
-        let servers = prefs.dnsServers ?? profiles.activeProfile?.dnsServers ?? ["1.1.1.1", "8.8.8.8"]
+        if isUp, let observed = stateMgr.statusFrame.dnsObserved {
+            return DashboardPresentation.dnsLabel(observed: observed)
+        }
+        let servers = prefs.dnsServers ?? profiles.activeProfile?.dnsServers ?? SettingsViewModel.defaultDnsServers
         return servers.joined(separator: " · ")
     }
 
@@ -421,9 +427,10 @@ struct DashboardView: View {
         return sf.rateTxBps > 0 ? sf.rateTxBps : (vm.txSamples.last ?? 0)
     }
 
-    /// Bytes/s → «2,41 МБ/с».
+    /// StatusFrame bits/s → «2,41 МБ/с».
     private func rate(_ bps: Double) -> String {
-        String(format: L("dashboard.rate.mbs.format"), locale: .current, bps / 1_000_000)
+        String(format: L("dashboard.rate.mbs.format"), locale: .current,
+               DashboardPresentation.megabytesPerSecond(bitsPerSecond: bps))
     }
 
     private var streamActivityLevels: [Float]? {
@@ -466,6 +473,11 @@ struct DashboardView: View {
         case .connected, .reconnecting: return true
         default: return false
         }
+    }
+
+    private var isConnected: Bool {
+        if case .connected = vm.state { return true }
+        return false
     }
 
     private var isReconnecting: Bool {
