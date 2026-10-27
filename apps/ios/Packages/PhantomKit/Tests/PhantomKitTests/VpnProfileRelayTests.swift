@@ -112,4 +112,12 @@ final class VpnProfileRelayTests: XCTestCase {
         XCTAssertEqual(p.sanitizedForUserDefaults.relayAddr, "5.6.7.8:443")
         XCTAssertEqual(p.sanitizedForProviderConfiguration.relayEnabled, true)
     }
+
+    // MARK: - Editor input
+
+    func testRelayWithoutPortDefaultsTo443() {
+        XCTAssertEqual(VpnProfile.normalizedRelayAddr(" relay.example.com "), "relay.example.com:443")
+        XCTAssertEqual(VpnProfile.normalizedRelayAddr("5.6.7.8:8443"), "5.6.7.8:8443")
+        XCTAssertNil(VpnProfile.normalizedRelayAddr("  "))
+    }
 }

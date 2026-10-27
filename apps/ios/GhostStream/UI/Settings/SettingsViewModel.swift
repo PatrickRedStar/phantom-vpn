@@ -93,6 +93,7 @@ public final class SettingsViewModel {
     public var languageOverride: String? { preferencesStore.languageOverride }
     public var onDemand: Bool { preferencesStore.onDemand }
     public var killSwitch: Bool { preferencesStore.killSwitch }
+    public var liveActivity: Bool { preferencesStore.liveActivity }
 
     // MARK: - Profile mutations
 
@@ -362,6 +363,13 @@ public final class SettingsViewModel {
     /// «Без VPN — без сети» (includeAllNetworks), applied at the next Connect.
     public func setKillSwitch(_ on: Bool) {
         preferencesStore.killSwitch = on
+    }
+
+    /// «Dynamic Island»: off ends the running Live Activity, on starts it
+    /// for the current session — both right away via SystemSurfaces.
+    public func setLiveActivity(_ on: Bool) {
+        preferencesStore.liveActivity = on
+        SystemSurfaces.shared.sync()
     }
 
     /// Overrides app language. `nil` → follow system.

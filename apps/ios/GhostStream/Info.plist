@@ -28,16 +28,6 @@
 	<string>GhostStream uses the camera to scan QR codes containing VPN connection strings.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
-	<key>UIAppFonts</key>
-	<array>
-		<string>space_grotesk.ttf</string>
-		<string>space_grotesk_bold.ttf</string>
-		<string>departure_mono.otf</string>
-		<string>jetbrains_mono.ttf</string>
-		<string>jetbrains_mono_medium.ttf</string>
-		<string>instrument_serif.ttf</string>
-		<string>instrument_serif_italic.ttf</string>
-	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

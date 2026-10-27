@@ -362,6 +362,12 @@ public struct SettingsView: View {
 
     private var appCard: some View {
         NativeSectionCard {
+            NativeToggleRow(
+                title: L("settings.row.live.activity"),
+                subtitle: L("settings.live.activity.subtitle"),
+                isOn: Binding(get: { model.liveActivity }, set: { model.setLiveActivity($0) })
+            )
+            HairlineDivider()
             pickerRow(L("settings.row.theme"), value: themeTitle(themeSelection)) {
                 Picker(L("settings.row.theme"), selection: $themeSelection) {
                     ForEach(ThemeOverride.allCases, id: \.self) { Text(themeTitle($0)).tag($0) }

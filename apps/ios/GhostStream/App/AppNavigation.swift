@@ -82,8 +82,8 @@ struct AppNavigation: View {
 
             NavigationStack {
                 #if DEBUG
-                if UserDefaults.standard.bool(forKey: "gsAdminDemo") {
-                    AdminView(viewModel: AdminPreviewData.populatedVM())
+                if let admin = DebugDemo.adminScreen {
+                    admin
                 } else {
                     SettingsView(addProfileRequest: $addProfileRequest)
                         .id(languageIdentity)
@@ -115,7 +115,8 @@ struct AppNavigation: View {
     }
 
     /// Screenshot hook (DEBUG): `-gsTab logs|settings` opens that tab,
-    /// `-gsAdminDemo YES` puts the admin console with preview data there.
+    /// `-gsAdminDemo YES|detail|qr` puts the admin console (or a client
+    /// detail / its QR card) with preview data there. See DebugDemo.swift.
     private static var launchTab: AppTab {
         #if DEBUG
         switch UserDefaults.standard.string(forKey: "gsTab") {

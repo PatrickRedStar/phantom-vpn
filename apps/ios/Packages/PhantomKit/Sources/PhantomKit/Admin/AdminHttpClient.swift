@@ -153,9 +153,11 @@ public struct ClientLog: Codable {
 
 // MARK: - Errors
 
-/// Errors surfaced by `AdminHttpClient`.
+/// Errors surfaced by `AdminHttpClient`. Descriptions follow the app's
+/// language (RU/EN), they are shown as is.
 public enum AdminHttpError: Error, LocalizedError {
-    case badStatus(Int)
+    /// HTTP status and the server's text, if it sent any.
+    case badStatus(Int, String?)
     case transport(Error)
     case decoding(Error)
     case identityCreation(String)
@@ -163,14 +165,41 @@ public enum AdminHttpError: Error, LocalizedError {
     case invalidResponse
 
     public var errorDescription: String? {
+        func t(_ ru: String, _ en: String) -> String { Self.english ? en : ru }
         switch self {
-        case .badStatus(let code):           return "HTTP \(code)"
-        case .transport(let e):              return "Transport error: \(e.localizedDescription)"
-        case .decoding(let e):               return "Decode error: \(e.localizedDescription)"
-        case .identityCreation(let msg):     return "Failed to build client identity: \(msg)"
-        case .pinMismatch:                   return "Server cert fingerprint mismatch"
-        case .invalidResponse:               return "Invalid server response"
+        case .badStatus(let code, let text):
+            switch code {
+            case 401, 403:
+                return t("Нет прав администратора на этом сервере", "No admin rights on this server")
+            case 404:
+                return t("Клиент не найден", "Client not found")
+            case 409 where text?.contains("subscription expired") == true:
+                return t("Подписка истекла — сначала продлите её или сделайте бессрочной",
+                         "Subscription expired — extend it or make it unlimited first")
+            case 409:
+                return text ?? t("Клиент с таким именем уже есть", "A client with this name already exists")
+            default:
+                return t("Ошибка сервера", "Server error") + " (HTTP \(code))" + (text.map { ": \($0)" } ?? "")
+            }
+        case .transport(let e):
+            return t("Сервер админки недоступен: ", "Admin server unreachable: ") + e.localizedDescription
+        case .decoding:
+            return t("Неожиданный ответ сервера", "Unexpected server response")
+        case .identityCreation(let msg):
+            return t("Не удалось подготовить сертификат клиента: ", "Failed to build client identity: ") + msg
+        case .pinMismatch:
+            return t("Сертификат админ-сервера сменился. Если сервер переустанавливали — заново импортируйте профиль.",
+                     "The admin server certificate changed. If the server was reinstalled, re-import the profile.")
+        case .invalidResponse:
+            return t("Некорректный ответ сервера", "Invalid server response")
         }
+    }
+
+    /// The app's language override from the App Group, else the system's.
+    static var english: Bool {
+        let override = UserDefaults(suiteName: SharedKeys.appGroup)?.string(forKey: "language_override")
+            .flatMap { $0.isEmpty || $0 == "system" ? nil : $0 }
+        return (override ?? Bundle.main.preferredLocalizations.first ?? "ru").hasPrefix("en")
     }
 }
 
@@ -179,14 +208,14 @@ public enum AdminHttpError: Error, LocalizedError {
 /// URLSession delegate that:
 /// 1. Presents the client SecIdentity for mTLS challenges.
 /// 2. Performs TOFU SHA-256 pinning on the server cert — accepts on first
-///    handshake, rejects on mismatch thereafter.
+///    handshake and pins it for the rest of the session, rejects on mismatch.
 final class MTLSDelegate: NSObject, URLSessionDelegate {
 
     private let clientIdentity: SecIdentity
     private let clientCertificates: [SecCertificate]
-    private let pinnedServerCertFp: String?
 
     private let lock = NSLock()
+    private var _pinnedServerCertFp: String?
     private var _lastServerCertFp: String?
 
     var lastServerCertFp: String? {
@@ -194,10 +223,16 @@ final class MTLSDelegate: NSObject, URLSessionDelegate {
         return _lastServerCertFp
     }
 
+    /// The configured pin, or the one learned on the first TOFU handshake.
+    var pinnedServerCertFp: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _pinnedServerCertFp
+    }
+
     init(identity: SecIdentity, certificates: [SecCertificate], pinnedFingerprint: String?) {
         self.clientIdentity = identity
         self.clientCertificates = certificates
-        self.pinnedServerCertFp = pinnedFingerprint?.lowercased()
+        self._pinnedServerCertFp = pinnedFingerprint?.lowercased()
     }
 
     func urlSession(
@@ -230,17 +265,15 @@ final class MTLSDelegate: NSObject, URLSessionDelegate {
 
             lock.lock()
             _lastServerCertFp = fp
+            // TOFU: the first handshake pins; the caller persists `lastServerCertFp`.
+            let pinned = _pinnedServerCertFp ?? fp
+            _pinnedServerCertFp = pinned
             lock.unlock()
 
-            if let pinned = pinnedServerCertFp {
-                if fp == pinned {
-                    completionHandler(.useCredential, URLCredential(trust: trust))
-                } else {
-                    completionHandler(.cancelAuthenticationChallenge, nil)
-                }
-            } else {
-                // TOFU: accept first handshake, caller persists `lastServerCertFp`.
+            if fp == pinned {
                 completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
             }
 
         default:
@@ -278,6 +311,35 @@ public final class AdminHttpClient {
     /// into `VpnProfile.cachedAdminServerCertFp` after first connect.
     public var lastServerCertFp: String? { delegate.lastServerCertFp }
 
+    /// One client per profile identity: building the identity costs keychain
+    /// writes, and a fresh URLSession costs a TLS handshake per request.
+    private static var cached: (key: String, client: AdminHttpClient)?
+
+    /// Shared client for `profile`'s admin API. Reused while the profile id,
+    /// certificate, key and gateway stay the same and its pin matches the
+    /// profile's (a cleared pin re-runs TOFU); otherwise replaced.
+    public static func shared(for profile: VpnProfile) throws -> AdminHttpClient {
+        guard let certPem = profile.certPem, !certPem.isEmpty,
+              let keyPem = profile.keyPem, !keyPem.isEmpty,
+              let baseURL = AdminGateway.adminBaseURL(for: profile)
+        else {
+            throw AdminHttpError.identityCreation("profile has no client certificate")
+        }
+        let key = [profile.id, baseURL.absoluteString, certPem, keyPem].joined(separator: "|")
+        let pin = profile.cachedAdminServerCertFp?.lowercased()
+        if let cached, cached.key == key, cached.client.delegate.pinnedServerCertFp == pin {
+            return cached.client
+        }
+        let client = try AdminHttpClient(
+            baseURL: baseURL,
+            clientCertPem: certPem,
+            clientKeyPem: keyPem,
+            pinnedServerCertFp: pin
+        )
+        cached = (key, client)
+        return client
+    }
+
     /// Builds a client. Fails if the PEMs can't be parsed into a SecIdentity.
     /// - Parameters:
     ///   - baseURL: Admin server URL, e.g. `https://10.7.0.1:8080`.
@@ -309,6 +371,12 @@ public final class AdminHttpClient {
         // принудительно ходим напрямую.
         cfg.connectionProxyDictionary = [:]
         self.session = URLSession(configuration: cfg, delegate: delegate, delegateQueue: nil)
+    }
+
+    deinit {
+        // A session retains its delegate until invalidated — without this
+        // every client leaked its session and identity.
+        session.finishTasksAndInvalidate()
     }
 
     // MARK: Endpoints
@@ -359,14 +427,25 @@ public final class AdminHttpClient {
         try await requestVoid("POST", "/api/clients/\(escape(name))/disable")
     }
 
-    /// `GET /api/clients/:name/conn_string` — returns the raw `ghs://…`
+    /// `GET /api/clients/:name/conn_string` — returns the `ghs://…`
     /// connection string for `name`.
     public func getConnString(name: String) async throws -> String {
         let data = try await requestRaw("GET", "/api/clients/\(escape(name))/conn_string")
-        guard let str = String(data: data, encoding: .utf8) else {
+        guard let str = Self.connString(fromBody: data) else {
             throw AdminHttpError.invalidResponse
         }
-        return str.trimmingCharacters(in: .whitespacesAndNewlines)
+        return str
+    }
+
+    /// The server answers `{"conn_string":"ghs://…"}`; plain text is accepted
+    /// too, as in the Linux client (`admin_api.rs`).
+    nonisolated static func connString(fromBody data: Data) -> String? {
+        struct Body: Decodable { let conn_string: String }
+        if let body = try? JSONDecoder().decode(Body.self, from: data) {
+            return body.conn_string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text?.isEmpty == false ? text : nil
     }
 
     /// `GET /api/clients/:name/stats` — historical traffic counters.
@@ -430,6 +509,10 @@ public final class AdminHttpClient {
         do {
             (data, response) = try await session.data(for: req)
         } catch {
+            // A rejected pin surfaces as a bare "cancelled".
+            if let seen = delegate.lastServerCertFp, seen != delegate.pinnedServerCertFp {
+                throw AdminHttpError.pinMismatch
+            }
             throw AdminHttpError.transport(error)
         }
 
@@ -437,7 +520,8 @@ public final class AdminHttpClient {
             throw AdminHttpError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw AdminHttpError.badStatus(http.statusCode)
+            let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AdminHttpError.badStatus(http.statusCode, text?.isEmpty == false ? text : nil)
         }
         return data
     }
@@ -767,6 +851,9 @@ private extension AdminHttpClient {
             kSecValueRef as String: certificate,
             kSecAttrLabel as String: label,
             kSecUseDataProtectionKeychain as String: true,
+            // Default WhenUnlocked fails with -25308 when the app refreshes
+            // with the device locked.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
         let certStatus = SecItemAdd(certAttrs as CFDictionary, nil)
         if certStatus != errSecSuccess && certStatus != errSecDuplicateItem {
@@ -778,6 +865,7 @@ private extension AdminHttpClient {
             kSecValueRef as String: privateKey,
             kSecAttrLabel as String: label,
             kSecUseDataProtectionKeychain as String: true,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
         ]
         let keyStatus = SecItemAdd(keyAttrs as CFDictionary, nil)
         if keyStatus != errSecSuccess && keyStatus != errSecDuplicateItem {

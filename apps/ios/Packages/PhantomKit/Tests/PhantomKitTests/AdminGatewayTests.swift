@@ -15,6 +15,22 @@ final class AdminGatewayTests: XCTestCase {
         XCTAssertEqual(AdminGateway.host(forTunAddr: "bad-profile"), AdminGateway.fallbackHost)
     }
 
+    /// The server wraps the link in JSON; QR / Share / Copy need the bare `ghs://`.
+    func testConnStringIsUnwrappedFromServerJson() {
+        let link = "ghs://Y2VydA@vpn.example:443?sni=vpn.example&tun=10.7.0.5%2F24&v=1"
+        XCTAssertEqual(AdminHttpClient.connString(fromBody: Data(#"{"conn_string":"\#(link)"}"#.utf8)), link)
+        XCTAssertEqual(AdminHttpClient.connString(fromBody: Data("\(link)\n".utf8)), link)
+        XCTAssertNil(AdminHttpClient.connString(fromBody: Data()))
+    }
+
+    /// Server text survives into the message; the known 409 gets a human one.
+    func testBadStatusKeepsServerText() {
+        let other = AdminHttpError.badStatus(500, "boom").errorDescription ?? ""
+        XCTAssertTrue(other.contains("500") && other.contains("boom"), other)
+        let expired = AdminHttpError.badStatus(409, "subscription expired: extend it or make it unlimited first")
+        XCTAssertFalse(expired.errorDescription?.contains("subscription expired:") ?? true)
+    }
+
     /// `/api/me` is the only subscription source; an old server without
     /// `enabled` must not wipe the cached subscription.
     func testSelfInfoAppliesSubscriptionOnlyWhenServerSendsIt() throws {

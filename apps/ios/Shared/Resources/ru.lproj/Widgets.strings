@@ -6,6 +6,7 @@
 "intent.toggle.title" = "VPN GhostStream";
 "intent.toggle.value" = "Включён";
 "intent.error.no.profile" = "Нет профиля с сертификатом — добавьте его в приложении.";
+"intent.error.needs.setup" = "Подключитесь один раз из приложения — iOS спросит разрешение на VPN.";
 "shortcut.connect" = "Подключить";
 "shortcut.disconnect" = "Отключить";
 
@@ -18,7 +19,8 @@
 "control.description" = "Подключает и отключает VPN.";
 "control.no.profile" = "Нет профиля";
 "activity.disconnect" = "Отключить VPN";
-"activity.rates %@ %@ %lld %lld" = "↓ %1$@ МБ/с · ↑ %2$@ МБ/с · %3$lld/%4$lld";
+"activity.route.relay %@" = "Relay · %@";
+"activity.route.direct" = "Напрямую";
 
 /* Заголовки состояний — как на главном экране приложения */
 "state.connected" = "Передача";

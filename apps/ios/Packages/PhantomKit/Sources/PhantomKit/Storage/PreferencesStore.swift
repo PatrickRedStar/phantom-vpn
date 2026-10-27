@@ -49,6 +49,7 @@ public final class PreferencesStore {
         static let verboseLog        = "verbose_log"
         static let killSwitch        = "kill_switch"
         static let onDemand          = "on_demand"
+        static let liveActivity      = "live_activity"
     }
 
     /// Stored property so `@Observable` can track changes and trigger SwiftUI
@@ -91,6 +92,12 @@ public final class PreferencesStore {
     /// любой сети. Выключен по умолчанию; macOS не читает.
     public var onDemand: Bool = false {
         didSet { defaults.set(onDemand, forKey: Key.onDemand) }
+    }
+
+    /// iOS «Dynamic Island»: Live Activity сессии (остров + экран
+    /// блокировки — iOS их не разделяет). Включён по умолчанию; macOS не читает.
+    public var liveActivity: Bool = true {
+        didSet { defaults.set(liveActivity, forKey: Key.liveActivity) }
     }
 
     public var startInMenuBar: Bool = false {
@@ -180,6 +187,7 @@ public final class PreferencesStore {
         self.killSwitch = defaults.object(forKey: Key.killSwitch) as? Bool ?? false
         self.autoReconnect = defaults.object(forKey: Key.autoReconnect) as? Bool ?? true
         self.onDemand = defaults.object(forKey: Key.onDemand) as? Bool ?? false
+        self.liveActivity = defaults.object(forKey: Key.liveActivity) as? Bool ?? true
         self.startInMenuBar = defaults.object(forKey: Key.startInMenuBar) as? Bool ?? false
         self.notifyStateChanges = defaults.object(forKey: Key.notifyStateChanges) as? Bool ?? true
         self.reduceMotion = defaults.object(forKey: Key.reduceMotion) as? Bool ?? false

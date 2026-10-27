@@ -1,5 +1,4 @@
 import XCTest
-import NetworkExtension
 import Security
 import PhantomKit
 @testable import GhostStream
@@ -41,31 +40,15 @@ final class ProfilePresentationTests: XCTestCase {
     }
 
     @MainActor
-    func testEntitlementRefreshCanUseSystemVpnStatusWhenAppStateIsStale() {
-        XCTAssertTrue(
-            ProfileEntitlementRefresher.shouldAttemptRefresh(
-                appState: .disconnected,
-                systemStatus: .connected
-            )
-        )
-        XCTAssertTrue(
-            ProfileEntitlementRefresher.shouldAttemptRefresh(
-                appState: .connecting,
-                systemStatus: nil
-            )
-        )
-        XCTAssertFalse(
-            ProfileEntitlementRefresher.shouldAttemptRefresh(
-                appState: .disconnecting,
-                systemStatus: .connected
-            )
-        )
-        XCTAssertFalse(
-            ProfileEntitlementRefresher.shouldAttemptRefresh(
-                appState: .disconnected,
-                systemStatus: .disconnected
-            )
-        )
+    func testEntitlementRefreshOnlyThroughAnEstablishedTunnel() {
+        XCTAssertTrue(ProfileEntitlementRefresher.shouldAttemptRefresh(
+            appState: .connected(since: Date(), serverName: "nl")
+        ))
+        XCTAssertFalse(ProfileEntitlementRefresher.shouldAttemptRefresh(appState: .connecting))
+        XCTAssertFalse(ProfileEntitlementRefresher.shouldAttemptRefresh(
+            appState: .reconnecting(since: Date(), serverName: "nl")
+        ))
+        XCTAssertFalse(ProfileEntitlementRefresher.shouldAttemptRefresh(appState: .disconnected))
     }
 
     @MainActor

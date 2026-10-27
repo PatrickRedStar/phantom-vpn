@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-27
 ---
 
 # Admin API
@@ -75,7 +75,7 @@ lookup — на каждый request (с READ-only блокировкой).
 | DELETE | `/api/clients/:name` | Удалить: keyring entry + cert/key файлы + вытеснить живую сессию |
 | POST | `/api/clients/:name/enable` | `enabled=true`; для истёкшего клиента — 409 с текстом (сначала продлить/снять срок) |
 | POST | `/api/clients/:name/disable` | `enabled=false` + вытеснить живую сессию |
-| GET | `/api/clients/:name/conn_string` | Regenerate `ghs://…` |
+| GET | `/api/clients/:name/conn_string` | Regenerate: `{"conn_string": "ghs://…"}` (клиенты принимают и голый текст) |
 | GET | `/api/clients/:name/stats` | Time-series `[{ts,bytes_rx,bytes_tx}]` |
 | GET | `/api/clients/:name/logs` | Последние 200 dst: `[{ts,dst,port,proto,bytes}]` |
 | POST | `/api/clients/:name/subscription` | Управление expires_at (см. ниже) |

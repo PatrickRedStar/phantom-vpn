@@ -1,7 +1,7 @@
 // Live Activity: Dynamic Island (shield + session timer) and the lock-screen
-// banner (profile, state, rates, Disconnect). Started/updated by the app
-// (SystemSurfaces); the timer runs on its own. Stale content (app suspended)
-// shows the timer instead of rates.
+// banner (profile, state, timer · route, Disconnect). Started/updated by the
+// app (SystemSurfaces); the timer runs on its own. No rates: the app is
+// suspended in the background and they would freeze.
 
 import ActivityKit
 import AppIntents
@@ -17,53 +17,72 @@ struct VpnLiveActivity: Widget {
                 .activitySystemActionForegroundColor(GS.bone)
         } dynamicIsland: { context in
             let tint = context.state.reconnecting ? GS.warn : GS.signal
+            let a11y = GS.a11yState(context.state.reconnecting ? .reconnecting : .connected)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Image(systemName: "shield")
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundColor(tint)
                         .padding(.leading, 4)
+                        .accessibilityLabel(a11y)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
+                    // The inset keeps the digits off the island's corner,
+                    // like the shield on the left.
                     SessionTimer(start: context.attributes.sessionStart)
                         .font(GS.mono(14))
                         .foregroundColor(tint)
-                        .frame(maxWidth: 90, alignment: .trailing)
+                        .padding(.trailing, 4)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    LockScreenView(context: context)
+                    LockScreenView(context: context, showsTimer: false)
                         .environment(\.locale, SurfaceState.locale)
                 }
             } compactLeading: {
                 Image(systemName: "shield")
                     .foregroundColor(tint)
+                    .accessibilityLabel(a11y)
             } compactTrailing: {
+                // Uncapped, the timer takes all the width it is offered and
+                // the island grows to full width: cap at "HH:MM:SS"
+                // (8 × 7 pt), shrink a 100 h+ session to fit.
                 SessionTimer(start: context.attributes.sessionStart)
                     .font(GS.mono(11))
                     .foregroundColor(tint)
+                    .minimumScaleFactor(0.8)
                     .frame(maxWidth: 56)
             } minimal: {
                 Image(systemName: "shield.fill")
                     .foregroundColor(tint)
+                    .accessibilityLabel(a11y)
             }
             .keylineTint(tint)
         }
     }
 }
 
+/// Dynamic Island timer. Text(timerInterval:) reserves the width of the
+/// longest value in its range: up to distantFuture that is a 14-digit hour
+/// count, wider than the region, and the digits got clipped. The range ends
+/// 12 h after render — past the activity's life (8 h + up to 4 h on the Lock
+/// Screen); the session may already be days old when the app starts the
+/// activity — so it reserves "HH:MM:SS", rarely "HHH:MM:SS".
 private struct SessionTimer: View {
     let start: Date
 
     var body: some View {
-        Text(timerInterval: start...Date.distantFuture, countsDown: false)
+        Text(timerInterval: start...max(start, Date()).addingTimeInterval(12 * 3600), countsDown: false)
             .monospacedDigit()
             .multilineTextAlignment(.trailing)
+            .lineLimit(1)
     }
 }
 
 private struct LockScreenView: View {
     let context: ActivityViewContext<GhostActivityAttributes>
-    @Environment(\.locale) private var locale
+    /// The expanded island has its own timer in the trailing region.
+    var showsTimer = true
 
     var body: some View {
         let state = context.state
@@ -82,17 +101,10 @@ private struct LockScreenView: View {
                     .tracking(-0.52)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
-                Group {
-                    if context.isStale {
-                        SessionTimer(start: context.attributes.sessionStart)
-                            .multilineTextAlignment(.leading)
-                    } else {
-                        Text(
-                            "activity.rates \(rate(state.rxMBps)) \(rate(state.txMBps)) \(state.streamsUp) \(state.streamsTotal)",
-                            tableName: "Widgets"
-                        )
-                    }
-                }
+                // Timer first: a long relay host is cut at the tail, not it.
+                (showsTimer
+                    ? Text(context.attributes.sessionStart, style: .timer) + Text(verbatim: " · ") + route
+                    : route)
                 .font(GS.jet(11))
                 .foregroundColor(GS.label)
                 .lineLimit(1)
@@ -113,7 +125,5 @@ private struct LockScreenView: View {
         .padding(.vertical, 16)
     }
 
-    private func rate(_ megabytes: Double) -> String {
-        megabytes.formatted(.number.precision(.fractionLength(1)).locale(locale))
-    }
+    private var route: Text { GS.route(context.attributes.relayHost) }
 }

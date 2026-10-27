@@ -23,16 +23,33 @@ final class VpnProfileTests: XCTestCase {
         )
     }
 
-    /// `sanitizedForUserDefaults` predates the macOS leak fix — it only
-    /// strips PEM bodies. `connString` is left alone so the host app can
-    /// still re-derive PEMs on profile import. Make sure that contract
-    /// is intact.
-    func test_sanitizedForUserDefaults_stripsPemButKeepsConnString() {
+    /// profiles.json lives in App Group UserDefaults, readable by every
+    /// member (the widget too): no PEM and no `ghs://` string — its
+    /// userinfo is the base64 cert + private key. The tunnel rebuilds the
+    /// string from the Keychain PEMs.
+    func test_sanitizedForUserDefaults_dropsPemAndConnString() throws {
         let sanitized = sampleProfile().sanitizedForUserDefaults
         XCTAssertNil(sanitized.certPem)
         XCTAssertNil(sanitized.keyPem)
-        XCTAssertNotNil(sanitized.connString,
-                        "host-side store must keep connString so re-imports work")
+        XCTAssertNil(sanitized.connString)
+
+        let json = String(decoding: try JSONEncoder().encode(sanitized), as: UTF8.self)
+        XCTAssertFalse(json.contains("ghs://"))
+        XCTAssertFalse(json.contains("PRIVATE KEY"))
+    }
+
+    /// What the extension does with a stored profile: Keychain PEMs back,
+    /// no connString → ConnStringBuilder; relay swaps only the authority.
+    func test_storedProfileRebuildsConnStringFromKeychainPems() throws {
+        var stored = sampleProfile().sanitizedForUserDefaults
+        stored.certPem = sampleProfile().certPem
+        stored.keyPem = sampleProfile().keyPem
+        stored.relayEnabled = true
+        stored.relayAddr = "relay.example.com:443"
+
+        let dialed = stored.withRelayEndpoint
+        let conn = try XCTUnwrap(dialed.connString ?? ConnStringBuilder.build(from: dialed))
+        XCTAssertTrue(conn.contains("@relay.example.com:443?sni=cdn.example.com&"))
     }
 
     /// `sanitizedForProviderConfiguration` is the macOS-specific guard.

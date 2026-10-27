@@ -29,7 +29,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var activeProfile: VpnProfile?
     private var activeSettings: TunnelSettings?
     private var statusBroadcastGate = StatusBroadcastGate(minInterval: 1.0)
-    private var lastSurfaceKind: VpnStatePayload.Kind?
+    private var sessionClock = SessionClock()
 
     @discardableResult
     private func withStateLock<T>(_ block: () -> T) -> T {
@@ -48,8 +48,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             do {
                 try await self.startTunnelAsync(completionHandler: completionHandler)
             } catch {
-                self.log.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
+                self.appendProviderLog("startTunnel failed: \(error.localizedDescription)", level: "ERR")
                 self.writeErrorSnapshot(error.localizedDescription)
+                // A fatal-marker refusal (On-Demand retry) adds nothing:
+                // keep the tail of the session that actually failed.
+                if case ProviderError.fatalStop = error {} else { self.persistLogTail() }
                 completionHandler(error)
             }
         }
@@ -59,7 +62,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
-        log.info("stopTunnel reason=\(reason.rawValue, privacy: .public)")
+        appendProviderLog("stopTunnel reason=\(reason.rawValue)")
         outboundTask?.cancel()
         outboundTask = nil
         memoryTask?.cancel()
@@ -67,6 +70,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         Task {
             await PhantomBridge.shared.stop()
+            withStateLock { sessionClock.reset() }
+            persistLogTail()
             UserDefaults(suiteName: SharedKeys.appGroup)?.removeObject(forKey: SharedKeys.tunnelMemoryMiB)
             writeDisconnectedSnapshot()
             completionHandler()
@@ -143,6 +148,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         withStateLock {
             statusBroadcastGate.reset()
+            sessionClock.reset()
             lastStatusFrame = .disconnected
         }
         writeStatePayload(VpnStatePayload(kind: .connecting))
@@ -159,7 +165,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         appendProviderLog(
             "tunnel start relay=\(relayOn ? "on" : "off") target=\(profile.serverAddr) sni=\(profile.serverName)"
                 + " mtu=\(networkSettings.mtu?.intValue ?? 0)"
-                + " excludedRoutes=\(networkSettings.ipv4Settings?.excludedRoutes?.count ?? 0)"
+                + " excludedRoutes=\(networkSettings.ipv4Settings?.excludedRoutes?.count ?? 0)",
+            isPublic: false
         )
 
         // Read and set only under `stateLock`: the status callback and the
@@ -180,19 +187,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try await PhantomBridge.shared.start(
                 profile: profile,
                 settings: settings,
-                onStatus: { [weak self] frame in
+                onStatus: { [weak self] coreFrame in
                     guard let self else { return }
-                    let (previousState, broadcast) = self.withStateLock { () -> (ConnState, Bool) in
+                    let (frame, previousState, broadcast) = self.withStateLock { () -> (StatusFrame, ConnState, Bool) in
                         let previous = self.lastStatusFrame.state
+                        let frame = self.sessionClock.stamp(coreFrame)
                         self.lastStatusFrame = frame
                         let pass = self.statusBroadcastGate.shouldBroadcast(
                             frame,
                             now: ProcessInfo.processInfo.systemUptime
                         )
-                        return (previous, pass)
+                        return (frame, previous, pass)
                     }
                     if broadcast {
                         self.writeSnapshot(frame)
+                    }
+                    if frame.state != previousState {
+                        self.appendProviderLog(
+                            "state \(previousState.rawValue) → \(frame.state.rawValue)"
+                                + " streams=\(frame.streamsUp)/\(frame.nStreams)"
+                        )
                     }
 
                     // Signal connected to NEPacketTunnelProvider on first .connected
@@ -222,6 +236,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                             forKey: SharedKeys.fatalStop
                         )
                         self.notifyFatalStop(err.localizedDescription, profileName: profileName)
+                        self.persistLogTail()
                         if claimCompletion() {
                             completionHandler(err)
                             Task { await PhantomBridge.shared.stop() }
@@ -231,7 +246,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     }
                 },
                 onLog: { [weak self] frame in
-                    self?.appendLogFrame(frame)
+                    self?.appendCoreLog(frame)
                 },
                 onInbound: { [weak self] data in
                     guard let self else { return }
@@ -302,22 +317,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         // iOS rejects NEIPv6Settings without at least one tunnel address.
         // Route IPv6 into the tunnel with a ULA address so unsupported IPv6
-        // traffic is captured and dropped instead of leaking outside the VPN.
+        // traffic is captured and dropped instead of leaking outside the VPN —
+        // in split modes too: apps fall back to IPv4, which follows the split
+        // rules. Only explicit direct IPv6 rules bypass the tunnel.
         if settings.ipv6Killswitch {
             let ipv6 = NEIPv6Settings(
                 addresses: ["fd00:6768:6f73:7473::1"],
                 networkPrefixLengths: [64]
             )
-            let directIpv6Cidrs = directIpv6RoutesForRouteComputation(settings: settings)
-            if shouldTunnelIPv6Traffic(settings: settings, directIpv6Cidrs: directIpv6Cidrs) {
-                ipv6.includedRoutes = [NEIPv6Route.default()]
-                let excludedRoutes = directIpv6Cidrs.compactMap(route(forIPv6CIDR:))
-                if !excludedRoutes.isEmpty {
-                    ipv6.excludedRoutes = excludedRoutes
-                }
-            } else {
-                ipv6.excludedRoutes = [NEIPv6Route.default()]
-                log.warning("split routing leaves IPv6 outside tunnel because no routeable IPv6 direct rules are available")
+            ipv6.includedRoutes = [NEIPv6Route.default()]
+            let excludedRoutes = directIpv6RoutesForRouteComputation(settings: settings)
+                .compactMap(route(forIPv6CIDR:))
+            if !excludedRoutes.isEmpty {
+                ipv6.excludedRoutes = excludedRoutes
             }
             networkSettings.ipv6Settings = ipv6
         }
@@ -565,15 +577,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             || !serverDirectCidrs.isEmpty
             || (settings.routePolicy == nil && profile.splitRouting == true)
         let adminGatewayHost = AdminGateway.host(forTunAddr: profile.tunAddr)
-        guard shouldUseSplitRoutes else {
+        let applyFullTunnel = {
             // Full tunnel leaves LAN, link-local and multicast reachable
             // (ADR 0019); our own subnet (admin API) stays in the tunnel —
             // more specific than the excluded 10/8.
-            ipv4.includedRoutes = [NEIPv4Route.default()] + [route(forCIDR: profile.tunAddr)].compactMap { $0 }
-            ipv4.excludedRoutes = physicalServerExcludedRoutes(
+            ipv4.includedRoutes = [NEIPv4Route.default()] + [self.route(forCIDR: profile.tunAddr)].compactMap { $0 }
+            ipv4.excludedRoutes = self.physicalServerExcludedRoutes(
                 settings: settings,
                 preservingHost: adminGatewayHost
-            ) + Self.specialRanges.compactMap(route(forCIDR:))
+            ) + Self.specialRanges.compactMap(self.route(forCIDR:))
+        }
+        guard shouldUseSplitRoutes else {
+            applyFullTunnel()
             return
         }
 
@@ -590,17 +605,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     NEIPv4Route(destinationAddress: route.addr, subnetMask: $0)
                 }
             }
+        // The core returns nothing when the list is over its 256 KiB input
+        // cap or unparsable. Split routes of just the admin /32 would send
+        // everything else outside the tunnel — take the full tunnel instead.
+        guard !routes.isEmpty else {
+            appendProviderLog(
+                "split routing: no routes computed for \(directCidrs.count) direct CIDRs; using full tunnel",
+                level: "ERR"
+            )
+            applyFullTunnel()
+            return
+        }
         if let adminRoute = route(forIPv4Host: adminGatewayHost),
            !routes.contains(where: { $0.destinationAddress == adminRoute.destinationAddress }) {
             routes.append(adminRoute)
         }
 
-        if routes.isEmpty {
-            log.error("split routing route computation returned no routes; leaving IPv4 includedRoutes empty")
-            ipv4.includedRoutes = []
-        } else {
-            ipv4.includedRoutes = routes
-        }
+        ipv4.includedRoutes = routes
         ipv4.excludedRoutes = physicalServerExcludedRoutes(
             settings: settings,
             preservingHost: adminGatewayHost
@@ -639,11 +660,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return routeable
     }
 
-    private func shouldTunnelIPv6Traffic(settings: TunnelSettings, directIpv6Cidrs: [String]) -> Bool {
-        if settings.routingMode == .global { return true }
-        return !directIpv6Cidrs.isEmpty
-    }
-
     private func physicalServerExcludedRoutes(
         settings: TunnelSettings,
         preservingHost host: String? = nil
@@ -658,9 +674,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Same ranges as Android `SPECIAL_RANGES` / core `special_ranges()`.
+    /// Same ranges as Android `SPECIAL_RANGES` / core `special_ranges()`,
+    /// minus 127/8: NE rejects it («Destination address is loopback») and
+    /// loopback never enters the tunnel anyway.
     private static let specialRanges = [
-        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "169.254.0.0/16",
         "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4",
     ]
 
@@ -762,10 +780,57 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    /// Provider-side INFO line next to the core's logs.
-    private func appendProviderLog(_ msg: String) {
-        appendLogFrame(.structured(level: "INF", category: "tunnel", msg: msg))
-        log.info("\(msg, privacy: .private)")
+    /// Provider-side line next to the core's logs, mirrored to os_log at
+    /// default level (persisted on device). `isPublic: false` for lines
+    /// that carry the server / relay address.
+    private func appendProviderLog(_ msg: String, level: String = "INF", isPublic: Bool = true) {
+        appendLogFrame(.structured(level: level, category: "tunnel", msg: msg))
+        let type: OSLogType = level == "ERR" ? .error : .default
+        if isPublic {
+            log.log(level: type, "\(msg, privacy: .public)")
+        } else {
+            log.log(level: type, "\(msg, privacy: .private)")
+        }
+    }
+
+    /// Core frames: the ring for the Logs screen; WRN/ERR also to os_log,
+    /// public — core messages carry errors and addresses, never the key or
+    /// the conn string.
+    private func appendCoreLog(_ frame: LogFrame) {
+        appendLogFrame(frame)
+        let type: OSLogType
+        switch frame.level {
+        case "ERR": type = .error
+        case "WRN": type = .default
+        default: return
+        }
+        let fields = (frame.fields ?? [:]).sorted { $0.key < $1.key }
+            .map { " \($0.key)=\($0.value)" }.joined()
+        log.log(
+            level: type,
+            "core \(frame.level, privacy: .public) [\(frame.category ?? "-", privacy: .public)] \(frame.msg, privacy: .public)\(fields, privacy: .public)"
+        )
+    }
+
+    /// The ring dies with the process, and failures happen while the Logs
+    /// screen is closed: keep the last 200 frames in the App Group
+    /// (`ext-tail.jsonl`, one `LogFrame` JSON per line, as `logs.jsonl`)
+    /// for the app to import.
+    private func persistLogTail() {
+        let tail = withStateLock { Array(recentLogFrames.suffix(200)) }
+        guard !tail.isEmpty,
+              let url = FileManager.default
+                .containerURL(forSecurityApplicationGroupIdentifier: SharedKeys.appGroup)?
+                .appendingPathComponent("ext-tail.jsonl")
+        else { return }
+        let encoder = JSONEncoder()
+        var data = Data()
+        for frame in tail {
+            guard let line = try? encoder.encode(frame) else { continue }
+            data.append(line)
+            data.append(0x0A)
+        }
+        try? data.write(to: url, options: .atomic)
     }
 
     // MARK: - Fatal stop notification
@@ -794,6 +859,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func writeStatePayload(_ payload: VpnStatePayload) {
         guard let defaults = UserDefaults(suiteName: "group.com.ghoststream.client") else { return }
+        let previous = defaults.data(forKey: "vpn.state.v1")
+            .flatMap { try? JSONDecoder().decode(VpnStatePayload.self, from: $0) }
         if let data = try? JSONEncoder().encode(payload) {
             defaults.set(data, forKey: "vpn.state.v1")
             defaults.set(Date().timeIntervalSince1970, forKey: "vpn.state.updatedAt.v1")
@@ -801,12 +868,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         DarwinNotifications.post(DarwinNotifications.stateChanged)
 
         // The widget and the Control Center toggle read this payload; the app
-        // is usually suspended, so the tunnel asks for a reload itself.
-        let kindChanged = withStateLock { () -> Bool in
-            defer { lastSurfaceKind = payload.kind }
-            return lastSurfaceKind != payload.kind
-        }
-        if kindChanged {
+        // is usually suspended, so the tunnel asks for a reload itself — only
+        // when the tunnel goes up or down (reload budget): not on
+        // connected ↔ reconnecting (the timer runs from the stable `since`),
+        // and not on each On-Demand retry in a fresh process — compared with
+        // the stored payload, not with in-process memory.
+        let isUp = { (kind: VpnStatePayload.Kind?) in kind == .connected || kind == .reconnecting }
+        if isUp(previous?.kind) != isUp(payload.kind) {
             WidgetCenter.shared.reloadAllTimelines()
             if #available(iOS 18.0, *) {
                 ControlCenter.shared.reloadAllControls()
@@ -831,7 +899,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             payload = VpnStatePayload(kind: .connecting)
         case .connected, .reconnecting:
             payload = VpnStatePayload(kind: frame.state == .connected ? .connected : .reconnecting,
-                                       since: Date().timeIntervalSince1970 - Double(frame.sessionSecs),
+                                       since: frame.sessionStartedAt,
                                        serverName: frame.sni ?? frame.serverAddr ?? "")
         case .error:
             payload = VpnStatePayload(kind: .error, error: frame.lastError)

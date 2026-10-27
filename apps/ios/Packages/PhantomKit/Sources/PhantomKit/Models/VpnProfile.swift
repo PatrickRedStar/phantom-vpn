@@ -139,6 +139,15 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         return serverAddr
     }
 
+    /// Relay `host[:port]` as typed in the editor; nil when empty. No port →
+    /// 443: production relays listen there (nginx stream), not on the
+    /// exit's 8443.
+    public static func normalizedRelayAddr(_ raw: String) -> String? {
+        let relay = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !relay.isEmpty else { return nil }
+        return relay.contains(":") ? relay : relay + ":443"
+    }
+
     /// `true` when the relay hop will actually be used by `effectiveServerAddr`.
     public var relayActive: Bool { effectiveServerAddr != serverAddr }
 
@@ -154,12 +163,16 @@ public struct VpnProfile: Codable, Identifiable, Equatable {
         return copy
     }
 
-    /// Returns a copy with PEM secrets stripped — for persistence to
-    /// UserDefaults while PEMs live in the Keychain.
+    /// Returns a copy with secrets stripped — for persistence to App Group
+    /// UserDefaults (readable by every member, the widget too) while PEMs
+    /// live in the Keychain. `connString` goes too: its userinfo is the
+    /// base64 cert + private key; the tunnel rebuilds it from the Keychain
+    /// PEMs (`ConnStringBuilder`).
     public var sanitizedForUserDefaults: VpnProfile {
         var copy = self
         copy.certPem = nil
         copy.keyPem = nil
+        copy.connString = nil
         return copy
     }
 

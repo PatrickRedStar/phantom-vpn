@@ -13,7 +13,7 @@ final class RoutingRulesManagerTests: XCTestCase {
 
         XCTAssertEqual(
             RoutingRulesManager.normalizeIPv4Cidrs(from: text),
-            ["8.8.0.0/13", "2.16.0.0/13"]
+            ["8.8.8.0/24", "2.16.20.0/23"]
         )
     }
 
@@ -28,7 +28,7 @@ final class RoutingRulesManagerTests: XCTestCase {
 
         let rules = RoutingRulesManager.normalizeGeoipCidrs(from: text)
 
-        XCTAssertEqual(rules.ipv4Cidrs, ["5.248.0.0/13", "77.88.0.0/13"])
+        XCTAssertEqual(rules.ipv4Cidrs, ["5.255.255.0/24", "77.88.44.0/24"])
         XCTAssertEqual(rules.ipv6Cidrs, ["2a02:6b8::/45"])
     }
 
@@ -43,7 +43,7 @@ final class RoutingRulesManagerTests: XCTestCase {
             withIntermediateDirectories: true
         )
         try """
-        # ghoststream-format: geoip-v2-mixed
+        # ghoststream-format: geoip-v4-exact
         5.255.192.0/18
         77.88.0.0/18
         2a02:6b8::/45
@@ -51,9 +51,29 @@ final class RoutingRulesManagerTests: XCTestCase {
 
         let rules = manager.mergedCountryRules(countryCodes: ["ru", "ru"])
 
-        XCTAssertEqual(rules.ipv4Cidrs, ["5.248.0.0/13", "77.88.0.0/13"])
+        XCTAssertEqual(rules.ipv4Cidrs, ["5.255.192.0/18", "77.88.0.0/18"])
         XCTAssertEqual(rules.ipv6Cidrs, ["2a02:6b8::/45"])
         XCTAssertEqual(rules.missingCountryCodes, [])
+    }
+
+    /// A file from the /13-widening era must not be applied: its blocks
+    /// cover foreign addresses. Missing → that traffic stays in the tunnel.
+    func testMergedCountryRulesSkipsOldFormatFile() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let manager = RoutingRulesManager(baseDirectory: folder)
+        let file = manager.fileURL(for: RoutingRulePreset(source: .geoip, code: "ru", labelKey: ""))
+        try FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try "# ghoststream-format: geoip-v3-ios-p13\n5.248.0.0/13\n"
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let rules = manager.mergedCountryRules(countryCodes: ["ru"])
+
+        XCTAssertEqual(rules.ipv4Cidrs, [])
+        XCTAssertEqual(rules.missingCountryCodes, ["ru"])
     }
 
     func testCustomHostnamesAcceptV2FlyDomainPrefixes() {

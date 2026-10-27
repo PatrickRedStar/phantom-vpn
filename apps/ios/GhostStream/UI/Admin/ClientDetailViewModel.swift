@@ -29,7 +29,7 @@ public final class ClientDetailViewModel {
     /// Per-client RX/TX history samples, newest-last.
     public private(set) var stats: [ClientStat] = []
 
-    /// Destination log rows, newest-last.
+    /// Destination log rows, newest first (server order).
     public private(set) var logs: [ClientLog] = []
 
     /// `true` while fetching stats/logs.
@@ -110,10 +110,18 @@ public final class ClientDetailViewModel {
         }
     }
 
-    /// Delete the client. Reloads list (detail view should pop on success).
-    public func delete() async {
-        await runMutation {
-            try await self.adminVM.deleteClient(name: self.client.name)
+    /// Delete the client. `true` on success — the view pops; no stats
+    /// re-fetch, the server has nothing for this client any more (404).
+    public func delete() async -> Bool {
+        mutating = true
+        error = nil
+        defer { mutating = false }
+        do {
+            try await adminVM.deleteClient(name: client.name)
+            return true
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return false
         }
     }
 

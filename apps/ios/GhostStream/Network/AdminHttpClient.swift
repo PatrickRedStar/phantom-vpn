@@ -4,90 +4,83 @@
 // The URLSession admin client itself (AdminHttpClient + DTOs + mTLS/TOFU
 // plumbing) lives in PhantomKit (`Sources/PhantomKit/Admin/`) and is shared
 // with the macOS app. This file keeps only the iOS-specific refresh glue:
-// it depends on VpnStateManager / VpnTunnelController / AppStrings, which
-// have per-platform implementations.
+// it depends on VpnStateManager / SystemSurfaces / AppStrings, which have
+// per-platform implementations.
 
 import Foundation
-import NetworkExtension
 import PhantomKit
 import os.log
+import UIKit
 
 // MARK: - Active profile entitlements
 
 /// Refreshes per-profile admin/subscription cache through the currently
 /// connected tunnel. Admin state is identity-specific, so only the active
 /// profile is refreshed automatically.
+///
+/// Safe to call as often as a caller likes: one request at a time, only in
+/// the foreground while connected, at most every 5 min per profile (sooner
+/// for a new tunnel session), failures back off from 30 s to 5 min.
 @MainActor
 enum ProfileEntitlementRefresher {
     private static let log = Logger(subsystem: "com.ghoststream.client", category: "entitlements")
+    private static let interval: TimeInterval = 300
+
+    private static var inFlight: Task<VpnProfile?, Never>?
+    private static var last: (key: String, session: Date?, at: Date, ok: Bool, failures: Int)?
 
     static func refreshActiveProfileIfConnected(
         profilesStore: ProfilesStore
     ) async -> VpnProfile? {
-        guard let profile = profilesStore.activeProfile else {
+        guard let profile = profilesStore.activeProfile,
+              UIApplication.shared.applicationState == .active,
+              shouldAttemptRefresh(appState: VpnStateManager.shared.state)
+        else {
             return nil
         }
+        if let inFlight {
+            return await inFlight.value
+        }
 
-        let appState = VpnStateManager.shared.state
-        if !shouldAttemptRefresh(appState: appState) {
-            let systemStatus = await VpnTunnelController().currentStatus()
-            guard shouldAttemptRefresh(appState: appState, systemStatus: systemStatus) else {
-                return nil
+        let key = profile.id + (profile.certPem ?? "")
+        let session = SystemSurfaces.sessionStartedAt()
+        if let last, last.key == key, session == nil || session == last.session {
+            let wait = last.ok ? interval : min(interval, 30 * pow(2, Double(last.failures - 1)))
+            if Date().timeIntervalSince(last.at) < wait {
+                return last.ok ? profile : nil
             }
         }
 
-        return await refresh(profile: profile, profilesStore: profilesStore)
+        let task = Task { await refresh(profile: profile, profilesStore: profilesStore) }
+        inFlight = task
+        let result = await task.value
+        inFlight = nil
+        let failures = result != nil ? 0 : (last?.key == key ? last?.failures ?? 0 : 0) + 1
+        last = (key, session, Date(), result != nil, failures)
+        return result
     }
 
-    static func shouldAttemptRefresh(
-        appState: VpnState,
-        systemStatus: NEVPNStatus? = nil
-    ) -> Bool {
-        if case .disconnecting = appState {
-            return false
-        }
-        switch appState {
-        case .connected, .connecting, .reconnecting:
-            return true
-        case .disconnected, .disconnecting, .error:
-            break
-        }
-        switch systemStatus {
-        case .connected, .connecting, .reasserting:
-            return true
-        case .invalid, .disconnected, .disconnecting, .none:
-            return false
-        @unknown default:
-            return false
-        }
+    /// The admin API is reachable only through an established tunnel.
+    static func shouldAttemptRefresh(appState: VpnState) -> Bool {
+        if case .connected = appState { return true }
+        return false
     }
 
     static func refresh(
         profile: VpnProfile,
         profilesStore: ProfilesStore
     ) async -> VpnProfile? {
-        guard let certPem = profile.certPem, !certPem.isEmpty,
-              let keyPem = profile.keyPem, !keyPem.isEmpty,
-              let baseURL = adminBaseURL(for: profile)
-        else {
-            return nil
-        }
-
         do {
-            let client = try AdminHttpClient(
-                baseURL: baseURL,
-                clientCertPem: certPem,
-                clientKeyPem: keyPem,
-                pinnedServerCertFp: profile.cachedAdminServerCertFp
-            )
+            let client = try AdminHttpClient.shared(for: profile)
             let me = try await client.getMe()
-            var updated = currentProfile(for: profile, in: profilesStore)
+            let current = currentProfile(for: profile, in: profilesStore)
+            var updated = current
             me.apply(to: &updated)
             if let fp = client.lastServerCertFp {
                 updated.cachedAdminServerCertFp = fp
             }
 
-            profilesStore.update(updated)
+            if updated != current { profilesStore.update(updated) }
             return updated
         } catch {
             log.error("Admin entitlement refresh failed for profile \(profile.id, privacy: .public): \(error.localizedDescription, privacy: .public)")

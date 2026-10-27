@@ -88,6 +88,11 @@ public struct StatusFrame: Codable {
     public var dnsObserved: String?
     /// DNS queries seen this session; 0 = none yet (not "DNS broken").
     public var dnsQueries: UInt64
+    /// Unix seconds of the tunnel session start, set by the iOS extension
+    /// (`SessionClock`), not by the core: `sessionSecs` restarts on every
+    /// full reconnect and stops while the device sleeps. Kept through
+    /// `reconnecting`; `nil` before the first `connected` and on macOS.
+    public var sessionStartedAt: Double?
 
     enum CodingKeys: String, CodingKey {
         case state
@@ -113,6 +118,7 @@ public struct StatusFrame: Codable {
         case bandwidthClass = "bandwidth_class"
         case dnsObserved = "dns_observed"
         case dnsQueries = "dns_queries"
+        case sessionStartedAt = "session_started_at"
     }
 
     public init(
@@ -193,6 +199,7 @@ public struct StatusFrame: Codable {
         self.bandwidthClass = try c.decodeIfPresent(BandwidthClass.self, forKey: .bandwidthClass)
         self.dnsObserved = try c.decodeIfPresent(String.self, forKey: .dnsObserved)
         self.dnsQueries = try c.decodeIfPresent(UInt64.self, forKey: .dnsQueries) ?? 0
+        self.sessionStartedAt = try c.decodeIfPresent(Double.self, forKey: .sessionStartedAt)
     }
 
     public static let disconnected = StatusFrame(

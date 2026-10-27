@@ -48,6 +48,10 @@ public final class ProfilesStore {
 
     private var keychainImportObserver: NSObjectProtocol?
 
+    /// Keychain secrets as last read or written, by Keychain key — `save()`
+    /// writes only what changed.
+    @ObservationIgnored private var keychainSecrets: [String: String] = [:]
+
     private init() {
         // App Group UserDefaults must be configured for the main app and
         // extension to agree on stored state. If the suite is unavailable
@@ -172,8 +176,21 @@ public final class ProfilesStore {
                 let id = decoded[i].id
                 decoded[i].certPem = Keychain.get(certKey(id))
                 decoded[i].keyPem = Keychain.get(keyKey(id))
+                keychainSecrets[certKey(id)] = decoded[i].certPem
+                keychainSecrets[keyKey(id)] = decoded[i].keyPem
+                // Older builds kept the ghs:// string (key inside) in
+                // profiles.json. If the Keychain lacks the PEMs, recover
+                // them from it before save() drops it.
+                if decoded[i].certPem == nil || decoded[i].keyPem == nil,
+                   let parsed = decoded[i].connString.flatMap(PhantomBridge.parseConnString) {
+                    decoded[i].certPem = parsed.certPem
+                    decoded[i].keyPem = parsed.keyPem
+                }
             }
             profiles = decoded
+            if decoded.contains(where: { $0.connString != nil }) {
+                save()
+            }
         } catch {
             log.error("Failed to decode profiles.json: \(error.localizedDescription, privacy: .public)")
             profiles = []
@@ -184,17 +201,19 @@ public final class ProfilesStore {
         // Persist secrets to Keychain; swallow individual failures so one
         // broken entry doesn't corrupt the whole batch.
         for profile in profiles {
-            if let pem = profile.certPem {
-                do { try Keychain.set(pem, forKey: certKey(profile.id)) }
-                catch { log.error("Keychain.set cert failed: \(String(describing: error), privacy: .public)") }
-            }
-            if let key = profile.keyPem {
-                do { try Keychain.set(key, forKey: keyKey(profile.id)) }
-                catch { log.error("Keychain.set key failed: \(String(describing: error), privacy: .public)") }
-            }
+            persistSecret(profile.certPem, forKey: certKey(profile.id))
+            persistSecret(profile.keyPem, forKey: keyKey(profile.id))
         }
 
-        let sanitized = profiles.map { $0.sanitizedForUserDefaults }
+        let sanitized = profiles.map { profile -> VpnProfile in
+            var copy = profile.sanitizedForUserDefaults
+            // Keep the ghs:// string only while it is the sole copy of the
+            // key (its Keychain write failed).
+            if keychainSecrets[certKey(profile.id)] == nil || keychainSecrets[keyKey(profile.id)] == nil {
+                copy.connString = profile.connString
+            }
+            return copy
+        }
         do {
             let data = try JSONEncoder().encode(sanitized)
             defaults.set(data, forKey: profilesKey)
@@ -209,7 +228,21 @@ public final class ProfilesStore {
         }
     }
 
+    /// Writes only a changed value: every save (rename, active profile,
+    /// /api/me cache) used to rewrite every profile's cert and key.
+    private func persistSecret(_ value: String?, forKey key: String) {
+        guard let value, keychainSecrets[key] != value else { return }
+        do {
+            try Keychain.set(value, forKey: key)
+            keychainSecrets[key] = value
+        } catch {
+            log.error("Keychain.set \(key, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
     private func deleteKeychainSecrets(profileId: String) {
+        keychainSecrets[certKey(profileId)] = nil
+        keychainSecrets[keyKey(profileId)] = nil
         do { try Keychain.delete(certKey(profileId)) } catch {
             log.error("Keychain.delete cert failed: \(String(describing: error), privacy: .public)")
         }
