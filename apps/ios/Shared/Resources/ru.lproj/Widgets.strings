@@ -18,7 +18,8 @@
 "control.description" = "Подключает и отключает VPN.";
 "control.no.profile" = "Нет профиля";
 "activity.disconnect" = "Отключить VPN";
-"activity.rates %@ %@ %lld %lld" = "↓ %1$@ МБ/с · ↑ %2$@ МБ/с · %3$lld/%4$lld";
+"activity.route.relay %@" = "Relay · %@";
+"activity.route.direct" = "Напрямую";
 
 /* Заголовки состояний — как на главном экране приложения */
 "state.connected" = "Передача";

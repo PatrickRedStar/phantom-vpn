@@ -18,7 +18,8 @@
 "control.description" = "Connects and disconnects the VPN.";
 "control.no.profile" = "No profile";
 "activity.disconnect" = "Disconnect VPN";
-"activity.rates %@ %@ %lld %lld" = "↓ %1$@ MB/s · ↑ %2$@ MB/s · %3$lld/%4$lld";
+"activity.route.relay %@" = "Relay · %@";
+"activity.route.direct" = "Direct";
 
 /* State headlines — same words as the app's main screen */
 "state.connected" = "Transmitting";

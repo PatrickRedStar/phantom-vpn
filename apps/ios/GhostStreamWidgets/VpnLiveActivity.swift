@@ -1,7 +1,7 @@
 // Live Activity: Dynamic Island (shield + session timer) and the lock-screen
-// banner (profile, state, rates, Disconnect). Started/updated by the app
-// (SystemSurfaces); the timer runs on its own. Stale content (app suspended)
-// shows the timer instead of rates.
+// banner (profile, state, timer · route, Disconnect). Started/updated by the
+// app (SystemSurfaces); the timer runs on its own. No rates: the app is
+// suspended in the background and they would freeze.
 
 import ActivityKit
 import AppIntents
@@ -34,7 +34,7 @@ struct VpnLiveActivity: Widget {
                         .padding(.trailing, 4)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    LockScreenView(context: context)
+                    LockScreenView(context: context, showsTimer: false)
                         .environment(\.locale, SurfaceState.locale)
                 }
             } compactLeading: {
@@ -71,7 +71,8 @@ private struct SessionTimer: View {
 
 private struct LockScreenView: View {
     let context: ActivityViewContext<GhostActivityAttributes>
-    @Environment(\.locale) private var locale
+    /// The expanded island has its own timer in the trailing region.
+    var showsTimer = true
 
     var body: some View {
         let state = context.state
@@ -90,17 +91,10 @@ private struct LockScreenView: View {
                     .tracking(-0.52)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
-                Group {
-                    if context.isStale {
-                        SessionTimer(start: context.attributes.sessionStart)
-                            .multilineTextAlignment(.leading)
-                    } else {
-                        Text(
-                            "activity.rates \(rate(state.rxMBps)) \(rate(state.txMBps)) \(state.streamsUp) \(state.streamsTotal)",
-                            tableName: "Widgets"
-                        )
-                    }
-                }
+                // Timer first: a long relay host is cut at the tail, not it.
+                (showsTimer
+                    ? Text(context.attributes.sessionStart, style: .timer) + Text(verbatim: " · ") + route
+                    : route)
                 .font(GS.jet(11))
                 .foregroundColor(GS.label)
                 .lineLimit(1)
@@ -121,7 +115,10 @@ private struct LockScreenView: View {
         .padding(.vertical, 16)
     }
 
-    private func rate(_ megabytes: Double) -> String {
-        megabytes.formatted(.number.precision(.fractionLength(1)).locale(locale))
+    private var route: Text {
+        if let host = context.attributes.relayHost {
+            return Text("activity.route.relay \(host)", tableName: "Widgets")
+        }
+        return Text("activity.route.direct", tableName: "Widgets")
     }
 }
