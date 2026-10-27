@@ -352,3 +352,7 @@
 "profile.editor.ping" = "Ping";
 "profile.editor.ping.format" = "Ping · %d ms";
 "profile.editor.reimport.clipboard" = "Refresh keys from clipboard (ghs://)";
+
+// Logs (Liquid Glass)
+"native.logs.footnote" = "Long-press a line to copy. The journal survives app restarts.";
+"native.logs.status.offline" = "VPN is off — new lines appear once connected.";

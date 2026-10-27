@@ -352,3 +352,7 @@
 "profile.editor.ping" = "Пинг";
 "profile.editor.ping.format" = "Пинг · %d мс";
 "profile.editor.reimport.clipboard" = "Обновить ключи из буфера (ghs://)";
+
+// Logs (Liquid Glass)
+"native.logs.footnote" = "Долгое нажатие на строку — копировать. Журнал переживает перезапуск приложения.";
+"native.logs.status.offline" = "VPN выключен — новые строки появятся после подключения.";

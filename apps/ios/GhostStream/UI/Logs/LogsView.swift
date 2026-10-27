@@ -2,13 +2,15 @@
 //  LogsView.swift
 //  GhostStream
 //
-//  Live log tail view. Filter chip row (ALL/TRACE/DEBUG/INFO/WARN/ERROR +
-//  CLEAR + SHARE), newest-first log list, bottom fade to the nav bar.
+//  Journal: level chips, newest-first lines in one card (repeats folded
+//  into «×N», long-press copies), share + clear in the toolbar, native
+//  search. History survives app restarts (LogsViewModel).
 //
 
 import PhantomKit
 import PhantomUI
 import SwiftUI
+import UIKit
 
 /// Root Logs screen.
 struct LogsView: View {
@@ -19,36 +21,61 @@ struct LogsView: View {
     @State private var showClearConfirmation = false
     @State private var userPinnedScroll = false
 
+    /// Chips per mockup — TRACE stays reachable through ВСЕ.
+    private let filters: [LogFilter] = [.all, .debug, .info, .warn, .error]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            filterRow
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Color.clear.frame(height: 0).id("__head__")
+                    filterRow
+                    statusBanner
+                    logCard
+                    Text(L("native.logs.footnote"))
+                        .font(.custom(GsFontName.jetBrainsMono, size: 10))
+                        .foregroundStyle(C.textFaint)
+                        .padding(.horizontal, 8)
+                }
+                .padding(.horizontal, 20)
                 .padding(.top, 4)
-            statusBanner
-            logList
+                .padding(.bottom, 24)
+            }
+            .scrollIndicators(.hidden)
+            .onChange(of: vm.visibleLogs.count) { _, _ in
+                guard !userPinnedScroll else { return }
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("__head__", anchor: .top)
+                }
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 6).onChanged { _ in
+                    userPinnedScroll = true
+                }
+            )
         }
         .background(C.bg.ignoresSafeArea())
         .navigationTitle(L("nav_logs"))
         .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 6) {
-                    if isLive {
-                        Circle()
-                            .fill(statusColor)
-                            .frame(width: 6, height: 6)
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    if let url = vm.shareFileURL(range: 500) {
+                        shareItem = ShareItem(url: url)
                     }
-                    Text(metaText)
-                        .font(.caption2.monospaced().weight(.semibold))
-                        .foregroundStyle(C.textDim)
-                        .lineLimit(1)
+                } label: {
+                    Label(L("chip_share"), systemImage: "square.and.arrow.up")
                 }
+                .disabled(vm.allLogs.isEmpty)
+                Button {
+                    showClearConfirmation = true
+                } label: {
+                    Label(L("chip_clear"), systemImage: "trash")
+                }
+                .disabled(vm.allLogs.isEmpty)
             }
         }
-        .searchable(
-            text: $vm.searchText,
-            placement: .navigationBarDrawer(displayMode: .always),
-            prompt: L("native.logs.search")
-        )
+        .logsSearch(text: $vm.searchText, prompt: L("native.logs.search"))
         .confirmationDialog(
             L("native.logs.clear.confirm.title"),
             isPresented: $showClearConfirmation,
@@ -66,29 +93,6 @@ struct LogsView: View {
         .sheet(item: $shareItem) { item in
             ActivityView(items: [item.url])
         }
-    }
-
-    private var metaText: String {
-        let n = vm.allLogs.count
-        if n >= 1000 {
-            return String(
-                format: L("native.logs.lines.format"),
-                headerStateText,
-                String(format: "%.1fk", Double(n) / 1000)
-            )
-        }
-        return String(format: L("native.logs.lines.format"), headerStateText, "\(n)")
-    }
-
-    private var headerStateText: String {
-        if vm.hasIpcError { return L("native.logs.ipc.error") }
-        return isLive ? L("native.logs.live") : vm.statusLabel
-    }
-
-    private var isLive: Bool {
-        guard !vm.hasIpcError else { return false }
-        if case .connected = vm.tunnelState { return true }
-        return false
     }
 
     private var statusColor: Color {
@@ -115,16 +119,11 @@ struct LogsView: View {
             .foregroundStyle(statusColor)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(statusColor.opacity(0.10))
-            )
+            .background(statusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(statusColor.opacity(0.35), lineWidth: 1)
             )
-            .padding(.horizontal, 16)
-            .padding(.bottom, 6)
         }
     }
 
@@ -132,80 +131,41 @@ struct LogsView: View {
 
     private var filterRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(LogFilter.allCases, id: \.self) { f in
-                    chip(filter: f)
-                }
-                logChip(L("chip_clear"), active: false, accent: C.danger) {
-                    showClearConfirmation = true
-                }
-
-                logChip(L("chip_share"), active: false, accent: C.signal) {
-                    if let url = vm.shareFileURL(range: 500) {
-                        shareItem = ShareItem(url: url)
+            HStack(spacing: 6) {
+                ForEach(filters, id: \.self) { f in
+                    let active = vm.filter == f
+                    Button {
+                        vm.filter = f
+                    } label: {
+                        Text(f.nativeTitle)
+                            .gsFont(.chipText)
+                            .foregroundStyle(active ? C.signal : C.textDim)
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(active ? C.signal.opacity(0.16) : C.bgElev, in: Capsule())
+                            .overlay(Capsule().stroke(active ? C.signal.opacity(0.5) : C.hair, lineWidth: 1))
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(active ? .isSelected : [])
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
         }
-    }
-
-    private func chip(filter f: LogFilter) -> some View {
-        logChip(f.nativeTitle, active: vm.filter == f, accent: C.signal) {
-            vm.filter = f
-        }
-    }
-
-    private func logChip(
-        _ text: String,
-        active: Bool,
-        accent: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Text(text)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(active ? C.bg : accent)
-                .lineLimit(1)
-                .padding(.horizontal, 13)
-                .frame(height: 34)
-                .background(active ? accent : C.bgElev.opacity(0.62), in: Capsule(style: .continuous))
-                .overlay(Capsule(style: .continuous).stroke(active ? accent : C.hairBold, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Log list
 
-    private var logList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    // Render newest-first so appended rows appear at the top.
-                    Color.clear
-                        .frame(height: 1)
-                        .id("__head__")
-                    ForEach(vm.visibleLogs) { entry in
-                        LogFrameRow(entry: entry)
-                            .id(entry.tsUnixMs)
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 6)
-                .padding(.bottom, 80)
-            }
-            .onChange(of: vm.visibleLogs.count) { _, _ in
-                guard !userPinnedScroll else { return }
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo("__head__", anchor: .top)
+    @ViewBuilder
+    private var logCard: some View {
+        let lines = LogsPresentation.collapsed(vm.visibleLogs)
+        if !lines.isEmpty {
+            LazyVStack(alignment: .leading, spacing: 9) {
+                ForEach(lines) { line in
+                    LogLineRow(line: line)
                 }
             }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 6).onChanged { _ in
-                    userPinnedScroll = true
-                }
-            )
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .gsCardBackground(C)
         }
     }
 }
@@ -227,77 +187,65 @@ private extension LogFilter {
     }
 }
 
-// MARK: - LogFrameRow
+private extension View {
+    /// iOS 26: search collapses into a glass button in the toolbar (a
+    /// bottom-bar placement hides behind the tab bar); before that, the
+    /// classic drawer under the title.
+    @ViewBuilder
+    func logsSearch(text: Binding<String>, prompt: String) -> some View {
+        if #available(iOS 26, *) {
+            searchable(text: text, prompt: prompt)
+                .searchToolbarBehavior(.minimize)
+        } else {
+            searchable(text: text, placement: .navigationBarDrawer(displayMode: .automatic), prompt: prompt)
+        }
+    }
+}
 
-private struct LogFrameRow: View {
+// MARK: - LogLineRow
 
-    let entry: LogFrame
+private struct LogLineRow: View {
+
+    let line: LogLine
 
     @Environment(\.gsColors) private var C
 
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Rectangle()
-                .fill(levelColor)
-                .frame(width: 2)
+        let entry = line.frame
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(LogsViewModel.formatTs(entry.tsUnixMs))
-                .gsFont(.logTs)
-                .foregroundStyle(C.textFaint)
-                .frame(width: 54, alignment: .leading)
+                .foregroundStyle(C.textDim)
             Text(LogsViewModel.levelBadge(entry.level))
-                .gsFont(.labelMonoSmall)
+                .font(.custom(GsFontName.departureMono, size: 10.5))
                 .foregroundStyle(levelColor)
-                .frame(width: 32, height: 16, alignment: .center)
-                .background(levelColor.opacity(badgeOpacity))
-            Text(entry.msg)
-                .gsFont(.logMsg)
-                .foregroundStyle(messageColor)
+                .frame(width: 34, alignment: .leading)
+            (Text(entry.msg).foregroundColor(C.bone)
+                + Text(line.count > 1 ? "  ×\(line.count)" : "").foregroundColor(C.textDim))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 2)
-        .padding(.trailing, 4)
-        .background(rowBackground)
+        .font(.custom(GsFontName.jetBrainsMono, size: 10.5))
+        .lineSpacing(2)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = LogsViewModel.format(entry)
+            } label: {
+                Label(L("logs.copy"), systemImage: "doc.on.doc")
+            }
+        }
     }
 
     private var levelColor: Color {
         switch entry.level.uppercased() {
         case "ERROR", "ERR", "CRITICAL": return C.danger
-        case "WARN", "WARNING":          return C.warn
-        case "INFO", "OK":               return C.signal
-        case "DEBUG":                    return C.blueDebug
-        case "TRACE":                    return C.textFaint
-        default:                         return C.textDim
+        case "WARN", "WARNING", "WRN":   return C.warn
+        case "INFO", "OK", "INF":        return C.signal
+        case "DEBUG", "DBG":             return C.blueDebug
+        default:                         return C.textFaint
         }
     }
 
-    private var badgeOpacity: Double {
-        switch entry.level.uppercased() {
-        case "ERROR", "ERR", "CRITICAL": return 0.16
-        case "WARN", "WARNING":          return 0.12
-        case "INFO", "OK":               return 0.10
-        case "DEBUG":                    return 0.12
-        case "TRACE":                    return 0.08
-        default:                         return 0.08
-        }
-    }
-
-    private var rowBackground: Color {
-        switch entry.level.uppercased() {
-        case "ERROR", "ERR", "CRITICAL": return C.danger.opacity(0.08)
-        case "WARN", "WARNING":          return C.warn.opacity(0.05)
-        default:                         return Color.clear
-        }
-    }
-
-    private var messageColor: Color {
-        switch entry.level.uppercased() {
-        case "ERROR", "ERR", "CRITICAL": return C.danger.opacity(0.85)
-        case "WARN", "WARNING":          return C.warn.opacity(0.80)
-        case "DEBUG":                    return C.blueDebug.opacity(0.70)
-        case "TRACE":                    return C.textFaint
-        default:                         return C.bone
-        }
-    }
+    private var entry: LogFrame { line.frame }
 }
 
 // MARK: - Share sheet plumbing

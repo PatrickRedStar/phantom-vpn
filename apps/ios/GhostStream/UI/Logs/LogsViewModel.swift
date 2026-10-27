@@ -3,8 +3,9 @@
 //  GhostStream
 //
 //  Polls the PacketTunnelProvider via TunnelIpcBridge every 500ms for
-//  LogFrame entries. Keeps an in-memory rolling buffer of up to 10 000
-//  entries (as Android) and exposes a hierarchical level filter.
+//  LogFrame entries. Keeps a rolling buffer of up to 10 000 entries (as
+//  Android), mirrored to logs.jsonl in the App Group so the journal
+//  survives app restarts, and exposes a hierarchical level filter.
 
 import Foundation
 import NetworkExtension
@@ -38,10 +39,11 @@ enum LogFilter: String, CaseIterable, Hashable {
     /// Log-level string as emitted by Rust, mapped to a priority.
     static func priority(of level: String) -> Int {
         switch level.uppercased() {
-        case "TRACE": return 0
-        case "DEBUG": return 1
-        case "INFO", "OK": return 2
-        case "WARN", "WARNING": return 3
+        // The core and the provider send 3-char codes (TRC/DBG/INF/WRN/ERR).
+        case "TRACE", "TRC": return 0
+        case "DEBUG", "DBG": return 1
+        case "INFO", "INF", "OK": return 2
+        case "WARN", "WRN", "WARNING": return 3
         case "ERROR", "ERR", "CRITICAL": return 4
         default: return 2
         }
@@ -81,6 +83,14 @@ final class LogsViewModel {
     private var ipc: TunnelIpcBridge?
     private let maxEntries = 10_000
     private let log = Logger(subsystem: "com.ghoststream.client", category: "LogsVM")
+    /// One JSON LogFrame per line; the app is the only writer.
+    private let historyURL = FileManager.default
+        .containerURL(forSecurityApplicationGroupIdentifier: SharedKeys.appGroup)?
+        .appendingPathComponent("logs.jsonl")
+
+    init() {
+        loadHistory()
+    }
 
     // MARK: - Derived
 
@@ -119,16 +129,14 @@ final class LogsViewModel {
 
     var statusMessage: String? {
         if let lastIpcError {
-            return "IPC error: \(lastIpcError)"
+            return "IPC: \(lastIpcError)"
         }
 
         switch tunnelState {
-        case .disconnected:
-            return "VPN disconnected. Live log IPC is unavailable."
-        case .disconnecting:
-            return "VPN disconnecting. Live log IPC may be unavailable."
+        case .disconnected, .disconnecting:
+            return AppStrings.localized("native.logs.status.offline")
         case .error(let message):
-            return "VPN error: \(message)"
+            return message
         case .connecting, .connected, .reconnecting:
             return nil
         }
@@ -163,9 +171,11 @@ final class LogsViewModel {
 
     // MARK: - Actions
 
-    /// Wipes the in-memory buffer.
+    /// Wipes the buffer and the saved history. The IPC cursor stays, so
+    /// cleared lines don't come back from the extension's ring.
     func clear() {
         allLogs.removeAll()
+        if let historyURL { try? FileManager.default.removeItem(at: historyURL) }
     }
 
     /// Writes the last `range` entries (newest first in file) to a temp
@@ -244,11 +254,45 @@ final class LogsViewModel {
                 // Trim in 1k chunks: one O(n) shift per ~1k lines, not per poll.
                 if allLogs.count > maxEntries {
                     allLogs.removeFirst(allLogs.count - maxEntries + maxEntries / 10)
+                    writeHistory(allLogs, append: false)
+                } else {
+                    writeHistory(frames, append: true)
                 }
             }
         } catch {
             ipc = nil
             recordIpcError(error.localizedDescription)
+        }
+    }
+
+    // MARK: - History file
+
+    private func loadHistory() {
+        guard let historyURL, let data = try? Data(contentsOf: historyURL) else { return }
+        let decoder = JSONDecoder()
+        let frames = data.split(separator: UInt8(ascii: "\n")).compactMap {
+            try? decoder.decode(LogFrame.self, from: Data($0))
+        }
+        allLogs = Array(frames.suffix(maxEntries))
+        // The extension's ring still holds these — don't fetch them twice.
+        lastTsUs = allLogs.map(\.timestampUs).max() ?? 0
+    }
+
+    private func writeHistory(_ frames: [LogFrame], append: Bool) {
+        guard let historyURL else { return }
+        let encoder = JSONEncoder()
+        var data = Data()
+        for frame in frames {
+            guard let line = try? encoder.encode(frame) else { continue }
+            data.append(line)
+            data.append(UInt8(ascii: "\n"))
+        }
+        if append, let handle = try? FileHandle(forWritingTo: historyURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: historyURL, options: .atomic)
         }
     }
 
@@ -317,10 +361,10 @@ final class LogsViewModel {
     static func levelBadge(_ level: String) -> String {
         switch level.uppercased() {
         case "ERROR", "ERR", "CRITICAL": return "ERR"
-        case "WARN", "WARNING":          return "WRN"
-        case "INFO", "OK":               return "INF"
-        case "DEBUG":                    return "DBG"
-        case "TRACE":                    return "TRC"
+        case "WARN", "WARNING", "WRN":   return "WRN"
+        case "INFO", "OK", "INF":        return "INF"
+        case "DEBUG", "DBG":             return "DBG"
+        case "TRACE", "TRC":             return "TRC"
         default: return String(level.uppercased().prefix(3))
         }
     }
