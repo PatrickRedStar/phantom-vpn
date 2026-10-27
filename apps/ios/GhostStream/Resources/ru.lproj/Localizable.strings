@@ -155,7 +155,7 @@
 "admin.egress" = "Egress";
 "admin.clients.count" = "Клиенты · %d";
 "admin.no.clients" = "Нет клиентов";
-"admin.new.client" = "+ Новый клиент";
+"admin.new.client" = "Новый клиент";
 "admin.tag.off" = "Выкл";
 "admin.tag.live" = "Live";
 "admin.tag.idle" = "Idle";

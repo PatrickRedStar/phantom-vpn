@@ -176,21 +176,15 @@ public struct AdminView: View {
     }
 
     private var createButton: some View {
-        Button {
+        GlassPrimaryButton(
+            title: L("admin.new.client"),
+            systemImage: "plus",
+            tint: C.signal
+        ) {
             showCreateSheet = true
-        } label: {
-            Label(L("admin.new.client"), systemImage: "plus")
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .frame(height: 54)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(C.signal)
-        .foregroundColor(C.bg)
-        .padding(.horizontal, 18)
-        .padding(.top, 10)
+        .padding(.horizontal, 20)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
         .disabled(vm.mtlsUnavailable)
         .opacity(vm.mtlsUnavailable ? 0.45 : 1.0)
     }

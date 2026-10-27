@@ -89,8 +89,7 @@ struct AppNavigation: View {
             .tag(AppTab.settings)
         }
         .tint(C.signal)
-        .toolbarBackground(C.bg, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
+        .legacyTabBarBackground(C.bg)
         .task {
             await reconcileRoutePolicyOnLaunch()
         }

@@ -155,7 +155,7 @@
 "admin.egress" = "Egress";
 "admin.clients.count" = "Clients · %d";
 "admin.no.clients" = "No clients";
-"admin.new.client" = "+ New client";
+"admin.new.client" = "New client";
 "admin.tag.off" = "Off";
 "admin.tag.live" = "Live";
 "admin.tag.idle" = "Idle";

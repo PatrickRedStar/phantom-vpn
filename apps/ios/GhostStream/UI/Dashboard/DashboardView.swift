@@ -76,15 +76,22 @@ struct DashboardView: View {
     }
 
     private var bottomActionBar: some View {
-        NativeBottomAction(
+        GlassPrimaryButton(
             title: dashboardPresentation.primaryActionTitle,
-            tone: dashboardPresentation.tone,
+            systemImage: "power",
+            tint: primaryTint,
             action: handlePrimaryAction
         )
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
+        .padding(.horizontal, 20)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial)
+    }
+
+    private var primaryTint: Color {
+        switch dashboardPresentation.tone {
+        case .neutral, .success: return C.signal
+        case .warning:           return C.warn
+        case .danger:            return C.danger
+        }
     }
 
     /// Reconnect banner — visible when `statusFrame.state == .reconnecting`.
