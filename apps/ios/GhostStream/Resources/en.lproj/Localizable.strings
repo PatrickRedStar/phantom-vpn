@@ -194,7 +194,7 @@
 "action_retry" = "Retry";
 "chip_clear" = "Clear";
 "chip_share" = "Share";
-"hint_add_profile" = "Swipe to Settings → add an endpoint to connect";
+"hint_add_profile" = "Scan a QR code or paste a ghs://… link";
 
 // Native iOS UI
 "native.dashboard.standby" = "Standby";

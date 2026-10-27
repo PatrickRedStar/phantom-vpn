@@ -32,7 +32,12 @@ public struct SettingsView: View {
 
     @Environment(\.gsColors) private var C
 
-    public init() {}
+    /// Set by the Dashboard's empty-state row: open the add-profile dialog.
+    @Binding private var addProfileRequest: Bool
+
+    public init(addProfileRequest: Binding<Bool> = .constant(false)) {
+        self._addProfileRequest = addProfileRequest
+    }
 
     public var body: some View {
         ScrollView {
@@ -103,6 +108,11 @@ public struct SettingsView: View {
         .refreshable {
             await model.refreshPings()
             await model.refreshSubscriptions()
+        }
+        .task(id: addProfileRequest) {
+            guard addProfileRequest else { return }
+            addProfileRequest = false
+            showAddDialog = true
         }
         .confirmationDialog(L("settings.add.profile"), isPresented: $showAddDialog, titleVisibility: .visible) {
             Button(L("settings.scan.qr")) {

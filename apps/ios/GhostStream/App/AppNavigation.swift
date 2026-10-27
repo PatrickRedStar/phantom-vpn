@@ -48,6 +48,7 @@ struct AppNavigation: View {
     @Environment(ProfilesStore.self) private var profiles
     @Environment(PreferencesStore.self) private var prefs
     @State private var selection: AppTab = .dashboard
+    @State private var addProfileRequest = false
     @State private var routePolicyReconciled = false
 
     private let routePolicyLog = Logger(
@@ -58,7 +59,10 @@ struct AppNavigation: View {
     var body: some View {
         TabView(selection: $selection) {
             NavigationStack {
-                DashboardView()
+                DashboardView(onAddProfile: {
+                    addProfileRequest = true
+                    selection = .settings
+                })
                     .id(languageIdentity)
             }
             .tabItem {
@@ -76,7 +80,7 @@ struct AppNavigation: View {
             .tag(AppTab.logs)
 
             NavigationStack {
-                SettingsView()
+                SettingsView(addProfileRequest: $addProfileRequest)
                     .id(languageIdentity)
             }
             .tabItem {

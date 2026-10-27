@@ -194,7 +194,7 @@
 "action_retry" = "Повторить";
 "chip_clear" = "Очистить";
 "chip_share" = "Отправить";
-"hint_add_profile" = "Свайпни в Настройки → добавь endpoint для подключения";
+"hint_add_profile" = "Сканировать QR или вставить ghs://…";
 
 // Native iOS UI
 "native.dashboard.standby" = "Ожидание";

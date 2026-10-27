@@ -22,6 +22,13 @@ struct DashboardView: View {
 
     @State private var vm = DashboardViewModel()
 
+    /// Opens the add-profile flow (Settings tab).
+    private let onAddProfile: () -> Void
+
+    init(onAddProfile: @escaping () -> Void = {}) {
+        self.onAddProfile = onAddProfile
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -150,7 +157,7 @@ struct DashboardView: View {
     private var emptyHint: some View {
         if profiles.activeProfile == nil && !isConnected {
             NativeSectionCard {
-                NativeRow(title: L("native.dashboard.add.profile"), subtitle: L("hint_add_profile"), action: nil) {
+                NativeRow(title: L("native.dashboard.add.profile"), subtitle: L("hint_add_profile"), action: onAddProfile) {
                     Image(systemName: "plus.circle")
                         .foregroundStyle(C.signal)
                 }
