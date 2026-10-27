@@ -387,6 +387,9 @@ public final class VpnTunnelController: ObservableObject {
     /// Returns the current system VPN status for the installed GhostStream
     /// manager. Used by the UI to avoid trusting stale App Group snapshots.
     public func currentStatus() async -> NEVPNStatus {
+        #if DEBUG
+        if let demo = DebugDemo.neStatus { return demo }
+        #endif
         do {
             try await loadFromPreferences()
             return manager?.connection.status ?? .invalid

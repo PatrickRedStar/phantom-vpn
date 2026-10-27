@@ -41,6 +41,9 @@ struct GhostStreamApp: App {
             nav.largeTitleTextAttributes = [.font: large]
             nav.titleTextAttributes = [.font: inline]
         }
+        #if DEBUG
+        DebugDemo.startIfRequested()
+        #endif
     }
 
     var body: some Scene {
