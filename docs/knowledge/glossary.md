@@ -140,6 +140,11 @@ updated: 2026-10-27
   предъявляет phantom-server (и fakeapp). Сервер читает его только при старте —
   на vdsina нужен `renew_hook` с рестартом.
 
+- **RU-only trust** — наш корень с Name Constraints `.ru/.рф/.su`, которым
+  переподписан `Russian Trusted Sub CA` (Минцифры). Ставится пользователем из
+  настроек iOS/Android, чтобы банки РФ открывались в браузере без доверия к
+  корню Минцифры. Файлы — `tools/ru-only-certs/`, ADR 0023.
+
 ---
 
 ## Admin / roles

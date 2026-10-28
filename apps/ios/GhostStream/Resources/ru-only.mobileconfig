@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadContent</key>
+			<data>
+			MIIB/jCCAaWgAwIBAgIUd3XJEDM8EE7/erq/JB2mzQJzSOYwCgYI
+			KoZIzj0EAwIwLjEsMCoGA1UEAwwjUlUtb25seSB0cnVzdCAoLnJ1
+			IC5yZiAuc3UpIC0gbG9jYWwwHhcNMjYxMDI4MTM0NzIwWhcNMjkw
+			NzE5MTI1MDQxWjAuMSwwKgYDVQQDDCNSVS1vbmx5IHRydXN0ICgu
+			cnUgLnJmIC5zdSkgLSBsb2NhbDBZMBMGByqGSM49AgEGCCqGSM49
+			AwEHA0IABLdBkzsm0mDeBAd39jdakn0ma1JN7vhmy7bHobD5d2zJ
+			lutqwqtL0IdkkrDcKbFXeowHUrbm5HvKKFJ2GHshfDmjgaAwgZ0w
+			EgYDVR0TAQH/BAgwBgEB/wIBATAOBgNVHQ8BAf8EBAMCAQYwWAYD
+			VR0eAQH/BE4wTKAYMASCAnJ1MAqCCHhuLS1wMWFpMASCAnN1oTAw
+			CocIAAAAAAAAAAAwIocgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+			AAAAAAAAAAAwHQYDVR0OBBYEFLge4ATbSYKCE/rSqGAwZaP7ujHV
+			MAoGCCqGSM49BAMCA0cAMEQCID8e0fi2fnqLuVYZiIg11rAr4yVl
+			VGY+m6Y3U3hTK8rkAiAU+tdSlOME7vTCIySQ6b2z1jv5kr+d78ES
+			gaYgBspcEA==
+			</data>
+			<key>PayloadDisplayName</key>
+			<string>RU-only root</string>
+			<key>PayloadIdentifier</key>
+			<string>local.ru-only.ae73554a-6564-4f7e-a75e-b457e77b4907</string>
+			<key>PayloadType</key>
+			<string>com.apple.security.root</string>
+			<key>PayloadUUID</key>
+			<string>ee821d41-af96-4cfa-ba0d-ca9de30115e5</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+		</dict>
+		<dict>
+			<key>PayloadContent</key>
+			<data>
+			MIIELDCCA9KgAwIBAgIUCS0mA0F4MJGeGzfRqiE67GneupwwCgYI
+			KoZIzj0EAwIwLjEsMCoGA1UEAwwjUlUtb25seSB0cnVzdCAoLnJ1
+			IC5yZiAuc3UpIC0gbG9jYWwwHhcNMjYxMDI4MTM0NzIwWhcNMjkw
+			NzE5MTI1MDQxWjBvMQswCQYDVQQGEwJSVTE/MD0GA1UECgw2VGhl
+			IE1pbmlzdHJ5IG9mIERpZ2l0YWwgRGV2ZWxvcG1lbnQgYW5kIENv
+			bW11bmljYXRpb25zMR8wHQYDVQQDDBZSdXNzaWFuIFRydXN0ZWQg
+			U3ViIENBMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA
+			1j0rkZECOt1S8o7IJY+4YKAxuEa5xaHKHXT2EpkuC/0krqMOjUy2
+			oPIRNgR5g8X0Jl6jamxeGLc4Q1tfju6or9oSRYThIUhRsFDQNBiB
+			BEXoBgWxTfiKB2eyT97+pz5TBtBiRCPaLGRHYLRb9Jz2HkJlxbtN
+			PjtDrF5DPHym+mZ1M1z3hIQYAqJwLpsEBnsw/VxWMlxqHoeewd0h
+			uJMd71KQ5vOKlz7KrIZ6EobNNa6wItuvsfj3kYCK7O78uLHGXXFx
+			dr8Hae9lMUmC8F7AFwa+bO1LRlTlqW7rE3rLf+jj70N01N8T3o22
+			v14YBaFBWQWncAVYD2JuL3tH252+kdNOERf1fLbLRigJAbd+hOhW
+			YlNf963TFDgnNPliHNIW72SygVBnI2V3JwO1dp1hVKpK/zt8ziGd
+			HW4gmOLTsH50YKdR4jNqUgQv4wASlKn9OpN6zHYc5G8h86fYBM+z
+			xE5ikGI+I/vIqBuI0eaDU92AWN/YjFLpu8tMu9kLRSCf1vug6FIf
+			DPWVo7iPac/SI2v8jnnpaW7ph/Pz3WkzaG7ZZJsfFs+8dploWc6L
+			OoDtbFBhMdGMxu024msC0PSjZb5ODXPIaO2NsA7fMiAtZcoK6anT
+			UJh4zOP/stA9qsJGNxdrEmiPXSmBZY/NY0wkZgZ6JTDhw7038bPv
+			ctkblJkCAwEAAaOBwTCBvjASBgNVHRMBAf8ECDAGAQH/AgEAMA4G
+			A1UdDwEB/wQEAwIBBjBYBgNVHR4BAf8ETjBMoBgwBIICcnUwCoII
+			eG4tLXAxYWkwBIICc3WhMDAKhwgAAAAAAAAAADAihyAAAAAAAAAA
+			AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAdBgNVHQ4EFgQUdz3Z
+			Oa9Cvdxbynbq7v3OPmEpMF8wHwYDVR0jBBgwFoAUuB7gBNtJgoIT
+			+tKoYDBlo/u6MdUwCgYIKoZIzj0EAwIDSAAwRQIgYMM3ngCDfQpW
+			m+/AmgXIb9FKvPw7vzfFnCZhG29zDeYCIQDmHKrpPz3XDEB7XYaa
+			1BNhvKWqSOXzn1/3Pf1ppbdK5w==
+			</data>
+			<key>PayloadDisplayName</key>
+			<string>Russian Trusted Sub CA (ограниченный)</string>
+			<key>PayloadIdentifier</key>
+			<string>local.ru-only.b945b876-71d8-4291-a7ad-e38dfa0617dc</string>
+			<key>PayloadType</key>
+			<string>com.apple.security.pkcs1</string>
+			<key>PayloadUUID</key>
+			<string>870bf1d3-c6ce-4c71-bead-03c3d96c770e</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>PayloadDescription</key>
+	<string>Доверие Russian Trusted Sub CA, ограниченное зонами .ru, .рф, .su. Корень Минцифры не устанавливается.</string>
+	<key>PayloadDisplayName</key>
+	<string>Сертификаты Минцифры только для .ru/.рф/.su</string>
+	<key>PayloadIdentifier</key>
+	<string>local.ru-only-trust</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>fc7c6da5-a08c-4324-958d-841a0157ec3f</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>

@@ -847,6 +847,10 @@ private fun PhoneSettingsBody(
 
         Spacer(Modifier.height(24.dp))
 
+        RuCertsSection()
+
+        Spacer(Modifier.height(24.dp))
+
         // ── Appearance ──────────────────────────────────────────────
         SectionLabel(text = stringResource(R.string.set_appearance))
         SectionCard {
@@ -1197,6 +1201,8 @@ private fun SystemDetailPane(
             .background(C.bg)
             .verticalScroll(rememberScrollState()),
     ) {
+        RuCertsSection()
+        Spacer(Modifier.height(16.dp))
         SectionLabel(text = stringResource(R.string.set_appearance))
         SectionCard {
             AppearanceRows(
@@ -1478,6 +1484,25 @@ private fun KvRow(label: String, value: String) {
         Spacer(Modifier.width(12.dp))
         Text(value, style = GsText.host, color = C.textDim)
     }
+}
+
+// ── Российские сайты: сертификаты Минцифры (RuCertsDialog.kt) ──────────────
+// Перед «Внешним видом»: на телефоне — в общем списке, на планшете — в панели
+// «Внешний вид».
+@Composable
+private fun RuCertsSection() {
+    var show by rememberSaveable { mutableStateOf(false) }
+    SectionLabel(text = stringResource(R.string.set_ru_sites))
+    SectionCard {
+        SettingRow(
+            label = stringResource(R.string.row_ru_certs),
+            sub = stringResource(R.string.sub_ru_certs),
+            right = { Text("→", style = GsText.labelMono, color = C.textDim) },
+            onClick = { show = true },
+            showDivider = false,
+        )
+    }
+    if (show) RuCertsDialog(onDismiss = { show = false })
 }
 
 // ── Section label ────────────────────────────────────────────────────────────

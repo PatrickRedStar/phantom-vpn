@@ -30,6 +30,7 @@ updated: 2026-10-26
 | [0017](0017-android-exclude-routes.md) | accepted | Split-routing на Android через excludeRoute | 2026-08-02 |
 | [0018](0018-rust-owns-reconnect.md) | accepted | Rust — единственный владелец переподключения; error = фатально | 2026-10-26 |
 | [0019](0019-owner-decisions-audit-2026-10.md) | accepted | Решения владельца по аудиту 2026-10 | 2026-10-26 |
+| [0023](0023-ru-only-mintsifry-certs.md) | accepted | Сертификаты Минцифры только для .ru/.рф/.su | 2026-10-28 |
 
 ## Когда писать новый ADR
 
