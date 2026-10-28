@@ -21,11 +21,15 @@ public struct DashboardView: View {
     @Environment(TrafficSeriesStore.self) private var traffic
     @Environment(ProfilesStore.self) private var profiles
     @Environment(AppRouter.self) private var router
+    @Environment(PreferencesStore.self) private var prefs
+    @Environment(UpstreamVpnMonitor.self) private var upstream
     @EnvironmentObject private var tunnel: VpnTunnelController
 
     /// Окно графика, секунд.
     @State private var window = 60
     @State private var pasteError: String?
+    /// Видимая область: по ширине — раскладка карточек, по высоте — график.
+    @State private var viewport: CGSize = .zero
 
     public init() {}
 
@@ -39,6 +43,7 @@ public struct DashboardView: View {
             .padding(.bottom, GsSpace.xxl)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewport = $0 }
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
         // Ошибка коннекта гасится только после удачной сессии — флаг общий
@@ -63,23 +68,45 @@ public struct DashboardView: View {
                 .padding(.bottom, 6)
             if let issue { banner(issue) }
             if state == .connected || state == .reconnecting {
-                HStack(alignment: .top, spacing: GsSpace.l) {
-                    speedCard
-                    VStack(spacing: GsSpace.l) {
-                        accessCard
-                        connectionCard
+                let chart = chartHeight(banner: issue != nil)
+                // Скорость (~390) + колонка 300 + поля: уже — карточки уходят
+                // под скорость, иначе цифры переносятся по строкам.
+                if viewport.width >= 780 {
+                    HStack(alignment: .top, spacing: GsSpace.l) {
+                        speedCard(chartHeight: chart)
+                        VStack(spacing: GsSpace.l) {
+                            accessCard
+                            connectionCard
+                        }
+                        .frame(width: 300)
                     }
-                    .frame(width: 300)
+                    // Правая колонка тянется до высоты карточки скорости.
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    speedCard(chartHeight: chart)
+                    infoRow
                 }
-                // Правая колонка тянется до высоты карточки скорости.
-                .fixedSize(horizontal: false, vertical: true)
             } else {
-                HStack(alignment: .top, spacing: GsSpace.l) {
-                    if state != .error { accessCard.fixedSize() }
-                    connectionCard
-                }
+                infoRow
             }
         }
+    }
+
+    /// Срок доступа и карточка подключения рядом.
+    private var infoRow: some View {
+        HStack(alignment: .top, spacing: GsSpace.l) {
+            if state != .error { accessCard.fixedSize() }
+            connectionCard
+        }
+    }
+
+    /// В высоком окне график растёт, чтобы карточки заняли экран, а не
+    /// оставляли пустую половину; в низком — 168, остальное прокручивается.
+    /// Запас — высота всего остального (заголовок, цифры, итоги, поля;
+    /// в узком окне ещё и карточки под графиком).
+    private func chartHeight(banner: Bool) -> CGFloat {
+        let reserve: CGFloat = 440 + (banner ? 120 : 0) + (viewport.width < 780 ? 220 : 0)
+        return min(440, max(168, viewport.height - reserve))
     }
 
     private var hero: some View {
@@ -146,6 +173,16 @@ public struct DashboardView: View {
                 }
             }
             Spacer(minLength: 0)
+            if state == .reconnecting, let profile {
+                Button {
+                    tunnel.restart(with: profile, preferences: prefs)
+                } label: {
+                    Label(L("dash.reconnect.now"), systemImage: "arrow.clockwise")
+                        .gsType(.body)
+                        .foregroundStyle(C.bone)
+                }
+                .gsGlassButton()
+            }
         }
         .padding(.vertical, GsSpace.l)
         .padding(.horizontal, 18)
@@ -155,7 +192,7 @@ public struct DashboardView: View {
 
     // MARK: - Speed
 
-    private var speedCard: some View {
+    private func speedCard(chartHeight: CGFloat) -> some View {
         let live = state == .connected
         let series = traffic.series(capacity: window)
         // При переподключении график остаётся, но замирает (см. ниже).
@@ -188,7 +225,7 @@ public struct DashboardView: View {
                 }
                 .padding(.top, 2)
                 .padding(.bottom, 2)
-                ScopeChart(rxSamples: rx, txSamples: tx, height: 168, sampleCapacity: series.sampleCapacity)
+                ScopeChart(rxSamples: rx, txSamples: tx, height: chartHeight, sampleCapacity: series.sampleCapacity)
                     .overlay(alignment: .topTrailing) {
                         if peak > 0 { axisLabel(peak).offset(y: -7) }
                     }
@@ -206,9 +243,14 @@ public struct DashboardView: View {
                     Text(String(format: L("dash.streams"),
                                 Int64(live ? frame.streamsUp : 0), Int64(frame.nStreams)))
                     Spacer(minLength: GsSpace.s)
-                    Text(String(format: L("dash.totals"),
-                                DashFormat.bytes(frame.bytesRx), DashFormat.bytes(frame.bytesTx)))
-                        .lineLimit(1)
+                    let received = DashFormat.bytes(frame.bytesRx), sent = DashFormat.bytes(frame.bytesTx)
+                    let totals = String(format: L("dash.totals"), received, sent)
+                    // В узкой карточке — «↓ 1,93 ГБ · ↑ 148 МБ» вместо обрезанной фразы.
+                    ViewThatFits {
+                        Text(totals)
+                        Text(verbatim: "↓ \(received) · ↑ \(sent)").help(totals)
+                    }
+                    .lineLimit(1)
                 }
                 .gsType(.caption)
                 .foregroundStyle(C.textDim)
@@ -309,6 +351,13 @@ public struct DashboardView: View {
                 kv(L("dash.route")) {
                     Text(L(profile?.relayActive == true ? "dash.route.relay" : "dash.route.direct"))
                 }
+                // Режим «вместе с Cisco»: видно, что рабочий VPN найден и идёт мимо.
+                if prefs.effectiveRoutingMode(profileSplitRouting: profile?.splitRouting) == .layeredAuto {
+                    kv(L("dash.work_vpn")) {
+                        Text(upstream.snapshot.upstreamProviderName.map { String(format: L("dash.work_vpn.found"), $0) }
+                             ?? L("dash.work_vpn.none"))
+                    }
+                }
                 if let address = vpnAddress {
                     kv(L("dash.vpn_address")) { Text(address).gsType(.mono) }
                 }
@@ -326,7 +375,8 @@ public struct DashboardView: View {
     }
 
     private func kv<V: View>(_ label: String, first: Bool = false, @ViewBuilder value: () -> V) -> some View {
-        HStack(spacing: GsSpace.m) {
+        // По базовой линии: моноширинный адрес мельче и иначе «прыгает».
+        HStack(alignment: .firstTextBaseline, spacing: GsSpace.m) {
             Text(label).foregroundStyle(C.textDim)
             Spacer(minLength: GsSpace.m)
             value()

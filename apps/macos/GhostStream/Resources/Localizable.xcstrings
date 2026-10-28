@@ -1282,13 +1282,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Command Palette"
+            "value": "Quick Commands…"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Командная палитра"
+            "value": "Быстрые команды…"
           }
         }
       }
@@ -1316,13 +1316,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Open Console"
+            "value": "Open GhostStream"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Открыть консоль"
+            "value": "Открыть GhostStream"
           }
         }
       }
@@ -1955,13 +1955,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "IPv6 leak protection"
+            "value": "IPv6 through VPN"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Защита от IPv6-утечек"
+            "value": "IPv6 через VPN"
           }
         }
       }
@@ -3211,13 +3211,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Double-click to connect · ⌘N to add a profile · ⌫ to delete"
+            "value": "Double-click to connect · right-click to edit · ⌘N to add · ⌫ to delete"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Двойной щелчок — подключиться · ⌘N — добавить профиль · ⌫ — удалить"
+            "value": "Двойной щелчок — подключиться · правый щелчок — изменить · ⌘N — добавить · ⌫ — удалить"
           }
         }
       }
@@ -6288,13 +6288,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "All except work VPN"
+            "value": "Alongside Cisco / work VPN"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Всё, кроме рабочего VPN"
+            "value": "Вместе с Cisco / рабочим VPN"
           }
         }
       }
@@ -6305,13 +6305,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Work VPN found: %@"
+            "value": "Cisco / work VPN is up (%@) — its networks go through it, everything else through GhostStream"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Найден рабочий VPN: %@"
+            "value": "Cisco / рабочий VPN подключён (%@) — его сети идут через него, остальное через GhostStream"
           }
         }
       }
@@ -6322,13 +6322,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No work VPN found — all traffic goes through GhostStream for now"
+            "value": "Cisco / work VPN isn't connected — all traffic goes through GhostStream"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Рабочий VPN не найден — пока весь трафик идёт через GhostStream"
+            "value": "Cisco / рабочий VPN сейчас не подключён — весь трафик идёт через GhostStream"
           }
         }
       }
@@ -6560,13 +6560,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Start in the menu bar"
+            "value": "Start without a window"
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "Запускать в строке меню"
+            "value": "Запускать без окна"
           }
         }
       }
@@ -8131,6 +8131,244 @@
           "stringUnit": {
             "state": "translated",
             "value": "Системное расширение не установлено — открываю настройку."
+          }
+        }
+      }
+    },
+    "dash.work_vpn": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cisco / work VPN"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cisco / рабочий VPN"
+          }
+        }
+      }
+    },
+    "dash.work_vpn.found": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ — direct"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ — напрямую"
+          }
+        }
+      }
+    },
+    "dash.work_vpn.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "not connected"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "не подключён"
+          }
+        }
+      }
+    },
+    "chip.edit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Profile…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Изменить профиль…"
+          }
+        }
+      }
+    },
+    "chip.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Profile…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Добавить профиль…"
+          }
+        }
+      }
+    },
+    "profile.access_unlimited": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No expiry"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Доступ бессрочный"
+          }
+        }
+      }
+    },
+    "adm.copy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Копировать"
+          }
+        }
+      }
+    },
+    "adm.qr": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "QR code"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "QR-код"
+          }
+        }
+      }
+    },
+    "update.notes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What’s New"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Что нового"
+          }
+        }
+      }
+    },
+    "update.auto": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check automatically"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Проверять автоматически"
+          }
+        }
+      }
+    },
+    "update.auto.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Looks for new versions on GitHub once a day"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Раз в день смотрим новые версии на GitHub"
+          }
+        }
+      }
+    },
+    "dash.reconnect.now": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry now"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Повторить сейчас"
+          }
+        }
+      }
+    },
+    "settings.dns_leak.hint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Site names are looked up only through the VPN — your ISP can’t see where you go"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Адреса сайтов узнаются только через VPN — провайдер не видит, куда вы заходите"
+          }
+        }
+      }
+    },
+    "general.clear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Очистить"
           }
         }
       }

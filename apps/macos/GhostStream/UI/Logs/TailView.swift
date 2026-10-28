@@ -3,8 +3,8 @@
 //  GhostStream (macOS)
 //
 //  «Логи» (mockup.html, pane logs): нативная Table — время, уровень,
-//  сообщение; новые сверху. Уровень — сегменты в тулбаре, поиск —
-//  `.searchable`. Копирование — меню строки и ⌘C по выделению; клик
+//  сообщение; новые сверху. Уровень — сегменты над таблицей, поиск —
+//  ToolbarSearchField в тулбаре. Копирование — меню строки и ⌘C по выделению; клик
 //  буфер не трогает. Одна кнопка «Экспорт» (⌘E). Тот же вид — в
 //  отдельном окне логов (⇧⌘L).
 //
@@ -32,6 +32,7 @@ public struct TailView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: GsSpace.s) {
+            levelPicker
             table
             footer
         }
@@ -39,18 +40,11 @@ public struct TailView: View {
         .padding(.top, GsSpace.s)
         .padding(.bottom, GsSpace.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .searchable(text: $search, placement: .toolbar, prompt: L("srv.search"))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Picker(L("log.filter"), selection: $level) {
-                    Text(L("log.filter.all")).tag(LevelFilter.all)
-                    Text(L("log.filter.warn")).tag(LevelFilter.warn)
-                    Text(L("log.filter.error")).tag(LevelFilter.error)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .tint(C.signal)
+                ToolbarSearchField(text: $search, prompt: L("srv.search"))
             }
+            ConsoleToolbarItems()
         }
         .onAppear { recompute(debounce: false) }
         // `revision`, а не `logs.count`: после насыщения буфера count
@@ -65,6 +59,20 @@ public struct TailView: View {
         }
         .onDisappear { filterTask?.cancel() }
         .task { logStore.start(stateManager: stateMgr) }
+    }
+
+    /// Уровень — маленькие сегменты над таблицей (в тулбаре были огромные и серые).
+    private var levelPicker: some View {
+        Picker(L("log.filter"), selection: $level) {
+            Text(L("log.filter.all")).tag(LevelFilter.all)
+            Text(L("log.filter.warn")).tag(LevelFilter.warn)
+            Text(L("log.filter.error")).tag(LevelFilter.error)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .fixedSize()
+        .tint(C.signal)
     }
 
     // MARK: - Table
@@ -98,7 +106,6 @@ public struct TailView: View {
         .scrollContentBackground(.hidden)
         .background(C.bgElev, in: RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous).stroke(C.hair, lineWidth: 1))
-        .frame(maxHeight: GsTable.height(rows: rows.count, rowHeight: GsTable.oneLineRow))
         .contextMenu(forSelectionType: LogRow.ID.self) { ids in
             if !ids.isEmpty {
                 Button(L("log.copy")) { copy(ids) }

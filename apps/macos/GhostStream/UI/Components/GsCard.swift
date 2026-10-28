@@ -41,7 +41,8 @@ struct GsCard<Content: View>: View {
     }
 }
 
-/// «Доступна версия X — Скачать». Скачать открывает страницу релиза.
+/// «Доступна версия X — Что нового · Скачать». «Что нового» — страница
+/// релиза, «Скачать» — DMG.
 struct UpdateBanner: View {
     let release: UpdateChecker.Release
     let onDismiss: () -> Void
@@ -65,6 +66,11 @@ struct UpdateBanner: View {
                     .foregroundStyle(C.textDim)
             }
             Spacer(minLength: GsSpace.m)
+            Button(L("update.notes")) { openURL(release.notes) }
+                .buttonStyle(.borderless)
+                .gsType(.body)
+                .fontWeight(.medium)
+                .foregroundStyle(C.signal)
             Button(L("update.download")) { openURL(release.url) }
                 .gsType(.body)
                 .fontWeight(.semibold)

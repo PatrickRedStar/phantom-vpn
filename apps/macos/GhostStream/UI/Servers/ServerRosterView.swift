@@ -23,7 +23,8 @@ public struct ServerRosterView: View {
     @Environment(DockPolicyController.self) private var dock
 
     @State private var selection: String?
-    @State private var sortOrder = [KeyPathComparator(\RosterRow.name)]
+    /// Сначала состояние (активный профиль — первым), внутри — по имени.
+    @State private var sortOrder = [KeyPathComparator(\RosterRow.stateSort), KeyPathComparator(\RosterRow.name)]
     @State private var search = ""
     @State private var rtt: [String: UInt32] = [:]
     @State private var probed = false
@@ -46,8 +47,10 @@ public struct ServerRosterView: View {
         .padding(.top, GsSpace.s)
         .padding(.bottom, GsSpace.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .searchable(text: $search, placement: .toolbar, prompt: L("srv.search"))
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                ToolbarSearchField(text: $search, prompt: L("srv.search"))
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button { sheet = .new } label: {
                     Label(L("srv.add"), systemImage: "plus")
@@ -55,6 +58,7 @@ public struct ServerRosterView: View {
                 .keyboardShortcut("n", modifiers: .command)
                 .help(L("srv.add"))
             }
+            ConsoleToolbarItems()
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
@@ -98,12 +102,14 @@ public struct ServerRosterView: View {
                 }
                 .padding(.vertical, GsSpace.xs)
             }
-            .width(min: 180, ideal: 250)
+            // Без ideal: профиль забирает остаток, остальные колонки
+            // в узком окне не уезжают за край.
+            .width(min: 160)
 
             TableColumn(L("srv.col.route"), value: \.route) { row in
                 Text(row.route)
             }
-            .width(min: 90, ideal: 120)
+            .width(min: 80, ideal: 100)
 
             TableColumn(L("srv.col.latency"), value: \.rttSort) { row in
                 if let ms = row.rtt {
@@ -112,19 +118,19 @@ public struct ServerRosterView: View {
                     Text(probed ? L("srv.no_reply") : "—").foregroundStyle(.secondary)
                 }
             }
-            .width(min: 70, ideal: 90)
+            .width(min: 70, ideal: 80)
 
             TableColumn(L("srv.col.access"), value: \.accessSort) { row in
                 Text(row.access.text)
                     .monospacedDigit()
                     .foregroundStyle(row.access.dim ? .secondary : .primary)
             }
-            .width(min: 80, ideal: 100)
+            .width(min: 80, ideal: 96)
 
             TableColumn(L("srv.col.state"), value: \.stateSort) { row in
                 stateLabel(row)
             }
-            .width(min: 110, ideal: 140)
+            .width(min: 100, ideal: 110)
         }
         .gsType(.body)
         .tableStyle(.inset)
@@ -132,9 +138,6 @@ public struct ServerRosterView: View {
         .scrollContentBackground(.hidden)
         .background(C.bgElev, in: RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous).stroke(C.hair, lineWidth: 1))
-        // По высоте строк, как в макете: иначе inset-таблица рисует до низа
-        // пустые полосы-заполнители. Больше строк — прокрутка.
-        .frame(maxHeight: GsTable.height(rows: rows.count, rowHeight: GsTable.twoLineRow))
         .contextMenu(forSelectionType: String.self) { ids in
             if let profile = ids.first.flatMap(profiles.load(id:)) {
                 rowMenu(profile)
@@ -327,16 +330,6 @@ public struct ServerRosterView: View {
 }
 
 // MARK: - Models
-
-/// Высота inset-таблицы под содержимое (шапка + отступы + строки).
-enum GsTable {
-    static let twoLineRow: CGFloat = 47
-    static let oneLineRow: CGFloat = 24.1
-
-    static func height(rows: Int, rowHeight: CGFloat) -> CGFloat {
-        38 + CGFloat(max(rows, 1)) * rowHeight
-    }
-}
 
 private enum EditorSheet: Identifiable {
     case new

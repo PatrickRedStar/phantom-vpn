@@ -6,13 +6,15 @@
 //
 //    -gsDemo idle|connecting|connected|reconnecting|error|empty
 //    -gsSnapshot <name>    PNG окна на каждый пункт сайдбара (main, servers,
-//                          logs, admin, settings) + popover.png, мастер
+//                          logs, admin, settings) + popover.png, отдельное
+//                          окно логов (logs-window.png), мастер
 //                          (welcome*.png) и about.png, затем выход.
 //                          Приложение в песочнице, поэтому папка всегда в
 //                          tmp контейнера: ~/Library/Containers/
 //                          com.ghoststream.client/Data/tmp/<name> (от пути
 //                          берётся последний компонент; пути — в stdout)
 //    -gsTheme light|dark   иначе системная тема
+//    -gsWindow WxH         размер окна консоли для снимков (по умолчанию 1100x720)
 //
 //  Всё живёт в памяти: профили подставлены через volatile argument domain
 //  UserDefaults (поверх App Group, на диск не пишется), StatusFrame — в
@@ -35,6 +37,10 @@ enum DebugDemo {
 
     private static let snapshotDir = UserDefaults.standard.string(forKey: "gsSnapshot")
     private static let theme = UserDefaults.standard.string(forKey: "gsTheme")
+    private static let windowSize: NSSize = {
+        let wh = (UserDefaults.standard.string(forKey: "gsWindow") ?? "").split(separator: "x").compactMap { Double($0) }
+        return wh.count == 2 ? NSSize(width: wh[0], height: wh[1]) : NSSize(width: 1100, height: 720)
+    }()
 
     /// До создания сторов: подставить профили и тему поверх App Group.
     static func prepare() {
@@ -54,10 +60,8 @@ enum DebugDemo {
         guard isActive else { return nil }
         var parts = UpdateChecker.currentVersion.split(separator: ".").map { Int($0) ?? 0 }
         parts[parts.count - 1] += 1
-        return .init(
-            version: parts.map(String.init).joined(separator: "."),
-            url: URL(string: "https://github.com/PatrickRedStar/phantom-vpn/releases/latest")!
-        )
+        let page = URL(string: "https://github.com/PatrickRedStar/ghoststream-releases/releases/latest")!
+        return .init(version: parts.map(String.init).joined(separator: "."), url: page, notes: page)
     }
 
     // MARK: - Data
@@ -144,9 +148,9 @@ enum DebugDemo {
     // MARK: - Launch
 
     /// Из `MenuBarExtra` label `.task`: открыть консоль; с -gsSnapshot —
-    /// снять PNG и выйти.
+    /// снять PNG и выйти. `open` — openWindow(id:).
     @MainActor
-    static func start(openConsole: () -> Void) async {
+    static func start(open: (String) -> Void) async {
         _ = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { event in
             if event.type == .keyDown, event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "q" {
@@ -157,14 +161,14 @@ enum DebugDemo {
         if let theme {
             NSApp.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
         }
-        openConsole()
+        open("console")
         guard let snapshotDir else { return }
-        await snapshot(to: URL(fileURLWithPath: snapshotDir, isDirectory: true))
+        await snapshot(to: URL(fileURLWithPath: snapshotDir, isDirectory: true), open: open)
         exit(0)
     }
 
     @MainActor
-    private static func snapshot(to requested: URL) async {
+    private static func snapshot(to requested: URL, open: (String) -> Void) async {
         // Песочница: писать можно только в свой контейнер.
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(requested.lastPathComponent)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -173,7 +177,7 @@ enum DebugDemo {
             print("gsSnapshot: console window not found in \(NSApp.windows.map { $0.identifier?.rawValue ?? "-" })")
             return
         }
-        window.setFrame(NSRect(x: 80, y: 80, width: 1100, height: 720), display: true)
+        window.setFrame(NSRect(origin: NSPoint(x: 80, y: 80), size: windowSize), display: true)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
 
@@ -187,17 +191,30 @@ enum DebugDemo {
             capture(window, to: dir.appendingPathComponent("\(files[channel]!).png"))
         }
 
-        // Попап меню-бара — offscreen, в своём окне вне экрана.
+        // Отдельное окно логов (⇧⌘L) — настоящая сцена, с тулбаром.
+        open("logs")
+        try? await Task.sleep(for: .seconds(1.2))
+        if let logs = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("logs") == true }) {
+            logs.setFrame(NSRect(origin: NSPoint(x: 120, y: 120), size: NSSize(width: 900, height: 560)), display: true)
+            try? await Task.sleep(for: .seconds(0.6))
+            capture(logs, to: dir.appendingPathComponent("logs-window.png"))
+            logs.close()
+        }
+
+        // Попап меню-бара — offscreen, в ключевой панели: как вживую, иначе
+        // prominent-кнопки рисуются неактивными (серыми).
         let host = NSHostingView(rootView: LocalizedRoot {
             MenuBarPopover().gsAppEnvironment()
         })
-        let popover = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: 380, height: 636),
+        let popover = KeyPanel(contentRect: NSRect(x: -4000, y: -4000, width: 380, height: 636),
                                styleMask: [.borderless], backing: .buffered, defer: false)
         popover.appearance = NSApp.appearance
         popover.contentView = host
-        popover.orderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        popover.makeKeyAndOrderFront(nil)
         try? await Task.sleep(for: .seconds(1))
         capture(popover, to: dir.appendingPathComponent("popover.png"))
+        popover.orderOut(nil)
 
         await snapshotWelcomeAndAbout(to: dir)
     }
@@ -265,5 +282,10 @@ enum DebugDemo {
         }
         print("gsSnapshot: \(url.path)")
     }
+}
+
+/// Borderless-окно по умолчанию не становится ключевым.
+private final class KeyPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }
 #endif

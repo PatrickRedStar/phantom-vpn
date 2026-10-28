@@ -87,10 +87,11 @@ struct AdminClientDetailPanel: View {
                     .foregroundStyle(C.textDim)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: GsSpace.s) {
-                    Button(L("adm.copy_link")) { onRequest(.copyLink) }
+                    // Короткие подписи: в узком инспекторе длинные обрезались.
+                    Button(L("adm.copy")) { onRequest(.copyLink) }
                         .gsGlassButton()
                     if link == nil {
-                        Button(L("adm.show_qr")) { Task { await loadLink() } }
+                        Button(L("adm.qr")) { Task { await loadLink() } }
                             .gsGlassButton()
                     }
                 }
@@ -118,8 +119,13 @@ struct AdminClientDetailPanel: View {
                     .foregroundStyle(C.danger)
             }
             .buttonStyle(.borderless)
+            // Без цвета borderless-кнопки выглядели выключенными.
+            .foregroundStyle(C.signal)
         }
         .formStyle(.grouped)
+        // Фон палитры, как у основной области, — без серой полосы инспектора.
+        .scrollContentBackground(.hidden)
+        .background(C.bg)
         .gsType(.body)
         .task(id: client.name) {
             link = nil

@@ -57,7 +57,7 @@ struct GhostStreamApp: App {
                     delegate.openConsole = { openForegroundWindow("console") }
                     #if DEBUG
                     if DebugDemo.isActive {
-                        await DebugDemo.start { openForegroundWindow("console") }
+                        await DebugDemo.start { openForegroundWindow($0) }
                         return
                     }
                     #endif
@@ -108,14 +108,15 @@ struct GhostStreamApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
-            // ⌘1…⌘5 — пункты сайдбара (меню «Вид»). Пока открыта палитра,
-            // цифры нужны её полю поиска.
+            // ⌘1…⌘N — пункты сайдбара по видимому порядку (меню «Вид»).
+            // Пока открыта палитра, цифры нужны её полю поиска.
             CommandGroup(before: .sidebar) {
-                ForEach(SidebarChannel.visible(adminUnlocked: profiles.activeProfile?.cachedIsAdmin == true)) { channel in
+                let admin = profiles.activeProfile?.cachedIsAdmin == true
+                ForEach(SidebarChannel.visible(adminUnlocked: admin)) { channel in
                     Button(L(channel.localizedKey)) {
                         openConsole(on: channel)
                     }
-                    .keyboardShortcut(KeyEquivalent(channel.hotkey), modifiers: .command)
+                    .keyboardShortcut(KeyEquivalent(channel.hotkey(adminUnlocked: admin)), modifiers: .command)
                 }
                 .disabled(router.commandPaletteOpen)
                 Divider()
@@ -152,18 +153,15 @@ struct GhostStreamApp: App {
             ForegroundWindowClaim("logs", dock: dock) {
                 LocalizedRoot {
                 TailView()
-                    .environment(prefs)
-                    .environment(state)
-                    .environment(logs)
-                    .environment(router)
-                    .gsTheme(override: themeOverride(from: prefs.theme))
+                    .gsAppEnvironment()
                     .frame(minWidth: 760, minHeight: 520)
                     .onAppear { router.detachedLogsOpen = true }
                     .onDisappear { router.detachedLogsOpen = false }
                 }
             }
         }
-        .windowStyle(.hiddenTitleBar)
+        // Обычный заголовок: фильтр и поиск живут в тулбаре окна.
+        .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)
 
         // Onboarding window.
@@ -171,12 +169,7 @@ struct GhostStreamApp: App {
             ForegroundWindowClaim("welcome", dock: dock) {
                 LocalizedRoot {
                 WelcomeWindow()
-                    .environment(profiles)
-                    .environment(prefs)
-                    .environment(sysExt)
-                    .environment(upstream)
-                    .environmentObject(tunnel)
-                    .gsTheme(override: themeOverride(from: prefs.theme))
+                    .gsAppEnvironment()
                     .frame(width: 720, height: 560)
                 }
             }
@@ -190,17 +183,13 @@ struct GhostStreamApp: App {
             ForegroundWindowClaim("about", dock: dock) {
                 LocalizedRoot {
                 AboutView()
-                    .gsTheme(override: themeOverride(from: prefs.theme))
+                    .gsAppEnvironment()
                 }
             }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
-    }
-
-    private func themeOverride(from raw: String) -> ThemeOverride {
-        ThemeOverride(rawValue: raw) ?? .system
     }
 
     @MainActor

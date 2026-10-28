@@ -4,7 +4,8 @@
 //
 //  ADR 0022: сравниваем свою версию с последним релизом на GitHub и
 //  показываем «Доступна версия X — Скачать». DMG пользователь ставит сам.
-//  Проверка при запуске и раз в сутки; сетевые ошибки молча игнорируются.
+//  Проверка при запуске и раз в сутки (если не выключена в «Настройках»);
+//  сетевые ошибки молча игнорируются.
 //
 
 import Foundation
@@ -18,15 +19,36 @@ final class UpdateChecker {
 
     struct Release: Equatable {
         let version: String
+        /// Что скачивать: DMG релиза, а без него — страница релиза.
         let url: URL
+        /// «Что нового» — страница релиза.
+        let notes: URL
     }
 
     /// Последний релиз, если он новее установленной версии.
     private(set) var available: Release?
     private(set) var checking = false
     private(set) var lastCheck: Date?
-    /// Крестик на баннере — скрыть до следующего запуска.
-    var bannerDismissed = false
+    /// Крестик на баннере скрывает эту версию насовсем; следующая покажется.
+    /// Только флаг UI — в UserDefaults приложения, не в App Group.
+    private var dismissedVersion = UserDefaults.standard.string(forKey: UpdateChecker.dismissedKey)
+    var bannerDismissed: Bool { available?.version == dismissedVersion }
+
+    /// Тумблер «Проверять автоматически».
+    var autoCheck = UserDefaults.standard.object(forKey: UpdateChecker.autoCheckKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(autoCheck, forKey: Self.autoCheckKey)
+            if autoCheck {
+                start()
+            } else {
+                loop?.cancel()
+                loop = nil
+            }
+        }
+    }
+
+    private static let dismissedKey = "updateBannerDismissedVersion"
+    private static let autoCheckKey = "updateAutoCheck"
 
     nonisolated static let currentVersion =
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
@@ -53,7 +75,7 @@ final class UpdateChecker {
             return
         }
         #endif
-        guard loop == nil else { return }
+        guard autoCheck, loop == nil else { return }
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.check()
@@ -72,12 +94,20 @@ final class UpdateChecker {
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let latest = try? JSONDecoder().decode(LatestRelease.self, from: data),
-              let url = URL(string: latest.html_url)
+              let page = URL(string: latest.html_url)
         else { return }
 
         lastCheck = Date()
         let version = latest.tag_name.hasPrefix("v") ? String(latest.tag_name.dropFirst()) : latest.tag_name
-        available = Self.isNewer(version, than: Self.currentVersion) ? Release(version: version, url: url) : nil
+        let dmg = latest.assets?.first { $0.name.hasSuffix(".dmg") }
+            .flatMap { URL(string: $0.browser_download_url) }
+        available = Self.isNewer(version, than: Self.currentVersion)
+            ? Release(version: version, url: dmg ?? page, notes: page) : nil
+    }
+
+    func dismissBanner() {
+        dismissedVersion = available?.version
+        UserDefaults.standard.set(dismissedVersion, forKey: Self.dismissedKey)
     }
 
     /// Покомпонентно числами: «0.29.10» новее «0.29.9»; хвосты вида «-beta» отбрасываются.
@@ -97,6 +127,12 @@ final class UpdateChecker {
     private struct LatestRelease: Decodable {
         let tag_name: String
         let html_url: String
+        let assets: [Asset]?
+
+        struct Asset: Decodable {
+            let name: String
+            let browser_download_url: String
+        }
     }
 
     #if DEBUG

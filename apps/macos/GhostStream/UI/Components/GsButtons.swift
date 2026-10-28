@@ -96,6 +96,19 @@ struct ConnectButton: View {
     }
 }
 
+extension ToolbarContent {
+    /// Кнопка рисует свою капсулу сама: без этого macOS 26 кладёт под неё
+    /// ещё и стеклянную подложку тулбара — двойная обводка вокруг кнопки.
+    @ToolbarContentBuilder
+    func gsOwnBackground() -> some ToolbarContent {
+        if #available(macOS 26, *) {
+            sharedBackgroundVisibility(.hidden)
+        } else {
+            self
+        }
+    }
+}
+
 /// Одна точка «подключить/отключить» для тулбара, дашборда и попапа
 /// (раньше — две одинаковые копии в DashboardView и MenuBarPopover).
 @MainActor
@@ -157,6 +170,43 @@ enum ConnectAction {
             return L("connect.err.sysext_pending")
         case .notInstalled:
             return L("connect.err.sysext_missing")
+        }
+    }
+}
+
+/// Поиск экрана в тулбаре обычным полем, а не `.searchable`: системный
+/// поиск macOS всегда встаёт крайним справа, и главная кнопка прыгала бы
+/// между вкладками. Капсулу на macOS 26 рисует сам тулбар.
+struct ToolbarSearchField: View {
+    @Binding var text: String
+    let prompt: String
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .focused($focused)
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(L("general.clear"))
+            }
+        }
+        .padding(.horizontal, GsSpace.s)
+        .frame(width: 130)
+        // ⌘F, как было у `.searchable`.
+        .background {
+            Button("") { focused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .accessibilityHidden(true)
         }
     }
 }

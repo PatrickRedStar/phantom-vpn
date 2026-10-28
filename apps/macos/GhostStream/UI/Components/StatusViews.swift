@@ -84,52 +84,80 @@ struct StatusHeadline: View {
     }
 }
 
-/// Чип активного профиля: меню переключает профиль. В тулбаре — одна строка,
-/// в сайдбаре (`showsAccess`) — плюс срок доступа и стеклянная подложка.
+/// Чип активного профиля: меню переключает профиль, правит и добавляет. В
+/// тулбаре — одна строка, в сайдбаре (`showsAccess`) — плюс срок доступа и
+/// стеклянная подложка. Без профилей в сайдбаре — кнопка «вставить ссылку».
 struct ProfileChip: View {
     var showsAccess = false
 
     @Environment(\.gsColors) private var C
+    @Environment(\.openWindow) private var openWindow
     @Environment(ProfilesStore.self) private var profiles
     @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(AppRouter.self) private var router
+    @Environment(DockPolicyController.self) private var dock
+    @EnvironmentObject private var tunnel: VpnTunnelController
 
     var body: some View {
-        Menu {
-            ForEach(profiles.profiles) { profile in
-                Toggle(profile.name, isOn: Binding(
-                    get: { profiles.activeProfile?.id == profile.id },
-                    set: { if $0 { profiles.setActive(id: profile.id) } }
-                ))
+        if profiles.profiles.isEmpty {
+            // Ссылка в буфере — сразу профиль, иначе мастер с полем вставки.
+            Button {
+                if DashPaste.importFromClipboard(profiles) != nil {
+                    openWindow(id: "welcome")
+                    dock.activateForegroundWindow()
+                }
+            } label: {
+                sidebarLabel
             }
-        } label: {
-            if showsAccess { sidebarLabel } else { toolbarLabel }
+            .buttonStyle(.plain)
+        } else {
+            Menu {
+                ForEach(profiles.profiles) { profile in
+                    Toggle(profile.name, isOn: Binding(
+                        get: { profiles.activeProfile?.id == profile.id },
+                        set: { if $0 { profiles.setActive(id: profile.id) } }
+                    ))
+                }
+                Divider()
+                if let active = profiles.activeProfile {
+                    Button(L("chip.edit")) { router.profileSheet = .edit(active.id) }
+                }
+                Button(L("chip.add")) { router.profileSheet = .add }
+            } label: {
+                if showsAccess { sidebarLabel } else { toolbarLabel }
+            }
+            // Свой шеврон (chevron.up.chevron.down) в обоих местах; в сайдбаре
+            // plain, иначе Menu схлопывает лейбл до «иконка + текст».
+            .menuIndicator(.hidden)
+            .modifier(SidebarMenuStyle(enabled: showsAccess))
+            .accessibilityLabel(L("profile.choose"))
         }
-        // Сайдбар: plain + свой шеврон, иначе Menu схлопывает лейбл до
-        // «иконка + текст». Тулбар сам рисует лейбл и индикатор.
-        .modifier(SidebarMenuStyle(enabled: showsAccess))
-        .disabled(profiles.profiles.isEmpty)
-        .accessibilityLabel(L("profile.choose"))
     }
 
     private var state: ConnState { stateMgr.statusFrame.state }
 
     private var name: String { profiles.activeProfile?.name ?? L("profile.none") }
 
-    /// Тулбар превращает лейбл Menu в «иконка + заголовок»: точка — иконкой.
+    /// Тулбар превращает лейбл Menu в «иконка + заголовок»: точка — иконкой,
+    /// шеврон — картинкой внутри заголовка.
     private var toolbarLabel: some View {
         Label {
-            Text(name)
+            Text("\(name)  \(Image(systemName: "chevron.up.chevron.down"))")
+                .lineLimit(1)
+                .truncationMode(.tail)
         } icon: {
             Image(nsImage: Self.dot(NSColor(state.tone(C))))
         }
         .labelStyle(.titleAndIcon)
+        .frame(maxWidth: 200)
     }
 
-    /// Точка 8 pt картинкой: тулбар масштабирует SF-символы до размера иконки.
+    /// Точка 8 pt картинкой (тулбар масштабирует SF-символы до размера
+    /// иконки) и 6 pt воздуха до названия.
     private static func dot(_ color: NSColor) -> NSImage {
-        NSImage(size: NSSize(width: 8, height: 8), flipped: false) { rect in
+        NSImage(size: NSSize(width: 14, height: 8), flipped: false) { _ in
             color.setFill()
-            NSBezierPath(ovalIn: rect).fill()
+            NSBezierPath(ovalIn: NSRect(x: 0, y: 0, width: 8, height: 8)).fill()
             return true
         }
     }
@@ -145,15 +173,13 @@ struct ProfileChip: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(C.bone)
                     .lineLimit(1)
-                if let subtitle {
-                    Text(subtitle)
-                        .gsType(.caption)
-                        .foregroundStyle(C.textDim)
-                        .lineLimit(1)
-                }
+                Text(subtitle)
+                    .gsType(.caption)
+                    .foregroundStyle(C.textDim)
+                    .lineLimit(1)
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.up.chevron.down")
+            Image(systemName: profiles.profiles.isEmpty ? "plus" : "chevron.up.chevron.down")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(C.textDim)
         }
@@ -163,11 +189,16 @@ struct ProfileChip: View {
         .modifier(GlassSurface(shape: shape))
     }
 
-    /// Вторая строка сайдбарного чипа: проблема, если есть, иначе срок доступа.
-    private var subtitle: String? {
+    /// Вторая строка сайдбарного чипа — всегда есть, чтобы высота не прыгала:
+    /// проблема, если есть, иначе срок доступа.
+    private var subtitle: String {
         guard let profile = profiles.activeProfile else { return L("profile.none_hint") }
-        if state == .reconnecting || state == .error { return state.title }
-        guard let expires = profile.cachedExpiresAt else { return nil }
+        if state == .reconnecting { return state.title }
+        if state == .error {
+            return DashIssue.current(frame: stateMgr.statusFrame, tunnelError: tunnel.lastError,
+                                     profileName: profile.name)?.title ?? state.title
+        }
+        guard let expires = profile.cachedExpiresAt else { return L("profile.access_unlimited") }
         let date = Date(timeIntervalSince1970: TimeInterval(expires))
         let day = date.formatted(.dateTime.day(.twoDigits).month(.twoDigits))
         let days = Int((date.timeIntervalSinceNow / 86_400).rounded(.up))
@@ -182,7 +213,7 @@ private struct SidebarMenuStyle: ViewModifier {
 
     func body(content: Content) -> some View {
         if enabled {
-            content.buttonStyle(.plain).menuIndicator(.hidden)
+            content.buttonStyle(.plain)
         } else {
             content
         }

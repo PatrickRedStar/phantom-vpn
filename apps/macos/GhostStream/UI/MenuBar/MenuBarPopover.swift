@@ -71,12 +71,14 @@ public struct MenuBarPopover: View {
                     .padding(.horizontal, GsSpace.s)
                     .padding(.top, 2)
                     .padding(.bottom, GsSpace.xs)
-                ForEach(profiles.profiles) { profile in
-                    let active = profile.id == profiles.activeId
-                    MenuRow(title: profile.name, checked: active,
-                            trailing: active && state == .connected ? frame.rttMs.map { String(format: L("unit.ms"), Int64($0)) } : nil) {
-                        profiles.setActive(id: profile.id)
+                // Много профилей — прокрутка, попап не выше ~8 строк.
+                if profiles.profiles.count > Self.maxProfileRows {
+                    ScrollView {
+                        VStack(spacing: 0) { profileRows }
                     }
+                    .frame(height: CGFloat(Self.maxProfileRows) * MenuRow.height)
+                } else {
+                    profileRows
                 }
             }
             separator
@@ -97,6 +99,18 @@ public struct MenuBarPopover: View {
         // Тот же флаг удачной сессии, что и на «Главной».
         .onChange(of: state) { _, newState in
             tunnel.observeStateForSuccessTracking(newState)
+        }
+    }
+
+    private static let maxProfileRows = 8
+
+    private var profileRows: some View {
+        ForEach(profiles.profiles) { profile in
+            let active = profile.id == profiles.activeId
+            MenuRow(title: profile.name, checked: active,
+                    trailing: active && state == .connected ? frame.rttMs.map { String(format: L("unit.ms"), Int64($0)) } : nil) {
+                profiles.setActive(id: profile.id)
+            }
         }
     }
 
@@ -276,6 +290,8 @@ private struct MenuRow: View {
     var trailing: String?
     let action: () -> Void
 
+    static let height: CGFloat = 28
+
     @Environment(\.gsColors) private var C
     @State private var hover = false
 
@@ -298,7 +314,7 @@ private struct MenuRow: View {
             .gsType(.body)
             .foregroundStyle(hover ? C.bg : C.bone)
             .padding(.horizontal, GsSpace.s)
-            .frame(height: 28)
+            .frame(height: Self.height)
             .background(hover ? C.signal : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .contentShape(Rectangle())
         }

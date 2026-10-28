@@ -3,8 +3,8 @@
 //  GhostStream (macOS)
 //
 //  Нативный каркас окна (ADR 0022, mockup.html): системный сайдбар с чипом
-//  профиля внизу, тулбар с чипом и главной кнопкой, баннер обновления над
-//  экраном. Command Palette — overlay.
+//  профиля внизу, тулбар «кнопки экрана → чип → главная кнопка», баннер
+//  обновления над экраном. Command Palette — overlay.
 //
 
 import PhantomKit
@@ -33,7 +33,10 @@ public struct MainConsoleWindow: View {
             } detail: {
                 detail
                     .navigationTitle(L(router.selectedChannel.localizedKey))
-                    .toolbar { toolbar }
+                    .environment(\.gsInConsole, true)
+                    // Один фон тулбара на всех вкладках: Form и инспектор
+                    // иначе красят полосу по-своему и она мигает.
+                    .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             }
             // UI-R2-R02: пока открыта палитра, шорткаты и клики под ней
             // не должны срабатывать.
@@ -44,8 +47,14 @@ public struct MainConsoleWindow: View {
                     .transition(.opacity)
             }
         }
-        // Старые экраны рассчитаны на ~820 pt детали + сайдбар.
-        .frame(minWidth: 1040, minHeight: 680)
+        // Уже — тулбар «Серверов» (поиск, +, чип, кнопка) уходит в «»».
+        .frame(minWidth: 960, minHeight: 640)
+        .sheet(item: Bindable(router).profileSheet) { sheet in
+            switch sheet {
+            case .add:          ProfileEditorSheet()
+            case .edit(let id): ProfileEditorSheet(editProfileId: id)
+            }
+        }
         // Админский профиль сменился на обычный — не оставляем пользователя
         // на пропавшем пункте.
         .onChange(of: adminUnlocked) { _, unlocked in
@@ -87,8 +96,9 @@ public struct MainConsoleWindow: View {
 
     private var detail: some View {
         VStack(spacing: 0) {
-            if let release = updates.available, !updates.bannerDismissed {
-                UpdateBanner(release: release) { updates.bannerDismissed = true }
+            // В «Админе» баннер лёг бы поверх колонки инспектора.
+            if let release = updates.available, !updates.bannerDismissed, router.selectedChannel != .admin {
+                UpdateBanner(release: release) { updates.dismissBanner() }
                     .padding(.horizontal, GsSpace.xxl)
                     .padding(.top, GsSpace.s)
             }
@@ -97,26 +107,46 @@ public struct MainConsoleWindow: View {
         .background(C.bg)
     }
 
-    @ToolbarContentBuilder
-    private var toolbar: some ToolbarContent {
-        if !profiles.profiles.isEmpty {
+    @ViewBuilder
+    private var detailPane: some View {
+        // Серверы, Логи и Админ ставят ConsoleToolbarItems в конец своего
+        // `.toolbar` — после своих кнопок.
+        switch router.selectedChannel {
+        case .stream:  DashboardView().toolbar { ConsoleToolbarItems() }
+        case .tail:    TailView()
+        case .setup:   SettingsView().toolbar { ConsoleToolbarItems() }
+        case .roster:  ServerRosterView()
+        case .admin:   AdminConsoleView()
+        }
+    }
+}
+
+extension EnvironmentValues {
+    /// Экран показан в консоли. Отдельное окно логов — нет: там чипа и
+    /// главной кнопки не нужно.
+    @Entry var gsInConsole = false
+}
+
+/// Чип профиля и «Подключить / Отключить» — последними в тулбаре любой
+/// вкладки, чтобы главная кнопка всегда стояла справа и не прыгала. Без
+/// профилей обоих нет: подключать нечего.
+struct ConsoleToolbarItems: ToolbarContent {
+    @Environment(\.gsInConsole) private var inConsole
+    @Environment(ProfilesStore.self) private var profiles
+
+    var body: some ToolbarContent {
+        if inConsole && !profiles.profiles.isEmpty {
+            if #available(macOS 26, *) {
+                // Чип — своей капсулой, отдельно от кнопок экрана.
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
             ToolbarItem(placement: .primaryAction) {
                 ProfileChip()
             }
-        }
-        ToolbarItem(placement: .primaryAction) {
-            ConnectButton()
-        }
-    }
-
-    @ViewBuilder
-    private var detailPane: some View {
-        switch router.selectedChannel {
-        case .stream:  DashboardView()
-        case .tail:    TailView()
-        case .setup:   SettingsView()
-        case .roster:  ServerRosterView()
-        case .admin:   AdminConsoleView()
+            ToolbarItem(placement: .primaryAction) {
+                ConnectButton()
+            }
+            .gsOwnBackground()
         }
     }
 }

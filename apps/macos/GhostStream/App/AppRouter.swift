@@ -12,7 +12,7 @@ import Foundation
 import Observation
 
 /// Пункты сайдбара в порядке макета: Главная / Серверы / Логи / Админ /
-/// Настройки. ⌘1…⌘5 — по этому же порядку.
+/// Настройки. ⌘1…⌘N — по видимому порядку (`hotkey(adminUnlocked:)`).
 public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
     case stream
     case roster
@@ -44,14 +44,10 @@ public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
         }
     }
 
-    public var hotkey: Character {
-        switch self {
-        case .stream: return "1"
-        case .roster: return "2"
-        case .tail:   return "3"
-        case .admin:  return "4"
-        case .setup:  return "5"
-        }
+    /// Цифра ⌘N по видимому порядку: у не-админа «Настройки» — ⌘4, без дыры.
+    public func hotkey(adminUnlocked: Bool) -> Character {
+        let index = Self.visible(adminUnlocked: adminUnlocked).firstIndex(of: self) ?? 0
+        return Character(String(index + 1))
     }
 
     /// Channels to render for the current session. The ADMIN tab is
@@ -72,6 +68,9 @@ public final class AppRouter {
     public var selectedChannel: SidebarChannel = .stream
     public var commandPaletteOpen: Bool = false
     public var detachedLogsOpen: Bool = false
+    /// Лист «Добавить / Изменить профиль» из чипа профиля: один на окно
+    /// для обоих чипов (тулбар и сайдбар), показывает его консоль.
+    public var profileSheet: ProfileSheet?
 
     private init() {}
 
@@ -85,5 +84,17 @@ public final class AppRouter {
 
     public func openDetachedLogs() {
         detachedLogsOpen = true
+    }
+}
+
+public enum ProfileSheet: Identifiable {
+    case add
+    case edit(String)
+
+    public var id: String {
+        switch self {
+        case .add:          return "add"
+        case .edit(let id): return id
+        }
     }
 }

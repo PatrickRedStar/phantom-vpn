@@ -292,17 +292,21 @@ public struct CommandPalette: View {
         var groups: [Group] = []
         let state = stateMgr.statusFrame.state
 
-        // 1. Профили. RTT — только у активного: он один и замерен.
+        // 1. Профили: маршрут словами вместо адреса; RTT — только у
+        // активного (он один и замерен). Активный при поднятом туннеле —
+        // имя и состояние («Подключено»), а не «Подключиться к …».
         let profilesSection = L("palette.section.profiles")
         let profileItems: [PaletteItem] = profiles.profiles.map { profile in
             let isActive = profile.id == profiles.activeProfile?.id
+            let isLive = isActive && VpnTunnelController.isUp(state)
             let rtt = isActive && state == .connected
-                ? stateMgr.statusFrame.rttMs.map { " · \($0) " + L("palette.ms") } ?? ""
+                ? stateMgr.statusFrame.rttMs.map { " · " + String(format: L("unit.ms"), Int64($0)) } ?? ""
                 : ""
+            let route = L(profile.relayActive ? "dash.route.relay" : "dash.route.direct") + rtt
             return PaletteItem(
                 id: "profile.\(profile.id)",
-                title: String(format: L("palette.connect_to"), profile.name),
-                subtitle: profile.effectiveServerAddr + rtt,
+                title: isLive ? profile.name : String(format: L("palette.connect_to"), profile.name),
+                subtitle: isLive ? state.title + " · " + route : route,
                 section: profilesSection,
                 icon: isActive ? "checkmark.circle" : "dot.radiowaves.left.and.right",
                 kbd: nil,
@@ -445,7 +449,7 @@ public struct CommandPalette: View {
                 subtitle: nil,
                 section: navSection,
                 icon: channel.sfSymbol,
-                kbd: "⌘\(channel.hotkey)",
+                kbd: "⌘\(channel.hotkey(adminUnlocked: adminUnlocked))",
                 action: {
                     router.select(channel)
                     return .close

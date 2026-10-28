@@ -50,6 +50,7 @@ public struct AdminConsoleView: View {
                     .keyboardShortcut("n", modifiers: .command)
                 }
             }
+            ConsoleToolbarItems()
         }
         .inspector(isPresented: Binding(
             get: { adminReachable && vm?.mtlsUnavailable == false && selectedClient != nil },
@@ -63,7 +64,8 @@ public struct AdminConsoleView: View {
                     onRequest: { handle($0, client) },
                     onStatus: { notice = AdminNotice(text: $0, isError: !$1) }
                 )
-                .inspectorColumnWidth(min: 250, ideal: 270, max: 380)
+                // Уже 250 — в окне 920 pt таблице не хватало места на «Трафик».
+                .inspectorColumnWidth(min: 230, ideal: 240, max: 380)
             }
         }
         .sheet(isPresented: $showCreate) {
@@ -163,12 +165,14 @@ public struct AdminConsoleView: View {
                 }
                 .padding(.vertical, GsSpace.xs)
             }
-            .width(min: 120, ideal: 150)
+            .width(min: 80, ideal: 110)
 
             TableColumn(L("adm.col.status"), value: \.statusSort) { row in
                 AdminClientStatus(client: row.client)
             }
-            .width(min: 150, ideal: 190)
+            // Сжимаются только имя и статус (дата и трафик — фиксированные):
+            // в окне 920 pt с открытым инспектором «Трафик» не уезжает за край.
+            .width(min: 80, ideal: 160)
 
             TableColumn(L("adm.col.access"), value: \.accessSort) { row in
                 let access = AdminFormat.access(row.client.expiresAt)
@@ -176,12 +180,12 @@ public struct AdminConsoleView: View {
                     .monospacedDigit()
                     .foregroundStyle(access.dim ? .secondary : .primary)
             }
-            .width(min: 80, ideal: 96)
+            .width(84)
 
             TableColumn(L("adm.col.traffic"), value: \.traffic) { row in
                 Text(AdminFormat.bytes(row.traffic)).monospacedDigit()
             }
-            .width(min: 60, ideal: 76)
+            .width(64)
         }
         .gsType(.body)
         .tableStyle(.inset)
@@ -189,7 +193,6 @@ public struct AdminConsoleView: View {
         .scrollContentBackground(.hidden)
         .background(C.bgElev, in: RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous).stroke(C.hair, lineWidth: 1))
-        .frame(maxHeight: GsTable.height(rows: rows.count, rowHeight: GsTable.twoLineRow))
         .contextMenu(forSelectionType: String.self) { names in
             if let client = names.first.flatMap(client(named:)) {
                 AdminActionsMenu(client: client) { handle($0, client) }

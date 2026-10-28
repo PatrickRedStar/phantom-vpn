@@ -72,7 +72,9 @@ public struct SettingsView: View {
         @Bindable var p = prefs
         Section {
             Toggle(isOn: $p.killSwitch) {
+                // Вне «весь трафик» не действует — заголовок приглушён вместе с тумблером.
                 Text(L("settings.kill_switch.title"))
+                    .foregroundStyle(routingMode == .global ? Color.primary : C.textDim)
                 Text(L(routingMode == .global ? "settings.kill_switch.hint" : "settings.kill_switch.only_global"))
             }
             .tint(C.signal)
@@ -90,6 +92,12 @@ public struct SettingsView: View {
                 Text(L("settings.dns"))
                 Text(L("settings.dns.hint"))
             }
+
+            Toggle(isOn: $p.dnsLeakProtection) {
+                Text(L("settings.dns_leak"))
+                Text(L("settings.dns_leak.hint"))
+            }
+            .tint(C.signal)
 
             Toggle(isOn: $p.ipv6Killswitch) {
                 Text(L("settings.ipv6_leak"))
@@ -156,6 +164,7 @@ public struct SettingsView: View {
             .flatMap { try? JSONDecoder().decode(VpnProfile.self, from: $0) }?
             .dnsServers
         return applied.ipv6Killswitch != prefs.ipv6Killswitch
+            || applied.dnsLeakProtection != prefs.dnsLeakProtection
             || applied.streams != prefs.streamOverride
             || proto.includeAllNetworks != (prefs.killSwitch && routingMode == .global)
             || appliedDns != (dnsServers ?? profiles.activeProfile?.dnsServers)
@@ -193,6 +202,7 @@ public struct SettingsView: View {
                         Text(exclusionsCount)
                             .foregroundStyle(C.textDim)
                         Button(L("settings.exclusions.edit")) { editingExclusions = true }
+                            .gsGlassButton()
                     }
                 } label: {
                     Text(L("settings.exclusions.title"))
@@ -239,6 +249,7 @@ public struct SettingsView: View {
                     Button(L("settings.login.open_settings")) {
                         SMAppService.openSystemSettingsLoginItems()
                     }
+                    .gsGlassButton()
                 } label: {
                     Text(L("settings.login.approval"))
                         .foregroundStyle(C.warn)
@@ -321,6 +332,11 @@ public struct SettingsView: View {
                             UpdateChecker.currentVersion, UpdateChecker.currentBuild))
                 Text(updateStatus)
             }
+            Toggle(isOn: Binding(get: { updates.autoCheck }, set: { updates.autoCheck = $0 })) {
+                Text(L("update.auto"))
+                Text(L("update.auto.hint"))
+            }
+            .tint(C.signal)
         }
     }
 
@@ -348,6 +364,7 @@ public struct SettingsView: View {
             .tint(C.signal)
             LabeledContent {
                 Button(L("settings.report.save")) { Task { await exportDiagnostics() } }
+                    .gsGlassButton()
                     .disabled(exportingDiagnostics)
             } label: {
                 Text(L("settings.report.title"))

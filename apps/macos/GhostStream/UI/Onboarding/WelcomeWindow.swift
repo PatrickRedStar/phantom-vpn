@@ -3,7 +3,7 @@
 //  GhostStream (macOS)
 //
 //  Мастер первого запуска в стиле mockup.html: системный шрифт, заголовок
-//  28 pt, одна lime-кнопка главного действия. Каждая граница прав — свой
+//  28 pt, одна lime-кнопка главного действия — справа, последней. Каждая граница прав — свой
 //  экран с понятным объяснением по русской macOS и живым ожиданием,
 //  которое само переходит дальше.
 //
@@ -253,13 +253,14 @@ private struct MoveToApplicationsStepView: View {
             StepIntro(title: L("welcome.move.title"), text: L("welcome.move.body"))
             Spacer()
             HStack(spacing: GsSpace.m) {
-                WizardButton(title: L("welcome.move.open")) {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
-                }
                 WizardButton(title: L("menu.quit"), prominent: false) {
                     NSApp.terminate(nil)
                 }
+                WizardButton(title: L("welcome.move.open")) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 }
@@ -290,6 +291,7 @@ private struct PasteStepView: View {
             WizardButton(title: L("welcome.paste.add")) { importGhs() }
                 .disabled(ghsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .keyboardShortcut(.return, modifiers: .command)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .onAppear { detectClipboard() }
     }
@@ -367,6 +369,7 @@ private struct InstallExtStepView: View {
             WizardButton(title: L("welcome.install.action")) {
                 coordinator.kickOffInstall()
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
@@ -401,13 +404,14 @@ private struct AwaitingApprovalStepView: View {
             WizardError(text: coordinator.lastError)
             Spacer()
             HStack(spacing: GsSpace.m) {
-                WizardButton(title: L("welcome.approve.open")) {
-                    OnboardingCoordinator.openSystemSettingsLoginItems()
-                }
                 WizardButton(title: L("welcome.approve.retry"), prominent: false) {
                     coordinator.kickOffInstall()
                 }
+                WizardButton(title: L("welcome.approve.open")) {
+                    OnboardingCoordinator.openSystemSettingsLoginItems()
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
@@ -435,6 +439,7 @@ private struct RebootStepView: View {
             StepIntro(title: L("welcome.reboot.title"), text: L("welcome.reboot.body"))
             Spacer()
             WizardButton(title: L("general.done"), prominent: false, action: onClose)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 }
@@ -457,6 +462,7 @@ private struct ConfigureVpnStepView: View {
                 Task { await coordinator.configureVpn() }
             }
             .disabled(coordinator.awaitingVpnApproval)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 }
@@ -482,12 +488,14 @@ private struct ReadyStepView: View {
                 checkRow(L("welcome.ready.config"))
             }
             Spacer()
+            // Как в диалогах macOS: кнопки справа, главная — последней.
             HStack(spacing: GsSpace.m) {
+                WizardButton(title: L("welcome.ready.later"), prominent: false) { finish(connect: false) }
                 WizardButton(title: L("welcome.connect_now")) { finish(connect: true) }
                     .disabled(profiles.activeProfile == nil)
                     .keyboardShortcut(.defaultAction)
-                WizardButton(title: L("welcome.ready.later"), prominent: false) { finish(connect: false) }
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
