@@ -1,9 +1,9 @@
 #!/bin/sh
 # GhostStream VPN — OpenWrt one-liner installer
-# Usage: wget -O /tmp/gs-install.sh https://github.com/PatrickRedStar/phantom-vpn/releases/latest/download/ghoststream-install.sh && sh /tmp/gs-install.sh
+# Usage: wget -O /tmp/gs-install.sh https://github.com/PatrickRedStar/ghoststream-releases/releases/latest/download/ghoststream-install.sh && sh /tmp/gs-install.sh
 set -e
 
-GITHUB="https://github.com/PatrickRedStar/phantom-vpn/releases/latest/download"
+GITHUB="https://github.com/PatrickRedStar/ghoststream-releases/releases/latest/download"
 
 echo ""
 echo "=== GhostStream VPN installer for OpenWrt ==="

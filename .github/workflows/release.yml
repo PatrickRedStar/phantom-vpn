@@ -614,3 +614,37 @@ jobs:
             apps/openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json
           draft: false
           prerelease: false
+
+      # Код приватный, поэтому клиентские сборки дублируются в публичный
+      # ghoststream-releases: оттуда их видит проверка обновлений macOS и
+      # качает установщик OpenWrt (ADR 0022). Без секрета шаг пропускается.
+      - name: Mirror client builds to public releases repo
+        if: ${{ env.RELEASES_REPO_TOKEN != '' }}
+        env:
+          RELEASES_REPO_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          repository: PatrickRedStar/ghoststream-releases
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          name: "GhostStream ${{ github.ref_name }}"
+          body: |
+            ## GhostStream ${{ github.ref_name }}
+
+            macOS — `GhostStream-*-macOS.dmg`, Android — `app-release.apk`,
+            Linux GUI — `ghoststream-linux-gui-x86_64.tar.gz`, OpenWrt — `ghoststream-install.sh`.
+          files: |
+            artifacts/phantom-client-linux/phantom-client-linux
+            artifacts/PhantomVPN-Android/app-release.apk
+            artifacts/ghoststream-linux-gui-x86_64/ghoststream-linux-gui-x86_64.tar.gz
+            artifacts/GhostStream-macOS-DMG/*.dmg
+            artifacts/openwrt-aarch64/openwrt-aarch64
+            artifacts/openwrt-armv7/openwrt-armv7
+            artifacts/openwrt-x86_64/openwrt-x86_64
+            artifacts/openwrt-mipsel/openwrt-mipsel
+            apps/openwrt/ghoststream-install.sh
+            apps/openwrt/proto/ghoststream.sh
+            apps/openwrt/luci/htdocs/luci-static/resources/protocol/ghoststream.js
+            apps/openwrt/luci/root/usr/share/rpcd/acl.d/luci-proto-ghoststream.json
+          draft: false
+          prerelease: false
