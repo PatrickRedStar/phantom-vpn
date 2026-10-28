@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-26
+updated: 2026-10-28
 ---
 
 # Troubleshooting
@@ -15,6 +15,7 @@ updated: 2026-10-26
 | `JAVA_HOME not set` при сборке APK | Указать JDK 17 из системы: macOS `export JAVA_HOME=$(/usr/libexec/java_home -v17)`, Linux `/usr/lib/jvm/java-17-*`, Windows — путь установленного JDK 17 |
 | `git push github` fails | Remote называется `origin`, не `github` |
 | `adb install` fails signature mismatch | `adb uninstall com.ghoststream.vpn` перед install (нужно при смене подписи или очистке данных) |
+| Android: приложение падает при старте `dlopen failed: cannot locate symbol "SSL_free"` | Отравлен кэш CMake у `boring-sys`: собрал под macOS (`/usr/bin/ar`, `apple-aarch64`), `libssl.a`/`libcrypto.a` по 96 Б. Удалить `target/*android*/release/build/boring-sys-*` и пересобрать. Проверка: `llvm-nm -D --undefined-only libphantom_android.so \| grep -c " SSL_"` = 0 |
 | Android: `versionCode` не совпадает | Обновить `apps/android/app/build.gradle.kts` перед тегом — таблица в [build.md](build.md) |
 | Срок подписки не отображается в UI | Берётся из `/api/me` после подключения (поля `expires_at`, `enabled`). Сервер старше v0.29.0 их не отдаёт — обновить сервер |
 | MCP `gitnexus_*` tools missing | См. `~/.claude/projects/.../memory/project_mcp_setup.md` — чаще всего `npx` вместо прямого биннаря → timeout. Установить глобально: `npm install -g gitnexus@latest` |

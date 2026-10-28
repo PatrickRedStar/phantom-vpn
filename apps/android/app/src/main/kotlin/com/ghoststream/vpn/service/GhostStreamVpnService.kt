@@ -276,9 +276,18 @@ class GhostStreamVpnService : VpnService(), PhantomListener {
          * Но узкое место не establish(), а чтение LinkProperties сторонним
          * процессом: 9406 записей дают reply IConnectivityManager в 1 317 500 Б
          * (≈140 Б на запись), Binder этого не переживает и уносит system_server
-         * вместе с «Настройками». 6000 записей ≈ 840 КБ — с запасом.
+         * вместе с «Настройками».
+         *
+         * 6000 (≈840 КБ) оказалось мало: Samsung Watch Manager
+         * (watchuniteplugin) читает LinkProperties из нескольких потоков сразу
+         * и падал с DeadSystemException каждые 10–20 с, пока поднят VPN —
+         * бесконечный рестарт, нагрев, батарея. Замер на Z Fold (2026-10-28):
+         * 3000 — падает, 2000 — живы и плагин, и «Подключения → Другие
+         * настройки». 1500 (≈210 КБ) — двукратный запас, как ROUTE_BUDGET.
+         * Цена: в обход туннеля остаются блоки от /20 (≈79 % адресов geoip ru),
+         * мелкие российские сети едут через туннель.
          */
-        private const val EXCLUDE_BUDGET = 6000
+        private const val EXCLUDE_BUDGET = 1500
 
         /**
          * Потолок склейки exclude-списка: разрыв до 1024 адресов (4 × /24).

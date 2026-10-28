@@ -236,6 +236,13 @@ GsLightDanger = 0xFFCC3322
   `VpnService.Builder.addDisallowedApplication()`.
 - **`MAX_SPLIT_ROUTES = 8000`** — больше маршрутов переполняет Binder-транзакцию в
   `VpnService.Builder.establish()` → `TransactionTooLargeException`.
+- **Маршруты VPN читают чужие процессы.** Весь список уезжает в
+  `LinkProperties` VPN-сети (~140 Б на запись), и его тянет через Binder любое
+  приложение. При 6000 excludeRoute (~840 КБ) Samsung Watch Manager падал в
+  бесконечном рестарте (нагрев, батарея); при 3000 тоже. Поэтому
+  `EXCLUDE_BUDGET` = `ROUTE_BUDGET` = 1500 (~210 КБ). Поднимать только с
+  замером: VPN в режиме «РФ напрямую» + рестарт плагина часов + «Подключения →
+  Другие настройки».
 - **Поток чтения TUN владеет fd сам** (poll + флаг остановки) — `nativeStop`
   не висит на `read(fd)`.
 - **`cachedAdminServerCertFp` (TOFU)** — при смене admin-server.crt на сервере
@@ -283,7 +290,8 @@ git не лежит. Нужны `cargo-ndk`, NDK и rustup-таргеты `aarch
 | v0.23.1 | 62 |
 | … | … |
 | v0.28.5 | 123 |
-| v0.29.0 | 124 (текущий) |
+| v0.29.0 | 124 |
+| v0.29.1 | 125 (текущий) |
 
 Текущее значение — всегда в `build.gradle.kts`; таблица — исторические точки.
 
