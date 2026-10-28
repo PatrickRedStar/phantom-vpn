@@ -95,8 +95,12 @@ public final class UpstreamVpnMonitor {
         let input = UpstreamVpnRouteDetector.SnapshotInput(
             mode: preferences.effectiveRoutingMode(profileSplitRouting: activeProfile?.splitRouting),
             manualDirectCidrs: preferences.manualDirectCidrs,
+            manualDirectIpv6Cidrs: preferences.manualDirectIpv6Cidrs,
             preserveScopedDns: preferences.preserveScopedDns,
-            serverAddr: activeProfile?.serverAddr,
+            // ADR 0013: коннект идёт на relay, если он включён — /32-исключение
+            // и пин endpoint'а в провайдере должны указывать туда же, иначе
+            // hash расходится с installOnly и в туннель уходит политика exit.
+            serverAddr: activeProfile?.effectiveServerAddr,
             tunAddr: activeProfile?.tunAddr
         )
         let next = await detector.snapshot(input)

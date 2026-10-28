@@ -86,6 +86,11 @@ public final class TrafficSeriesStore {
             currentRxRateBps = 0
             currentTxRateBps = 0
             lastByteSnapshot = nil
+            // График новой сессии не должен начинаться с хвоста прошлой.
+            if !samples.isEmpty {
+                samples.removeAll()
+                sampleCount = 0
+            }
             return
         }
 

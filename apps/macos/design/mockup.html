@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GhostStream для Mac</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ── Палитра PhantomUI (Colors.swift), светлая «Daylight» ── */
+:root{
+  --sys:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue","Segoe UI",system-ui,sans-serif;
+  --grot:"Space Grotesk",var(--sys);          /* латиница и цифры; кириллица падает в системный */
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+
+  --bg:#F1ECDC; --bg-elev:#E8E2D0; --bg-elev2:#DDD6C2;
+  --hair:#CBC3AD; --hair-bold:#B5AD96;
+  --ink:#16130C; --dim:#5A5240; --faint:#948A6F;
+  --signal:#4A6010; --signal-dim:#7A9B30; --warn:#D4600A; --danger:#CC3322;
+  --on-signal:#F1ECDC; --on-danger:#FFFFFF;
+
+  --glass:rgba(252,249,240,.58); --glass-strong:rgba(246,242,230,.80);
+  --glass-edge:rgba(255,255,255,.85); --glass-line:rgba(22,19,12,.10);
+  --win-bg:rgba(241,236,220,.52); --side-fill:rgba(255,252,242,.38);
+  --seg-on:#F1ECDC; --row-alt:rgba(22,19,12,.03);
+  --win-shadow:0 0 0 .5px rgba(40,30,10,.25),0 34px 90px rgba(60,45,15,.32),0 10px 28px rgba(60,45,15,.16);
+  --mb-ink:#16130C; --mb-bg:rgba(255,253,246,.28);
+  --mbl-bg:#ECE7DA; --mbl-ink:#16130C; --mbd-bg:#1D1B17; --mbd-ink:#F2EEE3;
+  --traffic-r:#FF5F57; --traffic-y:#FEBC2E; --traffic-g:#28C840;
+  --wall:
+    radial-gradient(55% 65% at 12% 18%,#E6D3A8 0%,transparent 62%),
+    radial-gradient(45% 55% at 88% 12%,#C5D6A6 0%,transparent 60%),
+    radial-gradient(60% 70% at 78% 92%,#E9B897 0%,transparent 62%),
+    radial-gradient(50% 60% at 25% 95%,#B9CBB8 0%,transparent 60%),
+    linear-gradient(160deg,#EFE6D1,#D9CBAE);
+  color-scheme:light;
+}
+/* ── Тёмная «Ghoststream»: системная тема ── */
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0A0908; --bg-elev:#12110E; --bg-elev2:#17150F;
+    --hair:#2A2619; --hair-bold:#3D3828;
+    --ink:#E8E2D0; --dim:#948A6F; --faint:#5A5240;
+    --signal:#C4FF3E; --signal-dim:#4A6010; --warn:#FF7A3D; --danger:#FF4A3D;
+    --on-signal:#0A0908; --on-danger:#0A0908;
+    --glass:rgba(34,31,24,.55); --glass-strong:rgba(22,20,15,.78);
+    --glass-edge:rgba(255,255,255,.16); --glass-line:rgba(255,255,255,.08);
+    --win-bg:rgba(10,9,8,.50); --side-fill:rgba(255,255,255,.035);
+    --seg-on:#3D3828; --row-alt:rgba(232,226,208,.025);
+    --win-shadow:0 0 0 .5px rgba(255,255,255,.12),0 34px 90px rgba(0,0,0,.6),0 10px 28px rgba(0,0,0,.4);
+    --mb-ink:#F2EEE3; --mb-bg:rgba(10,9,8,.25);
+    --wall:
+      radial-gradient(55% 65% at 12% 18%,#2C3512 0%,transparent 62%),
+      radial-gradient(45% 55% at 88% 10%,#3B2414 0%,transparent 60%),
+      radial-gradient(60% 70% at 75% 95%,#1D2B1F 0%,transparent 62%),
+      radial-gradient(50% 60% at 25% 95%,#2A2016 0%,transparent 60%),
+      linear-gradient(160deg,#16140E,#0A0908);
+    color-scheme:dark;
+  }
+}
+/* ── Тёмная: ручной переключатель ── */
+:root[data-theme="dark"]{
+  --bg:#0A0908; --bg-elev:#12110E; --bg-elev2:#17150F;
+  --hair:#2A2619; --hair-bold:#3D3828;
+  --ink:#E8E2D0; --dim:#948A6F; --faint:#5A5240;
+  --signal:#C4FF3E; --signal-dim:#4A6010; --warn:#FF7A3D; --danger:#FF4A3D;
+  --on-signal:#0A0908; --on-danger:#0A0908;
+  --glass:rgba(34,31,24,.55); --glass-strong:rgba(22,20,15,.78);
+  --glass-edge:rgba(255,255,255,.16); --glass-line:rgba(255,255,255,.08);
+  --win-bg:rgba(10,9,8,.50); --side-fill:rgba(255,255,255,.035);
+  --seg-on:#3D3828; --row-alt:rgba(232,226,208,.025);
+  --win-shadow:0 0 0 .5px rgba(255,255,255,.12),0 34px 90px rgba(0,0,0,.6),0 10px 28px rgba(0,0,0,.4);
+  --mb-ink:#F2EEE3; --mb-bg:rgba(10,9,8,.25);
+  --wall:
+    radial-gradient(55% 65% at 12% 18%,#2C3512 0%,transparent 62%),
+    radial-gradient(45% 55% at 88% 10%,#3B2414 0%,transparent 60%),
+    radial-gradient(60% 70% at 75% 95%,#1D2B1F 0%,transparent 62%),
+    radial-gradient(50% 60% at 25% 95%,#2A2016 0%,transparent 60%),
+    linear-gradient(160deg,#16140E,#0A0908);
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.4 var(--sys);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.ic-f{fill:currentColor;stroke:none;flex:none}
+.num{font-family:var(--grot);font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono)}
+
+/* ── Панель макета ── */
+.bar{position:sticky;top:0;z-index:10;display:flex;flex-wrap:wrap;align-items:center;gap:10px 22px;padding:12px 16px;
+  background:color-mix(in srgb,var(--bg) 84%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid var(--hair)}
+.bar .brand{font:700 15px var(--grot);letter-spacing:-.01em;margin-right:6px}
+.bar .brand em{font-style:normal;color:var(--signal)}
+.bar .brand small{font:500 12px var(--sys);color:var(--dim);margin-left:6px}
+.ctl{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;min-width:0}
+.ctl>span{font-size:12px;color:var(--dim)}
+.seg{display:inline-flex;flex-wrap:wrap;gap:2px;padding:2px;border-radius:9px;background:var(--bg-elev2);max-width:100%}
+.seg button{border:0;background:transparent;font:500 12.5px var(--sys);color:var(--dim);padding:5px 10px;border-radius:7px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--seg-on);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.06)}
+.chk{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink);cursor:pointer}
+
+main{max-width:1272px;margin:0 auto;padding:16px}
+.stage-scroll{overflow-x:auto;overflow-y:hidden;border-radius:14px;-webkit-overflow-scrolling:touch}
+.stage-size{position:relative;margin:0 auto}
+.stage{position:absolute;top:0;left:0;width:1240px;height:820px;transform-origin:0 0;border-radius:14px;overflow:hidden;
+  background:var(--wall);font:13px/1.35 var(--sys);color:var(--ink)}
+.caption{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;margin:14px 2px 0;font-size:12.5px;color:var(--dim)}
+.ib{display:inline-flex;align-items:center;gap:8px;height:26px;padding:0 10px;border-radius:7px;font-size:12px}
+.ib.l{background:var(--mbl-bg);color:var(--mbl-ink)} .ib.d{background:var(--mbd-bg);color:var(--mbd-ink)}
+.ib .ic-f{width:16px;height:16px}
+
+/* ── Строка меню macOS ── */
+.menubar{position:absolute;inset:0 0 auto 0;height:28px;display:flex;align-items:center;gap:20px;padding:0 14px;
+  color:var(--mb-ink);background:var(--mb-bg);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);font-size:13px;z-index:15}
+.menubar b{font-weight:700}
+.menubar .r{margin-left:auto;display:flex;align-items:center;gap:14px}
+.mb-ghost{display:flex;align-items:center;justify-content:center;width:30px;height:22px;border:0;border-radius:6px;background:transparent;color:var(--mb-ink);cursor:pointer;padding:0}
+.mb-ghost.open{background:color-mix(in srgb,var(--mb-ink) 16%,transparent)}
+.mb-ghost .ic-f{width:16px;height:16px}
+.batt{width:24px;height:11px;border:1.3px solid currentColor;border-radius:3.5px;position:relative;opacity:.9}
+.batt::before{content:"";position:absolute;inset:1.5px;right:5px;background:currentColor;border-radius:1.5px}
+.batt::after{content:"";position:absolute;right:-4px;top:2.5px;width:2px;height:4px;background:currentColor;border-radius:0 1px 1px 0}
+
+/* ── Окно ── */
+.win{position:absolute;left:64px;top:54px;width:1100px;height:720px;border-radius:24px;overflow:hidden;display:grid;grid-template-columns:244px 1fr;
+  background:var(--win-bg);backdrop-filter:blur(60px) saturate(170%);-webkit-backdrop-filter:blur(60px) saturate(170%);box-shadow:var(--win-shadow)}
+.side{padding:8px;display:flex;min-height:0}
+.side-panel{flex:1;display:flex;flex-direction:column;border-radius:17px;padding:12px 10px 10px;background:var(--side-fill);
+  box-shadow:inset 0 0 0 1px var(--glass-line),inset 0 1px 0 var(--glass-edge),0 2px 12px rgba(0,0,0,.06)}
+.lights{display:flex;gap:8px;padding:3px 6px 20px}
+.lights i{width:12px;height:12px;border-radius:50%;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.22)}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{display:flex;align-items:center;gap:10px;height:32px;padding:0 10px;border:0;border-radius:10px;background:transparent;font-size:13.5px;text-align:left;cursor:pointer}
+.nav button .ic{width:17px;height:17px;color:var(--dim)}
+.nav button[aria-current="page"]{background:color-mix(in srgb,var(--signal) 15%,transparent)}
+.nav button[aria-current="page"] .ic{color:var(--signal)}
+.side-chip{margin-top:auto;display:flex;align-items:center;gap:10px;padding:10px 12px;border:0;border-radius:14px;text-align:left;cursor:pointer;
+  background:var(--glass);box-shadow:inset 0 1px 0 var(--glass-edge),inset 0 0 0 1px var(--glass-line),0 4px 14px rgba(0,0,0,.06)}
+.side-chip .t{flex:1;min-width:0}
+.side-chip b{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side-chip small{display:block;font-size:11.5px;color:var(--dim);margin-top:1px}
+.side-chip .ic{color:var(--dim);width:14px;height:14px}
+
+.detail{position:relative;background:var(--bg);overflow:hidden}
+.tb{position:absolute;inset:0 0 auto 0;height:62px;display:flex;align-items:center;gap:10px;padding:0 14px 0 26px;z-index:3;
+  background:linear-gradient(var(--bg) 58%,color-mix(in srgb,var(--bg) 0%,transparent))}
+.tb h2{margin:0;font:700 17px var(--sys);letter-spacing:-.01em}
+.tb .sp{flex:1}
+.scroll{position:absolute;inset:0;overflow:auto;padding:70px 28px 32px;scrollbar-width:thin}
+
+/* Стекло — только на контролах */
+.gl{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:34px;padding:0 14px;border:0;border-radius:999px;
+  font:500 13px var(--sys);color:var(--ink);white-space:nowrap;cursor:pointer;
+  background:var(--glass);backdrop-filter:blur(16px) saturate(180%);-webkit-backdrop-filter:blur(16px) saturate(180%);
+  box-shadow:inset 0 1px 0 var(--glass-edge),inset 0 0 0 1px var(--glass-line),0 1px 2px rgba(0,0,0,.06),0 6px 18px rgba(0,0,0,.07)}
+.gl.pro{--tint:var(--signal);color:var(--on-signal);font-weight:600;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--tint) 76%,#fff) 0%,var(--tint) 62%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 0 0 1px color-mix(in srgb,var(--tint) 80%,#000),0 6px 20px color-mix(in srgb,var(--tint) 34%,transparent)}
+.gl.pro.danger{--tint:var(--danger);color:var(--on-danger)}
+.gl.big{height:38px;padding:0 20px;font-size:14px}
+.gl.sm{height:28px;padding:0 12px;font-size:12.5px}
+.gl.circle{width:34px;padding:0}
+.gl.search{width:176px;justify-content:flex-start;color:var(--dim);font-weight:400}
+.gl:disabled{opacity:.45;cursor:default;filter:saturate(.4)}
+.gl .ic{width:15px;height:15px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--tone);flex:none}
+
+/* Тона состояния */
+.t-ok{--tone:var(--signal);--tone-text:var(--signal)}
+.t-warn{--tone:var(--warn);--tone-text:var(--warn)}
+.t-danger{--tone:var(--danger);--tone-text:var(--danger)}
+.t-off{--tone:var(--faint);--tone-text:var(--ink)}
+@keyframes pulse{50%{opacity:.3}}
+.stage.t-warn :is(.big-dot,.side-chip .dot,#tbChip .dot,.pop-h .dot){animation:pulse 1.3s ease-in-out infinite}
+@media (prefers-reduced-motion:reduce){.stage.t-warn :is(.big-dot,.side-chip .dot,#tbChip .dot,.pop-h .dot){animation:none}}
+
+/* ── Главная ── */
+.hero{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin:4px 4px 22px}
+.status{display:flex;align-items:center;gap:14px}
+.status h1{margin:0;font:700 44px/1.05 var(--sys);letter-spacing:-.025em;color:var(--tone-text)}
+.big-dot{width:14px;height:14px;border-radius:50%;background:var(--tone);flex:none;
+  box-shadow:0 0 0 5px color-mix(in srgb,var(--tone) 18%,transparent),0 0 18px color-mix(in srgb,var(--tone) 55%,transparent)}
+.t-off .big-dot{box-shadow:0 0 0 5px color-mix(in srgb,var(--tone) 18%,transparent)}
+.hero .sub{margin:8px 0 0 28px;font-size:14px;color:var(--dim)}
+.timer{text-align:right}
+.timer .num{font-size:40px;font-weight:600;line-height:1;letter-spacing:-.02em}
+.timer .cap{font-size:12px;color:var(--dim);margin-top:7px}
+
+.card{background:var(--bg-elev);border:1px solid var(--hair);border-radius:26px;padding:18px 20px}
+.card-h{display:flex;align-items:center;justify-content:space-between;font-size:13px;font-weight:600;color:var(--dim);margin-bottom:12px}
+.grid{display:grid;grid-template-columns:1.55fr 1fr;gap:16px}
+.col{display:flex;flex-direction:column;gap:16px}
+.grid:has(.speed[hidden]){grid-template-columns:1fr}
+.grid:has(.speed[hidden]) .col{flex-direction:row;align-items:flex-start}
+.col>.card{flex:1} .col>.access{flex:none}
+
+.seg.sm{background:color-mix(in srgb,var(--ink) 6%,transparent)}
+.seg.sm button{font-size:11.5px;padding:3px 9px}
+.rates{display:flex;gap:40px;margin:2px 0 14px}
+.rate .v{display:flex;align-items:baseline;gap:6px}
+.rate .v .ic{width:18px;height:18px;align-self:center;stroke-width:2.2}
+.rate .num{font-size:34px;font-weight:600;line-height:1;letter-spacing:-.02em}
+.rate .unit{font-size:13px;color:var(--dim)}
+.rate .lbl{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);margin:6px 0 0 24px}
+.rate .lbl i{width:12px;height:2px;border-radius:2px;background:currentColor}
+.down{color:var(--signal)} .up{color:var(--warn)}
+.chart-w{position:relative}
+.chart{display:block;width:100%;height:168px}
+.axis{position:absolute;right:0;font-size:10.5px;color:var(--dim);background:var(--bg-elev);padding-left:4px}
+.speed.frozen .rates,.speed.frozen .chart-w{opacity:.35;filter:grayscale(1)}
+.card-f{display:flex;align-items:center;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid var(--hair);font-size:12.5px;color:var(--dim)}
+.card-f .sp{flex:1}
+.mux{display:flex;align-items:flex-end;gap:3px;height:16px}
+.mux i{width:4px;border-radius:2px;background:var(--mux,var(--signal))}
+
+.access{display:flex;align-items:center;gap:14px}
+.tile{width:42px;height:42px;border-radius:13px;display:grid;place-items:center;flex:none;
+  background:color-mix(in srgb,var(--c,var(--signal)) 14%,transparent);color:var(--c,var(--signal))}
+.tile .ic{width:20px;height:20px}
+.access b{display:block;font-size:17px;font-weight:600;letter-spacing:-.01em}
+.access span{display:block;font-size:13px;color:var(--dim);margin-top:2px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--hair);font-size:13px}
+.kv:first-of-type{border-top:0;padding-top:0}
+.kv>span:first-child{color:var(--dim)}
+.kv .mono{font-size:12px}
+
+.banner{--c:var(--warn);display:flex;align-items:center;gap:14px;padding:16px 18px;margin-bottom:16px;border-radius:22px;
+  background:color-mix(in srgb,var(--c) 10%,var(--bg));border:1px solid color-mix(in srgb,var(--c) 35%,transparent)}
+.banner.danger{--c:var(--danger);align-items:flex-start}
+.banner>.ic{width:24px;height:24px;color:var(--c)}
+.banner .t{flex:1}
+.banner b{display:block;font-size:15px;font-weight:600}
+.banner p{margin:3px 0 0;font-size:13px;color:var(--dim)}
+.banner .acts{display:flex;gap:8px;margin-top:12px}
+
+.upd{display:flex;align-items:center;gap:12px;padding:9px 9px 9px 14px;margin-bottom:18px;border-radius:18px;
+  background:color-mix(in srgb,var(--signal) 9%,var(--bg-elev));border:1px solid color-mix(in srgb,var(--signal) 30%,transparent)}
+.upd>.ic{width:22px;height:22px;color:var(--signal)}
+.upd .t{flex:1;min-width:0}
+.upd b{font-size:13.5px;font-weight:600}
+.upd span{display:block;font-size:12px;color:var(--dim)}
+.link{border:0;background:none;padding:0 6px;color:var(--signal);font-size:13px;font-weight:500;cursor:pointer}
+.x{width:26px;height:26px;border:0;border-radius:50%;background:transparent;color:var(--dim);display:grid;place-items:center;cursor:pointer}
+.x:hover{background:color-mix(in srgb,var(--ink) 8%,transparent)}
+.x .ic{width:12px;height:12px;stroke-width:2.2}
+
+.empty{min-height:560px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:12px}
+.appicon{width:116px;height:116px;filter:drop-shadow(0 10px 24px rgba(0,0,0,.25));margin-bottom:6px}
+.empty h2{margin:0;font:700 28px var(--sys);letter-spacing:-.02em}
+.empty p{margin:0;max-width:440px;font-size:14px;color:var(--dim)}
+.empty .mono{font-size:12.5px;color:var(--ink)}
+.empty .gl{margin-top:10px}
+.empty small{font-size:12px;color:var(--dim)}
+
+/* ── Таблицы ── */
+.tbl{background:var(--bg-elev);border:1px solid var(--hair);border-radius:16px;padding:6px}
+.th,.tr{display:grid;grid-template-columns:var(--cols);align-items:center;gap:14px;padding:0 12px}
+.th{height:32px;font-size:11.5px;font-weight:600;color:var(--dim);border-bottom:1px solid var(--hair);margin-bottom:4px}
+.tr{min-height:46px;border-radius:10px;font-size:13px;cursor:default}
+.tr:nth-of-type(odd){background:var(--row-alt)}
+.tr .sub{display:block;font:11px var(--mono);color:var(--dim);margin-top:1px}
+.tr .dm{color:var(--dim)}
+.tr.sel{background:var(--signal);color:var(--on-signal)}
+.tr.sel .sub,.tr.sel .dm{color:color-mix(in srgb,var(--on-signal) 72%,transparent)}
+.tr.sel .dot{background:var(--on-signal)}
+.st{display:inline-flex;align-items:center;gap:7px}
+.foot-hint{margin:10px 6px 0;font-size:12px;color:var(--dim)}
+.logs .tr{min-height:30px;font:12px var(--mono);user-select:text}
+.lv{font:600 11px var(--sys)} .lv.w{color:var(--warn)} .lv.e{color:var(--danger)} .lv.i{color:var(--dim)}
+
+/* ── Настройки: Form(.grouped) ── */
+.form{max-width:640px;margin:0 auto}
+.fs{margin-bottom:24px}
+.fs h3{margin:0 0 8px 14px;font-size:13px;font-weight:600}
+.box{background:var(--bg-elev);border:1px solid var(--hair);border-radius:16px}
+.row{position:relative;display:flex;align-items:center;gap:16px;padding:11px 14px;min-height:46px}
+.row+.row::before{content:"";position:absolute;top:0;left:14px;right:14px;border-top:1px solid var(--hair)}
+.row .t{flex:1;min-width:0}
+.row .t b{display:block;font-size:13px;font-weight:500}
+.row .t small{display:block;font-size:12px;color:var(--dim);margin-top:2px;line-height:1.35}
+.row .val{font-size:13px;color:var(--dim)}
+label.row{cursor:pointer}
+.fs .foot{display:flex;align-items:center;gap:4px;margin:8px 14px 0;font-size:12px;color:var(--dim)}
+.fs .foot .link{font-size:12px;padding:0 2px}
+input.switch{appearance:none;-webkit-appearance:none;margin:0;flex:none;width:40px;height:24px;border-radius:999px;position:relative;cursor:pointer;
+  background:var(--hair-bold);transition:background .18s}
+input.switch::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;
+  box-shadow:0 1px 3px rgba(0,0,0,.28),0 0 0 .5px rgba(0,0,0,.06);transition:transform .18s}
+input.switch:checked{background:var(--signal)}
+input.switch:checked::after{transform:translateX(16px)}
+input.switch:focus-visible,.pop select:focus-visible{outline:3px solid color-mix(in srgb,var(--signal) 45%,transparent);outline-offset:2px}
+input.switch.sm{width:32px;height:19px} input.switch.sm::after{width:15px;height:15px}
+input.switch.sm:checked::after{transform:translateX(13px)}
+.popw{position:relative;display:inline-flex;flex:none}
+.popw select{appearance:none;-webkit-appearance:none;font:13px var(--sys);color:var(--ink);height:26px;padding:0 28px 0 11px;border:0;border-radius:999px;cursor:pointer;
+  background:var(--bg);box-shadow:inset 0 0 0 1px var(--hair-bold),0 1px 1px rgba(0,0,0,.05)}
+.popw .ic{position:absolute;right:9px;top:50%;transform:translateY(-50%);width:11px;height:11px;color:var(--dim);pointer-events:none;stroke-width:2.2}
+.btn{height:26px;padding:0 13px;border:0;border-radius:999px;background:var(--bg);font:500 13px var(--sys);cursor:pointer;flex:none;
+  box-shadow:inset 0 0 0 1px var(--hair-bold),0 1px 1px rgba(0,0,0,.05)}
+
+/* ── Попап строки меню ── */
+.pop{position:absolute;top:34px;right:14px;width:306px;padding:12px;border-radius:22px;z-index:20;
+  background:var(--glass-strong);backdrop-filter:blur(36px) saturate(190%);-webkit-backdrop-filter:blur(36px) saturate(190%);
+  box-shadow:inset 0 1px 0 var(--glass-edge),inset 0 0 0 1px var(--glass-line),0 20px 56px rgba(0,0,0,.30)}
+.pop-h{display:flex;align-items:center;gap:9px;padding:4px 6px 0}
+.pop-h b{font-size:17px;font-weight:700;letter-spacing:-.01em;color:var(--tone-text)}
+.pop-h .num{margin-left:auto;font-size:15px;font-weight:600}
+.pop-sub{padding:2px 6px 12px 23px;font-size:12.5px;color:var(--dim)}
+.pop-rates{display:flex;gap:18px;margin:0 2px 12px;padding:10px 12px;border-radius:14px;background:color-mix(in srgb,var(--ink) 5%,transparent)}
+.pop-rates div{display:flex;align-items:baseline;gap:5px}
+.pop-rates .ic{width:14px;height:14px;align-self:center;stroke-width:2.2}
+.pop-rates .num{font-size:17px;font-weight:600}
+.pop-rates small{font-size:11.5px;color:var(--dim)}
+.pop-note{--c:var(--warn);margin:0 2px 12px;padding:10px 12px;border-radius:14px;font-size:12.5px;background:color-mix(in srgb,var(--c) 13%,transparent)}
+.pop-note b{display:block;color:var(--c);font-size:13px}
+.pop-note.danger{--c:var(--danger)} .pop-note.off{--c:var(--ink)}
+.pop .gl.wide{width:100%;height:38px;font-size:14px}
+.pop hr{border:0;border-top:1px solid color-mix(in srgb,var(--ink) 12%,transparent);margin:10px 6px}
+.pop-sec{font-size:11.5px;font-weight:600;color:var(--dim);padding:2px 8px 4px}
+.mi{display:flex;align-items:center;gap:8px;width:100%;height:28px;padding:0 8px;border:0;border-radius:8px;background:transparent;font-size:13px;text-align:left;cursor:default}
+.mi:hover{background:var(--signal);color:var(--on-signal)}
+.mi .ic{width:13px;height:13px;stroke-width:2.4}
+.mi .ph{width:13px;flex:none}
+.mi kbd,.mi small{margin-left:auto;font:12px var(--sys);color:var(--dim)}
+.mi:hover kbd,.mi:hover small{color:inherit;opacity:.8}
+.pop-upd{display:flex;align-items:center;gap:8px;margin:0 2px 10px;padding:8px 10px;border-radius:12px;font-size:12.5px;
+  background:color-mix(in srgb,var(--signal) 12%,transparent)}
+.pop-upd .ic{width:16px;height:16px;color:var(--signal)}
+.pop-upd .link{margin-left:auto;font-size:12.5px}
+</style>
+</head>
+<body>
+
+<!-- Иконки (контурные, в духе SF Symbols) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 10.5 12 3.5l8.5 7V19a1.5 1.5 0 0 1-1.5 1.5h-4v-6h-6v6H5A1.5 1.5 0 0 1 3.5 19z"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.4 3.8 5.2 3.8 8.5s-1.2 6.1-3.8 8.5c-2.6-2.4-3.8-5.2-3.8-8.5S9.4 5.9 12 3.5z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8.5 6.5h12M8.5 12h12M8.5 17.5h12"/><circle cx="4.2" cy="6.5" r=".6"/><circle cx="4.2" cy="12" r=".6"/><circle cx="4.2" cy="17.5" r=".6"/></symbol>
+  <symbol id="i-people" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 19.5c.8-3.4 3.2-5.2 6.2-5.2s5.4 1.8 6.2 5.2"/><circle cx="17" cy="9" r="2.5"/><path d="M16.4 14.4c2.6.2 4.3 1.9 5 4.6"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.5v8"/><path d="M6.6 6.9a7.6 7.6 0 1 0 10.8 0"/></symbol>
+  <symbol id="i-updown" viewBox="0 0 24 24"><path d="M7.5 9 12 4.5 16.5 9M7.5 15l4.5 4.5 4.5-4.5"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v15.5M6 13.5l6 6 6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 20V4.5M6 10.5l6-6 6 6"/></symbol>
+  <symbol id="i-wifislash" viewBox="0 0 24 24"><path d="M2.5 9a14.5 14.5 0 0 1 19 0M5.5 12.6a10 10 0 0 1 13 0M9 16.2a5 5 0 0 1 6 0"/><circle cx="12" cy="19.6" r=".9"/><path d="M3.5 3.5l17 17"/></symbol>
+  <symbol id="i-shieldx" viewBox="0 0 24 24"><path d="M12 3l7.5 3v5.6c0 4.5-3.2 8.2-7.5 9.4-4.3-1.2-7.5-4.9-7.5-9.4V6z"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
+  <symbol id="i-retry" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v5h-5"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v8.5M8.3 12.5 12 16.2l3.7-3.7"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 20.5 20.5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a14.5 14.5 0 0 1 19 0M5.5 12.6a10 10 0 0 1 13 0M9 16.2a5 5 0 0 1 6 0"/><circle cx="12" cy="19.6" r=".9"/></symbol>
+  <symbol id="i-cc" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="6" rx="3"/><rect x="3" y="13" width="18" height="6" rx="3"/><circle cx="16" cy="8" r="1.6"/><circle cx="8" cy="16" r="1.6"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="M7 9.5 12 5l5 4.5M7 14.5l5 4.5 5-4.5"/></symbol>
+  <symbol id="i-apple" viewBox="0 0 24 24"><path d="M16.4 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.8-.9-3-.8-1.6 0-3 .9-3.8 2.4-1.7 2.9-.4 7.2 1.2 9.5.8 1.1 1.7 2.4 2.9 2.4 1.2-.1 1.6-.8 3-.8s1.8.8 3 .7c1.3 0 2.1-1.1 2.8-2.3.9-1.3 1.3-2.6 1.3-2.6s-2.5-1-2.5-4.1zM14.2 5.8c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1.1.1 2.1-.5 2.7-1.3z"/></symbol>
+  <!-- Призрак бренда (геометрия из ic_launcher_foreground.xml) как template-иконка -->
+  <symbol id="g-fill" viewBox="92 122 306 306"><path fill-rule="evenodd" d="M256 140C330 140 380 194 380 266L380 388C380 400 370 406 360 400L334 386C328 382 320 382 314 388L296 404C288 410 278 410 270 404L256 390C250 384 240 384 234 390L220 404C212 410 202 410 194 404L176 388C170 382 162 382 156 386L130 400C120 406 110 400 110 388L110 266C110 194 182 140 256 140ZM194 240a22 28 0 1 0 44 0a22 28 0 1 0-44 0ZM274 240a22 28 0 1 0 44 0a22 28 0 1 0-44 0Z"/></symbol>
+  <symbol id="g-line" viewBox="92 122 306 306"><path fill="none" stroke="currentColor" stroke-width="26" stroke-linejoin="round" d="M256 140C330 140 380 194 380 266L380 388C380 400 370 406 360 400L334 386C328 382 320 382 314 388L296 404C288 410 278 410 270 404L256 390C250 384 240 384 234 390L220 404C212 410 202 410 194 404L176 388C170 382 162 382 156 386L130 400C120 406 110 400 110 388L110 266C110 194 182 140 256 140Z"/><path d="M194 240a22 28 0 1 0 44 0a22 28 0 1 0-44 0ZM274 240a22 28 0 1 0 44 0a22 28 0 1 0-44 0Z"/></symbol>
+</svg>
+
+<header class="bar">
+  <div class="brand"><em>G</em>hostStream <small>macOS 26 · макет редизайна</small></div>
+  <div class="ctl"><span>Экран</span>
+    <div class="seg" data-ctl="screen">
+      <button data-v="home">Главная</button><button data-v="servers">Серверы</button><button data-v="logs">Логи</button><button data-v="admin">Админ</button><button data-v="settings">Настройки</button>
+    </div>
+  </div>
+  <div class="ctl"><span>Состояние</span>
+    <div class="seg" data-ctl="state">
+      <button data-v="connected">Подключено</button><button data-v="connecting">Подключение</button><button data-v="reconnecting">Переподключение</button><button data-v="error">Ошибка</button><button data-v="disconnected">Отключено</button><button data-v="empty">Нет профиля</button>
+    </div>
+  </div>
+  <div class="ctl">
+    <label class="chk"><input type="checkbox" class="switch sm" id="ctlPop"> Попап строки меню</label>
+    <label class="chk"><input type="checkbox" class="switch sm" id="ctlUpd"> Баннер обновления</label>
+  </div>
+  <div class="ctl"><span>Тема</span>
+    <div class="seg" data-ctl="theme">
+      <button data-v="auto">Как в системе</button><button data-v="light">Светлая</button><button data-v="dark">Тёмная</button>
+    </div>
+  </div>
+</header>
+
+<main>
+<div class="stage-scroll" id="stageScroll">
+<div class="stage-size" id="stageSize">
+<div class="stage" id="stage">
+
+  <!-- Строка меню -->
+  <div class="menubar">
+    <svg class="ic-f" style="width:15px;height:15px;margin-top:-2px"><use href="#i-apple"/></svg>
+    <b>GhostStream</b><span>Файл</span><span>Правка</span><span>Вид</span><span>VPN</span><span>Окно</span><span>Справка</span>
+    <div class="r">
+      <button class="mb-ghost" id="mbGhost" aria-label="GhostStream в строке меню"><svg class="ic-f"><use id="mbGhostUse" href="#g-fill"/></svg></button>
+      <svg class="ic" style="width:17px;height:17px"><use href="#i-wifi"/></svg>
+      <span class="batt" aria-hidden="true"></span>
+      <svg class="ic" style="width:16px;height:16px"><use href="#i-cc"/></svg>
+      <span>Ср 28 окт.&nbsp;&nbsp;14:32</span>
+    </div>
+  </div>
+
+  <!-- Главное окно -->
+  <div class="win">
+    <aside class="side">
+      <div class="side-panel">
+        <div class="lights"><i style="background:var(--traffic-r)"></i><i style="background:var(--traffic-y)"></i><i style="background:var(--traffic-g)"></i></div>
+        <nav class="nav">
+          <button data-go="home"><svg class="ic"><use href="#i-home"/></svg>Главная</button>
+          <button data-go="servers"><svg class="ic"><use href="#i-globe"/></svg>Серверы</button>
+          <button data-go="logs"><svg class="ic"><use href="#i-list"/></svg>Логи</button>
+          <button data-go="admin" data-show="connected connecting reconnecting error disconnected"><svg class="ic"><use href="#i-people"/></svg>Админ</button>
+          <button data-go="settings"><svg class="ic"><use href="#i-gear"/></svg>Настройки</button>
+        </nav>
+        <button class="side-chip">
+          <span class="dot"></span>
+          <span class="t"><b id="chipName">Нидерланды · relay</b><small id="chipSub">Доступ до 12.12 · осталось 45 дн.</small></span>
+          <svg class="ic"><use href="#i-chev"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <section class="detail">
+      <div class="tb">
+        <h2 id="tbTitle">Главная</h2>
+        <div class="sp"></div>
+        <button class="gl search" data-pane="servers"><svg class="ic"><use href="#i-search"/></svg>Поиск</button>
+        <button class="gl circle" data-pane="servers" aria-label="Добавить профиль"><svg class="ic"><use href="#i-plus"/></svg></button>
+        <div class="seg sm" data-pane="logs"><button aria-pressed="true">Все</button><button>Внимание</button><button>Ошибки</button></div>
+        <button class="gl search" data-pane="logs" style="width:140px"><svg class="ic"><use href="#i-search"/></svg>Поиск</button>
+        <button class="gl" data-pane="admin"><svg class="ic"><use href="#i-plus"/></svg>Новый клиент</button>
+        <button class="gl" id="tbChip" data-show="connected connecting reconnecting error disconnected"><span class="dot"></span>Нидерланды · relay<svg class="ic" style="width:12px;height:12px;color:var(--dim)"><use href="#i-chev"/></svg></button>
+        <button class="gl big pro" id="mainBtn"><svg class="ic"><use href="#i-power"/></svg><span>Отключить</span></button>
+      </div>
+
+      <div class="scroll" id="scroll">
+        <div class="upd" data-upd>
+          <svg class="ic"><use href="#i-dl"/></svg>
+          <div class="t"><b>Доступна версия 0.29.1</b><span>У вас 0.29.0 · исправлены переподключение и «РФ напрямую»</span></div>
+          <button class="link">Что нового</button>
+          <button class="gl sm pro">Скачать</button>
+          <button class="x" data-close-upd aria-label="Скрыть"><svg class="ic"><use href="#i-x"/></svg></button>
+        </div>
+
+        <!-- Главная -->
+        <div data-pane="home">
+          <div data-show="empty" class="empty">
+            <svg class="appicon" viewBox="0 0 512 512" aria-hidden="true">
+              <defs>
+                <linearGradient id="ai-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1B1915"/><stop offset="1" stop-color="#0A0908"/></linearGradient>
+                <linearGradient id="ai-hl" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".22"/><stop offset=".45" stop-color="#fff" stop-opacity="0"/></linearGradient>
+              </defs>
+              <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#ai-bg)"/>
+              <path fill="#E8E2D0" d="M256 140C330 140 380 194 380 266L380 388C380 400 370 406 360 400L334 386C328 382 320 382 314 388L296 404C288 410 278 410 270 404L256 390C250 384 240 384 234 390L220 404C212 410 202 410 194 404L176 388C170 382 162 382 156 386L130 400C120 406 110 400 110 388L110 266C110 194 182 140 256 140Z"/>
+              <ellipse cx="216" cy="240" rx="22" ry="28" fill="#0A0908"/><ellipse cx="296" cy="240" rx="22" ry="28" fill="#0A0908"/>
+              <circle cx="224" cy="228" r="7" fill="#C4FF3E"/><circle cx="304" cy="228" r="7" fill="#C4FF3E"/>
+              <ellipse cx="180" cy="294" rx="14" ry="9" fill="#C4FF3E"/><ellipse cx="332" cy="294" rx="14" ry="9" fill="#C4FF3E"/>
+              <path d="M240 290Q256 306 272 290" fill="none" stroke="#0A0908" stroke-width="6" stroke-linecap="round"/>
+              <rect x="8" y="8" width="496" height="496" rx="112" fill="url(#ai-hl)"/>
+              <rect x="9" y="9" width="494" height="494" rx="111" fill="none" stroke="#fff" stroke-opacity=".14" stroke-width="2"/>
+            </svg>
+            <h2>Добавьте профиль</h2>
+            <p>Попросите у администратора ссылку-приглашение вида <span class="mono">ghs://…</span>, скопируйте её и нажмите кнопку ниже.</p>
+            <button class="gl big pro" data-paste><svg class="ic"><use href="#i-link"/></svg>Вставить ссылку</button>
+            <small>Ссылку можно вставить и сочетанием ⌘V прямо в этом окне</small>
+          </div>
+
+          <div data-show="connected connecting reconnecting error disconnected">
+            <section class="hero">
+              <div>
+                <div class="status"><span class="big-dot"></span><h1 id="stTitle">Подключено</h1></div>
+                <div class="sub" id="stSub">Нидерланды · relay</div>
+              </div>
+              <div class="timer" data-show="connected reconnecting">
+                <div class="num" id="stTimer">1:24:37</div>
+                <div class="cap" id="stTimerCap">время сессии</div>
+              </div>
+            </section>
+
+            <div class="banner" data-show="reconnecting">
+              <svg class="ic"><use href="#i-wifislash"/></svg>
+              <div class="t"><b>Нет сети</b><p>Попытка 3 · повтор через <span id="retryIn">8</span> с. Сессия сохранится, когда сеть вернётся.</p></div>
+              <button class="gl sm"><svg class="ic"><use href="#i-retry"/></svg>Повторить сейчас</button>
+            </div>
+
+            <div class="banner danger" data-show="error">
+              <svg class="ic"><use href="#i-shieldx"/></svg>
+              <div class="t"><b>Доступ отозван</b><p>Администратор отключил этот профиль. Попросите новую ссылку у администратора и вставьте её сюда.</p>
+                <div class="acts"><button class="gl sm pro" data-paste><svg class="ic"><use href="#i-link"/></svg>Вставить ссылку</button><button class="gl sm" data-go="logs">Открыть логи</button></div>
+              </div>
+            </div>
+
+            <div class="grid">
+              <div class="card speed" id="speed" data-show="connected reconnecting">
+                <div class="card-h"><span>Скорость</span>
+                  <div class="seg sm" id="win"><button aria-pressed="true" data-seed="7">1 мин</button><button data-seed="11">5 мин</button><button data-seed="23">15 мин</button></div>
+                </div>
+                <div class="rates">
+                  <div class="rate"><div class="v"><svg class="ic down"><use href="#i-down"/></svg><span class="num" id="rx">48,2</span><span class="unit">Мбит/с</span></div><div class="lbl down"><i></i><span style="color:var(--dim)">загрузка</span></div></div>
+                  <div class="rate"><div class="v"><svg class="ic up"><use href="#i-up"/></svg><span class="num" id="tx">3,1</span><span class="unit">Мбит/с</span></div><div class="lbl up"><i></i><span style="color:var(--dim)">отдача</span></div></div>
+                </div>
+                <div class="chart-w">
+                  <svg class="chart" viewBox="0 0 600 132" preserveAspectRatio="none" aria-label="График скорости за минуту">
+                    <defs><linearGradient id="rxg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--signal)" stop-opacity=".30"/><stop offset="1" stop-color="var(--signal)" stop-opacity="0"/></linearGradient></defs>
+                    <g stroke="var(--hair)" stroke-width="1" vector-effect="non-scaling-stroke"><line x1="0" y1="1" x2="600" y2="1" vector-effect="non-scaling-stroke"/><line x1="0" y1="66" x2="600" y2="66" vector-effect="non-scaling-stroke"/><line x1="0" y1="131" x2="600" y2="131" vector-effect="non-scaling-stroke"/></g>
+                    <path id="rxArea" fill="url(#rxg)"/>
+                    <path id="rxLine" fill="none" stroke="var(--signal)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+                    <path id="txLine" fill="none" stroke="var(--warn)" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"/>
+                  </svg>
+                  <span class="axis" style="top:-7px">60</span><span class="axis" style="top:76px">30</span>
+                </div>
+                <div class="card-f">
+                  <div class="mux" id="mux"></div><span id="muxTxt">Каналы 8 из 8</span>
+                  <span class="sp"></span><span>Получено 1,92 ГБ · отправлено 148 МБ</span>
+                </div>
+              </div>
+
+              <div class="col">
+                <div class="card access" data-show="connected connecting reconnecting disconnected">
+                  <div class="tile"><svg class="ic"><use href="#i-cal"/></svg></div>
+                  <div><b>Доступ до 12.12</b><span>осталось 45 дн.</span></div>
+                </div>
+                <div class="card">
+                  <div class="card-h"><span>Подключение</span></div>
+                  <div class="kv"><span>Сервер</span><span>Нидерланды · relay</span></div>
+                  <div class="kv"><span>Маршрут</span><span>Через реле в РФ</span></div>
+                  <div class="kv"><span>Адрес в VPN</span><span class="mono">10.7.0.12</span></div>
+                  <div class="kv"><span>DNS</span><span><span class="mono">1.1.1.1</span> · зашифрован</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Серверы -->
+        <div data-pane="servers">
+          <div class="tbl" style="--cols:2.1fr 1.3fr .8fr 1fr 1.2fr" data-show="connected connecting reconnecting error disconnected" id="srvTbl">
+            <div class="th"><span>Профиль</span><span>Маршрут</span><span>Задержка</span><span>Доступ до</span><span>Состояние</span></div>
+            <div class="tr sel"><span>Нидерланды · relay<span class="sub">tls.nl2.bikini-bottom.com</span></span><span>Через реле в РФ</span><span class="num">38 мс</span><span class="num">12.12.2026</span><span class="st t-ok" id="srv1"><span class="dot"></span><span>Подключён</span></span></div>
+            <div class="tr"><span>Нидерланды · напрямую<span class="sub">tls.nl2.bikini-bottom.com</span></span><span>Напрямую</span><span class="num">61 мс</span><span class="num">12.12.2026</span><span class="st dm">Готов</span></div>
+            <div class="tr"><span>Резервный · relay-2<span class="sub">relay.bikini-bottom.com</span></span><span>Через реле в РФ</span><span class="num">1 240 мс</span><span class="num">12.12.2026</span><span class="st t-warn"><span class="dot"></span><span>Медленно</span></span></div>
+            <div class="tr"><span>Польша (старый)<span class="sub">pl1.bikini-bottom.com</span></span><span>Напрямую</span><span class="dm">нет ответа</span><span class="dm">истёк 31.07</span><span class="st t-danger"><span class="dot"></span><span>Нет доступа</span></span></div>
+          </div>
+          <p class="foot-hint" data-show="connected connecting reconnecting error disconnected">Двойной щелчок — подключиться к профилю · ⌘N — добавить профиль · ⌫ — удалить</p>
+          <div class="empty" data-show="empty" style="min-height:420px"><h2>Профилей пока нет</h2><p>Вставьте ссылку-приглашение от администратора — профиль появится здесь.</p><button class="gl big pro" data-paste><svg class="ic"><use href="#i-link"/></svg>Вставить ссылку</button></div>
+        </div>
+
+        <!-- Логи -->
+        <div data-pane="logs">
+          <div class="tbl logs" style="--cols:72px 74px 1fr">
+            <div class="th" style="font-family:var(--sys)"><span>Время</span><span>Уровень</span><span>Сообщение</span></div>
+            <div class="tr"><span>14:32:08</span><span class="lv i">Инфо</span><span>tunnel up · 8/8 streams · via relay</span></div>
+            <div class="tr"><span>14:32:07</span><span class="lv i">Инфо</span><span>TLS 1.3 handshake ok · sni=tls.nl2.bikini-bottom.com</span></div>
+            <div class="tr"><span>14:32:06</span><span class="lv i">Инфо</span><span>connecting · relay balancer.bikini-bottom.com:443</span></div>
+            <div class="tr"><span>14:31:59</span><span class="lv w">Внимание</span><span>network changed: Wi-Fi → Ethernet · reconnecting (attempt 1)</span></div>
+            <div class="tr"><span>14:28:40</span><span class="lv i">Инфо</span><span>dns 1.1.1.1:853 (DoT) · 1 204 queries</span></div>
+            <div class="tr"><span>14:05:13</span><span class="lv i">Инфо</span><span>stream 3 up · rtt 38 ms</span></div>
+            <div class="tr"><span>14:05:12</span><span class="lv e">Ошибка</span><span>stream 3: read timeout 15s · reopening</span></div>
+            <div class="tr"><span>13:41:02</span><span class="lv i">Инфо</span><span>route policy applied · ru-direct on · 3 manual cidrs</span></div>
+            <div class="tr"><span>13:08:00</span><span class="lv i">Инфо</span><span>session started · profile «Нидерланды · relay»</span></div>
+          </div>
+          <p class="foot-hint">Текст можно выделять и копировать · ⌘E — экспорт отчёта для поддержки</p>
+        </div>
+
+        <!-- Админ -->
+        <div data-pane="admin">
+          <div class="tbl" style="--cols:1.8fr 1.4fr 1fr 1fr">
+            <div class="th"><span>Клиент</span><span>Статус</span><span>Доступ до</span><span>Трафик за месяц</span></div>
+            <div class="tr"><span>Пётр (вы)<span class="sub">10.7.0.12</span></span><span class="st t-ok"><span class="dot"></span>В сети</span><span>бессрочно</span><span class="num">41,8 ГБ</span></div>
+            <div class="tr"><span>Мама<span class="sub">10.7.0.14</span></span><span class="st t-ok"><span class="dot"></span>В сети</span><span class="num">12.12.2026</span><span class="num">3,2 ГБ</span></div>
+            <div class="tr sel"><span>Аня<span class="sub">10.7.0.17</span></span><span class="st"><span class="dot" style="background:var(--on-signal)"></span>Не в сети · 2 ч назад</span><span class="num">30.11.2026</span><span class="num">12,6 ГБ</span></div>
+            <div class="tr"><span>Старый ноутбук<span class="sub">10.7.0.21</span></span><span class="st t-danger"><span class="dot"></span>Отключён</span><span class="dm">истёк 01.09</span><span class="dm">—</span></div>
+          </div>
+          <p class="foot-hint">Отключить или лишить прав себя самого нельзя — кнопки для своей строки неактивны</p>
+        </div>
+
+        <!-- Настройки -->
+        <div data-pane="settings" class="form">
+          <div class="fs"><h3>Подключение</h3><div class="box">
+            <label class="row"><span class="t"><b>Восстанавливать соединение</b><small>Переподключаться автоматически, если сеть пропала или сменилась</small></span><input type="checkbox" class="switch" checked></label>
+            <label class="row"><span class="t"><b>Блокировать интернет без VPN</b><small>Пока VPN не подключён, сайты не откроются — так ничего не утечёт мимо</small></span><input type="checkbox" class="switch"></label>
+            <div class="row"><span class="t"><b>DNS</b><small>Кто превращает адреса сайтов в IP</small></span><span class="popw"><select aria-label="DNS"><option>Cloudflare · 1.1.1.1</option><option>Google · 8.8.8.8</option><option>Как в профиле</option></select></span></div>
+            <div class="row"><span class="t"><b>Параллельные каналы</b><small>По умолчанию — по числу ядер процессора</small></span><span class="popw"><select aria-label="Параллельные каналы"><option>Авто · 8</option><option>4</option><option>2</option></select></span></div>
+          </div></div>
+
+          <div class="fs"><h3>Маршрутизация</h3><div class="box">
+            <div class="row"><span class="t"><b>Через VPN идёт</b></span><span class="popw"><select aria-label="Через VPN идёт"><option>Весь трафик</option><option>Всё, кроме локальной сети</option><option>Всё, кроме рабочего VPN</option></select></span></div>
+            <label class="row"><span class="t"><b>РФ напрямую</b><small>Российские сайты и сервисы открываются без VPN — быстрее и без капч</small></span><input type="checkbox" class="switch" checked></label>
+            <div class="row"><span class="t"><b>Свои исключения</b><small>Адреса, которые всегда идут мимо VPN</small></span><span class="val">3 адреса</span><button class="btn">Изменить…</button></div>
+            <label class="row"><span class="t"><b>IPv6 через VPN</b><small>Иначе часть сайтов может открываться в обход</small></span><input type="checkbox" class="switch" checked></label>
+          </div>
+          <div class="foot">Изменения маршрутов применятся после переподключения. <button class="link">Переподключить</button></div></div>
+
+          <div class="fs"><h3>Приложение</h3><div class="box">
+            <label class="row"><span class="t"><b>Открывать при входе в систему</b></span><input type="checkbox" class="switch" checked></label>
+            <label class="row"><span class="t"><b>Подключаться автоматически</b><small>После запуска, перезагрузки и выхода из сна</small></span><input type="checkbox" class="switch" checked></label>
+            <label class="row"><span class="t"><b>Значок в строке меню</b><small>Подключение в один клик, без окна</small></span><input type="checkbox" class="switch" checked></label>
+            <label class="row"><span class="t"><b>Значок в Dock</b></span><input type="checkbox" class="switch"></label>
+            <div class="row"><span class="t"><b>Уведомления</b></span><span class="popw"><select aria-label="Уведомления"><option>Только о проблемах</option><option>Обо всех изменениях</option><option>Выключены</option></select></span></div>
+            <div class="row"><span class="t"><b>Оформление</b></span><span class="popw"><select aria-label="Оформление" id="themeSel"><option value="auto">Как в системе</option><option value="light">Светлое</option><option value="dark">Тёмное</option></select></span></div>
+          </div></div>
+
+          <div class="fs"><h3>Обновления</h3><div class="box">
+            <div class="row"><span class="t"><b>GhostStream <span class="num">0.29.0 (44)</span></b><small data-noupd>Установлена последняя версия · проверено сегодня в 14:02</small><small data-upd>Доступна версия <span class="num">0.29.1</span> · проверено сегодня в 14:02</small></span><button class="btn" data-noupd>Проверить</button><button class="gl sm pro" data-upd>Скачать</button></div>
+            <label class="row"><span class="t"><b>Проверять автоматически</b><small>Раз в день смотрим новые версии на GitHub</small></span><input type="checkbox" class="switch" checked></label>
+          </div></div>
+
+          <div class="fs"><h3>Дополнительно</h3><div class="box">
+            <label class="row"><span class="t"><b>Подробный журнал</b><small>Больше деталей для поиска проблем. Включайте, если попросит поддержка</small></span><input type="checkbox" class="switch"></label>
+            <div class="row"><span class="t"><b>Отчёт для поддержки</b><small>Логи и настройки, без ключей и паролей</small></span><button class="btn">Сохранить…</button></div>
+          </div></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Попап строки меню -->
+  <div class="pop" id="pop" role="dialog" aria-label="GhostStream">
+    <div class="pop-upd" data-upd><svg class="ic"><use href="#i-dl"/></svg>Доступна версия <span class="num">0.29.1</span><button class="link">Скачать</button></div>
+    <div class="pop-h"><span class="dot"></span><b id="popTitle">Подключено</b><span class="num" id="popTimer" data-show="connected reconnecting">1:24:37</span></div>
+    <div class="pop-sub" id="popSub">Нидерланды · relay</div>
+    <div class="pop-rates" data-show="connected">
+      <div><svg class="ic down"><use href="#i-down"/></svg><span class="num">48,2</span><small>Мбит/с</small></div>
+      <div><svg class="ic up"><use href="#i-up"/></svg><span class="num">3,1</span><small>Мбит/с</small></div>
+    </div>
+    <div class="pop-note" id="popNote"><b></b><span></span></div>
+    <button class="gl wide pro" id="popBtn"><svg class="ic"><use href="#i-power"/></svg><span>Отключить</span></button>
+    <div data-show="connected connecting reconnecting error disconnected">
+      <hr>
+      <div class="pop-sec">Профиль</div>
+      <button class="mi"><svg class="ic"><use href="#i-check"/></svg>Нидерланды · relay<small>38 мс</small></button>
+      <button class="mi"><span class="ph"></span>Нидерланды · напрямую<small>61 мс</small></button>
+      <button class="mi"><span class="ph"></span>Резервный · relay-2<small>1 240 мс</small></button>
+    </div>
+    <hr>
+    <button class="mi" id="popOpen"><span class="ph"></span>Открыть GhostStream<kbd>⌘O</kbd></button>
+    <button class="mi"><span class="ph"></span>Настройки…<kbd>⌘,</kbd></button>
+    <button class="mi"><span class="ph"></span>Выйти<kbd>⌘Q</kbd></button>
+  </div>
+
+</div>
+</div>
+</div>
+
+<div class="caption">
+  <span>Кликабельно: сайдбар, кнопка в тулбаре, призрак в строке меню, тумблеры. Иконка в строке меню — template:</span>
+  <span class="ib l"><svg class="ic-f"><use href="#g-fill"/></svg>подключено</span>
+  <span class="ib l"><svg class="ic-f"><use href="#g-line"/></svg>отключено</span>
+  <span class="ib d"><svg class="ic-f"><use href="#g-fill"/></svg>подключено</span>
+  <span class="ib d"><svg class="ic-f"><use href="#g-line"/></svg>отключено</span>
+</div>
+</main>
+
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+const TITLES = { home: 'Главная', servers: 'Серверы', logs: 'Логи', admin: 'Админ', settings: 'Настройки' };
+const ST = {
+  connected:    { title: 'Подключено', tone: 'ok', sub: 'Нидерланды · relay', btn: 'Отключить', pro: true, pop: 'Отключить', popPro: true },
+  connecting:   { title: 'Подключение…', tone: 'warn', sub: 'Нидерланды · relay · устанавливаем защищённое соединение', btn: 'Отменить', pop: 'Отменить' },
+  reconnecting: { title: 'Переподключение…', tone: 'warn', sub: 'Нидерланды · relay', btn: 'Отключить', pop: 'Отключить',
+                  note: ['warn', 'Нет сети', 'Попытка 3 · повтор через 8 с'], chipSub: 'Переподключение…', srv: 'Переподключение…' },
+  error:        { title: 'Ошибка', tone: 'danger', sub: 'Нидерланды · relay', btn: 'Повторить', pop: 'Вставить ссылку', popPro: true, paste: true,
+                  note: ['danger', 'Доступ отозван', 'Попросите новую ссылку у администратора'], chipSub: 'Доступ отозван', srv: 'Доступ отозван' },
+  disconnected: { title: 'Отключено', tone: 'off', sub: 'Нидерланды · relay · нажмите «Подключить», чтобы защитить трафик', btn: 'Подключить', pro: true, pop: 'Подключить', popPro: true, srv: 'Отключён' },
+  empty:        { title: 'Нет профиля', tone: 'off', sub: 'Добавьте профиль, чтобы подключиться', btn: 'Подключить', pro: true, disabled: true,
+                  pop: 'Вставить ссылку', popPro: true, paste: true, note: ['off', 'Добавьте профиль', 'Скопируйте ссылку от администратора и нажмите кнопку ниже'] },
+};
+const S = { screen: 'home', state: 'connected', update: true, pop: false, theme: 'auto' };
+let elapsed = 5077, retry = 8, connectTimer;
+
+function set(patch) { Object.assign(S, patch); render(); }
+
+function render() {
+  const st = ST[S.state];
+  const stage = $('#stage');
+  stage.className = 'stage t-' + st.tone;
+
+  $$('[data-show]').forEach(el => el.hidden = !el.dataset.show.split(' ').includes(S.state));
+  $$('[data-pane]').forEach(el => el.hidden = el.dataset.pane !== S.screen);
+  $$('.nav [data-go]').forEach(b => b.dataset.go === S.screen ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current'));
+  $$('[data-upd]').forEach(el => el.hidden = !S.update);
+  $$('[data-noupd]').forEach(el => el.hidden = S.update);
+  $('#tbTitle').textContent = TITLES[S.screen];
+
+  $('#stTitle').textContent = st.title;
+  $('#stSub').textContent = st.sub;
+  $('#stTimerCap').textContent = S.state === 'reconnecting' ? 'сессия продолжается' : 'время сессии';
+
+  const main = $('#mainBtn');
+  main.querySelector('span').textContent = st.btn;
+  main.classList.toggle('pro', !!st.pro);
+  main.disabled = !!st.disabled;
+
+  $('#chipName').textContent = S.state === 'empty' ? 'Нет профиля' : 'Нидерланды · relay';
+  $('#chipSub').textContent = S.state === 'empty' ? 'Вставьте ссылку-приглашение' : (st.chipSub || 'Доступ до 12.12 · осталось 45 дн.');
+
+  // Скорость
+  const live = S.state === 'connected';
+  $('#speed').classList.toggle('frozen', !live);
+  $('#rx').textContent = live ? '48,2' : '—';
+  $('#tx').textContent = live ? '3,1' : '—';
+  $('#muxTxt').textContent = live ? 'Каналы 8 из 8' : 'Каналы 0 из 8';
+  $('#mux').style.setProperty('--mux', live ? 'var(--signal)' : 'var(--hair-bold)');
+
+  // Строка в «Серверах»
+  const srv = $('#srv1');
+  srv.className = 'st t-' + st.tone;
+  srv.lastElementChild.textContent = st.srv || 'Подключён';
+
+  // Попап
+  $('#pop').hidden = !S.pop;
+  $('#mbGhost').classList.toggle('open', S.pop);
+  $('#mbGhostUse').setAttribute('href', S.state === 'connected' ? '#g-fill' : '#g-line');
+  $('#popTitle').textContent = st.title;
+  $('#popSub').textContent = S.state === 'empty' ? 'Профилей пока нет' : 'Нидерланды · relay';
+  const note = $('#popNote');
+  note.hidden = !st.note;
+  if (st.note) { note.className = 'pop-note ' + st.note[0]; note.querySelector('b').textContent = st.note[1]; note.querySelector('span').textContent = st.note[2]; }
+  const pb = $('#popBtn');
+  pb.querySelector('span').textContent = st.pop;
+  pb.querySelector('use').setAttribute('href', st.paste ? '#i-link' : '#i-power');
+  pb.classList.toggle('pro', !!st.popPro);
+
+  // Переключатели
+  $$('[data-ctl]').forEach(g => $$('button', g).forEach(b => b.setAttribute('aria-pressed', b.dataset.v === S[g.dataset.ctl])));
+  $('#ctlPop').checked = S.pop;
+  $('#ctlUpd').checked = S.update;
+  $('#themeSel').value = S.theme;
+  if (S.theme === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.dataset.theme = S.theme;
+}
+
+// Главная кнопка: отключить / подключить с коротким «Подключение…»
+function primary() {
+  clearTimeout(connectTimer);
+  if (['connected', 'connecting', 'reconnecting'].includes(S.state)) return set({ state: 'disconnected' });
+  set({ state: 'connecting' });
+  connectTimer = setTimeout(() => { if (S.state === 'connecting') { elapsed = 0; set({ state: 'connected' }); } }, 1500);
+}
+function paste() { set({ state: 'disconnected', screen: 'home' }); }
+
+// Таймер сессии и обратный отсчёт повтора
+const fmt = s => `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+setInterval(() => {
+  if (S.state === 'connected' || S.state === 'reconnecting') elapsed++;
+  retry = retry <= 1 ? 8 : retry - 1;
+  $('#stTimer').textContent = $('#popTimer').textContent = fmt(elapsed);
+  $('#retryIn').textContent = retry;
+  if (ST.reconnecting.note) ST.reconnecting.note[2] = `Попытка 3 · повтор через ${retry} с`;
+  if (S.state === 'reconnecting' && S.pop) $('#popNote span').textContent = ST.reconnecting.note[2];
+}, 1000);
+
+// График скорости (детерминированный шум)
+function series(n, base, amp, seed) {
+  let x = seed * 997, out = [];
+  for (let i = 0; i < n; i++) {
+    x = (x * 9301 + 49297) % 233280;
+    out.push(Math.max(.4, base + amp * Math.sin(i / 4.5 + seed) + (x / 233280 - .5) * amp * 1.3));
+  }
+  return out;
+}
+function line(arr, max) { return arr.map((v, i) => `${i ? 'L' : 'M'}${(i / (arr.length - 1) * 600).toFixed(1)} ${(131 - v / max * 130).toFixed(1)}`).join(' '); }
+function drawChart(seed) {
+  const rx = series(60, 40, 9, seed); rx[59] = 48.2;
+  const tx = series(60, 3.4, 1.4, seed + 3); tx[59] = 3.1;
+  const d = line(rx, 60);
+  $('#rxLine').setAttribute('d', d);
+  $('#rxArea').setAttribute('d', d + ' L600 132 L0 132 Z');
+  $('#txLine').setAttribute('d', line(tx, 60));
+}
+$('#mux').innerHTML = [12, 16, 10, 14, 16, 9, 13, 15].map(h => `<i style="height:${h}px"></i>`).join('');
+$$('#win button').forEach(b => b.onclick = () => { $$('#win button').forEach(x => x.setAttribute('aria-pressed', x === b)); drawChart(+b.dataset.seed); });
+drawChart(7);
+
+// Шеврон у всех выпадающих списков
+$$('.popw').forEach(w => w.insertAdjacentHTML('beforeend', '<svg class="ic"><use href="#i-updown"/></svg>'));
+
+// Обработчики
+$$('[data-ctl]').forEach(g => g.addEventListener('click', e => { const b = e.target.closest('button'); if (b) set({ [g.dataset.ctl]: b.dataset.v }); }));
+$$('[data-go]').forEach(b => b.onclick = () => set({ screen: b.dataset.go }));
+$$('[data-paste]').forEach(b => b.onclick = paste);
+$$('[data-close-upd]').forEach(b => b.onclick = () => set({ update: false }));
+$('#ctlPop').onchange = e => set({ pop: e.target.checked });
+$('#ctlUpd').onchange = e => set({ update: e.target.checked });
+$('#themeSel').onchange = e => set({ theme: e.target.value });
+$('#mbGhost').onclick = () => set({ pop: !S.pop });
+$('#mainBtn').onclick = primary;
+$('#popBtn').onclick = () => ST[S.state].paste ? paste() : primary();
+$('#popOpen').onclick = () => set({ pop: false });
+$$('#srvTbl .tr').forEach(r => r.onclick = () => { $$('#srvTbl .tr').forEach(x => x.classList.toggle('sel', x === r)); });
+
+// Масштаб «экрана» под ширину; на узких — не меньше 50 % и прокрутка внутри блока
+const DW = 1240, DH = 820;
+function fit() {
+  const s = Math.max(.5, Math.min(1, $('#stageScroll').clientWidth / DW));
+  $('#stage').style.transform = `scale(${s})`;
+  $('#stageSize').style.width = DW * s + 'px';
+  $('#stageSize').style.height = DH * s + 'px';
+}
+addEventListener('resize', fit);
+fit();
+render();
+</script>
+</body>
+</html>

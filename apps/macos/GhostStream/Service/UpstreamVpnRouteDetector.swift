@@ -12,6 +12,7 @@ public struct UpstreamVpnRouteDetector {
     public struct SnapshotInput: Sendable {
         public let mode: RoutingMode
         public let manualDirectCidrs: [String]
+        public let manualDirectIpv6Cidrs: [String]
         public let preserveScopedDns: Bool
         public let serverAddr: String?
         public let tunAddr: String?
@@ -19,12 +20,14 @@ public struct UpstreamVpnRouteDetector {
         public init(
             mode: RoutingMode,
             manualDirectCidrs: [String],
+            manualDirectIpv6Cidrs: [String],
             preserveScopedDns: Bool,
             serverAddr: String?,
             tunAddr: String?
         ) {
             self.mode = mode
             self.manualDirectCidrs = manualDirectCidrs
+            self.manualDirectIpv6Cidrs = manualDirectIpv6Cidrs
             self.preserveScopedDns = preserveScopedDns
             self.serverAddr = serverAddr
             self.tunAddr = tunAddr
@@ -39,18 +42,21 @@ public struct UpstreamVpnRouteDetector {
 
     private final class ServerCidrCache: @unchecked Sendable {
         private let lock = NSLock()
-        private var values: [String: [String]] = [:]
+        private var values: [String: (cidrs: [String], storedAt: Date)] = [:]
 
-        func cidrs(for host: String) -> [String]? {
+        /// `maxAge` nil — любая давность (фолбэк, когда свежий резолв не удался).
+        func cidrs(for host: String, maxAge: TimeInterval? = nil) -> [String]? {
             lock.lock()
             defer { lock.unlock() }
-            return values[host]
+            guard let entry = values[host] else { return nil }
+            if let maxAge, Date().timeIntervalSince(entry.storedAt) > maxAge { return nil }
+            return entry.cidrs
         }
 
         func store(_ cidrs: [String], for host: String) {
             guard !cidrs.isEmpty else { return }
             lock.lock()
-            values[host] = cidrs
+            values[host] = (cidrs, Date())
             lock.unlock()
         }
     }
@@ -75,11 +81,17 @@ public struct UpstreamVpnRouteDetector {
 
     private static let serverCidrCache = ServerCidrCache()
     private static let serverResolveTimeout: DispatchTimeInterval = .milliseconds(1500)
+    /// Адрес сервера/relay кэшируется не навсегда: после captive portal или
+    /// переезда IP реле вечный кэш вёл Connect на старый адрес до рестарта.
+    private static let serverCidrCacheTTL: TimeInterval = 300
 
     public init() {}
 
-    public func snapshot(_ input: SnapshotInput) async -> RoutePolicySnapshot {
-        let serverCidrs = await Self.serverDirectCidrs(for: input.serverAddr)
+    /// `freshServerResolve` — резолвить адрес сервера мимо кэша (Connect).
+    /// Результат всё равно кладётся в кэш, так что следующий poll монитора
+    /// получит те же адреса и тот же routeHash.
+    public func snapshot(_ input: SnapshotInput, freshServerResolve: Bool = false) async -> RoutePolicySnapshot {
+        let serverCidrs = await Self.serverDirectCidrs(for: input.serverAddr, fresh: freshServerResolve)
         return await Task.detached(priority: .utility) {
             Self.makeSnapshot(input, serverCidrs: serverCidrs)
         }.value
@@ -103,6 +115,7 @@ public struct UpstreamVpnRouteDetector {
             mode: input.mode,
             detectedUpstreamCidrs: detected,
             manualDirectCidrs: input.manualDirectCidrs,
+            manualDirectIpv6Cidrs: input.manualDirectIpv6Cidrs,
             serverDirectCidrs: serverCidrs,
             upstreamDnsServers: dns.servers,
             upstreamDnsDomains: dns.domains,
@@ -327,13 +340,13 @@ public struct UpstreamVpnRouteDetector {
         return (unique(servers), unique(domains))
     }
 
-    private static func serverDirectCidrs(for serverAddr: String?) async -> [String] {
+    private static func serverDirectCidrs(for serverAddr: String?, fresh: Bool) async -> [String] {
         guard let serverAddr else { return [] }
         let host = hostPart(of: serverAddr)
         if RoutePolicySnapshot.isValidIPv4Cidr("\(host)/32") {
             return ["\(host)/32"]
         }
-        if let cached = serverCidrCache.cidrs(for: host) {
+        if !fresh, let cached = serverCidrCache.cidrs(for: host, maxAge: serverCidrCacheTTL) {
             return cached
         }
 
@@ -377,7 +390,10 @@ public struct UpstreamVpnRouteDetector {
             let sin = addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
             output.append("\(ipv4String(sin.sin_addr))/32")
         }
-        let cidrs = unique(output)
+        // Сортировка: порядок A-записей от резолва к резолву плавает, а
+        // serverDirectCidrs входит в routeHash — без неё истечение TTL
+        // давало бы ложную смену политики.
+        let cidrs = unique(output).sorted(by: cidrSort)
         serverCidrCache.store(cidrs, for: host)
         return cidrs
     }

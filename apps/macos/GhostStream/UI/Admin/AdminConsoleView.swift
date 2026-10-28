@@ -24,6 +24,7 @@ public struct AdminConsoleView: View {
 
     @Environment(\.gsColors) private var C
     @Environment(ProfilesStore.self) private var profiles
+    @Environment(VpnStateManager.self) private var stateMgr
 
     @State private var vm: AdminViewModel?
     @State private var vmProfileId: String?
@@ -91,17 +92,15 @@ public struct AdminConsoleView: View {
         }
         // VM живёт per-profile: смена активного профиля = новый identity/PEM
         // = новый mTLS-клиент. Пересобираем и перечитываем.
-        .task(id: profiles.activeId) {
-            rebuildViewModel()
-            await vm?.refresh()
-        }
         // Лёгкий автопул как у roster probe — раз в 30 с, только пока
-        // вкладка смонтирована.
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
-                guard !Task.isCancelled else { break }
+        // вкладка смонтирована и туннель в .connected: API живёт на
+        // 10.7.0.1 за туннелем, без него — таймауты, а TOFU мог бы
+        // закрепить чужой хост из LAN.
+        .task(id: "\(profiles.activeId ?? "")|\(adminReachable)") {
+            rebuildViewModel()
+            while adminReachable, !Task.isCancelled {
                 await vm?.refresh()
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
             }
         }
         .onDisappear {
@@ -110,6 +109,8 @@ public struct AdminConsoleView: View {
     }
 
     // MARK: - VM lifecycle
+
+    private var adminReachable: Bool { stateMgr.statusFrame.state == .connected }
 
     private func rebuildViewModel() {
         guard let profile = profiles.activeProfile else {

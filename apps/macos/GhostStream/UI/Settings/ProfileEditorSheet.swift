@@ -298,9 +298,13 @@ public struct ProfileEditorSheet: View {
         updated.serverAddr = editEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.serverName = editSni.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.tunAddr = editTun.trimmingCharacters(in: .whitespacesAndNewlines)
-        let relayAddr = editRelayAddr.trimmingCharacters(in: .whitespacesAndNewlines)
         updated.relayEnabled = editRelayEnabled
-        updated.relayAddr = relayAddr.isEmpty ? nil : relayAddr
+        // Без порта → :443, как на iOS (реле слушают 443, не 8443 exit'а).
+        updated.relayAddr = VpnProfile.normalizedRelayAddr(editRelayAddr)
+        // Другой сервер — другой серт админки: TOFU-пин закрепляем заново.
+        if updated.serverAddr != original.serverAddr || updated.serverName != original.serverName {
+            updated.cachedAdminServerCertFp = nil
+        }
 
         // connString кодирует endpoint/SNI/tun — пересобираем из обновлённых
         // полей + существующих cert/key. Если PEM недоступны — оставляем

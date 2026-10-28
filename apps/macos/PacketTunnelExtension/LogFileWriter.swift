@@ -139,8 +139,10 @@ public final class LogFileWriter {
             try ensureRotation()
             let line = try encoder.encode(payload)
             guard let handle = handle else { return }
-            handle.write(line)
-            handle.write(Data([0x0a]))
+            // Throwing API: the legacy write(_:) raises an ObjC exception on
+            // ENOSPC/EIO that Swift can't catch — a full disk killed the extension.
+            try handle.write(contentsOf: line)
+            try handle.write(contentsOf: Data([0x0a]))
             bytesWritten &+= UInt64(line.count + 1)
         } catch {
             osLog.error("logwriter append failed: \(error.localizedDescription, privacy: .public)")

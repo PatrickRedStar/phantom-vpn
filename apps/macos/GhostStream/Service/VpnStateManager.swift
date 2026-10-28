@@ -52,6 +52,12 @@ public final class VpnStateManager {
     /// host shows last-seen status forever (CONC-H3).
     private var observedManagerId: ObjectIdentifier?
     private var safetyNetTask: Task<Void, Never>?
+    private var configurationObserver: NSObjectProtocol?
+    /// Причина последнего отключения от NE (`fetchLastDisconnectError`):
+    /// фатальная ошибка ядра (отзыв, серт, часы) или провал старта. На macOS
+    /// снапшот провайдера пишется в контейнер root и хосту не виден, так что
+    /// это единственный канал. Держим `.error` до следующего Connect.
+    private var disconnectError: String?
 
     private var containerURL: URL? {
         FileManager.default.containerURL(
@@ -87,6 +93,7 @@ public final class VpnStateManager {
         }
         self.loadSnapshot()
         self.observeDarwinNotifications()
+        self.observeConfigurationChanges()
         Task { @MainActor [weak self] in
             await self?.bootstrap()
         }
@@ -104,6 +111,28 @@ public final class VpnStateManager {
     private func bootstrap() async {
         await refreshCachedManager()
         await refreshLiveTunnelStatus()
+    }
+
+    /// Перечитать менеджер из настроек NE: после `saveToPreferences` /
+    /// `removeFromPreferences` в `VpnTunnelController` и по
+    /// `NEVPNConfigurationChange` (конфиг удалён или пересоздан в
+    /// Настройках → VPN) — иначе кэш и наблюдатель статуса остаются на
+    /// мёртвом менеджере.
+    public func reloadManager() async {
+        await refreshCachedManager()
+        await refreshLiveTunnelStatus()
+    }
+
+    private func observeConfigurationChanges() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .NEVPNConfigurationChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.reloadManager()
+            }
+        }
     }
 
     private func observeDarwinNotifications() {
@@ -155,8 +184,25 @@ public final class VpnStateManager {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
+                // Уведомление приходит только на реальный переход, так что
+                // ошибка не подтянется «из прошлого» при запуске приложения.
+                // Наблюдатель всегда висит на cachedManager (rewireStatusObserver).
+                if let manager = self?.cachedManager, manager.connection.status == .disconnected {
+                    await self?.captureDisconnectError(from: manager)
+                }
                 await self?.refreshLiveTunnelStatus()
             }
+        }
+    }
+
+    private func captureDisconnectError(from manager: NETunnelProviderManager) async {
+        // ObjC-completion `(NSError?)` импортируется как `async throws`:
+        // брошенная ошибка и есть причина отключения.
+        do {
+            try await manager.connection.fetchLastDisconnectError()
+            disconnectError = nil
+        } catch {
+            disconnectError = ConnectErrorHumanizer.humanize(error.localizedDescription)
         }
     }
 
@@ -200,9 +246,20 @@ public final class VpnStateManager {
             return false
         }
 
+        if isActiveNetworkExtensionStatus(manager.connection.status) {
+            disconnectError = nil
+        }
+
         guard isActiveNetworkExtensionStatus(manager.connection.status),
               let session = manager.connection as? NETunnelProviderSession
         else {
+            if let disconnectError {
+                var frame = StatusFrame.disconnected
+                frame.state = .error
+                frame.lastError = disconnectError
+                statusFrame = frame
+                return false
+            }
             // The extension leaves a fatal error from the core (revoked
             // access, certificate, clock) in the snapshot when it stops;
             // keep showing it until the next connect.
@@ -373,8 +430,9 @@ public final class VpnStateManager {
         return InterfaceRates(
             rxBytes: sample.rxBytes,
             txBytes: sample.txBytes,
-            rateRxBps: Double(rxDelta) / dt,
-            rateTxBps: Double(txDelta) / dt
+            // StatusFrame.rate*Bps — бит/с (контракт рантайма).
+            rateRxBps: Double(rxDelta) * 8 / dt,
+            rateTxBps: Double(txDelta) * 8 / dt
         )
     }
 

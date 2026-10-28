@@ -1123,28 +1123,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 addresses: ["fd00:6768:6f73:7473::1"],
                 networkPrefixLengths: [64]
             )
-            let directIpv6Cidrs = directIpv6RoutesForRouteComputation(settings: settings)
-            if shouldTunnelIPv6Traffic(settings: settings, directIpv6Cidrs: directIpv6Cidrs) {
-                ipv6.includedRoutes = [NEIPv6Route.default()]
-                let excludedRoutes = directIpv6Cidrs.compactMap(route(forIPv6CIDR:))
-                if !excludedRoutes.isEmpty {
-                    ipv6.excludedRoutes = excludedRoutes
-                }
-            } else {
-                ipv6.excludedRoutes = [NEIPv6Route.default()]
-                log.warning("split routing leaves IPv6 outside tunnel because no routeable IPv6 direct rules are available")
-            }
-            networkSettings.ipv6Settings = ipv6
-        } else {
-            // killswitch off — still route IPv6 default into the tunnel
-            // (so traffic goes through the VPN rather than the clear
-            // interface). Without a tunnel address NEIPv6Settings is
-            // ignored; supply the ULA so the include actually applies.
-            let ipv6 = NEIPv6Settings(
-                addresses: ["fd00:6768:6f73:7473::1"],
-                networkPrefixLengths: [64]
-            )
+            // As iOS: IPv6 goes into the tunnel in split modes too — apps fall
+            // back to IPv4, which follows the split rules. Excluding ::/0 here
+            // sent blocked sites with AAAA (YouTube, Telegram) straight past
+            // the VPN. Only explicit direct IPv6 rules bypass the tunnel.
             ipv6.includedRoutes = [NEIPv6Route.default()]
+            let excludedRoutes = directIpv6RoutesForRouteComputation(settings: settings)
+                .compactMap(route(forIPv6CIDR:))
+            if !excludedRoutes.isEmpty {
+                ipv6.excludedRoutes = excludedRoutes
+            }
             networkSettings.ipv6Settings = ipv6
         }
 
@@ -1170,11 +1158,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
         }
         return routeable
-    }
-
-    private func shouldTunnelIPv6Traffic(settings: TunnelSettings, directIpv6Cidrs: [String]) -> Bool {
-        if settings.routingMode == .global { return true }
-        return !directIpv6Cidrs.isEmpty
     }
 
     private func route(forIPv6CIDR cidr: String) -> NEIPv6Route? {

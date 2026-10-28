@@ -36,7 +36,7 @@ struct GhostStreamApp: App {
     @State private var logs     = TunnelLogStore.shared
     @State private var notifications = VpnNotificationController.shared
 
-    @State private var tunnel = VpnTunnelController()
+    @State private var tunnel = VpnTunnelController.shared
     @State private var startupHandled = false
 
     var body: some Scene {
@@ -73,6 +73,11 @@ struct GhostStreamApp: App {
                 }
                 .onChange(of: prefs.notifyStateChanges) { _, _ in
                     notifications.requestAuthorizationIfNeeded(preferences: prefs)
+                }
+                // Смена/удаление активного профиля из любого места UI при
+                // поднятом туннеле — переподключение в одной точке.
+                .onChange(of: profiles.activeProfile?.id) { oldId, _ in
+                    tunnel.activeProfileChanged(from: oldId, profiles: profiles, preferences: prefs)
                 }
         }
         .menuBarExtraStyle(.window)

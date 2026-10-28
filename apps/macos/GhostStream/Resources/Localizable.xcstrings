@@ -1558,6 +1558,74 @@
         }
       }
     },
+    "quit.vpn_on.disconnect": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disconnect and Quit"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Отключить и выйти"
+          }
+        }
+      }
+    },
+    "quit.vpn_on.keep": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit and Keep VPN On"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выйти, оставив VPN"
+          }
+        }
+      }
+    },
+    "quit.vpn_on.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The VPN keeps running after you quit. To turn it off, reopen GhostStream or use System Settings → VPN."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "После выхода VPN продолжит работать. Выключить его можно, снова открыв GhostStream, или в Системных настройках → VPN."
+          }
+        }
+      }
+    },
+    "quit.vpn_on.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "VPN is still on"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "VPN ещё включён"
+          }
+        }
+      }
+    },
     "roster.add": {
       "extractionState": "manual",
       "localizations": {

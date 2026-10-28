@@ -33,6 +33,10 @@ public enum VpnTunnelError: LocalizedError {
 @MainActor
 public final class VpnTunnelController: ObservableObject {
 
+    /// Один экземпляр на приложение: сцены SwiftUI и AppDelegate (⌘Q при
+    /// поднятом VPN) должны видеть один и тот же туннель.
+    public static let shared = VpnTunnelController()
+
     @Published public private(set) var manager: NETunnelProviderManager?
     @Published public var lastError: String?
 
@@ -104,20 +108,22 @@ public final class VpnTunnelController: ObservableObject {
         lastError = nil
         let preferences = preferences ?? PreferencesStore.shared
 
-        var providerProfile = profile
         // Relay hop: substitute the dialed endpoint before anything downstream
         // reads `serverAddr` — the route-policy snapshot (server /32 exclude),
-        // `proto.serverAddress` and the extension's ConnStringBuilder must all
-        // see the address the TCP connection actually goes to. SNI
-        // (`serverName`) is intentionally NOT touched: the relay forwards raw
-        // TLS by SNI (passthrough), end-to-end encryption terminates at the
-        // exit server.
-        providerProfile.serverAddr = profile.effectiveServerAddr
+        // `proto.serverAddress` and the extension's endpoint pin must all
+        // see the address the TCP connection actually goes to. The connString
+        // authority is rewritten too (`withRelayEndpoint`): the extension takes
+        // the pinned port from it, and a stale exit authority pinned the
+        // runtime to exitIP:443 (ADR 0013). SNI (`serverName`) is
+        // intentionally NOT touched: the relay forwards raw TLS by SNI
+        // (passthrough), end-to-end encryption terminates at the exit server.
+        var providerProfile = profile.withRelayEndpoint
         let effectiveRoutingMode = preferences.effectiveRoutingMode(
             profileSplitRouting: profile.splitRouting
         )
         let dnsServers = preferences.dnsServers
         let manualDirectCidrs = preferences.manualDirectCidrs
+        let manualDirectIpv6Cidrs = preferences.manualDirectIpv6Cidrs
         let preserveScopedDns = preferences.preserveScopedDns
         let dnsLeakProtection = preferences.dnsLeakProtection
         let ipv6Killswitch = preferences.ipv6Killswitch
@@ -128,11 +134,17 @@ public final class VpnTunnelController: ObservableObject {
         let routePolicyInput = UpstreamVpnRouteDetector.SnapshotInput(
             mode: effectiveRoutingMode,
             manualDirectCidrs: manualDirectCidrs,
+            manualDirectIpv6Cidrs: manualDirectIpv6Cidrs,
             preserveScopedDns: preserveScopedDns,
             serverAddr: providerProfile.serverAddr,
             tunAddr: providerProfile.tunAddr
         )
-        let routePolicy = await UpstreamVpnRouteDetector().snapshot(routePolicyInput)
+        // Свежий резолв адреса сервера/relay на каждый Connect: кэш мог
+        // пережить captive portal или переезд IP реле.
+        let routePolicy = await UpstreamVpnRouteDetector().snapshot(
+            routePolicyInput,
+            freshServerResolve: true
+        )
 
         // CRITICAL privacy: NETunnelProviderProtocol.providerConfiguration is
         // persisted by the system in plaintext under
@@ -178,6 +190,7 @@ public final class VpnTunnelController: ObservableObject {
                 autoReconnect: autoReconnect,
                 routingMode: effectiveRoutingMode,
                 manualDirectCidrs: manualDirectCidrs,
+                manualDirectIpv6Cidrs: manualDirectIpv6Cidrs,
                 preserveScopedDns: preserveScopedDns,
                 routePolicy: routePolicy,
                 streams: streamOverride
@@ -229,6 +242,9 @@ public final class VpnTunnelController: ObservableObject {
             log.info("saving GhostStream VPN manager profileId=\(profile.id, privacy: .public)")
             try await managerToSave.saveToPreferences()
             manager = try await reloadSavedManager(profileId: profile.id)
+            // Наблюдатель статуса не должен остаться на старом (возможно,
+            // удалённом в Настройках → VPN) менеджере.
+            await VpnStateManager.shared.reloadManager()
             // Снапшот routePolicy запечён в providerConfiguration и будет
             // применён самим startTunnel — сообщаем монитору, чтобы первый
             // poll после connect не слал провайдеру повторный apply тех же
@@ -277,10 +293,100 @@ public final class VpnTunnelController: ObservableObject {
         manager?.connection.stopVPNTunnel()
     }
 
+    /// Снимает все конфигурации GhostStream из Настроек → VPN (удалён
+    /// последний профиль). Грузит их сам: `manager` мог быть ещё не загружен.
     public func remove() async throws {
-        guard let manager else { return }
-        try await manager.removeFromPreferences()
-        self.manager = nil
+        let all = try await NETunnelProviderManager.loadAllFromPreferences()
+        for candidate in ghostStreamManagers(in: all) {
+            try await candidate.removeFromPreferences()
+        }
+        manager = nil
+        await VpnStateManager.shared.reloadManager()
+    }
+
+    // MARK: - Restart / profile switch
+
+    /// Очередь stop/start: быстрые переключения A→B→C выполняются по
+    /// порядку, а не гоняются друг с другом за один менеджер.
+    private var restartTask: Task<Void, Never>?
+
+    /// stop → дождаться `.disconnected` (не дольше `timeout`). No-op, если
+    /// туннель и так лежит.
+    public func stopAndWait(timeout: TimeInterval = 10) async {
+        guard let connection = (await VpnStateManager.shared.cachedOrLoadManager() ?? manager)?.connection
+        else { return }
+        switch connection.status {
+        case .connecting, .connected, .reasserting:
+            connection.stopVPNTunnel()
+        default:
+            break
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while connection.status != .disconnected,
+              connection.status != .invalid,
+              Date() < deadline,
+              !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    /// Одна точка «stop → дождаться .disconnected → start» — Reconnect и
+    /// смена профиля при поднятом туннеле. Ошибку старта кладёт в
+    /// `lastError` сам `installAndStart`.
+    @discardableResult
+    public func restart(with profile: VpnProfile, preferences: PreferencesStore) -> Task<Void, Never> {
+        enqueue { [weak self] in
+            guard let self else { return }
+            await self.stopAndWait()
+            guard !Task.isCancelled else { return }
+            try? await self.installAndStart(profile: profile, preferences: preferences)
+        }
+    }
+
+    /// Реакция на смену активного профиля откуда угодно (меню-бар, сайдбар,
+    /// ростер, палитра, импорт, удаление). Подключён к старому профилю —
+    /// переподключаемся к новому; активный удалён — только отключаемся;
+    /// профилей не осталось — снимаем конфиг из Настроек → VPN.
+    public func activeProfileChanged(
+        from oldId: String?,
+        profiles: ProfilesStore,
+        preferences: PreferencesStore
+    ) {
+        guard let next = profiles.activeProfile else {
+            enqueue { [weak self] in
+                await self?.stopAndWait()
+                try? await self?.remove()
+            }
+            return
+        }
+        // Коннект уже идёт (палитра «Connect to X» сама стартует новый
+        // профиль) или туннель лежит — переключать нечего.
+        guard !installAndStartInFlight, Self.isUp(VpnStateManager.shared.statusFrame.state) else { return }
+        let wasDeleted = oldId.map { profiles.load(id: $0) == nil } ?? false
+        if wasDeleted {
+            enqueue { [weak self] in await self?.stopAndWait() }
+        } else {
+            restart(with: next, preferences: preferences)
+        }
+    }
+
+    static func isUp(_ state: ConnState) -> Bool {
+        switch state {
+        case .connected, .connecting, .reconnecting: return true
+        case .disconnected, .error: return false
+        }
+    }
+
+    @discardableResult
+    private func enqueue(_ work: @escaping @MainActor () async -> Void) -> Task<Void, Never> {
+        let previous = restartTask
+        previous?.cancel()
+        let task = Task { @MainActor in
+            await previous?.value
+            await work()
+        }
+        restartTask = task
+        return task
     }
 
     private func reloadSavedManager(profileId: String) async throws -> NETunnelProviderManager {

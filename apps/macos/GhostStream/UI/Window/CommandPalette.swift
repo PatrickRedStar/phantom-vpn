@@ -321,6 +321,12 @@ public struct CommandPalette: View {
                 kbd: nil,
                 action: {
                     profiles.setActive(id: profile.id)
+                    // Туннель поднят: на новый профиль переподключит
+                    // VpnTunnelController.activeProfileChanged (наблюдатель
+                    // activeProfile в GhostStreamApp) — второй старт не нужен.
+                    if VpnTunnelController.isUp(stateMgr.statusFrame.state) {
+                        return .close
+                    }
                     return start(profile)
                 }
             )
@@ -548,18 +554,15 @@ public struct CommandPalette: View {
             return openSetupWithError(preflightError)
         }
 
-        tunnel.stop()
         statusMessage = .init(text: "Reconnecting to \(profile.name)...", kind: .info)
         Task {
-            do {
-                try await Task.sleep(nanoseconds: 350_000_000)
-                try await tunnel.installAndStart(profile: profile, preferences: PreferencesStore.shared)
-                tunnel.lastError = nil
+            // stop → дождаться .disconnected → start (ошибку старта
+            // installAndStart кладёт в tunnel.lastError).
+            await tunnel.restart(with: profile, preferences: PreferencesStore.shared).value
+            if let error = tunnel.lastError {
+                statusMessage = .init(text: error, kind: .error)
+            } else {
                 router.commandPaletteOpen = false
-            } catch {
-                let humanized = ConnectErrorHumanizer.humanize(error.localizedDescription)
-                tunnel.lastError = humanized
-                statusMessage = .init(text: humanized, kind: .error)
             }
         }
         return .stayOpen

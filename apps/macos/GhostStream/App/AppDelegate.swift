@@ -9,6 +9,7 @@
 
 import AppKit
 import Foundation
+import PhantomKit
 import os.log
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -47,6 +48,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         EntitlementRefresher.shared.start()
 
         log.info("GhostStream launched (macOS)")
+    }
+
+    /// ⌘Q / «Выйти» при поднятом VPN: туннель живёт в system extension и
+    /// переживает выход, а выключить его потом негде — спрашиваем.
+    @MainActor
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard VpnTunnelController.isUp(VpnStateManager.shared.statusFrame.state) else {
+            return .terminateNow
+        }
+        // Выход по logout/перезагрузке/выключению (у quit-события есть
+        // причина) — алертом не блокируем, VPN оставляем как есть.
+        if NSAppleEventManager.shared().currentAppleEvent?
+            .attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil {
+            return .terminateNow
+        }
+        let alert = NSAlert()
+        alert.messageText = L("quit.vpn_on.title")
+        alert.informativeText = L("quit.vpn_on.message")
+        alert.addButton(withTitle: L("quit.vpn_on.disconnect"))
+        alert.addButton(withTitle: L("quit.vpn_on.keep"))
+        alert.addButton(withTitle: L("general.cancel"))
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            Task { @MainActor in
+                await VpnTunnelController.shared.stopAndWait(timeout: 5)
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        case .alertSecondButtonReturn:
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
