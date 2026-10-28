@@ -19,7 +19,6 @@ public struct SettingsView: View {
     @State private var showAddDialog = false
     @State private var showDNSDialog = false
     @State private var showSplitDialog = false
-    @State private var showRuCerts = false
     @State private var showQRSheet = false
     @State private var editorProfileId: String? = nil
     @State private var importErrorText: String? = nil
@@ -53,14 +52,6 @@ public struct SettingsView: View {
                 connectionCard
                 SectionLabel(text: L("settings.section.routing"))
                 routingCard
-                SectionLabel(text: L("settings.section.ru.sites"))
-                NativeSectionCard {
-                    NativeRow(
-                        title: L("ru.certs.title"),
-                        subtitle: L("ru.certs.row.subtitle"),
-                        action: { showRuCerts = true }
-                    )
-                }
                 SectionLabel(text: L("settings.section.app"))
                 appCard
             }
@@ -165,10 +156,6 @@ public struct SettingsView: View {
                 }
             )
             .presentationDetents([.large])
-        }
-        .sheet(isPresented: $showRuCerts) {
-            RuCertsSheet(onDismiss: { showRuCerts = false })
-                .presentationDetents([.large])
         }
         .sheet(isPresented: Binding(
             get: { editorProfileId != nil },
