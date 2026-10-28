@@ -121,6 +121,9 @@ done
 # ─── Failure path: dump logs ────────────────────────────────────────────────
 
 red "==> FAIL: tunnel did NOT reach Connected within ${TIMEOUT_SECS}s (last status: $LAST_STATUS)"
+# Не оставлять туннель висеть в Connecting: он перехватывает маршруты и
+# роняет сеть (2026-10-28 — ~25 мин без GitHub, пока тест «упал»).
+scutil --nc stop "$PROFILE_NAME" >/dev/null 2>&1 || true
 yellow "==> Dumping ghoststream logs to $FAIL_LOG"
 
 log show \

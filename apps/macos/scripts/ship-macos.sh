@@ -29,9 +29,9 @@
 #   GHOSTSTREAM_DIST_COPY_DIR=~/Downloads   — also copy the final DMG here
 #
 set -euo pipefail
-cd "$(dirname "$0")/.."
-
+# SCRIPTS_DIR до cd: относительный $0 после cd уже не резолвится.
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPTS_DIR/.."
 
 echo ""
 echo "==> [1/4] Build release archive + export .app"
