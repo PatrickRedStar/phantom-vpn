@@ -1,6 +1,6 @@
 ---
 updated: 2026-10-28
-status: accepted
+status: accepted, частично отменён (Android убран; iOS — не работает в Safari, см. «Проверка на устройствах»)
 ---
 
 # 0023 — Сертификаты Минцифры только для .ru/.рф/.su (кнопка в iOS/Android)
