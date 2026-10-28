@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ship-android.sh — one-command Android tester deploy.
 #
-# Builds the Rust JNI .so + the Compose APK, cleanly uninstalls the
-# previous tester package (debug OR release), installs the new one,
+# Builds the Rust JNI .so + the Compose APK, updates the tester package
+# in place (adb install -r, never uninstall — that wipes profiles),
 # verifies versionCode/Name. Leaves `com.ghoststream.vpn` (Play Market
 # legacy install) alone.
 #
@@ -17,9 +17,8 @@
 #   tools/ship-android.sh --device <id>   # adb -s <id>; defaults to TARGET_DEVICE
 #
 # Memory rules baked in:
-#   - exactly two packages on device: com.ghoststream.vpn (Play Market) + ONE tester
-#   - never uninstall com.ghoststream.vpn
-#   - never -r across applicationId changes (debug↔release): always explicit uninstall first
+#   - never uninstall anything: update in place, profiles must survive
+#   - never touch com.ghoststream.vpn (Play Market)
 #   - bump version every install (feedback_version_bump)
 #
 set -euo pipefail
@@ -211,7 +210,7 @@ build_apk() {
     say "APK: $APK ($(du -h "$APK" | awk '{print $1}'))"
 }
 
-# ── clean install (uninstall prev tester → install) ──────────────────────
+# ── update in place (never uninstall: uninstall wipes the owner's profiles) ──
 deploy_apk() {
     local target_pkg
     if [[ "$MODE" == "release" ]]; then target_pkg="$RELEASE_PKG"; else target_pkg="$DEBUG_PKG"; fi
@@ -219,18 +218,9 @@ deploy_apk() {
     say "device packages before:"
     adb_cmd shell pm list packages | grep ghoststream || true
 
-    # Uninstall whichever tester is currently there (DEBUG_PKG or RELEASE_PKG
-    # but NEVER PLAYSTORE_PKG). Both packages can't both be testers (rule),
-    # but for safety we try both.
-    for pkg in "$DEBUG_PKG" "$RELEASE_PKG"; do
-        if adb_cmd shell pm list packages | grep -q "^package:${pkg}$"; then
-            say "uninstalling $pkg"
-            adb_cmd uninstall "$pkg" >/dev/null || warn "uninstall $pkg failed"
-        fi
-    done
-
-    say "installing $APK ($target_pkg)..."
-    adb_cmd install -r "$APK"
+    say "updating $APK ($target_pkg)..."
+    adb_cmd install -r "$APK" \
+        || die "install -r failed (signature mismatch?) — NOT uninstalling: it would wipe profiles; ask the owner"
 
     say "device packages after:"
     adb_cmd shell pm list packages | grep ghoststream || true

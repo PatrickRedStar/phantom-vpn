@@ -73,8 +73,8 @@ targets:
         INFOPLIST_FILE: GhostStream/Info.plist
         CODE_SIGN_ENTITLEMENTS: GhostStream/GhostStream.entitlements
         TARGETED_DEVICE_FAMILY: "1"
-        MARKETING_VERSION: "0.29.0"
-        CURRENT_PROJECT_VERSION: "6"
+        MARKETING_VERSION: "0.29.2"
+        CURRENT_PROJECT_VERSION: "7"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Frameworks"
     postBuildScripts:
@@ -142,8 +142,8 @@ targets:
         INFOPLIST_FILE: PacketTunnelProvider/Info.plist
         CODE_SIGN_ENTITLEMENTS: PacketTunnelProvider/PacketTunnelProvider.entitlements
         TARGETED_DEVICE_FAMILY: "1"
-        MARKETING_VERSION: "0.29.0"
-        CURRENT_PROJECT_VERSION: "6"
+        MARKETING_VERSION: "0.29.2"
+        CURRENT_PROJECT_VERSION: "7"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
         FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Frameworks"
     dependencies:
@@ -188,8 +188,8 @@ targets:
         INFOPLIST_FILE: GhostStreamWidgets/Info.plist
         CODE_SIGN_ENTITLEMENTS: GhostStreamWidgets/GhostStreamWidgets.entitlements
         TARGETED_DEVICE_FAMILY: "1"
-        MARKETING_VERSION: "0.29.0"
-        CURRENT_PROJECT_VERSION: "6"
+        MARKETING_VERSION: "0.29.2"
+        CURRENT_PROJECT_VERSION: "7"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
         # Shared/VpnIntents.swift: perform() runs in the app, not here.
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
