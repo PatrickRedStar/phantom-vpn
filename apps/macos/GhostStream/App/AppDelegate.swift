@@ -16,6 +16,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let log = Logger(subsystem: "com.ghoststream.client", category: "AppDelegate")
 
+    /// Запущено как объект входа — консоль при старте не открываем
+    /// (MacStartupPolicy).
+    private(set) static var launchedAtLogin = false
+
+    /// Открыть консоль (`openWindow(id: "console")`) — задаёт GhostStreamApp:
+    /// у делегата нет доступа к SwiftUI-окнам.
+    var openConsole: (() -> Void)?
+
     /// SwiftUI 14+: `applicationWillFinishLaunching(_:)` is called BEFORE
     /// the App's `body` is first evaluated — so any singletons that the
     /// scene captures via `@State` (ProfilesStore.shared, PreferencesStore.shared,
@@ -37,12 +45,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Объект входа macOS запускает событием oapp с keyAEPropData =
+        // keyAELaunchedAsLogInItem.
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        Self.launchedAtLogin = event?.eventID == AEEventID(kAEOpenApplication)
+            && event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?.enumCodeValue
+                == OSType(keyAELaunchedAsLogInItem)
+
         // Programmatic font registration — UIAppFonts is iOS-only.
         FontRegistration.register()
 
         // Initial Dock policy.
         DockPolicyController.shared.apply()
 
+        // Проверка новой версии на GitHub (ADR 0022).
+        UpdateChecker.shared.start()
+
+        #if DEBUG
+        if DebugDemo.isActive { return }
+        #endif
         // Admin/subscription cache refresh through the tunnel (/api/me) —
         // gates the ADMIN sidebar tab for admin identities.
         EntitlementRefresher.shared.start()
@@ -54,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// переживает выход, а выключить его потом негде — спрашиваем.
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        #if DEBUG
+        if DebugDemo.isActive { return .terminateNow }
+        #endif
         guard VpnTunnelController.isUp(VpnStateManager.shared.statusFrame.state) else {
             return .terminateNow
         }
@@ -88,16 +112,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         log.info("GhostStream terminating")
     }
 
-    /// Re-open the main window when the user clicks the Dock tile after
-    /// the window has been closed.
+    /// Клик по иконке в Dock при закрытых окнах — открыть консоль.
+    /// Перебор `NSApp.windows` поднимал скрытые служебные окна (попап
+    /// строки меню), а закрытую консоль SwiftUI так не вернуть.
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
         if !flag {
-            for window in sender.windows {
-                window.makeKeyAndOrderFront(self)
-            }
+            openConsole?()
         }
         return true
     }

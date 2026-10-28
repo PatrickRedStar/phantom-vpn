@@ -17,6 +17,9 @@ public final class LoginItemController {
     public static let shared = LoginItemController()
 
     public private(set) var enabled: Bool = false
+    /// Зарегистрирован, но пользователь ещё не разрешил (или выключил) его
+    /// в «Системные настройки → Основные → Объекты входа и расширения».
+    public private(set) var requiresApproval: Bool = false
 
     private let log = Logger(subsystem: "com.ghoststream.client", category: "LoginItem")
 
@@ -25,7 +28,9 @@ public final class LoginItemController {
     }
 
     public func refresh() {
-        enabled = (SMAppService.mainApp.status == .enabled)
+        let status = SMAppService.mainApp.status
+        enabled = status == .enabled
+        requiresApproval = status == .requiresApproval
     }
 
     public func setEnabled(_ value: Bool) {
@@ -38,6 +43,7 @@ public final class LoginItemController {
             refresh()
         } catch {
             log.error("login item toggle failed: \(error.localizedDescription, privacy: .public)")
+            refresh()
         }
     }
 }

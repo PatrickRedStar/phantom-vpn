@@ -11,13 +11,14 @@ import AppKit
 import Foundation
 import Observation
 
-/// Identifies the five main console tabs.
+/// Пункты сайдбара в порядке макета: Главная / Серверы / Логи / Админ /
+/// Настройки. ⌘1…⌘5 — по этому же порядку.
 public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
     case stream
-    case tail
-    case setup
     case roster
+    case tail
     case admin
+    case setup
 
     public var id: String { rawValue }
 
@@ -35,21 +36,21 @@ public enum SidebarChannel: String, CaseIterable, Hashable, Identifiable {
 
     public var sfSymbol: String {
         switch self {
-        case .stream: return "dot.radiowaves.left.and.right"
-        case .tail:   return "list.bullet.rectangle"
-        case .setup:  return "slider.horizontal.3"
-        case .roster: return "server.rack"
-        case .admin:  return "person.2.badge.gearshape"
+        case .stream: return "house"
+        case .roster: return "globe"
+        case .tail:   return "list.bullet"
+        case .admin:  return "person.2"
+        case .setup:  return "gearshape"
         }
     }
 
     public var hotkey: Character {
         switch self {
         case .stream: return "1"
-        case .tail:   return "2"
-        case .setup:  return "3"
-        case .roster: return "4"
-        case .admin:  return "5"
+        case .roster: return "2"
+        case .tail:   return "3"
+        case .admin:  return "4"
+        case .setup:  return "5"
         }
     }
 

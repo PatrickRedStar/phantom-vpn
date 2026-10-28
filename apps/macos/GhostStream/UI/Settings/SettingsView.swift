@@ -2,21 +2,16 @@
 //  SettingsView.swift
 //  GhostStream (macOS)
 //
-//  SETUP tab — pixel-matched to section 04 of the design HTML.
-//
-//  Two-column grid (1fr 1fr, 18pt gap) with cards:
-//    Left  · "tunnel"          — DNS leak / IPv6 leak / Auto reconnect
-//                                / Routing / DNS / Streams.
-//    Right · "mac integration" — login item / start in menu bar / show
-//                                in Dock / notifications.
-//          · "appearance"       — theme / reduce motion.
-//          · "updates"          — auto-update / check now button.
-//          · "diagnostics"      — export bundle.
+//  «Настройки» (mockup.html, `.form`): нативный Form(.grouped) с секциями
+//  Подключение / Маршрутизация / Приложение / Обновления / Дополнительно.
+//  Только то, что реально работает на macOS.
 //
 
 import AppKit
+import NetworkExtension
 import PhantomKit
 import PhantomUI
+import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -30,448 +25,335 @@ public struct SettingsView: View {
     @Environment(LoginItemController.self) private var login
     @Environment(DockPolicyController.self) private var dock
     @Environment(UpstreamVpnMonitor.self) private var upstream
+    @Environment(UpdateChecker.self) private var updates
+    @EnvironmentObject private var tunnel: VpnTunnelController
 
-    // A3: эффективный Reduce Motion = ручной тумблер OR системный флаг.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduceMotion: Bool { prefs.reduceMotion || systemReduceMotion }
-
+    @AppStorage(NotifyLevel.allKey) private var notifyAll = false
+    /// `prefs.dnsServers` читает UserDefaults напрямую и не наблюдается —
+    /// держим копию, чтобы Picker перерисовывался.
+    @State private var dnsServers: [String]? = PreferencesStore.shared.dnsServers
     @State private var exportStatusMessage: String?
     @State private var exportingDiagnostics = false
-    @State private var settingsAppeared = false
+    @State private var editingExclusions = false
 
     public init() {}
 
-    /// Реальные версия/билд из Info.plist (см. BUILD-1).
-    private static var buildStamp: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        return "v\(version) (\(build))"
-    }
-
     public var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                detailHead
-                    .settingsReveal(settingsAppeared, delay: 0.00, reduceMotion: reduceMotion)
-                grid
-                    .settingsReveal(settingsAppeared, delay: 0.06, reduceMotion: reduceMotion)
+        GeometryReader { geo in
+            Form {
+                connectionSection
+                routingSection
+                appSection
+                updatesSection
+                advancedSection
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 22)
-            .padding(.bottom, 32)
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+            // Колонка не шире 680 pt по центру (макет: max-width 640 + поля).
+            .contentMargins(.horizontal, max(0, (geo.size.width - 680) / 2), for: .scrollContent)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(C.bg)
-        .onAppear {
-            SettingsMotion.perform(reduceMotion: reduceMotion) {
-                settingsAppeared = true
-            }
+        .sheet(isPresented: $editingExclusions) { ExclusionsSheet() }
+        .onAppear { login.refresh() }
+        // Вернулись из Системных настроек — статус автозапуска мог смениться.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            login.refresh()
         }
     }
 
-    // MARK: - detail-head
-
-    @ViewBuilder
-    private var detailHead: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("CONFIGURATION")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.20 * 11)
-                    .foregroundStyle(C.textFaint)
-                HStack(spacing: 0) {
-                    Text("setup")
-                        .font(.custom("InstrumentSerif-Italic", size: 38))
-                        .foregroundStyle(C.signal)
-                    Text(".")
-                        .font(.custom("SpaceGrotesk-Bold", size: 38))
-                        .foregroundStyle(C.textDim)
-                }
-            }
-            Spacer()
-            HStack(spacing: 6) {
-                Text("BUILD ·")
-                    .font(.custom("DepartureMono-Regular", size: 10.5))
-                    .tracking(0.16 * 10.5)
-                    .foregroundStyle(C.textFaint)
-                // BUILD-1 fix: раньше тут был хардкод "2026.04.27.0142",
-                // застывший с апреля независимо от реальной версии.
-                Text(Self.buildStamp)
-                    .font(.custom("DepartureMono-Regular", size: 10.5))
-                    .tracking(0.04 * 10.5)
-                    .foregroundStyle(C.bone)
-            }
-        }
-        .padding(.bottom, 14)
-        .overlay(alignment: .bottom) {
-            DashedHairline()
-        }
+    private var routingMode: RoutingMode {
+        prefs.effectiveRoutingMode(profileSplitRouting: profiles.activeProfile?.splitRouting)
     }
 
-    // MARK: - 2-column grid
+    // MARK: - Подключение
 
     @ViewBuilder
-    private var grid: some View {
-        HStack(alignment: .top, spacing: 18) {
-            tunnelCard
-                .frame(maxWidth: .infinity)
-                .settingsReveal(settingsAppeared, delay: 0.10, reduceMotion: reduceMotion)
-            macColumn
-                .frame(maxWidth: .infinity)
-                .settingsReveal(settingsAppeared, delay: 0.16, reduceMotion: reduceMotion)
-        }
-    }
-
-    @ViewBuilder
-    private var tunnelCard: some View {
+    private var connectionSection: some View {
         @Bindable var p = prefs
-        SettingsCard(header: L("settings.tunnel").uppercased(), trailing: {
-            HStack(spacing: 6) {
-                PulseDot(color: C.signal, size: 6, pulse: !reduceMotion)
-                Text("SAVED")
-                    .font(.custom("DepartureMono-Regular", size: 10.5))
-                    .tracking(0.12 * 10.5)
-                    .foregroundStyle(C.textFaint)
+        Section {
+            Toggle(isOn: $p.killSwitch) {
+                Text(L("settings.kill_switch.title"))
+                Text(L(routingMode == .global ? "settings.kill_switch.hint" : "settings.kill_switch.only_global"))
             }
-        }) {
-            settingRow(title: L("settings.dns_leak"),
-                       description: "Принудительно использовать DNS из tunnel profile") {
-                SettingsToggle(on: $p.dnsLeakProtection)
+            .tint(C.signal)
+            .disabled(routingMode != .global)
+
+            Picker(selection: Binding(get: { dnsServers }, set: { dnsServers = $0; prefs.dnsServers = $0 })) {
+                Text(L("settings.dns.profile")).tag([String]?.none)
+                ForEach(Self.dnsPresets, id: \.1) { title, servers in
+                    Text(verbatim: title).tag(Optional(servers))
+                }
+                if let custom = dnsServers, !Self.dnsPresets.contains(where: { $0.1 == custom }) {
+                    Text(String(format: L("settings.dns.custom"), custom.joined(separator: ", "))).tag(Optional(custom))
+                }
+            } label: {
+                Text(L("settings.dns"))
+                Text(L("settings.dns.hint"))
             }
-            HairlineDivider()
-            settingRow(title: L("settings.ipv6_leak"),
-                       description: "Отключить IPv6 на интерфейсе пока активен туннель") {
-                SettingsToggle(on: $p.ipv6Killswitch)
+
+            Toggle(isOn: $p.ipv6Killswitch) {
+                Text(L("settings.ipv6_leak"))
+                Text(L("settings.ipv6.hint"))
             }
-            HairlineDivider()
-            settingRow(title: L("settings.kill_switch"),
-                       description: killSwitchDescription) {
-                SettingsToggle(on: $p.killSwitch)
-                    .disabled(p.routingMode != .global)
-                    .opacity(p.routingMode != .global ? 0.4 : 1)
+            .tint(C.signal)
+
+            Picker(selection: $p.streamOverride) {
+                Text(String(format: L("settings.streams.auto"), "\(Self.autoStreams)")).tag(Int?.none)
+                ForEach(streamOptions, id: \.self) { Text(verbatim: "\($0)").tag(Optional($0)) }
+            } label: {
+                Text(L("settings.streams.title"))
+                Text(L("settings.streams.hint"))
             }
-            HairlineDivider()
-            settingRow(title: L("settings.auto_reconnect"),
-                       description: "Восстанавливать туннель при разрывах сети") {
-                SettingsToggle(on: $p.autoReconnect)
-            }
-            HairlineDivider()
-            settingRow(title: L("settings.routing"),
-                       description: "Какой трафик заворачивается в туннель") {
-                RoutingPill()
-            }
-            if p.routingMode == .layeredAuto {
-                Group {
-                    cardSubHeader("WORK VPN")
-                    settingRow(title: "Cisco/work VPN first",
-                               description: routeDiagnosticText) {
-                        VStack(alignment: .trailing, spacing: 3) {
-                            Text("\(upstream.snapshot.detectedUpstreamCidrs.count)")
-                                .font(.custom("DepartureMono-Regular", size: 13))
-                                .tracking(0.10 * 13)
-                                .foregroundStyle(C.signal)
-                            Text("routes")
-                                .font(.custom("DepartureMono-Regular", size: 9.5))
-                                .tracking(0.14 * 9.5)
-                                .foregroundStyle(C.textFaint)
+        } header: {
+            Text(L("settings.section.connection"))
+        } footer: {
+            if needsReconnect {
+                HStack(spacing: GsSpace.xs) {
+                    Text(L("settings.reconnect_needed"))
+                        .foregroundStyle(C.textDim)
+                    Button(L("settings.reconnect")) {
+                        if let profile = profiles.activeProfile {
+                            tunnel.restart(with: profile, preferences: prefs)
                         }
                     }
-                    HairlineDivider()
-                    settingRow(title: "Preserve scoped DNS",
-                               description: dnsDiagnosticText) {
-                        SettingsToggle(on: $p.preserveScopedDns)
-                    }
-                    HairlineDivider()
-                    manualDirectCidrsEditor
-                }
-                .transition(SettingsMotion.sectionTransition(reduceMotion: reduceMotion))
-            }
-            HairlineDivider()
-            settingRow(title: L("settings.dns"),
-                       description: "Custom DNS overrides") {
-                DNSPill()
-            }
-            HairlineDivider()
-            settingRow(title: L("settings.streams"),
-                       description: streamDescription) {
-                StreamControl(streamOverride: $p.streamOverride)
-            }
-        }
-        .animation(SettingsMotion.layout(reduceMotion: reduceMotion), value: p.routingMode)
-    }
-
-    @ViewBuilder
-    private var macColumn: some View {
-        @Bindable var p = prefs
-        VStack(spacing: 0) {
-            SettingsCard(header: L("settings.mac_integration").uppercased(),
-                         trailing: { Text("— DARWIN")
-                            .font(.custom("DepartureMono-Regular", size: 10.5))
-                            .tracking(0.12 * 10.5)
-                            .foregroundStyle(C.textFaint) }) {
-                @Bindable var loginBinding = login
-                @Bindable var dockBinding = dock
-                settingRow(title: L("settings.launch_at_login"),
-                           description: "SMAppService.mainApp · login item") {
-                    SettingsToggle(on: Binding(
-                        get: { loginBinding.enabled },
-                        set: { loginBinding.setEnabled($0) }
-                    ))
-                }
-                HairlineDivider()
-                settingRow(title: L("settings.start_in_menu_bar"),
-                           description: "Без всплывания консоли · LSUIElement runtime") {
-                    SettingsToggle(on: $p.startInMenuBar)
-                }
-                HairlineDivider()
-                settingRow(title: L("settings.show_in_dock"),
-                           description: "Если выключено — app живёт только в menu bar") {
-                    SettingsToggle(on: $dockBinding.showInDock)
-                }
-                HairlineDivider()
-                settingRow(title: L("settings.notify_state_changes"),
-                           description: "Системный alert при connect/disconnect/reconnect") {
-                    SettingsToggle(on: $p.notifyStateChanges)
-                }
-
-                cardSubHeader(L("settings.appearance").uppercased())
-                settingRow(title: L("settings.theme"),
-                           description: "Тёмная (warm-black + lime), светлая (paper + moss)") {
-                    ThemePill()
-                }
-                HairlineDivider()
-                // A2: языковой пикер рядом с темой. Переключение живое
-                // (LocalizationManager + LocalizedRoot) — рестарт не нужен.
-                settingRow(title: L("settings.language"),
-                           description: nil) {
-                    LanguagePill(onChange: {})
-                }
-                HairlineDivider()
-                settingRow(title: L("settings.reduce_motion"),
-                           description: "Отключить mux shimmer + pulse") {
-                    SettingsToggle(on: $p.reduceMotion)
-                }
-
-                cardSubHeader("UPDATES")
-                settingRow(title: "Auto-update",
-                           description: "Недоступно: Sparkle updater не подключен") {
-                    SettingsToggle(on: .constant(false))
-                        .opacity(0.45)
-                        .allowsHitTesting(false)
-                }
-                HairlineDivider()
-                settingRow(title: L("settings.check_now"),
-                           description: "Недоступно: Sparkle updater не подключен") {
-                    actionButton(label: "ПРОВЕРИТЬ", color: C.signal, disabled: true)
-                }
-
-                cardSubHeader(L("settings.diagnostics").uppercased())
-                settingRow(title: L("settings.export_bundle"),
-                           description: exportStatusMessage ?? "Snapshot, настройки и последние логи без PEM/conn string") {
-                    actionButton(
-                        label: exportingDiagnostics ? "EXPORT..." : "EXPORT",
-                        color: C.bone,
-                        borderColor: C.hairBold,
-                        disabled: exportingDiagnostics
-                    ) {
-                        Task { await exportDiagnostics() }
-                    }
-                }
-
-                cardSubHeader("ADVANCED")
-                settingRow(
-                    title: L("settings.verbose_logging"),
-                    description: "Records every packet batch and micro-event. Adds ~10 MB/min to \(LogPathResolver.displayPath.replacingOccurrences(of: "/runtime.log", with: "/")). Reduce if disk-constrained."
-                ) {
-                    SettingsToggle(on: $p.verboseLog)
-                }
-                HairlineDivider()
-                settingRow(
-                    title: "Runtime log file",
-                    description: "\(LogPathResolver.displayPath) · NDJSON, daily rotation, 7-day retention"
-                ) {
-                    actionButton(
-                        label: "REVEAL",
-                        color: C.bone,
-                        borderColor: C.hairBold
-                    ) {
-                        revealRuntimeLogFile()
-                    }
-                }
-                HairlineDivider()
-                settingRow(
-                    title: "Log directory",
-                    description: "Open the rotation directory in a Finder window"
-                ) {
-                    actionButton(
-                        label: "OPEN",
-                        color: C.bone,
-                        borderColor: C.hairBold
-                    ) {
-                        openRuntimeLogDirectory()
-                    }
-                }
-            }
-        }
-    }
-
-    /// Single source of truth for the runtime log path — see
-    /// `PhantomKit.LogPathResolver` (ADR 0008 §4).
-    private func runtimeLogDirectoryURL() -> URL {
-        LogPathResolver.defaultDirectory()
-    }
-
-    private func revealRuntimeLogFile() {
-        let file = LogPathResolver.defaultRuntimeLogURL()
-        if FileManager.default.fileExists(atPath: file.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([file])
-            return
-        }
-        // No log yet — at least open the parent directory if it exists.
-        let dir = file.deletingLastPathComponent()
-        if FileManager.default.fileExists(atPath: dir.path) {
-            NSWorkspace.shared.open(dir)
-        }
-    }
-
-    private func openRuntimeLogDirectory() {
-        let dir = runtimeLogDirectoryURL()
-        try? FileManager.default.createDirectory(
-            at: dir,
-            withIntermediateDirectories: true
-        )
-        NSWorkspace.shared.open(dir)
-    }
-
-    // MARK: - Sub-header inside the right column
-
-    @ViewBuilder
-    private func cardSubHeader(_ text: String) -> some View {
-        HStack {
-            Text(text)
-                .font(.custom("DepartureMono-Regular", size: 11))
-                .tracking(0.18 * 11)
-                .foregroundStyle(C.textDim)
-            Spacer()
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(C.bgElev)
-        .overlay(alignment: .top) {
-            Rectangle().fill(C.hair).frame(height: 1)
-        }
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(C.hair).frame(height: 1)
-        }
-    }
-
-    @ViewBuilder
-    private func settingRow<Trailing: View>(
-        title: String,
-        description: String?,
-        @ViewBuilder trailing: @escaping () -> Trailing
-    ) -> some View {
-        SettingRow(title: title, description: description) {
-            trailing()
-        }
-    }
-
-    @ViewBuilder
-    private func actionButton(
-        label: String,
-        color: Color,
-        borderColor: Color? = nil,
-        disabled: Bool = false,
-        action: @escaping () -> Void = {}
-    ) -> some View {
-        SettingsActionButton(
-            label: label,
-            color: color,
-            borderColor: borderColor,
-            disabled: disabled,
-            action: action
-        )
-    }
-
-    @ViewBuilder
-    private var manualDirectCidrsEditor: some View {
-        @Bindable var p = prefs
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Manual direct CIDRs")
-                        .font(.custom("JetBrainsMono-Regular", size: 13))
-                        .foregroundStyle(C.bone)
-                    Text("GhostStream bypass · one IPv4 CIDR per line")
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
-                        .foregroundStyle(C.textFaint)
-                }
-                Spacer()
-                Text("\(prefs.manualDirectCidrs.count)")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.14 * 11)
+                    .buttonStyle(.plain)
                     .foregroundStyle(C.signal)
-            }
-
-            TextEditor(text: $p.manualDirectCidrsText)
-                .font(.custom("JetBrainsMono-Regular", size: 11))
-                .foregroundStyle(C.bone)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 74)
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bgElev2))
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
-
-            if !prefs.invalidManualDirectCidrs.isEmpty {
-                Text("Invalid: \(prefs.invalidManualDirectCidrs.joined(separator: ", "))")
-                    .font(.custom("JetBrainsMono-Regular", size: 10.5))
-                    .foregroundStyle(C.danger)
-                    .lineLimit(2)
-                    .transition(SettingsMotion.sectionTransition(reduceMotion: reduceMotion))
+                }
+                .gsType(.caption)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .animation(SettingsMotion.layout(reduceMotion: reduceMotion), value: prefs.invalidManualDirectCidrs)
     }
 
-    private var killSwitchDescription: String {
-        prefs.routingMode == .global
-            ? L("settings.kill_switch.desc")
-            : L("settings.kill_switch.only_global")
+    private static let dnsPresets: [(String, [String])] = [
+        ("Cloudflare · 1.1.1.1", ["1.1.1.1", "1.0.0.1"]),
+        ("Google · 8.8.8.8", ["8.8.8.8", "8.8.4.4"]),
+        ("Quad9 · 9.9.9.9", ["9.9.9.9", "149.112.112.112"]),
+    ]
+
+    /// Авто в ядре — число ядер, зажатое в 2…16 (`core::wire::n_data_streams`).
+    private static let autoStreams = min(max(ProcessInfo.processInfo.activeProcessorCount, 2), 16)
+
+    private var streamOptions: [Int] {
+        var options = [2, 4, 8, 12, 16]
+        if let current = prefs.streamOverride, !options.contains(current) {
+            options.append(current)
+            options.sort()
+        }
+        return options
     }
 
-    private var routeDiagnosticText: String {
+    /// Туннель поднят, а настройки, которые провайдер читает только при
+    /// старте, расходятся с запечёнными в его providerConfiguration.
+    /// Маршруты, свои исключения и DNS рабочего VPN монитор применяет на лету.
+    private var needsReconnect: Bool {
+        guard VpnTunnelController.isUp(stateMgr.statusFrame.state),
+              let proto = tunnel.manager?.protocolConfiguration as? NETunnelProviderProtocol,
+              let config = proto.providerConfiguration,
+              let settingsData = config["settings"] as? Data,
+              let applied = try? JSONDecoder().decode(TunnelSettings.self, from: settingsData)
+        else { return false }
+        let appliedDns = (config["profile"] as? Data)
+            .flatMap { try? JSONDecoder().decode(VpnProfile.self, from: $0) }?
+            .dnsServers
+        return applied.ipv6Killswitch != prefs.ipv6Killswitch
+            || applied.streams != prefs.streamOverride
+            || proto.includeAllNetworks != (prefs.killSwitch && routingMode == .global)
+            || appliedDns != (dnsServers ?? profiles.activeProfile?.dnsServers)
+    }
+
+    // MARK: - Маршрутизация
+
+    @ViewBuilder
+    private var routingSection: some View {
+        @Bindable var p = prefs
+        Section(L("settings.section.routing")) {
+            Picker(selection: Binding(get: { routingMode }, set: { prefs.routingMode = $0 })) {
+                Text(L("settings.routing.global")).tag(RoutingMode.global)
+                Text(L("settings.routing.public")).tag(RoutingMode.publicSplit)
+                Text(L("settings.routing.work")).tag(RoutingMode.layeredAuto)
+            } label: {
+                Text(L("settings.routing.title"))
+                if routingMode == .layeredAuto {
+                    Text(workVpnStatus)
+                }
+            }
+
+            if routingMode == .layeredAuto {
+                Toggle(isOn: $p.preserveScopedDns) {
+                    Text(L("settings.routing.work_dns.title"))
+                    Text(L("settings.routing.work_dns.hint"))
+                }
+                .tint(C.signal)
+            }
+
+            // Свои исключения действуют только в split-режимах.
+            if routingMode != .global {
+                LabeledContent {
+                    HStack(spacing: GsSpace.m) {
+                        Text(exclusionsCount)
+                            .foregroundStyle(C.textDim)
+                        Button(L("settings.exclusions.edit")) { editingExclusions = true }
+                    }
+                } label: {
+                    Text(L("settings.exclusions.title"))
+                    Text(L("settings.exclusions.hint"))
+                }
+            }
+        }
+    }
+
+    private var workVpnStatus: String {
         let snapshot = upstream.snapshot
-        // ADR 0012 guard: full-tunnel / сверхширокие маршруты upstream —
-        // longest-prefix уведёт публичный трафик в GhostStream, а
-        // корп-ресурсы без узких маршрутов лишатся корп-туннеля.
-        if snapshot.upstreamHasBroadRoutes {
-            return "⚠ Work VPN захватывает весь трафик (full-tunnel) — "
-                + "корпоративные ресурсы без явных маршрутов пойдут через GhostStream"
+        // ADR 0012: full-tunnel рабочий VPN — корп-ресурсы без узких
+        // маршрутов уйдут в GhostStream.
+        if snapshot.upstreamHasBroadRoutes { return L("settings.routing.work_broad") }
+        if let name = snapshot.upstreamProviderName {
+            return String(format: L("settings.routing.work_found"), name)
         }
-        let provider = snapshot.upstreamProviderName ?? "no upstream VPN detected"
-        let interfaces = snapshot.upstreamInterfaceNames.isEmpty
-            ? "no utun"
-            : snapshot.upstreamInterfaceNames.joined(separator: ", ")
-        return "\(provider) · \(interfaces) · hash \(snapshot.routeHash.prefix(8))"
+        return L("settings.routing.work_none")
     }
 
-    private var dnsDiagnosticText: String {
-        let snapshot = upstream.snapshot
-        if snapshot.upstreamDnsDomains.isEmpty && snapshot.upstreamDnsServers.isEmpty {
-            return "No upstream scoped DNS detected"
-        }
-        let domainCount = snapshot.upstreamDnsDomains.count
-        let serverCount = snapshot.upstreamDnsServers.count
-        return "\(domainCount) domains · \(serverCount) DNS servers stay with work VPN"
+    private var exclusionsCount: String {
+        let count = prefs.manualDirectCidrs.count + prefs.manualDirectIpv6Cidrs.count
+        return count == 0
+            ? L("settings.exclusions.none")
+            : String(format: L("settings.exclusions.count"), "\(count)")
     }
 
-    private var streamDescription: String {
-        if let streamOverride = prefs.streamOverride {
-            return "Manual override: \(streamOverride) streams, применяется при следующем старте"
+    // MARK: - Приложение
+
+    @ViewBuilder
+    private var appSection: some View {
+        @Bindable var p = prefs
+        @Bindable var dockBinding = dock
+        Section(L("settings.section.app")) {
+            Toggle(isOn: Binding(
+                get: { login.enabled || login.requiresApproval },
+                set: { login.setEnabled($0) }
+            )) {
+                Text(L("settings.login.title"))
+            }
+            .tint(C.signal)
+            if login.requiresApproval {
+                LabeledContent {
+                    Button(L("settings.login.open_settings")) {
+                        SMAppService.openSystemSettingsLoginItems()
+                    }
+                } label: {
+                    Text(L("settings.login.approval"))
+                        .foregroundStyle(C.warn)
+                }
+            }
+
+            Toggle(isOn: $p.startInMenuBar) {
+                Text(L("settings.menubar.title"))
+                Text(L("settings.menubar.hint"))
+            }
+            .tint(C.signal)
+
+            Toggle(L("settings.dock.title"), isOn: $dockBinding.showInDock)
+                .tint(C.signal)
+
+            Picker(L("settings.notifications.title"), selection: notifyLevel) {
+                Text(L("settings.notifications.problems")).tag(NotifyLevel.problems)
+                Text(L("settings.notifications.all")).tag(NotifyLevel.all)
+                Text(L("settings.notifications.off")).tag(NotifyLevel.off)
+            }
+
+            Picker(L("settings.appearance"), selection: Binding(
+                get: { ThemeOverride(rawValue: prefs.theme) ?? .system },
+                set: { prefs.theme = $0.rawValue }
+            )) {
+                Text(L("settings.theme.system")).tag(ThemeOverride.system)
+                Text(L("settings.theme.light")).tag(ThemeOverride.light)
+                Text(L("settings.theme.dark")).tag(ThemeOverride.dark)
+            }
+
+            Picker(L("settings.language"), selection: Binding(
+                get: { prefs.languageOverride },
+                set: setLanguage
+            )) {
+                Text(L("settings.language.system")).tag(String?.none)
+                Text(verbatim: "Русский").tag(Optional("ru"))
+                Text(verbatim: "English").tag(Optional("en"))
+            }
         }
-        return "Auto: runtime выбирает по CPU; вручную можно поставить 2…16"
+    }
+
+    private var notifyLevel: Binding<NotifyLevel> {
+        Binding(
+            get: { prefs.notifyStateChanges ? (notifyAll ? .all : .problems) : .off },
+            set: {
+                prefs.notifyStateChanges = $0 != .off
+                notifyAll = $0 == .all
+            }
+        )
+    }
+
+    /// Живое переключение (LocalizationManager + LocalizedRoot) плюс
+    /// `AppleLanguages` — им macOS выбирает язык при следующем запуске
+    /// (системные диалоги NE/панели).
+    private func setLanguage(_ code: String?) {
+        prefs.languageOverride = code
+        LocalizationManager.shared.setLanguage(code)
+        if let code {
+            UserDefaults.standard.set([code], forKey: "AppleLanguages")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+        }
+    }
+
+    // MARK: - Обновления
+
+    private var updatesSection: some View {
+        Section(L("settings.updates")) {
+            LabeledContent {
+                if let release = updates.available {
+                    Button(L("update.download")) { NSWorkspace.shared.open(release.url) }
+                        .foregroundStyle(C.bg)
+                        .gsProminentButton(tint: C.signal)
+                } else {
+                    Button(L("update.check")) { Task { await updates.check() } }
+                        .disabled(updates.checking)
+                }
+            } label: {
+                Text(String(format: L("update.version_build"),
+                            UpdateChecker.currentVersion, UpdateChecker.currentBuild))
+                Text(updateStatus)
+            }
+        }
+    }
+
+    /// «Доступна версия X» / «Установлена последняя версия · проверено в 14:02».
+    private var updateStatus: String {
+        if updates.checking { return L("update.checking") }
+        if let release = updates.available {
+            return String(format: L("update.available"), release.version)
+        }
+        guard let checked = updates.lastCheck else { return L("update.never_checked") }
+        return String(format: L("update.up_to_date"),
+                      checked.formatted(date: .omitted, time: .shortened))
+    }
+
+    // MARK: - Дополнительно
+
+    @ViewBuilder
+    private var advancedSection: some View {
+        @Bindable var p = prefs
+        Section(L("settings.section.advanced")) {
+            Toggle(isOn: $p.verboseLog) {
+                Text(L("settings.verbose.title"))
+                Text(L("settings.verbose.hint"))
+            }
+            .tint(C.signal)
+            LabeledContent {
+                Button(L("settings.report.save")) { Task { await exportDiagnostics() } }
+                    .disabled(exportingDiagnostics)
+            } label: {
+                Text(L("settings.report.title"))
+                Text(exportStatusMessage ?? L("settings.report.hint"))
+            }
+        }
     }
 
     @MainActor
@@ -489,9 +371,9 @@ public struct SettingsView: View {
                 stateManager: stateMgr,
                 logs: logStore
             )
-            exportStatusMessage = "Saved: \(destination.lastPathComponent)"
+            exportStatusMessage = String(format: L("settings.report.saved"), destination.lastPathComponent)
         } catch {
-            exportStatusMessage = "Export failed: \(error.localizedDescription)"
+            exportStatusMessage = String(format: L("settings.report.failed"), error.localizedDescription)
         }
     }
 
@@ -515,516 +397,48 @@ public struct SettingsView: View {
     }
 }
 
-// MARK: - SettingsCard wrapper
+/// Свои исключения: адреса и подсети мимо VPN, по одному на строку.
+private struct ExclusionsSheet: View {
 
-private struct SettingsCard<Header: View, Content: View>: View {
-    @Environment(\.gsColors) private var C
-    let header: String
-    @ViewBuilder var trailing: () -> Header
-    @ViewBuilder var content: () -> Content
-
-    init(header: String,
-         @ViewBuilder trailing: @escaping () -> Header,
-         @ViewBuilder content: @escaping () -> Content) {
-        self.header = header
-        self.trailing = trailing
-        self.content = content
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(header)
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.18 * 11)
-                    .foregroundStyle(C.textDim)
-                Spacer()
-                trailing()
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-            .background(C.bgElev)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(C.hair).frame(height: 1)
-            }
-            VStack(spacing: 0) {
-                content()
-            }
-            .background(C.bgElev)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.hairBold, lineWidth: 1))
-    }
-}
-
-// MARK: - Motion
-
-private enum SettingsMotion {
-    static func interactive(reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : .timingCurve(0.22, 1.0, 0.36, 1.0, duration: 0.22)
-    }
-
-    static func layout(reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : .timingCurve(0.22, 1.0, 0.36, 1.0, duration: 0.28)
-    }
-
-    static func reveal(delay: Double, reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : .timingCurve(0.16, 1.0, 0.30, 1.0, duration: 0.38).delay(delay)
-    }
-
-    static func sectionTransition(reduceMotion: Bool) -> AnyTransition {
-        reduceMotion
-            ? .identity
-            : .asymmetric(
-                insertion: .opacity.combined(with: .move(edge: .top)),
-                removal: .opacity
-            )
-    }
-
-    static func perform(reduceMotion: Bool, _ updates: () -> Void) {
-        if reduceMotion {
-            updates()
-        } else {
-            withAnimation(interactive(reduceMotion: false)) {
-                updates()
-            }
-        }
-    }
-}
-
-private struct SettingsRevealModifier: ViewModifier {
-    let appeared: Bool
-    let delay: Double
-    let reduceMotion: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(appeared ? 1 : 0)
-            .offset(y: reduceMotion || appeared ? 0 : 10)
-            .animation(SettingsMotion.reveal(delay: delay, reduceMotion: reduceMotion), value: appeared)
-    }
-}
-
-private extension View {
-    func settingsReveal(_ appeared: Bool, delay: Double, reduceMotion: Bool) -> some View {
-        modifier(SettingsRevealModifier(appeared: appeared, delay: delay, reduceMotion: reduceMotion))
-    }
-}
-
-// MARK: - Setting row
-
-private struct SettingRow<Trailing: View>: View {
     @Environment(\.gsColors) private var C
     @Environment(PreferencesStore.self) private var prefs
-    // A3: учитываем системный Reduce Motion наравне с тумблером.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
-
-    let title: String
-    let description: String?
-    @ViewBuilder var trailing: () -> Trailing
-
-    @State private var hovering = false
-    @State private var appeared = false
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        HStack(alignment: .center, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.custom("JetBrainsMono-Regular", size: 13))
-                    .foregroundStyle(C.bone)
-                if let description {
-                    Text(description)
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
-                        .foregroundStyle(C.textFaint)
-                        .lineLimit(2)
-                }
-            }
-            Spacer()
-            trailing()
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .background(C.signal.opacity(hovering ? 0.035 : 0))
-        .contentShape(Rectangle())
-        .opacity(appeared ? 1 : 0)
-        .offset(y: reduce || appeared ? 0 : 6)
-        .onHover { isHovering in
-            SettingsMotion.perform(reduceMotion: reduce) {
-                hovering = isHovering
-            }
-        }
-        .onAppear {
-            SettingsMotion.perform(reduceMotion: reduce) {
-                appeared = true
-            }
-        }
-        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
-    }
-}
-
-// MARK: - Settings toggle
-
-private struct SettingsToggle: View {
-    @Environment(\.gsColors) private var C
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    @Environment(PreferencesStore.self) private var prefs
-
-    @Binding var on: Bool
-    var disabled = false
-
-    @State private var hovering = false
-
-    var body: some View {
-        let reduce = prefs.reduceMotion || systemReduceMotion
-
-        Button {
-            guard !disabled else { return }
-            SettingsMotion.perform(reduceMotion: reduce) {
-                on.toggle()
-            }
-        } label: {
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(on ? C.signal.opacity(hovering ? 0.24 : 0.18) : C.hair)
-                    .overlay(Capsule().stroke(borderColor, lineWidth: 1))
-                    .shadow(color: C.signal.opacity(on && hovering ? 0.20 : 0), radius: 8, x: 0, y: 0)
-                Circle()
-                    .fill(on ? C.signal : C.bone)
-                    .frame(width: 18, height: 18)
-                    .overlay(
-                        Circle()
-                            .stroke(on ? C.bone.opacity(0.22) : C.hairBold, lineWidth: 1)
-                    )
-                    .shadow(color: on ? C.signal.opacity(0.28) : .clear, radius: 4, x: 0, y: 0)
-                    .offset(x: on ? 22 : 2)
-            }
-            .frame(width: 42, height: 24)
-            .scaleEffect(hovering && !disabled ? 1.04 : 1.0)
-            .opacity(disabled ? 0.45 : 1.0)
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .onHover { isHovering in
-            SettingsMotion.perform(reduceMotion: reduce) {
-                hovering = isHovering
-            }
-        }
-        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: on)
-        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
-        .accessibilityLabel(on ? "On" : "Off")
-    }
-
-    private var borderColor: Color {
-        if disabled { return C.hair }
-        if on { return C.signal }
-        return hovering ? C.hairBold : C.hair
-    }
-}
-
-private struct SettingsActionButton: View {
-    @Environment(\.gsColors) private var C
-    @Environment(PreferencesStore.self) private var prefs
-    // A3: системный Reduce Motion OR ручной тумблер.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
-
-    let label: String
-    let color: Color
-    let borderColor: Color?
-    let disabled: Bool
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(.custom("DepartureMono-Regular", size: 10.5))
-                .tracking(0.16 * 10.5)
-                .foregroundStyle(disabled ? C.textFaint : color)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.signal.opacity(hovering && !disabled ? 0.045 : 0)))
-                .overlay(
-                    RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(disabled ? C.hair : (borderColor ?? color), lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .scaleEffect(hovering && !disabled ? 1.03 : 1.0)
-        .onHover { isHovering in
-            SettingsMotion.perform(reduceMotion: reduce) {
-                hovering = isHovering
-            }
-        }
-        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
-    }
-}
-
-// MARK: - Menu pills
-
-private struct MenuPill: View {
-    @Environment(\.gsColors) private var C
-    @Environment(PreferencesStore.self) private var prefs
-    // A3: системный Reduce Motion OR ручной тумблер.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
-    let label: String   // e.g. "all"
-    let value: String   // e.g. "global"
-
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if !label.isEmpty {
-                Text(label)
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.14 * 11)
-                    .foregroundStyle(C.bone)
-            }
-            Text(value)
-                .font(.custom("DepartureMono-Regular", size: 11))
-                .tracking(0.14 * 11)
-                .foregroundStyle(C.signal)
-            Text("▾")
-                .font(.system(size: 10))
+        @Bindable var p = prefs
+        let shape = RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous)
+        VStack(alignment: .leading, spacing: GsSpace.m) {
+            Text(L("settings.exclusions.title"))
+                .gsType(.headline)
+                .foregroundStyle(C.bone)
+            Text(L("settings.exclusions.sheet_hint"))
+                .gsType(.caption)
                 .foregroundStyle(C.textDim)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).fill(hovering ? C.signal.opacity(0.045) : C.bgElev2))
-        .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(hovering ? C.signalDim : C.hairBold, lineWidth: 1))
-        .scaleEffect(hovering ? 1.02 : 1.0)
-        .contentShape(Rectangle())
-        .onHover { isHovering in
-            SettingsMotion.perform(reduceMotion: reduce) {
-                hovering = isHovering
+            TextEditor(text: $p.manualDirectCidrsText)
+                .font(GsType.mono.font)
+                .foregroundStyle(C.bone)
+                .scrollContentBackground(.hidden)
+                .padding(GsSpace.s)
+                .frame(minHeight: 180)
+                .background(C.bgElev, in: shape)
+                .overlay(shape.stroke(C.hair, lineWidth: 1))
+            if !prefs.invalidManualDirectCidrs.isEmpty {
+                Text(String(format: L("settings.exclusions.invalid"),
+                            prefs.invalidManualDirectCidrs.joined(separator: ", ")))
+                    .gsType(.caption)
+                    .foregroundStyle(C.danger)
+            }
+            HStack {
+                Spacer()
+                Button(L("general.done")) { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .foregroundStyle(C.bg)
+                    .gsProminentButton(tint: C.signal)
             }
         }
-        .animation(SettingsMotion.interactive(reduceMotion: reduce), value: hovering)
-    }
-}
-
-private struct RoutingPill: View {
-    @Environment(PreferencesStore.self) private var prefs
-    // A3: системный Reduce Motion OR ручной тумблер.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
-
-    var body: some View {
-        @Bindable var p = prefs
-        Menu {
-            Button("Global tunnel") { setRouting(.global) }
-            Button("Public split") { setRouting(.publicSplit) }
-            Button("Cisco/work VPN first") { setRouting(.layeredAuto) }
-        } label: {
-            MenuPill(
-                label: routingLabel(mode: p.routingMode),
-                value: routingValue(mode: p.routingMode)
-            )
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-
-    private func setRouting(_ mode: RoutingMode) {
-        SettingsMotion.perform(reduceMotion: reduce) {
-            prefs.routingMode = mode
-        }
-    }
-
-    private func routingLabel(mode: RoutingMode) -> String {
-        switch mode {
-        case .global: return "all"
-        case .publicSplit: return "split"
-        case .layeredAuto: return "work"
-        }
-    }
-
-    private func routingValue(mode: RoutingMode) -> String {
-        switch mode {
-        case .global: return "global"
-        case .publicSplit: return "public"
-        case .layeredAuto: return "first"
-        }
-    }
-}
-
-private struct DNSPill: View {
-    @Environment(PreferencesStore.self) private var prefs
-    // A3: системный Reduce Motion OR ручной тумблер.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
-
-    var body: some View {
-        Menu {
-            Button("Server push") { setDNS(nil) }
-            Button("Cloudflare") { setDNS(["1.1.1.1", "1.0.0.1"]) }
-            Button("Quad9") { setDNS(["9.9.9.9", "149.112.112.112"]) }
-        } label: {
-            MenuPill(label: "dns", value: dnsLabel)
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-
-    private func setDNS(_ servers: [String]?) {
-        SettingsMotion.perform(reduceMotion: reduce) {
-            prefs.dnsServers = servers
-        }
-    }
-
-    private var dnsLabel: String {
-        guard let dns = prefs.dnsServers, !dns.isEmpty else { return "push" }
-        if dns == ["1.1.1.1", "1.0.0.1"] { return "cloudflare" }
-        if dns == ["9.9.9.9", "149.112.112.112"] { return "quad9" }
-        return "\(dns.count) custom"
-    }
-}
-
-private struct StreamControl: View {
-    @Environment(PreferencesStore.self) private var prefs
-    // A3: системный Reduce Motion OR ручной тумблер.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
-    @Binding var streamOverride: Int?
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Menu {
-                Button("Auto") { setStreams(nil) }
-                Button("Manual") { setStreams(streamOverride ?? 8) }
-                Divider()
-                ForEach([2, 4, 8, 12, 16], id: \.self) { value in
-                    Button("\(value) streams") { setStreams(value) }
-                }
-            } label: {
-                MenuPill(label: "mux", value: streamOverride.map(String.init) ?? "auto")
-            }
-            .menuStyle(.borderlessButton)
-
-            if streamOverride != nil {
-                Stepper(value: manualValue, in: 2...16) {
-                    EmptyView()
-                }
-                .labelsHidden()
-                .controlSize(.small)
-                .transition(SettingsMotion.sectionTransition(reduceMotion: reduce))
-            }
-        }
-        .fixedSize()
-        .animation(SettingsMotion.layout(reduceMotion: reduce), value: streamOverride)
-    }
-
-    private var manualValue: Binding<Int> {
-        Binding(
-            get: { streamOverride ?? 8 },
-            set: { setStreams(max(2, min(16, $0))) }
-        )
-    }
-
-    private func setStreams(_ value: Int?) {
-        SettingsMotion.perform(reduceMotion: reduce) {
-            streamOverride = value
-        }
-    }
-}
-
-// MARK: - Theme picker pill
-
-private struct ThemePill: View {
-    @Environment(\.gsColors) private var C
-    @Environment(PreferencesStore.self) private var prefs
-    // A3: системный Reduce Motion OR ручной тумблер.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduce: Bool { prefs.reduceMotion || systemReduceMotion }
-
-    var body: some View {
-        @Bindable var p = prefs
-        let cur = ThemeOverride(rawValue: p.theme) ?? .system
-        Button {
-            SettingsMotion.perform(reduceMotion: reduce) {
-                // Cycle system → dark → light → system
-                switch cur {
-                case .system: p.theme = ThemeOverride.dark.rawValue
-                case .dark:   p.theme = ThemeOverride.light.rawValue
-                case .light:  p.theme = ThemeOverride.system.rawValue
-                }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                // A1: локализованное имя темы; lowercase сохраняет
-                // мелко-mono эстетику пилюли.
-                Text(Self.themeLabel(cur).lowercased())
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.14 * 11)
-                    .foregroundStyle(C.signal)
-                Text("▾")
-                    .font(.system(size: 10))
-                    .foregroundStyle(C.textDim)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).fill(C.bgElev2))
-            .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.hairBold, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private static func themeLabel(_ o: ThemeOverride) -> String {
-        switch o {
-        case .system: return L("settings.theme.system")
-        case .dark:   return L("settings.theme.dark")
-        case .light:  return L("settings.theme.light")
-        }
-    }
-}
-
-// MARK: - Language picker pill (A2)
-
-/// Меню выбора языка приложения. Пишет `prefs.languageOverride`
-/// (persist в App Group defaults) и одновременно `AppleLanguages` в
-/// `UserDefaults.standard` — именно последний читает macOS при старте.
-/// nil (Системный) = убрать override и вернуться к системной локали.
-private struct LanguagePill: View {
-    @Environment(PreferencesStore.self) private var prefs
-    let onChange: () -> Void
-
-    var body: some View {
-        Menu {
-            Button(L("settings.language.system")) { setLanguage(nil) }
-            Button(L("settings.language.english")) { setLanguage("en") }
-            Button(L("settings.language.russian")) { setLanguage("ru") }
-        } label: {
-            MenuPill(label: "lang", value: currentLabel)
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-
-    private func setLanguage(_ code: String?) {
-        prefs.languageOverride = code
-        // Живое переключение без рестарта: LocalizationManager меняет
-        // активный .lproj-бандл и триггерит перерисовку через
-        // LocalizedRoot(.id). AppleLanguages пишем тоже — чтобы
-        // launch-time локаль (и системные диалоги NE/панели) совпадали
-        // при следующем запуске.
-        LocalizationManager.shared.setLanguage(code)
-        if let code {
-            UserDefaults.standard.set([code], forKey: "AppleLanguages")
-        } else {
-            UserDefaults.standard.removeObject(forKey: "AppleLanguages")
-        }
-        onChange()
-    }
-
-    private var currentLabel: String {
-        switch prefs.languageOverride {
-        case "en": return L("settings.language.english")
-        case "ru": return L("settings.language.russian")
-        default:   return L("settings.language.system")
-        }
+        .padding(GsSpace.xl)
+        .frame(width: 460)
+        .background(C.bg)
     }
 }
 

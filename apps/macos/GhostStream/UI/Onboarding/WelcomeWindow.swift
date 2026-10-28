@@ -2,19 +2,19 @@
 //  WelcomeWindow.swift
 //  GhostStream (macOS)
 //
-//  Multi-step onboarding wizard. Replaces the silent "permission denied"
-//  failure with a guided flow modelled after best-in-class macOS VPN
-//  clients (Mullvad, Tailscale, Wireguard.app, Proton): each permission
-//  boundary gets its own screen with a human-readable explanation, a
-//  primary action button, a System Settings deeplink fallback, and live
-//  polling that auto-advances when state changes.
+//  Мастер первого запуска в стиле mockup.html: системный шрифт, заголовок
+//  28 pt, одна lime-кнопка главного действия. Каждая граница прав — свой
+//  экран с понятным объяснением по русской macOS и живым ожиданием,
+//  которое само переходит дальше.
 //
-//  Steps (FSM in OnboardingCoordinator):
-//    1. paste            — paste ghs:// (existing flow, lightly adapted)
-//    2. installExt       — explain system extension, "Установить" CTA
-//    3. awaitingApproval — live banner + "Открыть System Settings" deeplink
-//    4. configureVpn     — saveToPreferences → user clicks Allow VPN
-//    5. ready            — "Готово, можно подключаться"
+//  Шаги (FSM в OnboardingCoordinator):
+//    moveToApplications — запущено не из «Программ»
+//    paste              — ссылка ghs://
+//    installExt         — системное расширение, «Установить»
+//    awaitingApproval   — ждём «Разрешить» в Системных настройках
+//    reboot             — macOS закончит установку после перезагрузки
+//    configureVpn       — saveToPreferences → системный «Разрешить»
+//    ready              — «Подключиться»
 //
 
 import AppKit
@@ -32,51 +32,57 @@ public struct WelcomeWindow: View {
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @EnvironmentObject private var tunnel: VpnTunnelController
 
-    @State private var coordinator = OnboardingCoordinator()
+    @State private var coordinator: OnboardingCoordinator
+    private let preview: Bool
 
     /// UI-R4-R02: we observe `NSWindow.willCloseNotification` rather
     /// than relying on `.onDisappear`. The observer token is retained
     /// here so it is properly removed when the view is torn down.
     @State private var willCloseObserver: NSObjectProtocol?
 
-    public init() {}
+    public init() {
+        _coordinator = State(initialValue: OnboardingCoordinator())
+        preview = false
+    }
+
+    #if DEBUG
+    /// Снимки DebugDemo: конкретный шаг без resync и без NE.
+    init(previewStep: OnboardingCoordinator.Step) {
+        _coordinator = State(initialValue: OnboardingCoordinator(previewStep: previewStep))
+        preview = true
+    }
+    #endif
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            brandBlock
-            stepsRail
-            HairlineDivider().padding(.bottom, 28)
+            header
             Group {
                 switch coordinator.step {
+                case .moveToApplications:
+                    MoveToApplicationsStepView()
                 case .paste:
                     PasteStepView(coordinator: coordinator)
                 case .installExt:
                     InstallExtStepView(coordinator: coordinator)
                 case .awaitingApproval:
                     AwaitingApprovalStepView(coordinator: coordinator)
+                case .reboot:
+                    RebootStepView(onClose: close)
                 case .configureVpn:
                     ConfigureVpnStepView(coordinator: coordinator)
                 case .ready:
-                    ReadyStepView(coordinator: coordinator) {
-                        dismissWindow(id: "welcome")
-                        // Keep direct NSWindow fallback for older/restored windows that are not tracked by SwiftUI.
-                        if let win = NSApp.windows.first(where: { $0.identifier?.rawValue == "welcome" || $0.title == "Welcome" }) {
-                            win.close()
-                        } else {
-                            dismiss()
-                        }
-                    }
+                    ReadyStepView(coordinator: coordinator, onClose: close)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 56)
-        .padding(.top, 40)
-        .padding(.bottom, 36)
+        .padding(.horizontal, 48)
+        .padding(.top, 36)
+        .padding(.bottom, 32)
         .frame(width: 720, height: 560)
         .background(C.bg)
         .onAppear {
+            guard !preview else { return }
             coordinator.profiles = profiles
             coordinator.sysExt = sysExt
             coordinator.tunnel = tunnel
@@ -84,19 +90,9 @@ public struct WelcomeWindow: View {
             Task { await coordinator.resync() }
             installWillCloseObserver()
         }
-        // UI-R2-N23 / UI-R4-R02: when the user closes the Welcome window
-        // with ⌘W (or by clicking the red traffic light) before the wizard
-        // reaches `.ready`, the coordinator was getting stuck on the
-        // pending step — subsequent CONNECT taps would either show
-        // nothing (`.awaitingApproval`) or replay the failed sys-ext
-        // install.
-        //
-        // Round 2 used `.onDisappear` which also fired on ⌘H (hide app),
-        // app-minimise, and Space switches — those hide the window but
-        // don't close it, so the wizard was being reset out from under
-        // the user mid-flow. Round 5 listens for the explicit
-        // `NSWindow.willCloseNotification` so the reset only runs when
-        // the window is actually closing.
+        // UI-R2-N23 / UI-R4-R02: ⌘W или красная кнопка до `.ready` —
+        // сбрасываем FSM (иначе мастер залипал на шаге ожидания). Слушаем
+        // именно willClose: `.onDisappear` срабатывал и на ⌘H/сворачивание.
         .onDisappear {
             if let token = willCloseObserver {
                 NotificationCenter.default.removeObserver(token)
@@ -105,24 +101,29 @@ public struct WelcomeWindow: View {
         }
     }
 
+    private func close() {
+        dismissWindow(id: "welcome")
+        // Fallback для восстановленных окон, которых SwiftUI не отслеживает.
+        if let window = Self.window {
+            window.close()
+        } else {
+            dismiss()
+        }
+    }
+
+    /// SwiftUI даёт окну identifier вида «welcome-AppWindow-1».
+    private static var window: NSWindow? {
+        NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("welcome") == true }
+    }
+
     private func installWillCloseObserver() {
         guard willCloseObserver == nil else { return }
-        // Defer one runloop tick — `.onAppear` can fire before AppKit
-        // has fully wired the NSWindow into `NSApp.windows`, especially
-        // for SwiftUI `Window(_:id:)` scenes opened via `openWindow`.
-        // Without the trampoline, the observer was occasionally missed
-        // on cold open. We use `Task { @MainActor in ... }` so we can
-        // update the `@State` observer token from the closure body.
         let capturedCoordinator = coordinator
         Task { @MainActor in
-            // One main-loop tick so SwiftUI's window scene has handed
-            // the NSWindow to AppKit before we ask for it by id.
+            // Один тик: `.onAppear` бывает раньше, чем AppKit отдаст NSWindow.
             try? await Task.sleep(nanoseconds: 16_000_000)
-            guard willCloseObserver == nil else { return }
-            guard let window = NSApp.windows.first(where: {
-                $0.identifier?.rawValue == "welcome" || $0.title == "Welcome"
-            }) else { return }
-            let token = NotificationCenter.default.addObserver(
+            guard willCloseObserver == nil, let window = Self.window else { return }
+            willCloseObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification,
                 object: window,
                 queue: .main
@@ -131,78 +132,139 @@ public struct WelcomeWindow: View {
                     capturedCoordinator.dismissedBeforeReady()
                 }
             }
-            willCloseObserver = token
         }
     }
 
-    // MARK: - Brand block
-
-    @ViewBuilder
-    private var brandBlock: some View {
-        HStack(spacing: 14) {
-            ScopeRingGlyph(size: 30, signal: C.signal, dim: C.signalDim)
-            Text("Ghoststream")
-                .font(.custom("SpaceGrotesk-Bold", size: 22))
-                .tracking(-0.02 * 22)
+    private var header: some View {
+        HStack(spacing: GsSpace.m) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 40, height: 40)
+            Text(verbatim: "GhostStream")
+                .gsType(.headline)
                 .foregroundStyle(C.bone)
             Spacer()
-            Text("\(AppVersion.short) · macOS · setup")
-                .font(.custom("DepartureMono-Regular", size: 10.5))
-                .tracking(0.18 * 10.5)
-                .foregroundStyle(C.textFaint)
-        }
-        .padding(.bottom, 24)
-    }
-
-    // MARK: - Steps rail (1—2—3—4)
-
-    @ViewBuilder
-    private var stepsRail: some View {
-        let labels: [(OnboardingCoordinator.Step, String)] = [
-            (.paste,            "01 · ПОДКЛЮЧИСЬ"),
-            (.installExt,       "02 · УСТАНОВИ"),
-            (.awaitingApproval, "03 · РАЗРЕШИ"),
-            (.configureVpn,     "04 · ГОТОВО"),
-        ]
-        HStack(spacing: 0) {
-            ForEach(Array(labels.enumerated()), id: \.0) { idx, item in
-                let (step, label) = item
-                let active = coordinator.step == step
-                let done   = coordinator.step.rawValue > step.rawValue
-                HStack(spacing: 8) {
-                    ZStack {
-                        Circle()
-                            .stroke(done || active ? C.signal : C.hairBold, lineWidth: 1)
-                            .frame(width: 18, height: 18)
-                        if done {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(C.signal)
-                        } else {
-                            Text("\(idx + 1)")
-                                .font(.custom("DepartureMono-Regular", size: 10))
-                                .foregroundStyle(active ? C.signal : C.textFaint)
-                        }
-                    }
-                    Text(label)
-                        .font(.custom("DepartureMono-Regular", size: 9.5))
-                        .tracking(0.18 * 9.5)
-                        .foregroundStyle(active ? C.bone : (done ? C.textDim : C.textFaint))
-                }
-                if idx < labels.count - 1 {
-                    Rectangle()
-                        .fill(done ? C.signal : C.hair)
-                        .frame(height: 1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 12)
-                }
+            if let number = coordinator.step.number {
+                Text(String(format: L("welcome.step"), "\(number)", "4"))
+                    .gsType(.caption)
+                    .foregroundStyle(C.textDim)
             }
         }
-        .padding(.bottom, 22)
+        .padding(.bottom, GsSpace.xxl + GsSpace.s)
     }
 }
 
-// MARK: - Step 1: Paste
+// MARK: - Общие куски шагов
+
+/// Заголовок и пояснение шага.
+private struct StepIntro: View {
+    let title: String
+    let text: String
+
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: GsSpace.m) {
+            Text(title)
+                .gsType(.title)
+                .foregroundStyle(C.bone)
+            Text(text)
+                .gsType(.body)
+                .foregroundStyle(C.textDim)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 560, alignment: .leading)
+        }
+        .padding(.bottom, GsSpace.xl)
+    }
+}
+
+/// Главная кнопка мастера (lime) или вторичная (стекло).
+private struct WizardButton: View {
+    let title: String
+    var prominent = true
+    let action: () -> Void
+
+    @Environment(\.gsColors) private var C
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        let button = Button(action: action) {
+            Text(title)
+                .gsType(.body)
+                .fontWeight(.semibold)
+                .foregroundStyle(!isEnabled ? C.textFaint : prominent ? C.bg : C.bone)
+                .padding(.horizontal, GsSpace.s)
+        }
+        .controlSize(.large)
+        if prominent {
+            button.gsProminentButton(tint: C.signal)
+        } else {
+            button.gsGlassButton()
+        }
+    }
+}
+
+/// Строка ошибки под действием.
+private struct WizardError: View {
+    let text: String?
+
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        if let text {
+            Label(text, systemImage: "exclamationmark.triangle.fill")
+                .gsType(.caption)
+                .foregroundStyle(C.danger)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, GsSpace.m)
+        }
+    }
+}
+
+/// Карточка «ждём…»: пульсирующая точка и текст.
+private struct WaitingCard: View {
+    let text: String
+    var done = false
+
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous)
+        HStack(spacing: GsSpace.m) {
+            StateDot(state: done ? .connected : .connecting, size: 10)
+            Text(text)
+                .gsType(.body)
+                .foregroundStyle(C.bone)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, GsSpace.l)
+        .padding(.vertical, 14)
+        .background(C.bgElev, in: shape)
+        .overlay(shape.stroke(C.hair, lineWidth: 1))
+    }
+}
+
+// MARK: - Перенесите в «Программы»
+
+private struct MoveToApplicationsStepView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            StepIntro(title: L("welcome.move.title"), text: L("welcome.move.body"))
+            Spacer()
+            HStack(spacing: GsSpace.m) {
+                WizardButton(title: L("welcome.move.open")) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+                }
+                WizardButton(title: L("menu.quit"), prominent: false) {
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Шаг 1: ссылка
 
 private struct PasteStepView: View {
 
@@ -216,144 +278,52 @@ private struct PasteStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            hero
-            subtitle
+            StepIntro(title: L("welcome.paste.title"), text: L("welcome.paste.body"))
             if let candidate = clipboardCandidate {
                 clipboardBanner(candidate)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, GsSpace.m)
             }
             PasteGhsField(text: $ghsText)
-                .frame(minHeight: 120)
-            if let err = importError {
-                Text(err)
-                    .font(.custom("JetBrainsMono-Regular", size: 11))
-                    .foregroundStyle(C.danger)
-                    .padding(.top, 6)
-            }
-            actionRow
+                .frame(height: clipboardCandidate == nil ? 140 : 96)
+            WizardError(text: importError)
+            Spacer()
+            WizardButton(title: L("welcome.paste.add")) { importGhs() }
+                .disabled(ghsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.return, modifiers: .command)
         }
         .onAppear { detectClipboard() }
     }
 
-    @ViewBuilder
-    private var hero: some View {
-        HStack(spacing: 0) {
-            Text("Подключись")
-                .font(.custom("InstrumentSerif-Italic", size: 36))
-                .foregroundStyle(C.signal)
-            Text(".")
-                .font(.custom("SpaceGrotesk-Bold", size: 36))
-                .foregroundStyle(C.bone)
-        }
-        .padding(.bottom, 8)
-    }
-
-    @ViewBuilder
-    private var subtitle: some View {
-        (Text("Вставь ")
-            .font(.custom("JetBrainsMono-Regular", size: 13.5))
-            .foregroundColor(C.textDim)
-        + Text("ghs://")
-            .font(.custom("JetBrainsMono-Regular", size: 13.5))
-            .foregroundColor(C.signal)
-        + Text(" connection string которую тебе выдали. В ней зашиты сертификат, ключ и адрес — это всё что нужно для подключения.")
-            .font(.custom("JetBrainsMono-Regular", size: 13.5))
-            .foregroundColor(C.textDim))
-            .lineSpacing(5)
-            .padding(.bottom, 18)
-    }
-
-    @ViewBuilder
     private func clipboardBanner(_ candidate: String) -> some View {
-        HStack(spacing: 14) {
+        let shape = RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous)
+        return HStack(spacing: GsSpace.m) {
             Image(systemName: "doc.on.clipboard")
+                .font(.system(size: 16))
                 .foregroundStyle(C.signal)
-                .frame(width: 24, height: 24)
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.signal, lineWidth: 1))
-            (Text("В буфере найдено ")
-                .foregroundColor(C.bone)
-            + Text("ghs://")
-                .foregroundColor(C.signal)
-            + Text(" · \(parsePreview(candidate))")
-                .foregroundColor(C.bone))
-                .font(.custom("JetBrainsMono-Regular", size: 12.5))
-            Spacer()
-            Button {
+            Text(String(format: L("welcome.paste.clipboard"), host(of: candidate)))
+                .gsType(.body)
+                .foregroundStyle(C.bone)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: GsSpace.m)
+            WizardButton(title: L("welcome.paste.use"), prominent: false) {
                 ghsText = candidate
                 clipboardCandidate = nil
-            } label: {
-                HStack(spacing: 6) {
-                    Text("PASTE")
-                        .font(.custom("DepartureMono-Regular", size: 10.5))
-                        .tracking(0.18 * 10.5)
-                    Text("· ⌘V")
-                        .font(.custom("DepartureMono-Regular", size: 10))
-                        .opacity(0.6)
-                }
-                .foregroundStyle(C.signal)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signal, lineWidth: 1))
             }
-            .buttonStyle(.plain)
+            .controlSize(.regular)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(
-            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(
-                LinearGradient(colors: [C.signal.opacity(0.04), .clear],
-                               startPoint: .top, endPoint: .bottom)
-            )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).strokeBorder(
-                C.signalDim,
-                style: StrokeStyle(lineWidth: 1, dash: [4, 3])
-            )
-        )
-    }
-
-    @ViewBuilder
-    private var actionRow: some View {
-        HStack(spacing: 14) {
-            Button { importGhs() } label: {
-                HStack(spacing: 8) {
-                    Text(L("welcome.import"))
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.20 * 11)
-                    Text("⌘⏎")
-                        .font(.custom("DepartureMono-Regular", size: 9.5))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.signalDim, lineWidth: 1))
-                }
-                .foregroundStyle(ghsText.isEmpty ? C.textFaint : C.signal)
-                .padding(.horizontal, 28)
-                .padding(.vertical, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
-                        LinearGradient(
-                            colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
-                    .opacity(ghsText.isEmpty ? 0 : 1)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(ghsText.isEmpty ? C.hairBold : C.signal, lineWidth: 1)
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(ghsText.isEmpty)
-            .keyboardShortcut(.return, modifiers: .command)
-            Spacer()
+        .padding(.leading, 14)
+        .padding([.vertical, .trailing], GsSpace.s)
+        .background {
+            shape.fill(C.bgElev).overlay(shape.fill(C.signal.opacity(0.09)))
         }
-        .padding(.top, 22)
+        .overlay(shape.stroke(C.signal.opacity(0.3), lineWidth: 1))
     }
 
     private func detectClipboard() {
-        let pb = NSPasteboard.general
-        if let str = pb.string(forType: .string), str.hasPrefix("ghs://") {
+        if let str = NSPasteboard.general.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           str.hasPrefix("ghs://") {
             clipboardCandidate = str
         }
     }
@@ -366,20 +336,18 @@ private struct PasteStepView: View {
             importError = nil
             coordinator.didImportProfile()
         } catch {
-            importError = "Неверная ghs:// строка"
+            importError = L("welcome.paste.invalid")
         }
     }
 
-    private func parsePreview(_ s: String) -> String {
-        if let atIdx = s.range(of: "@", options: .backwards)?.upperBound {
-            let tail = s[atIdx...]
-            return String(tail.prefix(while: { $0 != "?" && $0 != "#" }))
-        }
-        return "ghs config"
+    /// Хост сервера из ссылки — чтобы было видно, что за профиль в буфере.
+    private func host(of link: String) -> String {
+        guard let at = link.range(of: "@", options: .backwards)?.upperBound else { return "ghs://" }
+        return String(link[at...].prefix { $0 != "?" && $0 != "#" && $0 != "/" })
     }
 }
 
-// MARK: - Step 2: Install system extension
+// MARK: - Шаг 2: системное расширение
 
 private struct InstallExtStepView: View {
 
@@ -388,180 +356,56 @@ private struct InstallExtStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Text("Установи")
-                    .font(.custom("InstrumentSerif-Italic", size: 36))
-                    .foregroundStyle(C.signal)
-                Text(" туннель.")
-                    .font(.custom("SpaceGrotesk-Bold", size: 36))
-                    .foregroundStyle(C.bone)
+            StepIntro(title: L("welcome.install.title"), text: L("welcome.install.body"))
+            VStack(alignment: .leading, spacing: GsSpace.m) {
+                numbered(1, L("welcome.install.step1"))
+                numbered(2, L("welcome.install.step2"))
+                numbered(3, L("welcome.install.step3"))
             }
-            .padding(.bottom, 14)
-
-            (Text("GhostStream использует ")
-                .foregroundColor(C.textDim)
-            + Text("системное расширение")
-                .foregroundColor(C.bone)
-            + Text(" — это часть macOS, которая запускается отдельно от приложения и обрабатывает сетевые пакеты. Без него VPN-туннель работать не сможет — это ограничение операционной системы, а не нашей прихоти.")
-                .foregroundColor(C.textDim))
-                .font(.custom("JetBrainsMono-Regular", size: 13.5))
-                .lineSpacing(5)
-                .padding(.bottom, 18)
-
-            // bullet list of what will happen
-            VStack(alignment: .leading, spacing: 10) {
-                bullet("macOS попросит подтвердить установку.")
-                bullet("Откроется System Settings → Login Items & Extensions.")
-                bullet("Раскрой Extensions → Network Extensions.")
-                bullet("Найди GhostStream и нажми Allow.")
-                bullet("Этот шаг делается один раз — потом всё автоматически.")
-            }
-            .padding(.bottom, 26)
-
-            HStack(spacing: 14) {
-                Button {
-                    coordinator.kickOffInstall()
-                } label: {
-                    Text("УСТАНОВИТЬ РАСШИРЕНИЕ")
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.20 * 11)
-                        .foregroundStyle(C.signal)
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 14)
-                        .background(
-                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
-                                LinearGradient(
-                                    colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                                    startPoint: .top, endPoint: .bottom
-                                )
-                            )
-                        )
-                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signal, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-
-                if let err = coordinator.lastError {
-                    Text(err)
-                        .font(.custom("JetBrainsMono-Regular", size: 11.5))
-                        .foregroundStyle(C.danger)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: 360, alignment: .leading)
-                }
-                Spacer()
+            WizardError(text: coordinator.lastError)
+            Spacer()
+            WizardButton(title: L("welcome.install.action")) {
+                coordinator.kickOffInstall()
             }
         }
     }
 
-    @ViewBuilder
-    private func bullet(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Text("·")
-                .font(.custom("JetBrainsMono-Regular", size: 13.5))
+    private func numbered(_ n: Int, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: GsSpace.m) {
+            Text(verbatim: "\(n)")
+                .gsType(.caption)
+                .fontWeight(.bold)
                 .foregroundStyle(C.signal)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(C.signal.opacity(0.15)))
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
             Text(text)
-                .font(.custom("JetBrainsMono-Regular", size: 13))
-                .foregroundStyle(C.textDim)
+                .gsType(.body)
+                .foregroundStyle(C.bone)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
 
-// MARK: - Step 3: Awaiting approval
+// MARK: - Шаг 2: ждём «Разрешить»
 
 private struct AwaitingApprovalStepView: View {
 
-    @Environment(\.gsColors) private var C
-    @Environment(PreferencesStore.self) private var prefs
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Environment(SystemExtensionInstaller.self) private var sysExt
     @Bindable var coordinator: OnboardingCoordinator
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Text("Жду")
-                    .font(.custom("InstrumentSerif-Italic", size: 36))
-                    .foregroundStyle(C.warn)
-                Text(" разрешения.")
-                    .font(.custom("SpaceGrotesk-Bold", size: 36))
-                    .foregroundStyle(C.bone)
-            }
-            .padding(.bottom, 14)
-
-            (Text("macOS должен подтвердить установку расширения. Открой ")
-                .foregroundColor(C.textDim)
-            + Text("System Settings → General → Login Items & Extensions → Network Extensions")
-                .foregroundColor(C.bone)
-            + Text(" и нажми ")
-                .foregroundColor(C.textDim)
-            + Text("Allow")
-                .foregroundColor(C.signal)
-            + Text(" рядом с GhostStream. Как только разрешишь — этот шаг закроется сам.")
-                .foregroundColor(C.textDim))
-                .font(.custom("JetBrainsMono-Regular", size: 13.5))
-                .lineSpacing(5)
-                .padding(.bottom, 22)
-
-            // Live status panel
-            HStack(spacing: 14) {
-                PulseDot(color: C.warn, size: 10, pulse: !(prefs.reduceMotion || systemReduceMotion))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("ОЖИДАНИЕ ДЕЙСТВИЯ ПОЛЬЗОВАТЕЛЯ")
-                        .font(.custom("DepartureMono-Regular", size: 10))
-                        .tracking(0.20 * 10)
-                        .foregroundStyle(C.warn)
-                    Text(statusText)
-                        .font(.custom("JetBrainsMono-Regular", size: 12.5))
-                        .foregroundStyle(C.bone)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
-            .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.warn.opacity(0.4), lineWidth: 1))
-            .padding(.bottom, 22)
-
-            HStack(spacing: 14) {
-                Button {
+            StepIntro(title: L("welcome.approve.title"), text: L("welcome.approve.body"))
+            WaitingCard(text: statusText, done: sysExt.state == .activated)
+            WizardError(text: coordinator.lastError)
+            Spacer()
+            HStack(spacing: GsSpace.m) {
+                WizardButton(title: L("welcome.approve.open")) {
                     OnboardingCoordinator.openSystemSettingsLoginItems()
-                } label: {
-                    Text("ОТКРЫТЬ NETWORK EXTENSIONS")
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.20 * 11)
-                        .foregroundStyle(C.signal)
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 14)
-                        .background(
-                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
-                                LinearGradient(
-                                    colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                                    startPoint: .top, endPoint: .bottom
-                                )
-                            )
-                        )
-                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signal, lineWidth: 1))
                 }
-                .buttonStyle(.plain)
-
-                Button {
+                WizardButton(title: L("welcome.approve.retry"), prominent: false) {
                     coordinator.kickOffInstall()
-                } label: {
-                    Text("ОТПРАВИТЬ ЗАПРОС ЗАНОВО")
-                        .font(.custom("DepartureMono-Regular", size: 10.5))
-                        .tracking(0.18 * 10.5)
-                        .foregroundStyle(C.textDim)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                if let err = coordinator.lastError {
-                    Text(err)
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
-                        .foregroundStyle(C.danger)
-                        .lineLimit(2)
-                        .frame(maxWidth: 240, alignment: .trailing)
                 }
             }
         }
@@ -569,109 +413,60 @@ private struct AwaitingApprovalStepView: View {
 
     private var statusText: String {
         switch sysExt.state {
-        case .requestPending:
-            return "Запрос отправлен в систему…"
+        case .notInstalled, .requestPending:
+            return L("welcome.approve.pending")
         case .awaitingUserApproval:
-            return sysExt.lastMessage ?? "Жду пока ты нажмёшь Allow в System Settings."
+            return L("welcome.approve.waiting")
         case .activated:
-            return "Получено! Перехожу к следующему шагу…"
-        case .failed(let m):
-            return "Не удалось: \(m)"
-        case .notInstalled:
-            return "Расширение не установлено."
+            return L("welcome.approve.done")
+        case .failed(let message):
+            return message
         }
     }
 }
 
-// MARK: - Step 4: Configure VPN (NEManager)
+// MARK: - Шаг 2: перезагрузка
+
+private struct RebootStepView: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            StepIntro(title: L("welcome.reboot.title"), text: L("welcome.reboot.body"))
+            Spacer()
+            WizardButton(title: L("general.done"), prominent: false, action: onClose)
+        }
+    }
+}
+
+// MARK: - Шаг 3: конфигурация VPN
 
 private struct ConfigureVpnStepView: View {
 
-    @Environment(\.gsColors) private var C
-    @Environment(PreferencesStore.self) private var prefs
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
     @Bindable var coordinator: OnboardingCoordinator
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Text("Сохрани")
-                    .font(.custom("InstrumentSerif-Italic", size: 36))
-                    .foregroundStyle(C.signal)
-                Text(" конфигурацию.")
-                    .font(.custom("SpaceGrotesk-Bold", size: 36))
-                    .foregroundStyle(C.bone)
-            }
-            .padding(.bottom, 14)
-
-            (Text("Последний шаг — macOS попросит разрешить добавление VPN-конфигурации. Это стандартный системный диалог: появится окно с кнопкой ")
-                .foregroundColor(C.textDim)
-            + Text("Allow")
-                .foregroundColor(C.signal)
-            + Text(", разреши его. После этого ты сможешь подключаться одной кнопкой из меню или dashboard'а.")
-                .foregroundColor(C.textDim))
-                .font(.custom("JetBrainsMono-Regular", size: 13.5))
-                .lineSpacing(5)
-                .padding(.bottom, 22)
-
+            StepIntro(title: L("welcome.configure.title"), text: L("welcome.configure.body"))
             if coordinator.awaitingVpnApproval {
-                HStack(spacing: 14) {
-                    PulseDot(color: C.warn, size: 10, pulse: !(prefs.reduceMotion || systemReduceMotion))
-                    Text("Жду подтверждения VPN-конфигурации…")
-                        .font(.custom("JetBrainsMono-Regular", size: 12.5))
-                        .foregroundStyle(C.bone)
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).stroke(C.warn.opacity(0.4), lineWidth: 1))
-                .padding(.bottom, 22)
+                WaitingCard(text: L("welcome.configure.waiting"))
             }
-
-            HStack(spacing: 14) {
-                Button {
-                    Task { await coordinator.configureVpn() }
-                } label: {
-                    Text(coordinator.awaitingVpnApproval ? "ЖДУ…" : "СОХРАНИТЬ И РАЗРЕШИТЬ")
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.20 * 11)
-                        .foregroundStyle(coordinator.awaitingVpnApproval ? C.textFaint : C.signal)
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 14)
-                        .background(
-                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(
-                                LinearGradient(
-                                    colors: [C.signal.opacity(0.06), C.signal.opacity(0.02)],
-                                    startPoint: .top, endPoint: .bottom
-                                )
-                            )
-                            .opacity(coordinator.awaitingVpnApproval ? 0 : 1)
-                        )
-                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(coordinator.awaitingVpnApproval ? C.hairBold : C.signal, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .disabled(coordinator.awaitingVpnApproval)
-
-                Spacer()
-
-                if let err = coordinator.lastError {
-                    Text(err)
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
-                        .foregroundStyle(C.danger)
-                        .lineLimit(3)
-                        .frame(maxWidth: 280, alignment: .trailing)
-                }
+            WizardError(text: coordinator.lastError)
+            Spacer()
+            WizardButton(title: L("welcome.configure.action")) {
+                Task { await coordinator.configureVpn() }
             }
+            .disabled(coordinator.awaitingVpnApproval)
         }
     }
 }
 
-// MARK: - Step 5: Ready
+// MARK: - Шаг 4: готово
 
 private struct ReadyStepView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(\.openWindow) private var openWindow
     @Environment(ProfilesStore.self) private var profiles
     @Environment(PreferencesStore.self) private var prefs
     @EnvironmentObject private var tunnel: VpnTunnelController
@@ -680,97 +475,94 @@ private struct ReadyStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Text("Готово")
-                    .font(.custom("InstrumentSerif-Italic", size: 44))
-                    .foregroundStyle(C.signal)
-                Text(".")
-                    .font(.custom("SpaceGrotesk-Bold", size: 44))
-                    .foregroundStyle(C.bone)
+            StepIntro(title: L("welcome.ready.title"), text: L("welcome.ready.body"))
+            VStack(alignment: .leading, spacing: GsSpace.m) {
+                checkRow(L("welcome.ready.profile"))
+                checkRow(L("welcome.ready.extension"))
+                checkRow(L("welcome.ready.config"))
             }
-            .padding(.bottom, 14)
-
-            Text("Все разрешения выданы. Туннель готов к подключению.")
-                .font(.custom("JetBrainsMono-Regular", size: 13.5))
-                .foregroundColor(C.textDim)
-                .lineSpacing(5)
-                .padding(.bottom, 22)
-
-            VStack(alignment: .leading, spacing: 12) {
-                checkRow("Профиль импортирован")
-                checkRow("Системное расширение установлено")
-                checkRow("VPN-конфигурация сохранена")
-            }
-            .padding(.bottom, 26)
-
-            HStack(spacing: 14) {
-                // A6: primary — стартуем активный профиль и закрываем окно.
-                Button {
-                    connectNow()
-                } label: {
-                    Text(L("welcome.connect_now").uppercased())
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.20 * 11)
-                        .foregroundStyle(profiles.activeProfile == nil ? C.textFaint : C.bg)
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 14)
-                        .background(
-                            RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous)
-                                .fill(profiles.activeProfile == nil ? C.hairBold : C.signal)
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(profiles.activeProfile == nil)
-
-                // Secondary (outline) — просто закрыть без подключения.
-                Button {
-                    coordinator.finish()
-                    onClose()
-                } label: {
-                    Text("ЗАВЕРШИТЬ")
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.20 * 11)
-                        .foregroundStyle(C.bone)
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 14)
-                        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hairBold, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                Text("⌘W чтобы закрыть")
-                    .font(.custom("DepartureMono-Regular", size: 10))
-                    .tracking(0.18 * 10)
-                    .foregroundStyle(C.textFaint)
+            Spacer()
+            HStack(spacing: GsSpace.m) {
+                WizardButton(title: L("welcome.connect_now")) { finish(connect: true) }
+                    .disabled(profiles.activeProfile == nil)
+                    .keyboardShortcut(.defaultAction)
+                WizardButton(title: L("welcome.ready.later"), prominent: false) { finish(connect: false) }
             }
         }
     }
 
-    /// A6: installAndStart активного профиля и закрытие Welcome-окна.
-    /// Запуск идёт в отдельной Task (VpnTunnelController удерживается
-    /// приложением), поэтому окно можно закрыть сразу — прогресс виден
-    /// в menu-bar / dashboard.
-    private func connectNow() {
-        guard let profile = profiles.activeProfile else { return }
-        Task {
-            try? await tunnel.installAndStart(profile: profile, preferences: prefs)
+    /// Запуск идёт в своей Task (VpnTunnelController живёт в приложении),
+    /// окно закрываем сразу. Дальше — консоль с подсказкой про строку меню,
+    /// чтобы пользователь не остался без окна.
+    private func finish(connect: Bool) {
+        if connect, let profile = profiles.activeProfile {
+            Task { try? await tunnel.installAndStart(profile: profile, preferences: prefs) }
         }
         coordinator.finish()
+        MenuBarHint.show()
+        openWindow(id: "console")
+        DockPolicyController.shared.activateForegroundWindow()
         onClose()
     }
 
-    @ViewBuilder
     private func checkRow(_ text: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "checkmark")
-                .font(.system(size: 11, weight: .bold))
+        HStack(spacing: GsSpace.m) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 18))
                 .foregroundStyle(C.signal)
-                .frame(width: 18, height: 18)
-                .overlay(Circle().stroke(C.signal, lineWidth: 1))
             Text(text)
-                .font(.custom("JetBrainsMono-Regular", size: 13))
+                .gsType(.body)
                 .foregroundStyle(C.bone)
+        }
+    }
+}
+
+// MARK: - Подсказка в консоли после мастера
+
+/// «GhostStream живёт в строке меню» — внизу консоли один раз после мастера.
+struct MenuBarHint: View {
+
+    private static let key = "menuBarHintPending"
+
+    static func show() {
+        UserDefaults.standard.set(true, forKey: key)
+    }
+
+    @AppStorage(MenuBarHint.key) private var pending = false
+    @Environment(\.gsColors) private var C
+
+    var body: some View {
+        if pending {
+            let shape = RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous)
+            HStack(spacing: GsSpace.m) {
+                Image(systemName: "menubar.arrow.up.rectangle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(C.signal)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L("menubar_hint.title"))
+                        .gsType(.body)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(C.bone)
+                    Text(L("menubar_hint.body"))
+                        .gsType(.caption)
+                        .foregroundStyle(C.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: GsSpace.m)
+                Button(L("menubar_hint.ok")) { pending = false }
+                    .gsType(.body)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(C.bg)
+                    .gsProminentButton(tint: C.signal)
+            }
+            .padding(.leading, GsSpace.l)
+            .padding([.vertical, .trailing], GsSpace.m)
+            .frame(maxWidth: 560)
+            .background(C.bgElev, in: shape)
+            .overlay(shape.stroke(C.signal.opacity(0.3), lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
+            .padding(.bottom, GsSpace.xl)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 }

@@ -2,12 +2,13 @@
 //  AdminClientDetailPanel.swift
 //  GhostStream (macOS)
 //
-//  Right-hand detail column of the ADMIN tab: traffic sparkline, recent
-//  destinations and subscription actions for the selected client. Data is
-//  fetched lazily per selection via the shared PhantomKit `AdminViewModel`.
+//  Инспектор «Админа»: сведения о выбранном клиенте, трафик за сутки,
+//  последние адреса, ссылка с QR и действия. Статистика и адреса
+//  подгружаются при выборе клиента.
 //
 
 import AppKit
+import CoreImage.CIFilterBuiltins
 import PhantomKit
 import PhantomUI
 import SwiftUI
@@ -16,238 +17,133 @@ struct AdminClientDetailPanel: View {
 
     let vm: AdminViewModel
     let client: AdminClient
+    let isOwn: Bool
+    let onRequest: (AdminRequest) -> Void
     let onStatus: (String, Bool) -> Void
-    let onDelete: () -> Void
 
     @Environment(\.gsColors) private var C
 
     @State private var stats: [ClientStat] = []
     @State private var logs: [ClientLog] = []
-    @State private var detailLoading = false
+    @State private var loading = false
+    @State private var link: String?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                meta
-                section(L("admin.detail.traffic"))
-                sparkline
-                section(L("admin.detail.destinations"))
-                destinations
-                section(L("admin.detail.subscription"))
-                subscriptionBlock
-                actions
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: GsSpace.xs) {
+                    Text(isOwn ? String(format: L("adm.you"), client.name) : client.name)
+                        .gsType(.headline)
+                    AdminClientStatus(client: client)
+                        .gsType(.caption)
+                        .foregroundStyle(C.textDim)
+                }
+                LabeledContent(L("adm.i.address")) {
+                    Text(client.tunAddr.split(separator: "/").first.map(String.init) ?? "")
+                        .font(GsType.mono.font)
+                }
+                LabeledContent(L("adm.col.access"), value: AdminFormat.access(client.expiresAt).text)
+                if !client.connected, let ago = AdminFormat.ago(client.lastSeenSecs) {
+                    LabeledContent(L("adm.i.seen"), value: ago)
+                }
+                LabeledContent(L("adm.i.received"), value: AdminFormat.bytes(client.bytesRx))
+                LabeledContent(L("adm.i.sent"), value: AdminFormat.bytes(client.bytesTx))
+                LabeledContent(L("adm.i.role"),
+                               value: L(client.isAdmin ? "adm.i.role.admin" : "adm.i.role.user"))
+                if let created = Self.created(client.createdAt) {
+                    LabeledContent(L("adm.i.created"), value: created)
+                }
             }
-            .padding(16)
+
+            Section(L("adm.i.traffic")) {
+                if stats.count >= 2 {
+                    TrafficSparkline(samples: stats, color: C.signal)
+                        .frame(height: 56)
+                } else {
+                    noData
+                }
+            }
+
+            Section(L("adm.i.destinations")) {
+                if logs.isEmpty {
+                    noData
+                } else {
+                    ForEach(Array(logs.suffix(6).reversed().enumerated()), id: \.offset) { _, entry in
+                        LabeledContent {
+                            Text(AdminFormat.bytes(entry.bytes))
+                        } label: {
+                            Text(entry.dst)
+                                .font(GsType.mono.font)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Text(L("adm.link.warning"))
+                    .gsType(.caption)
+                    .foregroundStyle(C.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: GsSpace.s) {
+                    Button(L("adm.copy_link")) { onRequest(.copyLink) }
+                        .gsGlassButton()
+                    if link == nil {
+                        Button(L("adm.show_qr")) { Task { await loadLink() } }
+                            .gsGlassButton()
+                    }
+                }
+                if let link {
+                    QRCodeView(link: link)
+                        .frame(maxWidth: .infinity)
+                }
+            } header: {
+                Text(L("adm.i.link"))
+            }
+
+            Section {
+                Button(L("adm.extend30")) { onRequest(.extend30) }
+                if client.enabled {
+                    Button(L("adm.disable")) { onRequest(.disable) }
+                } else {
+                    Button(L("adm.enable")) { onRequest(.enable) }
+                }
+                if client.isAdmin {
+                    Button(L("adm.revoke_admin")) { onRequest(.revokeAdmin) }
+                } else {
+                    Button(L("adm.make_admin")) { onRequest(.makeAdmin) }
+                }
+                Button(L("adm.delete"), role: .destructive) { onRequest(.delete) }
+                    .foregroundStyle(C.danger)
+            }
+            .buttonStyle(.borderless)
         }
-        .background(RoundedRectangle.gs(GsRadius.card).fill(C.bgElev))
-        .gsStroke(C.hair, GsRadius.card)
+        .formStyle(.grouped)
+        .gsType(.body)
         .task(id: client.name) {
+            link = nil
             await loadDetail()
         }
     }
 
-    // MARK: - Blocks
-
-    @ViewBuilder
-    private var header: some View {
-        HStack(spacing: 10) {
-            Text(client.name)
-                .font(.custom("SpaceGrotesk-Bold", size: 18))
-                .foregroundStyle(C.bone)
-            AdminStatusChip(chip: AdminClientRow(client: client, selected: false).chip)
-            Spacer()
-        }
-    }
-
-    @ViewBuilder
-    private var meta: some View {
-        Text("fp \(shortFingerprint) · \(client.tunAddr) · \(client.createdAt.prefix(10))")
-            .font(.custom("JetBrainsMono-Regular", size: 10))
-            .foregroundStyle(C.textFaint)
-            .padding(.top, 4)
-    }
-
-    private var shortFingerprint: String {
-        guard client.fingerprint.count > 12 else { return client.fingerprint }
-        return "\(client.fingerprint.prefix(4))…\(client.fingerprint.suffix(4))"
-    }
-
-    private func section(_ title: String) -> some View {
-        Text(title)
-            .font(.custom("DepartureMono-Regular", size: 9))
-            .tracking(0.16 * 9)
-            .foregroundStyle(C.textFaint)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
-    }
-
-    @ViewBuilder
-    private var sparkline: some View {
-        ZStack {
-            if stats.count >= 2 {
-                TrafficSparkline(samples: stats, color: C.signal)
-            } else {
-                Text(detailLoading ? "…" : L("admin.detail.no_stats"))
-                    .font(.custom("JetBrainsMono-Regular", size: 10))
-                    .foregroundStyle(C.textFaint)
-            }
-        }
-        .frame(height: 56)
-        .frame(maxWidth: .infinity)
-        .background(RoundedRectangle.gs(GsRadius.chip).fill(C.bg))
-        .gsStroke(C.hair, GsRadius.chip)
-    }
-
-    @ViewBuilder
-    private var destinations: some View {
-        if logs.isEmpty {
-            Text(detailLoading ? "…" : L("admin.detail.no_logs"))
-                .font(.custom("JetBrainsMono-Regular", size: 10))
-                .foregroundStyle(C.textFaint)
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(logs.suffix(8).reversed().enumerated()), id: \.offset) { _, entry in
-                    HStack(spacing: 6) {
-                        Text(Self.timeOnly(entry.ts))
-                            .foregroundStyle(C.textFaint)
-                        Text("\(entry.dst):\(entry.port)")
-                            .foregroundStyle(C.bone)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 4)
-                        Text("\(entry.proto) · \(AdminConsoleFormat.bytes(entry.bytes))")
-                            .foregroundStyle(C.textDim)
-                    }
-                    .font(.custom("JetBrainsMono-Regular", size: 10))
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var subscriptionBlock: some View {
-        VStack(spacing: 0) {
-            kvRow(
-                L("admin.detail.sub.state"),
-                client.expiresAt == nil
-                    ? L("admin.subscription.perpetual")
-                    : AdminConsoleFormat.subscriptionShort(client.expiresAt)
-            )
-            kvRow(L("admin.detail.last_seen"), AdminConsoleFormat.lastSeen(client.lastSeenSecs))
-            kvRow("RX", AdminConsoleFormat.bytes(client.bytesRx))
-            kvRow("TX", AdminConsoleFormat.bytes(client.bytesTx))
-        }
-    }
-
-    private func kvRow(_ key: String, _ value: String) -> some View {
-        HStack {
-            Text(key)
-                .foregroundStyle(C.textFaint)
-            Spacer()
-            Text(value)
-                .foregroundStyle(C.bone)
-        }
-        .font(.custom("JetBrainsMono-Regular", size: 10.5))
-        .padding(.vertical, 5)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(C.hair).frame(height: 1)
-        }
-    }
-
-    @ViewBuilder
-    private var actions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                actionButton(L("admin.action.extend30"), style: .signal) {
-                    await mutate(L("admin.status.extended")) {
-                        try await vm.manageSubscription(name: client.name, action: "extend", days: 30)
-                    }
-                }
-                actionButton(L("admin.action.copy_ghs"), style: .plain) {
-                    do {
-                        let ghs = try await vm.getConnString(name: client.name)
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(ghs, forType: .string)
-                        onStatus(L("admin.status.ghs_copied"), true)
-                    } catch {
-                        onStatus(error.localizedDescription, false)
-                    }
-                }
-            }
-            HStack(spacing: 8) {
-                actionButton(
-                    client.enabled ? L("admin.action.disable") : L("admin.action.enable"),
-                    style: .warn
-                ) {
-                    await mutate(client.enabled ? L("admin.status.disabled") : L("admin.status.enabled")) {
-                        try await vm.setEnabled(name: client.name, enabled: !client.enabled)
-                    }
-                }
-                actionButton(L("admin.action.delete"), style: .danger) {
-                    onDelete()
-                }
-            }
-        }
-        .padding(.top, 14)
-    }
-
-    private enum ActionStyle { case signal, plain, warn, danger }
-
-    private func actionButton(
-        _ title: String,
-        style: ActionStyle,
-        action: @escaping () async -> Void
-    ) -> some View {
-        Button {
-            Task { await action() }
-        } label: {
-            Text(title)
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.12 * 9.5)
-                .foregroundStyle(foreground(for: style))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(RoundedRectangle.gs(GsRadius.control).fill(style == .signal ? C.signal : Color.clear))
-                .gsStroke(border(for: style), GsRadius.control)
-                .contentShape(RoundedRectangle.gs(GsRadius.control))
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func foreground(for style: ActionStyle) -> Color {
-        switch style {
-        case .signal: return C.bg
-        case .plain:  return C.textDim
-        case .warn:   return C.warn
-        case .danger: return C.danger
-        }
-    }
-
-    private func border(for style: ActionStyle) -> Color {
-        switch style {
-        case .signal: return C.signal
-        case .plain:  return C.hairBold
-        case .warn:   return C.warn.opacity(0.4)
-        case .danger: return C.danger.opacity(0.4)
-        }
+    private var noData: some View {
+        Text(loading ? "…" : L("adm.i.no_data"))
+            .foregroundStyle(C.textDim)
     }
 
     // MARK: - Data
 
-    private func mutate(_ successMessage: String, _ op: () async throws -> Void) async {
-        do {
-            try await op()
-            onStatus(successMessage, true)
-            await loadDetail()
-        } catch {
-            onStatus(error.localizedDescription, false)
-        }
-    }
-
     private func loadDetail() async {
-        detailLoading = true
-        defer { detailLoading = false }
+        #if DEBUG
+        if DebugDemo.isActive {
+            stats = AdminDemo.stats
+            logs = AdminDemo.logs
+            return
+        }
+        #endif
+        loading = true
+        defer { loading = false }
         async let statsTask = try? vm.getClientStats(name: client.name)
         async let logsTask = try? vm.getClientLogs(name: client.name)
         let (fetchedStats, fetchedLogs) = await (statsTask, logsTask)
@@ -255,66 +151,92 @@ struct AdminClientDetailPanel: View {
         logs = fetchedLogs ?? []
     }
 
-    private static func timeOnly(_ ts: Int64) -> String {
-        let df = DateFormatter()
-        df.dateFormat = "HH:mm"
-        return df.string(from: Date(timeIntervalSince1970: TimeInterval(ts)))
+    private func loadLink() async {
+        do {
+            link = try await vm.getConnString(name: client.name)
+        } catch {
+            onStatus(error.localizedDescription, false)
+        }
+    }
+
+    private static func created(_ iso: String) -> String? {
+        let parser = ISO8601DateFormatter()
+        guard let date = parser.date(from: iso) ?? parser.date(from: iso + "Z") else { return nil }
+        return date.formatted(.dateTime.day(.twoDigits).month(.twoDigits).year())
+    }
+}
+
+// MARK: - QR
+
+/// QR ghs://-ссылки (CoreImage), на светлой подложке — чтобы читался
+/// камерой и в тёмной теме.
+struct QRCodeView: View {
+    let link: String
+
+    var body: some View {
+        if let image = Self.image(link) {
+            Image(nsImage: image)
+                .interpolation(.none)
+                .resizable()
+                .scaledToFit()
+                .padding(10)
+                .frame(width: 168, height: 168)
+                .background(.white, in: RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous))
+                .accessibilityLabel(L("adm.i.link"))
+        }
+    }
+
+    static func image(_ string: String) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)),
+              let cg = CIContext().createCGImage(output, from: output.extent)
+        else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: output.extent.width, height: output.extent.height))
     }
 }
 
 // MARK: - Sparkline
 
-/// Filled polyline of per-sample total traffic (rx+tx deltas between
-/// consecutive samples, normalised to the panel height).
+/// Трафик между соседними замерами (счётчики накопительные), нормирован
+/// по высоте.
 struct TrafficSparkline: View {
     let samples: [ClientStat]
     let color: Color
 
     var body: some View {
         GeometryReader { geo in
-            let points = normalisedPoints(in: geo.size)
+            let points = points(in: geo.size)
             ZStack {
                 Path { path in
-                    guard let first = points.first else { return }
+                    guard let first = points.first, let last = points.last else { return }
                     path.move(to: CGPoint(x: first.x, y: geo.size.height))
-                    for p in points { path.addLine(to: p) }
-                    if let last = points.last {
-                        path.addLine(to: CGPoint(x: last.x, y: geo.size.height))
-                    }
+                    points.forEach { path.addLine(to: $0) }
+                    path.addLine(to: CGPoint(x: last.x, y: geo.size.height))
                     path.closeSubpath()
                 }
-                .fill(color.opacity(0.08))
-
+                .fill(color.opacity(0.15))
                 Path { path in
                     guard let first = points.first else { return }
                     path.move(to: first)
-                    for p in points.dropFirst() { path.addLine(to: p) }
+                    points.dropFirst().forEach { path.addLine(to: $0) }
                 }
-                .stroke(color, lineWidth: 1.5)
+                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
             }
         }
-        .padding(.horizontal, 2)
-        .padding(.vertical, 4)
+        .padding(.vertical, GsSpace.xs)
     }
 
-    private func normalisedPoints(in size: CGSize) -> [CGPoint] {
+    private func points(in size: CGSize) -> [CGPoint] {
         guard samples.count >= 2 else { return [] }
-        // Counters are cumulative — chart the per-interval delta.
-        var deltas: [Double] = []
-        for i in 1..<samples.count {
-            let prev = samples[i - 1]
-            let cur = samples[i]
-            let rx = max(0, cur.bytesRx - prev.bytesRx)
-            let tx = max(0, cur.bytesTx - prev.bytesTx)
-            deltas.append(Double(rx + tx))
+        let deltas = zip(samples, samples.dropFirst()).map { prev, cur in
+            Double(max(0, cur.bytesRx - prev.bytesRx) + max(0, cur.bytesTx - prev.bytesTx))
         }
         let maxV = max(deltas.max() ?? 1, 1)
         let stepX = size.width / CGFloat(max(1, deltas.count - 1))
-        return deltas.enumerated().map { idx, v in
-            CGPoint(
-                x: CGFloat(idx) * stepX,
-                y: size.height - CGFloat(v / maxV) * size.height * 0.9 - size.height * 0.05
-            )
+        return deltas.enumerated().map { i, v in
+            CGPoint(x: CGFloat(i) * stepX, y: size.height * (0.95 - 0.9 * CGFloat(v / maxV)))
         }
     }
 }

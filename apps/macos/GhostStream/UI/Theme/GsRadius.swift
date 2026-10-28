@@ -27,6 +27,12 @@ public enum GsRadius {
     public static let control: CGFloat = 9
     /// Чипы, бейджи, мелкие пилюли.
     public static let chip: CGFloat = 7
+
+    // Редизайн 2026-10 (mockup.html): новые компоненты берут эти два.
+    /// Непрозрачная карточка контента.
+    public static let panel: CGFloat = 26
+    /// Таблицы, группы настроек, баннеры, чип профиля в сайдбаре.
+    public static let group: CGFloat = 16
 }
 
 public extension RoundedRectangle {

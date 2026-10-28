@@ -2,6 +2,7 @@ import Foundation
 
 public enum MacStartupForegroundWindow: String, Equatable {
     case welcome
+    case console
 }
 
 public struct MacStartupDecision: Equatable {
@@ -17,16 +18,21 @@ public struct MacStartupDecision: Equatable {
     }
 }
 
+/// Что показать при запуске macOS-приложения (только macOS).
 public enum MacStartupPolicy {
+    /// - Parameters:
+    ///   - startInMenuBar: «Запускать в строке меню» — без окна.
+    ///   - launchedAtLogin: запущено как объект входа — тоже без консоли.
     public static func decide(
         managerConfigured: Bool,
         hasActiveProfile: Bool,
-        startInMenuBar: Bool
+        startInMenuBar: Bool,
+        launchedAtLogin: Bool = false
     ) -> MacStartupDecision {
         if managerConfigured {
             return MacStartupDecision(
                 shouldActivateSystemExtension: true,
-                foregroundWindow: nil
+                foregroundWindow: startInMenuBar || launchedAtLogin ? nil : .console
             )
         }
 

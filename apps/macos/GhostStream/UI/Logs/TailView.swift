@@ -2,17 +2,11 @@
 //  TailView.swift
 //  GhostStream (macOS)
 //
-//  TAIL tab — pixel-matched to section 03 of the design HTML.
-//
-//  Layout:
-//   1. detail-head: lblmono "live tail" faint + 38pt hero "tail." with
-//      em italic signal serif accent + "● 247 lines · streaming" right.
-//   2. toolbar: tool-pills [all|info|warn|error|debug] with active state
-//      (signal text + signal.opacity(0.06) bg + signal-dim border) and
-//      filter input on the right with ⌘F + ⌘L kbd hints.
-//   3. table: 86pt ts column / 60pt level column / msg fills the rest.
-//      Row colours per level (ok=signal, info=textDim, warn=warn,
-//      err=danger, dbg=debug).
+//  «Логи» (mockup.html, pane logs): нативная Table — время, уровень,
+//  сообщение; новые сверху. Уровень — сегменты в тулбаре, поиск —
+//  `.searchable`. Копирование — меню строки и ⌘C по выделению; клик
+//  буфер не трогает. Одна кнопка «Экспорт» (⌘E). Тот же вид — в
+//  отдельном окне логов (⇧⌘L).
 //
 
 import AppKit
@@ -24,1011 +18,260 @@ import UniformTypeIdentifiers
 public struct TailView: View {
 
     @Environment(\.gsColors) private var C
-    @Environment(AppRouter.self) private var router
-    @Environment(PreferencesStore.self) private var prefs
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(TunnelLogStore.self) private var logStore
 
-    // A3: эффективный Reduce Motion = ручной тумблер OR системный флаг.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduceMotion: Bool { prefs.reduceMotion || systemReduceMotion }
-
-    @State private var activeFilter: LevelFilter = .all
-    @State private var searchText: String = ""
-    @State private var regexSearch: Bool = false
-    @State private var followTail: Bool = true
-    @State private var selectedCategories: Set<String> = []
-    @State private var actionStatus: TailStatus?
-    @State private var actionStatusTtlTask: Task<Void, Never>?
-    @State private var searchDebounceTask: Task<Void, Never>?
-    @State private var regexDebounceTask: Task<Void, Never>?
-    @State private var filterComputeTask: Task<Void, Never>?
-    // UI-C1: cached filter result. The previous `var filteredLogs`
-    // computed property re-ran `TailViewFilter.filter` 3+ times per
-    // body invocation (counts + ForEach + status strip). On a 50k row
-    // buffer that's tens of ms × 3 every time `logStore.logs` changed.
-    // We now recompute exactly once whenever the inputs change.
-    //
-    // TODO(UI-R2-N01): when both the embedded TailView (sidebar
-    // channel) and the detached Logs window are open, each instance
-    // owns its own `@State cachedFilteredLogs` — doubling memory
-    // (~25 MB worst case on a 50k buffer). The proper fix is a shared
-    // observable view-model keyed on filter inputs, similar to
-    // `TrafficSeriesStore`. Skipped in Round 3 because filter inputs
-    // (activeFilter / search / categories) are also per-view, so a
-    // naïve singleton would need keyed caches. Out of scope for this
-    // sweep.
-    @State private var cachedFilteredLogs: [LogFrame] = []
-    /// UI-R4-R05: confirmation gate before flushing the in-memory log
-    /// buffer. The previous ⌘⌫ shortcut collided with the standard
-    /// TextField "delete to start of line" chord, so the buffer could
-    /// be wiped while the user was deleting a word in the filter input.
-    /// We now require an explicit Clear tap through a confirmation
-    /// dialog *and* moved the chord to ⇧⌘⌫ so it can't fire from
-    /// inside a TextField.
-    @State private var showClearConfirm: Bool = false
-    @FocusState private var searchFieldFocused: Bool
-
-    /// Static formatter — UI-C2. Allocating a fresh `DateFormatter`
-    /// for every row (potentially thousands per scroll) is heavy:
-    /// each instance pulls locale/calendar data. The format itself
-    /// is locale-independent so a singleton is safe.
-    private static let timestampFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss.SSS"
-        return f
-    }()
+    @State private var level: LevelFilter = .all
+    @State private var search = ""
+    @State private var rows: [LogRow] = []
+    @State private var selection = Set<LogRow.ID>()
+    @State private var filterTask: Task<Void, Never>?
+    @State private var notice: String?
 
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            detailHead
-            toolbar
-            categoryStrip
-            tailStatusStrip
-            tailTable
+        VStack(alignment: .leading, spacing: GsSpace.s) {
+            table
+            footer
         }
-        .padding(.horizontal, 28)
-        .padding(.top, 22)
-        .padding(.bottom, 14)
+        .padding(.horizontal, GsSpace.xxl)
+        .padding(.top, GsSpace.s)
+        .padding(.bottom, GsSpace.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(C.bg)
-        // UI-C1: recompute the filter cache exactly when one of its
-        // inputs flips. The body never recomputes — readers just
-        // observe `cachedFilteredLogs`.
-        .onAppear { recomputeFilteredLogs() }
-        // LOG-1 fix: наблюдаем `revision`, а не `logs.count`. После
-        // насыщения буфера trim держит count на одном значении и
-        // onChange(of: count) перестаёт срабатывать — tail «замерзал».
-        .onChange(of: logStore.revision) { _, _ in recomputeFilteredLogs() }
-        .onChange(of: activeFilter) { _, _ in recomputeFilteredLogs() }
-        .onChange(of: selectedCategories) { _, _ in recomputeFilteredLogs() }
-        // UI-R2-N10: debounce regexSearch toggle too — recomputing on
-        // a 50k row buffer is ~50ms and the toggle previously ran on
-        // the main thread without yielding.
-        .onChange(of: regexSearch) { _, _ in
-            regexDebounceTask?.cancel()
-            let task = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                guard !Task.isCancelled else { return }
-                recomputeFilteredLogs()
-            }
-            regexDebounceTask = task
-        }
-        .onChange(of: searchText) { _, _ in
-            // UI-R4-R09: cancel the previous debounce *first* — even
-            // when we early-return for an invalid regex. Round 2 left
-            // the task armed, so the next keystroke after typing an
-            // invalid pattern would fire two recomputes (the stale
-            // debounce from the prior valid input + the fresh one).
-            // Cancelling unconditionally guarantees exactly one
-            // recompute per pause.
-            searchDebounceTask?.cancel()
-
-            // UI-R2-R05: when regex mode is on and the pattern is
-            // currently invalid, zero out the cache *synchronously*
-            // so the table doesn't keep showing stale matches against
-            // a regex that no longer compiles. The 300ms debounce
-            // below would otherwise leave the previous result on
-            // screen until the next pause in typing.
-            if regexSearch && !searchText.isEmpty {
-                do {
-                    _ = try NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
-                } catch {
-                    cachedFilteredLogs = []
-                    return
+        .searchable(text: $search, placement: .toolbar, prompt: L("srv.search"))
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Picker(L("log.filter"), selection: $level) {
+                    Text(L("log.filter.all")).tag(LevelFilter.all)
+                    Text(L("log.filter.warn")).tag(LevelFilter.warn)
+                    Text(L("log.filter.error")).tag(LevelFilter.error)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .tint(C.signal)
             }
-            // Debounce search keystrokes — typing in a 50k-row buffer
-            // should not lock the main thread on every character.
-            let task = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                guard !Task.isCancelled else { return }
-                recomputeFilteredLogs()
-            }
-            searchDebounceTask = task
         }
-        .onDisappear {
-            // UI-R2-R07-style cleanup: cancel every Task this view
-            // owns so we don't keep waking the main actor after the
-            // view is torn down (detached Logs window can come and go
-            // repeatedly within a session).
-            searchDebounceTask?.cancel()
-            regexDebounceTask?.cancel()
-            actionStatusTtlTask?.cancel()
-            filterComputeTask?.cancel()
+        .onAppear { recompute(debounce: false) }
+        // `revision`, а не `logs.count`: после насыщения буфера count
+        // стоит на месте (LOG-1).
+        .onChange(of: logStore.revision) { recompute(debounce: false) }
+        .onChange(of: level) { recompute(debounce: false) }
+        .onChange(of: search) { recompute(debounce: true) }
+        .task(id: notice) {
+            guard notice != nil else { return }
+            try? await Task.sleep(for: .seconds(4))
+            notice = nil
         }
+        .onDisappear { filterTask?.cancel() }
         .task { logStore.start(stateManager: stateMgr) }
     }
 
-    /// Run the filter and stash the result. LOG-2 fix: фильтр по буферу
-    /// (до 10k строк, строковые операции на каждую) раньше выполнялся
-    /// синхронно на main actor каждый poll — накапливающийся джанк.
-    /// Теперь считаем на background-приоритете и публикуем результат на
-    /// main; устаревшие пересчёты отменяются.
-    private func recomputeFilteredLogs() {
-        filterComputeTask?.cancel()
-        let frames = logStore.logs
-        let level = activeFilter
-        let categories = selectedCategories
-        let search = searchText
-        let useRegex = regexSearch
-        filterComputeTask = Task.detached(priority: .userInitiated) {
-            let result = TailViewFilter.filter(
-                frames: frames,
-                level: level,
-                categories: categories,
-                search: search,
-                useRegex: useRegex
-            )
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                cachedFilteredLogs = result
+    // MARK: - Table
+
+    private var table: some View {
+        Table(rows, selection: $selection) {
+            TableColumn(L("log.col.time")) { row in
+                Text(row.time)
+                    .font(GsType.mono.font)
+                    .foregroundStyle(.secondary)
+            }
+            .width(min: 64, ideal: 72, max: 90)
+
+            TableColumn(L("log.col.level")) { row in
+                Text(row.levelTitle)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(levelColor(row.level))
+            }
+            .width(min: 64, ideal: 80, max: 100)
+
+            TableColumn(L("log.col.message")) { row in
+                Text(row.message)
+                    .font(GsType.mono.font)
+                    .lineLimit(1)
+                    .help(row.message)
             }
         }
-    }
-
-    // MARK: - 1. detail-head
-
-    @ViewBuilder
-    private var detailHead: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("LIVE LOGS")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.20 * 11)
-                    .foregroundStyle(C.textFaint)
-                HStack(spacing: 0) {
-                    Text("logs")
-                        .font(.custom("InstrumentSerif-Italic", size: 38))
-                        .foregroundStyle(C.signal)
-                    Text(".")
-                        .font(.custom("SpaceGrotesk-Bold", size: 38))
-                        .foregroundStyle(C.textDim)
-                }
+        .gsType(.body)
+        .tableStyle(.inset)
+        .alternatingRowBackgrounds(.disabled)
+        .scrollContentBackground(.hidden)
+        .background(C.bgElev, in: RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous).stroke(C.hair, lineWidth: 1))
+        .frame(maxHeight: GsTable.height(rows: rows.count, rowHeight: GsTable.oneLineRow))
+        .contextMenu(forSelectionType: LogRow.ID.self) { ids in
+            if !ids.isEmpty {
+                Button(L("log.copy")) { copy(ids) }
             }
-            Spacer()
-            HStack(spacing: 6) {
-                PulseDot(
-                    color: C.signal,
-                    size: 8,
-                    pulse: !reduceMotion && stateMgr.statusFrame.state == .connected
-                )
-                Text("\(cachedFilteredLogs.count) LINES · \(stateMgr.statusFrame.state == .connected ? "STREAMING" : "STANDBY")")
-                    .font(.custom("DepartureMono-Regular", size: 10.5))
-                    .tracking(0.16 * 10.5)
+        }
+        .onCopyCommand {
+            [NSItemProvider(object: text(for: selection) as NSString)]
+        }
+        .overlay {
+            if rows.isEmpty {
+                Text(emptyText)
+                    .gsType(.body)
                     .foregroundStyle(C.textDim)
             }
         }
-        .padding(.bottom, 14)
-        .overlay(alignment: .bottom) {
-            DashedHairline()
-        }
     }
 
-    // MARK: - 2. toolbar
-
-    @ViewBuilder
-    private var toolbar: some View {
-        HStack(spacing: 0) {
-            // Level filter chips — rounded pills per full-rounded mockup.
-            HStack(spacing: 6) {
-                ForEach(Array(LevelFilter.allCases.enumerated()), id: \.element) { _, filter in
-                    let isActive = activeFilter == filter
-                    Button { activeFilter = filter } label: {
-                        Text(filter.label)
-                            .font(.custom("DepartureMono-Regular", size: 10.5))
-                            .tracking(0.16 * 10.5)
-                            .foregroundStyle(isActive ? C.signal : C.textDim)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(
-                                RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
-                                    .fill(isActive ? C.signal.opacity(0.06) : C.bgElev)
-                            )
-                            .gsStroke(isActive ? C.signalDim : C.hairBold, GsRadius.chip)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Spacer()
-
-            // Filter input
-            HStack(spacing: 8) {
-                TextField(regexSearch ? "filter · regex" : "filter · contains", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.custom("JetBrainsMono-Regular", size: 11.5))
-                    .foregroundStyle(C.bone)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .frame(minWidth: 140, maxWidth: 340)
-                    .focused($searchFieldFocused)
-                    .gsStroke(C.hairBold, GsRadius.control)
-                Button {
-                    regexSearch.toggle()
-                } label: {
-                    Text("REGEX")
-                        .font(.custom("DepartureMono-Regular", size: 10))
-                        .tracking(0.16 * 10)
-                        .foregroundStyle(regexSearch ? C.signal : C.textDim)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
-                                .fill(regexSearch ? C.signal.opacity(0.06) : C.bgElev)
-                        )
-                        .gsStroke(regexSearch ? C.signalDim : C.hairBold, GsRadius.chip)
-                }
-                .buttonStyle(.plain)
-                .help("Toggle regex search")
-                Button {
-                    showClearConfirm = true
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12))
-                        .foregroundStyle(C.textDim)
-                        .frame(width: 28, height: 28)
-                        .gsStroke(C.hairBold, GsRadius.control)
-                }
-                .buttonStyle(.plain)
-                .help("Clear log buffer (⇧⌘⌫)")
-                // UI-R4-R05: ⇧⌘⌫ (Shift+Cmd+Delete) to clear the log
-                // buffer. Round 1 used ⌘K (collided with the dashboard
-                // CONNECT chord), Round 2 moved to ⌘⌫ — but that
-                // chord is the AppKit standard for "delete to start of
-                // line" inside a TextField, so any user editing the
-                // filter input could wipe the log buffer with a habit
-                // keystroke. Shift+Cmd+Delete is unbound by AppKit
-                // text input handling and is the macOS norm for
-                // "Empty Trash" — exactly the right metaphor here.
-                // We also gate the action behind a confirmation
-                // dialog so even direct trash-button clicks need a
-                // second tap to commit (the buffer can't be undone).
-                .if(!router.commandPaletteOpen) { view in
-                    view.keyboardShortcut(.delete, modifiers: [.command, .shift])
-                }
-                .confirmationDialog(
-                    L("logs.clear.confirm.title"),
-                    isPresented: $showClearConfirm,
-                    titleVisibility: .visible
-                ) {
-                    Button(L("logs.clear.confirm.confirm"), role: .destructive) {
-                        clearLogs()
-                    }
-                    Button(L("logs.clear.confirm.cancel"), role: .cancel) {}
-                } message: {
-                    Text(L("logs.clear.confirm.message"))
-                }
-                Button {
-                    copyVisibleLogs()
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 12))
-                        .foregroundStyle(C.textDim)
-                        .frame(width: 28, height: 28)
-                        .gsStroke(C.hairBold, GsRadius.control)
-                }
-                .buttonStyle(.plain)
-                .help("Copy visible logs (⌥⌘C)")
-                // UI-C3 → UI-AUDIT-07/2026: было ⇧⌘C, но эта комба занята
-                // глобальным пунктом меню «Командная палитра» — key
-                // equivalent меню перехватывается AppKit раньше responder
-                // chain, и копирование с клавиатуры молча не работало.
-                // ⌥⌘C свободна. Plain ⌘C is deliberately left to the
-                // system so the user can still copy selected text.
-                .if(!router.commandPaletteOpen) { view in
-                    view.keyboardShortcut("c", modifiers: [.command, .option])
-                }
-                Button {
-                    exportVisibleLogs()
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 12))
-                        .foregroundStyle(C.textDim)
-                        .frame(width: 28, height: 28)
-                        .gsStroke(C.hairBold, GsRadius.control)
-                }
-                .buttonStyle(.plain)
-                .help("Export visible logs (⇧⌘E)")
-                .if(!router.commandPaletteOpen) { view in
-                    view.keyboardShortcut("e", modifiers: [.command, .shift])
-                }
-                Button {
-                    revealRuntimeLogFile()
-                } label: {
-                    Image(systemName: "folder")
-                        .font(.system(size: 12))
-                        .foregroundStyle(C.textDim)
-                        .frame(width: 28, height: 28)
-                        .gsStroke(C.hairBold, GsRadius.control)
-                }
-                .buttonStyle(.plain)
-                .help("Reveal runtime.log in Finder")
-                Button {
-                    followTail.toggle()
-                } label: {
-                    Text(followTail ? "FOLLOW" : "PAUSED")
-                        .font(.custom("DepartureMono-Regular", size: 10))
-                        .tracking(0.16 * 10)
-                        .foregroundStyle(followTail ? C.signal : C.textDim)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
-                                .fill(followTail ? C.signal.opacity(0.06) : C.bgElev)
-                        )
-                        .gsStroke(followTail ? C.signalDim : C.hairBold, GsRadius.chip)
-                }
-                .buttonStyle(.plain)
-                .help("Toggle follow tail")
-
-                // UI-C3 hidden chord: ⌘F focuses the filter field.
-                // Implemented as a zero-size Button so the SwiftUI
-                // shortcut system can route the key without us
-                // installing a global NSEvent monitor that hijacks
-                // every ⌘C/⌘F/⌘L/⌘E in the app.
-                Button {
-                    focusSearchField()
-                } label: {
-                    EmptyView()
-                }
-                .buttonStyle(.plain)
-                .frame(width: 0, height: 0)
-                .opacity(0)
-                .accessibilityHidden(true)
-                .if(!router.commandPaletteOpen) { view in
-                    view.keyboardShortcut("f", modifiers: .command)
-                }
-            }
-        }
+    private var emptyText: String {
+        if logStore.lastErrorMessage != nil { return L("log.unavailable") }
+        if logStore.logs.isEmpty && stateMgr.statusFrame.state == .disconnected { return L("log.empty.off") }
+        return L("log.empty")
     }
 
-    // MARK: - 2b. Category strip
-
-    @ViewBuilder
-    private var categoryStrip: some View {
-        let allCategories = TailView.knownCategories
-        HStack(spacing: 6) {
-            Text("CATEGORY")
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.18 * 9.5)
-                .foregroundStyle(C.textFaint)
-            // Категории могут не влезть в узкое окно — горизонтальный
-            // скролл вместо переполнения под сайдбар/за край.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(allCategories, id: \.self) { category in
-                        let isOn = selectedCategories.isEmpty || selectedCategories.contains(category)
-                        Button {
-                            toggleCategory(category, total: allCategories)
-                        } label: {
-                            Text(category)
-                                .font(.custom("DepartureMono-Regular", size: 9.5))
-                                .tracking(0.14 * 9.5)
-                                .foregroundStyle(isOn ? C.signal : C.textFaint)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(
-                                    RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
-                                        .fill(isOn ? C.signal.opacity(0.06) : C.bgElev)
-                                )
-                                .gsStroke(isOn ? C.signalDim : C.hairBold, GsRadius.chip)
-                        }
-                        .buttonStyle(.plain)
-                        .help(isOn ? "Hide \(category) events" : "Show \(category) events")
-                    }
-                }
-                .padding(.vertical, 1)
+    private var footer: some View {
+        HStack(spacing: GsSpace.m) {
+            Text(notice ?? L("log.hint"))
+                .gsType(.caption)
+                .foregroundStyle(C.textDim)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Button(action: export) {
+                Label(L("log.export"), systemImage: "square.and.arrow.up")
             }
-            if !selectedCategories.isEmpty {
-                Button {
-                    selectedCategories = []
-                } label: {
-                    Text("ALL")
-                        .font(.custom("DepartureMono-Regular", size: 9.5))
-                        .tracking(0.14 * 9.5)
-                        .foregroundStyle(C.textDim)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .gsStroke(C.hairBold, GsRadius.chip)
-                }
-                .buttonStyle(.plain)
-                .help("Reset category filter")
-            }
+            .keyboardShortcut("e", modifiers: .command)
+            .gsGlassButton()
+            .disabled(logStore.logs.isEmpty)
         }
+        .padding(.leading, GsSpace.s)
     }
 
-    private func toggleCategory(_ category: String, total: [String]) {
-        if selectedCategories.isEmpty {
-            // First click — invert: select all except the clicked one.
-            selectedCategories = Set(total).subtracting([category])
-            if selectedCategories.count == total.count {
-                selectedCategories = []
-            }
-            return
-        }
-        if selectedCategories.contains(category) {
-            selectedCategories.remove(category)
-        } else {
-            selectedCategories.insert(category)
-        }
-        if selectedCategories.count == total.count {
-            selectedCategories = []
-        }
-    }
-
-    /// Canonical category list per ADR 0008. Listed here so the strip
-    /// renders in a stable order regardless of which categories actually
-    /// have frames in the buffer.
-    static let knownCategories: [String] = [
-        "tunnel", "handshake", "stream", "packet",
-        "telemetry", "tun", "ipc", "settings", "runtime", "ffi",
-    ]
-
-    @ViewBuilder
-    private var tailStatusStrip: some View {
-        if let status = visibleTailStatus {
-            HStack(spacing: 8) {
-                Image(systemName: status.iconName)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(status.message)
-                    .font(.custom("JetBrainsMono-Regular", size: 11))
-                    .lineLimit(2)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(tailStatusColor(status.tone))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
-                    .fill(tailStatusColor(status.tone).opacity(0.06))
-            )
-            .gsStroke(tailStatusColor(status.tone).opacity(0.35), GsRadius.card)
-        }
-    }
-
-    // MARK: - 3. tail table
-
-    @ViewBuilder
-    private var tailTable: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if cachedFilteredLogs.isEmpty {
-                        Text(L("logs.empty"))
-                            .font(.custom("JetBrainsMono-Regular", size: 12))
-                            .foregroundStyle(C.textFaint)
-                            .padding(40)
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        ForEach(Array(cachedFilteredLogs.enumerated()), id: \.element.id) { idx, row in
-                            tailRow(row, index: idx)
-                            Rectangle().fill(C.hair.opacity(0.5)).frame(height: 1)
-                        }
-                    }
-                    // Anchor sits OUTSIDE the conditional + AFTER the
-                    // ForEach. LazyVStack only materialises the bottom
-                    // anchor when it is at the tail of the layout — not
-                    // wrapped inside the empty-state branch. Height is
-                    // explicitly small (not 0) so SwiftUI keeps it in the
-                    // layout pass even when cachedFilteredLogs is empty.
-                    Color.clear
-                        .frame(height: 2)
-                        .id("tail-bottom")
-                }
-            }
-            // Follow-tail: scrolling to a fixed bottom anchor is more
-            // reliable than scrolling to the last row's `id` because the
-            // anchor is always materialised. Defer one runloop tick so
-            // the LazyVStack has actually inserted the new row first.
-            //
-            // UI-H8: previously two `.onChange` handlers raced on every
-            // inbound log (one watched `logStore.logs.count`, one watched
-            // `filteredLogs.count`). Now a single watcher on the cached
-            // list — which is updated together with the source — drives
-            // the scroll, animation off so follow-tail looks like a
-            // ticker rather than an easing.
-            .onChange(of: cachedFilteredLogs.count) { _, _ in
-                guard followTail else { return }
-                scrollToBottom(proxy: proxy, animated: false)
-            }
-            .onChange(of: followTail) { _, isOn in
-                // When the user re-enables follow tail, snap to bottom
-                // immediately — otherwise the next inbound event is the
-                // only thing that triggers a scroll.
-                guard isOn else { return }
-                scrollToBottom(proxy: proxy, animated: true)
-            }
-            .onAppear {
-                // First reveal — jump to bottom so the user lands on the
-                // freshest events even after switching tabs back.
-                scrollToBottom(proxy: proxy, animated: false)
-            }
-        }
-        .background(
-            RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous)
-                .fill(C.bgElev2)
-        )
-        .gsClip(GsRadius.card)
-        .gsStroke(C.hair, GsRadius.card)
-    }
-
-    /// Scroll the tail table to the bottom anchor. Deferred via
-    /// `DispatchQueue.main.async` so the new row is laid out before the
-    /// scroll command runs (otherwise the LazyVStack hasn't inserted it
-    /// yet and the anchor lands above the latest event).
-    private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
-        DispatchQueue.main.async {
-            if animated {
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo("tail-bottom", anchor: .bottom)
-                }
-            } else {
-                proxy.scrollTo("tail-bottom", anchor: .bottom)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func tailRow(_ row: LogFrame, index: Int) -> some View {
-        let levelKey = normalizedLevel(row.level)
-        let levelChip = levelChipStyle(levelKey)
-        let categoryKey = row.category ?? ""
-        let categoryAccent = categoryChipColor(categoryKey)
-        let zebra = (index.isMultiple(of: 2)) ? Color.clear : C.bgElev.opacity(0.35)
-
-        Button {
-            copyRowAsJson(row)
-        } label: {
-            HStack(alignment: .top, spacing: 10) {
-                // Left accent strip — colored by category (or transparent).
-                // Avoid `firstTextBaseline` alignment for the parent HStack:
-                // a strip / chip without an intrinsic text baseline collapses
-                // the row when paired with `Color.clear`. `.top` keeps the
-                // row at its natural multi-line height.
-                Rectangle()
-                    .fill(categoryAccent.opacity(categoryKey.isEmpty ? 0 : 0.85))
-                    .frame(width: 3)
-
-                // Time column.
-                Text(formatTs(row.timestampUs))
-                    .font(.custom("JetBrainsMono-Regular", size: 10.5))
-                    .foregroundStyle(C.textFaint)
-                    .frame(width: 92, alignment: .leading)
-                    .padding(.top, 1)
-
-                // Level chip — solid bg, easy to spot.
-                Text(levelKey.uppercased())
-                    .font(.custom("DepartureMono-Regular", size: 9))
-                    .tracking(0.18 * 9)
-                    .foregroundStyle(levelChip.fg)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous)
-                            .fill(levelChip.bg)
-                    )
-                    .frame(minWidth: 38, alignment: .leading)
-
-                // Category chip — outlined, color-coded by domain.
-                Text(categoryKey.isEmpty ? "—" : categoryKey.uppercased())
-                    .font(.custom("DepartureMono-Regular", size: 9))
-                    .tracking(0.16 * 9)
-                    .foregroundStyle(categoryKey.isEmpty ? C.textFaint : categoryAccent)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .gsStroke(
-                        categoryKey.isEmpty
-                            ? C.hairBold.opacity(0.6)
-                            : categoryAccent.opacity(0.55),
-                        GsRadius.chip
-                    )
-                    .frame(minWidth: 84, alignment: .leading)
-
-                // Message + fields.
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(row.msg)
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
-                        .foregroundStyle(messageColor(levelKey))
-                        .textSelection(.enabled)
-                    if let summary = renderFields(row.fields), !summary.isEmpty {
-                        Text(summary)
-                            .font(.custom("JetBrainsMono-Regular", size: 10))
-                            .foregroundStyle(C.textFaint)
-                            .lineLimit(2)
-                            .textSelection(.enabled)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(zebra)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Click to copy this row as JSON")
-    }
-
-    /// Solid level badge — high contrast for ERR/WRN, soft tint for the
-    /// rest. Mapping covers normalised keys produced by
-    /// `TunnelLogStore.normalizedLevel`.
-    private func levelChipStyle(_ level: String) -> (fg: Color, bg: Color) {
+    private func levelColor(_ level: LogFrameFilter.Level) -> Color {
         switch level {
-        case "error": return (Color.white,         C.danger)
-        case "warn":  return (Color.black.opacity(0.88), C.warn)
-        case "ok":    return (C.signal,            C.signal.opacity(0.18))
-        case "info":  return (C.signal,            C.signal.opacity(0.10))
-        case "debug": return (C.blueDebug,         C.blueDebug.opacity(0.16))
-        case "trace": return (C.textFaint,         C.bgElev)
-        default:      return (C.textDim,           C.bgElev)
+        case .error:      return C.danger
+        case .warn:       return C.warn
+        case .debug:      return C.textFaint
+        case .info, .ok:  return C.textDim
         }
     }
 
-    /// Stable colour per ADR-0008 category. Picked for distinguishability
-    /// at small chip size on both dark and light palettes — none of these
-    /// duplicate the level palette (signal/warn/danger) so message and
-    /// category never read the same colour.
-    private func categoryChipColor(_ category: String) -> Color {
-        switch category {
-        case "tunnel":    return C.signal
-        case "handshake": return C.warn
-        case "stream":    return C.blueDebug
-        case "packet":    return Color(hex: 0xFF8B7AC0)   // lavender
-        case "telemetry": return Color(hex: 0xFF4DB6AC)   // teal
-        case "tun":       return Color(hex: 0xFFFF8A65)   // coral
-        case "ipc":       return C.textDim
-        case "settings":  return C.bone
-        case "runtime":   return C.danger
-        case "ffi":       return C.textFaint
-        default:          return C.textDim
-        }
-    }
+    // MARK: - Filtering
 
-    /// Slightly tone down the message colour for low-priority levels so
-    /// the eye stays on warn/error rows. Bone for everything ≥ INF, dim
-    /// for DBG, faint for TRC.
-    private func messageColor(_ level: String) -> Color {
-        switch level {
-        case "trace": return C.textFaint
-        case "debug": return C.textDim
-        default:      return C.bone
-        }
-    }
-
-    private func renderFields(_ fields: [String: String]?) -> String? {
-        guard let fields, !fields.isEmpty else { return nil }
-        return fields.keys.sorted()
-            .map { "\($0)=\(fields[$0] ?? "")" }
-            .joined(separator: " ")
-    }
-
-    private func copyRowAsJson(_ row: LogFrame) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(row),
-              let json = String(data: data, encoding: .utf8) else {
-            setActionStatus(TailStatus(message: "Could not encode row to JSON", tone: .danger))
-            return
-        }
-        NSPasteboard.general.clearContents()
-        guard NSPasteboard.general.setString(json, forType: .string) else {
-            setActionStatus(TailStatus(message: "Pasteboard rejected the copy", tone: .danger))
-            return
-        }
-        setActionStatus(TailStatus(message: "Copied 1 log row as JSON", tone: .info))
-    }
-
-    private func revealRuntimeLogFile() {
-        // ADR 0008 §4: resolve through `PhantomKit.LogPathResolver` —
-        // the same source the extension's `LogFileWriter` writes to,
-        // so this button always lands on the file the writer produces.
-        let url = LogPathResolver.defaultRuntimeLogURL()
-        if FileManager.default.fileExists(atPath: url.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-            setActionStatus(TailStatus(message: "Revealed runtime.log in Finder", tone: .info))
-            return
-        }
-
-        let dirUrl = url.deletingLastPathComponent()
-        if FileManager.default.fileExists(atPath: dirUrl.path) {
-            NSWorkspace.shared.open(dirUrl)
-            setActionStatus(TailStatus(
-                message: "runtime.log not yet created — opened log folder",
-                tone: .warning
-            ))
-        } else {
-            setActionStatus(TailStatus(
-                message: "Log folder not yet created — start the tunnel first",
-                tone: .warning
-            ))
-        }
-    }
-
-    // MARK: - Helpers
-
-    private var activeSearchRegex: NSRegularExpression? {
-        guard regexSearch, !searchText.isEmpty else { return nil }
-        return try? NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
-    }
-
-    private var regexSearchError: String? {
-        guard regexSearch, !searchText.isEmpty else { return nil }
-        do {
-            _ = try NSRegularExpression(pattern: searchText, options: [.caseInsensitive])
-            return nil
-        } catch {
-            return error.localizedDescription
-        }
-    }
-
-    private var visibleTailStatus: TailStatus? {
-        if let regexSearchError {
-            return TailStatus(message: "Invalid regex: \(regexSearchError)", tone: .danger)
-        }
-        if let actionStatus, actionStatus.tone != .info {
-            return actionStatus
-        }
-        if let lastErrorMessage = logStore.lastErrorMessage {
-            return TailStatus(message: lastErrorMessage, tone: .danger)
-        }
-        return actionStatus
-    }
-
-    private func matchesSearch(_ row: LogFrame, regex: NSRegularExpression?) -> Bool {
-        guard !searchText.isEmpty else { return true }
-        let haystack = "\(row.level) \(row.msg)"
-        guard regexSearch else {
-            return haystack.localizedCaseInsensitiveContains(searchText)
-        }
-        guard let regex else { return false }
-        let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
-        return regex.firstMatch(in: haystack, range: range) != nil
-    }
-
-    private func copyVisibleLogs() {
-        let output = renderVisibleLogs()
-        guard !output.isEmpty else {
-            setActionStatus(TailStatus(message: "No visible log lines to copy", tone: .warning))
-            return
-        }
-
-        NSPasteboard.general.clearContents()
-        guard NSPasteboard.general.setString(output, forType: .string) else {
-            setActionStatus(TailStatus(message: "Copy failed: pasteboard rejected the log text", tone: .danger))
-            return
-        }
-        setActionStatus(TailStatus(message: "Copied \(cachedFilteredLogs.count) visible log lines", tone: .info))
-    }
-
-    private func clearLogs() {
-        logStore.clear()
-        setActionStatus(TailStatus(message: "Cleared log buffer", tone: .info))
-    }
-
-    private func clearFilters() {
-        activeFilter = .all
-        searchText = ""
-        regexSearch = false
-        setActionStatus(TailStatus(message: "Cleared log filters", tone: .info))
-        focusSearchField()
-    }
-
-    private func focusSearchField() {
-        searchFieldFocused = true
-        DispatchQueue.main.async {
-            searchFieldFocused = true
-        }
-    }
-
-    /// UI-R2-N02: action banner with TTL. Info-tone banners auto-clear
-    /// after 5s so a successful "Copied N lines" doesn't sit on screen
-    /// forever (and gradually accrue visual weight like a warning).
-    /// Warning/danger banners stick until the next action so the user
-    /// has time to read them. Cancels any pending TTL task before
-    /// re-arming.
-    private func setActionStatus(_ status: TailStatus) {
-        actionStatus = status
-        actionStatusTtlTask?.cancel()
-        guard status.tone == .info else { return }
-        let captured = status
-        let task = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+    /// Фильтр по буферу (до 10k строк) — вне main actor; устаревший
+    /// пересчёт отменяется, поиск — с паузой 300 мс.
+    private func recompute(debounce: Bool) {
+        filterTask?.cancel()
+        let frames = logStore.logs
+        let level = level
+        let search = search.trimmingCharacters(in: .whitespaces)
+        let titles = LogRow.Titles()
+        filterTask = Task.detached(priority: .userInitiated) {
+            if debounce { try? await Task.sleep(for: .milliseconds(300)) }
             guard !Task.isCancelled else { return }
-            // Only clear if we still own this banner — a later action
-            // may have replaced it.
-            if let current = actionStatus,
-               current.message == captured.message,
-               current.tone == captured.tone {
-                actionStatus = nil
+            let result = frames.reversed().compactMap { frame -> LogRow? in
+                let normalized = LogFrameFilter.normalizedLevel(frame.level)
+                guard level.allows(normalized),
+                      LogFrameFilter.matches(level: frame.level, msg: frame.msg, category: frame.category,
+                                             fields: frame.fields, search: search, regex: nil, useRegex: false)
+                else { return nil }
+                return LogRow(frame: frame, level: normalized, titles: titles)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { rows = result }
+        }
+    }
+
+    // MARK: - Copy / export
+
+    /// Выделенные строки по порядку времени.
+    private func text(for ids: Set<LogRow.ID>) -> String {
+        rows.filter { ids.contains($0.id) }.reversed().map(\.line).joined(separator: "\n")
+    }
+
+    private func copy(_ ids: Set<LogRow.ID>) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text(for: ids), forType: .string)
+    }
+
+    /// Весь буфер в текстовый файл, с версией приложения и macOS сверху.
+    private func export() {
+        let panel = NSSavePanel()
+        let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
+            .replacingOccurrences(of: ":", with: "")
+        panel.nameFieldStringValue = "GhostStream-logs-\(stamp).txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let info = Bundle.main.infoDictionary
+        let header = "GhostStream \(info?["CFBundleShortVersionString"] as? String ?? "?") "
+            + "(\(info?["CFBundleVersion"] as? String ?? "?")) · macOS "
+            + ProcessInfo.processInfo.operatingSystemVersionString
+        let titles = LogRow.Titles()
+        let body = logStore.logs.map {
+            LogRow(frame: $0, level: LogFrameFilter.normalizedLevel($0.level), titles: titles).line
+        }
+        do {
+            try ([header, ""] + body).joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            notice = String(format: L("log.exported"), url.lastPathComponent)
+        } catch {
+            notice = String(format: L("log.export.failed"), error.localizedDescription)
+        }
+    }
+}
+
+// MARK: - Model
+
+enum LevelFilter: Hashable {
+    case all, warn, error
+
+    func allows(_ level: LogFrameFilter.Level) -> Bool {
+        switch self {
+        case .all:   return true
+        case .warn:  return level == .warn || level == .error
+        case .error: return level == .error
+        }
+    }
+}
+
+private struct LogRow: Identifiable, Sendable {
+    let id: String
+    let time: String
+    let level: LogFrameFilter.Level
+    let levelTitle: String
+    let message: String
+
+    /// Подписи уровней, снятые на main actor (L()) для фонового фильтра.
+    struct Titles: Sendable {
+        let info, warn, error, debug: String
+
+        @MainActor init() {
+            info = L("log.lv.info")
+            warn = L("log.lv.warn")
+            error = L("log.lv.error")
+            debug = L("log.lv.debug")
+        }
+
+        func title(_ level: LogFrameFilter.Level) -> String {
+            switch level {
+            case .error:      return error
+            case .warn:       return warn
+            case .debug:      return debug
+            case .info, .ok:  return info
             }
         }
-        actionStatusTtlTask = task
     }
 
-    // UI-C3/C6/H11: shortcut handling moved to per-button SwiftUI
-    // `.keyboardShortcut(...)` modifiers (⇧⌘C copy, ⇧⌘E export, ⌘K
-    // clear, ⌘F focus filter). SwiftUI scopes shortcuts to the
-    // hosting window's responder chain, so the previous
-    // `NSEvent.addLocalMonitorForEvents` global monitor — which
-    // hijacked Copy/Find for every TextField in the app and would
-    // double-fire when a detached Logs window was open — is
-    // deliberately removed.
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
 
-    private func exportVisibleLogs() {
-        let output = renderVisibleLogs()
-        guard !output.isEmpty else {
-            setActionStatus(TailStatus(message: "No visible log lines to export", tone: .warning))
-            return
-        }
-
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "ghoststream-logs-\(Int(Date().timeIntervalSince1970)).txt"
-        panel.allowedContentTypes = [.plainText]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try output.write(to: url, atomically: true, encoding: .utf8)
-            setActionStatus(TailStatus(message: "Exported \(cachedFilteredLogs.count) visible log lines", tone: .info))
-        } catch {
-            setActionStatus(TailStatus(message: "Export failed: \(error.localizedDescription)", tone: .danger))
-        }
-    }
-
-    private func renderVisibleLogs() -> String {
-        cachedFilteredLogs.map(formatLogLine).joined(separator: "\n")
-    }
-
-    private func formatLogLine(_ row: LogFrame) -> String {
-        let categoryPart = (row.category?.isEmpty ?? true) ? "" : " [\(row.category!)]"
-        let fieldsPart = renderFields(row.fields).map { " {\($0)}" } ?? ""
-        return "\(formatTs(row.timestampUs)) [\(normalizedLevel(row.level))]\(categoryPart) \(row.msg)\(fieldsPart)"
-    }
-
-    private func levelColor(_ level: String) -> Color {
-        switch normalizedLevel(level) {
-        case "error": return C.danger
-        case "warn":  return C.warn
-        case "info":  return C.textDim
-        case "ok":    return C.signal
-        case "debug": return C.blueDebug
-        default:      return C.textDim
-        }
-    }
-
-    private func normalizedLevel(_ level: String) -> String {
-        TunnelLogStore.normalizedLevel(level)
-    }
-
-    private func tailStatusColor(_ tone: TailStatusTone) -> Color {
-        switch tone {
-        case .info:    return C.signal
-        case .warning: return C.warn
-        case .danger:  return C.danger
-        }
-    }
-
-    private func formatTs(_ tsUs: UInt64) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(tsUs) / 1_000_000.0)
-        return Self.timestampFormatter.string(from: date)
-    }
-}
-
-/// Pure filter logic extracted for testability. Keeps the SwiftUI view
-/// state-free of business rules — see `LogFrameFilterTests` (when a
-/// macOS-app test target lands).
-enum TailViewFilter {
-    static func filter(
-        frames: [LogFrame],
-        level: LevelFilter,
-        categories: Set<String>,
-        search: String,
-        useRegex: Bool
-    ) -> [LogFrame] {
-        let regex: NSRegularExpression?
-        if useRegex && !search.isEmpty {
-            regex = try? NSRegularExpression(pattern: search, options: [.caseInsensitive])
-            if regex == nil { return [] }
+    init(frame: LogFrame, level: LogFrameFilter.Level, titles: Titles) {
+        id = frame.id
+        time = Self.timeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(frame.timestampUs) / 1_000_000))
+        self.level = level
+        levelTitle = titles.title(level)
+        if let fields = frame.fields, !fields.isEmpty {
+            message = frame.msg + " · " + fields.keys.sorted().map { "\($0)=\(fields[$0] ?? "")" }.joined(separator: " ")
         } else {
-            regex = nil
-        }
-
-        return frames.filter { frame in
-            let normalized = normalize(level: frame.level)
-            let levelOk = level == .all || normalized == level.matchKey
-            let categoryOk = categories.isEmpty
-                || (frame.category.map { categories.contains($0) } ?? false)
-            let textOk = matches(frame: frame, search: search, regex: regex, useRegex: useRegex)
-            return levelOk && categoryOk && textOk
+            message = frame.msg
         }
     }
 
-    /// Делегирует в каноничный `LogFrameFilter.normalizedLevel`
-    /// (PhantomKit, покрыт тестами) — рукописный дубль таблицы уровней
-    /// здесь и в `TunnelLogStore` расходился бы молча.
-    static func normalize(level: String) -> String {
-        LogFrameFilter.normalizedLevel(level).rawValue
-    }
-
-    private static func matches(
-        frame: LogFrame,
-        search: String,
-        regex: NSRegularExpression?,
-        useRegex: Bool
-    ) -> Bool {
-        LogFrameFilter.matches(
-            level: frame.level,
-            msg: frame.msg,
-            category: frame.category,
-            fields: frame.fields,
-            search: search,
-            regex: regex,
-            useRegex: useRegex
-        )
-    }
-}
-
-private struct TailStatus {
-    let message: String
-    let tone: TailStatusTone
-
-    var iconName: String {
-        switch tone {
-        case .info:    return "checkmark.circle"
-        case .warning: return "exclamationmark.triangle"
-        case .danger:  return "xmark.octagon"
-        }
-    }
-}
-
-private enum TailStatusTone: Equatable {
-    case info
-    case warning
-    case danger
-}
-
-enum LevelFilter: String, CaseIterable {
-    case all, info, warn, error, debug
-
-    var label: String {
-        switch self {
-        case .all:   return "all"
-        case .info:  return "info"
-        case .warn:  return "warn"
-        case .error: return "error"
-        case .debug: return "debug"
-        }
-    }
-
-    var matchKey: String {
-        switch self {
-        case .all:   return "*"
-        case .info:  return "info"
-        case .warn:  return "warn"
-        case .error: return "error"
-        case .debug: return "debug"
-        }
-    }
+    var line: String { "\(time)  \(levelTitle)  \(message)" }
 }

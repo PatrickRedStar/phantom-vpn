@@ -35,6 +35,9 @@ public final class SystemExtensionInstaller: NSObject {
 
     public private(set) var state: State
     public private(set) var lastMessage: String?
+    /// macOS закончит установку только после перезагрузки
+    /// (`willCompleteAfterReboot`) — мастер показывает «Перезагрузите Mac».
+    public private(set) var needsReboot = false
 
     /// Bundle id of the system extension target (must match
     /// PacketTunnelExtension/Info.plist CFBundleIdentifier).
@@ -51,7 +54,8 @@ public final class SystemExtensionInstaller: NSObject {
     }
 
     /// Submit an activation request. The first time this runs the user
-    /// must approve the extension in System Settings → Login Items & Extensions.
+    /// must approve the extension in System Settings → General → Login Items
+    /// & Extensions.
     public func activate() {
         guard state != .requestPending && state != .awaitingUserApproval else { return }
         state = .requestPending
@@ -98,7 +102,7 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
     nonisolated public func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         Task { @MainActor in
             self.state = .awaitingUserApproval
-            self.lastMessage = "Open System Settings → General → Login Items & Extensions → Network Extensions and click Allow."
+            self.lastMessage = L("sysext.approval")
             self.log.info("system extension awaiting user approval")
         }
     }
@@ -120,9 +124,10 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
                 self.lastMessage = nil
             case .willCompleteAfterReboot:
                 self.state = .awaitingUserApproval
-                self.lastMessage = "A reboot is required to finish the install."
+                self.needsReboot = true
+                self.lastMessage = L("sysext.reboot")
             @unknown default:
-                self.state = .failed("Unknown activation result")
+                self.state = .failed(String(format: L("sysext.failed"), "?"))
             }
             self.pendingAction = nil
             self.pendingRequest = nil
@@ -134,11 +139,33 @@ extension SystemExtensionInstaller: OSSystemExtensionRequestDelegate {
         didFailWithError error: Error
     ) {
         Task { @MainActor in
-            self.state = .failed(error.localizedDescription)
-            self.lastMessage = error.localizedDescription
+            let message = Self.message(for: error)
+            self.state = .failed(message)
+            self.lastMessage = message
             self.log.error("system extension activation failed: \(error.localizedDescription, privacy: .public)")
             self.pendingAction = nil
             self.pendingRequest = nil
+        }
+    }
+}
+
+extension SystemExtensionInstaller {
+    /// Понятный текст вместо системного `localizedDescription` (английский
+    /// и с кодами OSSystemExtensionErrorDomain).
+    static func message(for error: Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == OSSystemExtensionErrorDomain,
+              let code = OSSystemExtensionError.Code(rawValue: nsError.code)
+        else { return String(format: L("sysext.failed"), "\(nsError.code)") }
+        switch code {
+        case .unsupportedParentBundleLocation:
+            return L("sysext.location")
+        case .requestCanceled, .requestSuperseded:
+            return L("sysext.canceled")
+        case .missingEntitlement, .extensionNotFound, .codeSignatureInvalid, .validationFailed:
+            return L("sysext.signature")
+        default:
+            return String(format: L("sysext.failed"), "\(nsError.code)")
         }
     }
 }

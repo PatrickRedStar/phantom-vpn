@@ -2,20 +2,13 @@
 //  ServerRosterView.swift
 //  GhostStream (macOS)
 //
-//  ROSTER tab — pixel-matched to section 05 of the design HTML.
-//
-//   1. detail-head: lblmono "profiles · N" faint + 38pt hero "roster."
-//      with em italic signal serif accent + "● probing rtt · 30s" right.
-//   2. toolbar: "+ new profile · ⌘N" (signal border) + "paste ghs://"
-//      (hairBold border bone) + count text right.
-//   3. SwiftUI Table rows with columns
-//        active | name (+ ● active) | endpoint (+ sni small)
-//          | region badge | rtt (colour by range) | state | commands
-//      Active row gets signal.opacity(0.06) bg + 2pt left border.
+//  «Серверы» (mockup.html, pane servers): нативная Table профилей —
+//  профиль + хост, маршрут, задержка, срок доступа, состояние. Активный
+//  профиль отмечен одним маркером — точкой состояния туннеля.
+//  Двойной щелчок — подключиться, ⌘N — добавить, ⌫ — удалить.
 //
 
 import AppKit
-import Foundation
 import Network
 import PhantomKit
 import PhantomUI
@@ -24,510 +17,291 @@ import SwiftUI
 public struct ServerRosterView: View {
 
     @Environment(\.gsColors) private var C
+    @Environment(\.openWindow) private var openWindow
     @Environment(ProfilesStore.self) private var profiles
+    @Environment(VpnStateManager.self) private var stateMgr
+    @Environment(DockPolicyController.self) private var dock
 
-    @State private var rttCache: [String: UInt32] = [:]
-    @State private var showAddSheet = false
-    /// Профиль, открытый в редакторе (по клику ⋯). Отдельная сущность от
-    /// самого списка — редактор одного профиля, не список.
-    @State private var editTarget: EditTarget?
-
-    private struct EditTarget: Identifiable { let id: String }
-    @State private var rosterStatusBanner: RosterStatusBanner?
-    @State private var rosterStatusTtlTask: Task<Void, Never>?
-    @State private var probeStatus: String = "RTT PROBE UNAVAILABLE"
-    @State private var sortOrder: [KeyPathComparator<RosterRow>] = [
-        .init(\.name, order: .forward)
-    ]
-
-    /// Tagged status message — UI-M5 fix. The old `String?` flag
-    /// coloured every transient banner in warn-yellow, so a
-    /// *successful* "Imported …" looked indistinguishable from
-    /// "Failed to import". Tagging the kind separates them and
-    /// lets us auto-expire success banners.
-    private enum RosterStatusKind {
-        case success
-        case info
-        case error
-    }
-
-    private struct RosterStatusBanner: Equatable {
-        let message: String
-        let kind: RosterStatusKind
-    }
+    @State private var selection: String?
+    @State private var sortOrder = [KeyPathComparator(\RosterRow.name)]
+    @State private var search = ""
+    @State private var rtt: [String: UInt32] = [:]
+    @State private var probed = false
+    @State private var sheet: EditorSheet?
+    @State private var deleting: VpnProfile?
+    @State private var notice: Notice?
 
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            detailHead
-            toolbar
+        VStack(alignment: .leading, spacing: GsSpace.s) {
             if profiles.profiles.isEmpty {
                 emptyState
             } else {
-                tableView
+                table
+                footer
             }
         }
-        .padding(.horizontal, 28)
-        .padding(.top, 22)
-        .padding(.bottom, 14)
+        .padding(.horizontal, GsSpace.xxl)
+        .padding(.top, GsSpace.s)
+        .padding(.bottom, GsSpace.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(C.bg)
-        .sheet(isPresented: $showAddSheet) {
-            ProfileEditorSheet()
-        }
-        .sheet(item: $editTarget) { target in
-            ProfileEditorSheet(editProfileId: target.id)
-        }
-        .task {
-            await probeLoop()
-        }
-        // UI-R2-R07: cancel the running 5s TTL task when the user
-        // navigates away — otherwise it keeps a strong reference to
-        // the @MainActor closure and (more importantly) can mutate
-        // `rosterStatusBanner` after the view re-enters with a fresh
-        // banner, flickering it away.
-        .onDisappear {
-            rosterStatusTtlTask?.cancel()
-        }
-    }
-
-    // MARK: - 1. detail-head
-
-    @ViewBuilder
-    private var detailHead: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("PROFILES · \(profiles.profiles.count)")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.20 * 11)
-                    .foregroundStyle(C.textFaint)
-                HStack(spacing: 0) {
-                    Text("roster")
-                        .font(.custom("InstrumentSerif-Italic", size: 38))
-                        .foregroundStyle(C.signal)
-                    Text(".")
-                        .font(.custom("SpaceGrotesk-Bold", size: 38))
-                        .foregroundStyle(C.textDim)
+        .searchable(text: $search, placement: .toolbar, prompt: L("srv.search"))
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { sheet = .new } label: {
+                    Label(L("srv.add"), systemImage: "plus")
                 }
-            }
-            Spacer()
-            HStack(spacing: 6) {
-                PulseDot(color: C.textDim, size: 8, pulse: false)
-                Text(probeStatus)
-                    .font(.custom("DepartureMono-Regular", size: 10.5))
-                    .tracking(0.16 * 10.5)
-                    .foregroundStyle(C.textDim)
+                .keyboardShortcut("n", modifiers: .command)
+                .help(L("srv.add"))
             }
         }
-        .padding(.bottom, 14)
-        .overlay(alignment: .bottom) {
-            DashedHairline()
-        }
-    }
-
-    // MARK: - 2. toolbar
-
-    @ViewBuilder
-    private var toolbar: some View {
-        HStack(spacing: 10) {
-            Button { showAddSheet = true } label: {
-                HStack(spacing: 8) {
-                    Text("+ NEW PROFILE")
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.18 * 11)
-                    Text("· ⌘N")
-                        .font(.custom("DepartureMono-Regular", size: 10))
-                        .foregroundStyle(C.signal.opacity(0.6))
-                }
-                .foregroundStyle(C.signal)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .gsStroke(C.signal, GsRadius.control)
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut("n", modifiers: .command)
-
-            Button { pasteFromClipboard() } label: {
-                Text("PASTE GHS://")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.18 * 11)
-                    .foregroundStyle(C.bone)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .gsStroke(C.hairBold, GsRadius.control)
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            // UI-M5: colour reflects status kind — green for success,
-            // yellow for warn/info, red for failures. Previously every
-            // transient was yellow, so successful imports read as
-            // warnings.
-            Text(rosterStatusBanner?.message
-                 ?? "\(profiles.profiles.count) PROFILES · \(activeCount) ACTIVE · \(probeStatus)")
-                .font(.custom("DepartureMono-Regular", size: 10.5))
-                .tracking(0.14 * 10.5)
-                .foregroundStyle(rosterStatusColor)
-        }
-    }
-
-    private var rosterStatusColor: Color {
-        guard let banner = rosterStatusBanner else { return C.textFaint }
-        switch banner.kind {
-        case .success: return C.signal
-        case .info:    return C.textDim
-        case .error:   return C.danger
-        }
-    }
-
-    /// Show a transient banner. Success banners auto-clear after 5s
-    /// so they don't sit on screen forever pretending to be a
-    /// warning. Errors stick around until the next user action.
-    private func setRosterStatus(_ message: String, kind: RosterStatusKind) {
-        rosterStatusBanner = RosterStatusBanner(message: message, kind: kind)
-        rosterStatusTtlTask?.cancel()
-        guard kind == .success || kind == .info else { return }
-        let captured = rosterStatusBanner
-        let task = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            guard !Task.isCancelled else { return }
-            // Only clear if we still own the banner — another update
-            // may have replaced it in the meantime.
-            if rosterStatusBanner == captured {
-                rosterStatusBanner = nil
+        .sheet(item: $sheet) { sheet in
+            switch sheet {
+            case .new:            ProfileEditorSheet()
+            case .edit(let id):   ProfileEditorSheet(editProfileId: id)
             }
         }
-        rosterStatusTtlTask = task
-    }
-
-    private var activeCount: Int {
-        profiles.activeId == nil ? 0 : 1
-    }
-
-    // MARK: - 3. table
-
-    // Кастомный список вместо нативного Table: единый скруглённый
-    // контейнер + hairline-строки, без пустых filler-«пилюль» (их рисовал
-    // native Table). Колонки адаптивные — name/endpoint тянутся, остальные
-    // фикс. Паритет с мокапом (§4).
-    @ViewBuilder
-    private var tableView: some View {
-        ScrollView {
-            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                Section {
-                    let rs = rows
-                    ForEach(Array(rs.enumerated()), id: \.element.id) { idx, row in
-                        rosterRow(row)
-                        if idx < rs.count - 1 {
-                            Rectangle().fill(C.hair).frame(height: 1)
-                        }
-                    }
-                } header: {
-                    VStack(spacing: 0) {
-                        rosterHeader
-                        Rectangle().fill(C.hair).frame(height: 1)
-                    }
-                    .background(C.bgElev)
-                }
-            }
+        .alert(
+            deleting.map { String(format: L("profile.delete.confirm"), $0.name) } ?? "",
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+            presenting: deleting
+        ) { profile in
+            Button(L("profile.delete"), role: .destructive) { profiles.remove(id: profile.id) }
+            Button(L("general.cancel"), role: .cancel) {}
+        } message: { _ in
+            Text(L("srv.delete.message"))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
-        .gsClip(GsRadius.card)
-    }
-
-    // Ширины колонок (общие для шапки и строк).
-    private enum Col {
-        static let active: CGFloat = 30
-        static let name: CGFloat = 170
-        static let region: CGFloat = 160
-        static let rtt: CGFloat = 66
-        static let state: CGFloat = 86
-        static let menu: CGFloat = 34
-    }
-
-    private var rosterHeader: some View {
-        HStack(spacing: 10) {
-            Color.clear.frame(width: Col.active)
-            sortHeader("name", key: \.name)
-                .frame(width: Col.name, alignment: .leading)
-            Text("endpoint")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .modifier(HeaderLabel())
-            Text("region").modifier(HeaderLabel())
-                .frame(width: Col.region, alignment: .leading)
-            sortHeader("rtt", key: \.rttSort)
-                .frame(width: Col.rtt, alignment: .leading)
-            Text("state").modifier(HeaderLabel())
-                .frame(width: Col.state, alignment: .leading)
-            Color.clear.frame(width: Col.menu)
+        .task(id: profiles.profiles.map(\.effectiveServerAddr)) { await probeLoop() }
+        .task(id: notice) {
+            guard notice != nil else { return }
+            try? await Task.sleep(for: .seconds(4))
+            notice = nil
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .onAppear { if selection == nil { selection = profiles.activeProfile?.id } }
     }
 
-    /// Кликабельный заголовок-сортировка с кареткой.
-    private func sortHeader<V: Comparable>(_ title: String, key: KeyPath<RosterRow, V>) -> some View {
-        Button {
-            toggleSort(key: key)
-        } label: {
-            HStack(spacing: 4) {
-                Text(title).modifier(HeaderLabel())
-                if let cur = sortOrder.first, cur.keyPath == key {
-                    Image(systemName: cur.order == .forward ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 8))
-                        .foregroundStyle(C.textDim)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
+    // MARK: - Table
 
-    private func toggleSort<V: Comparable>(key: KeyPath<RosterRow, V>) {
-        if let cur = sortOrder.first, cur.keyPath == key {
-            sortOrder = [KeyPathComparator(key, order: cur.order == .forward ? .reverse : .forward)]
-        } else {
-            sortOrder = [KeyPathComparator(key, order: .forward)]
-        }
-    }
-
-    @ViewBuilder
-    private func rosterRow(_ row: RosterRow) -> some View {
-        HStack(spacing: 10) {
-            rowActionArea(row) {
-                Image(systemName: row.active ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(row.active ? C.signal : C.textFaint)
-                    .font(.system(size: 13))
-            }
-            .frame(width: Col.active)
-
-            rowActionArea(row) {
-                VStack(alignment: .leading, spacing: 2) {
+    private var table: some View {
+        let rows = rows
+        return Table(rows, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn(L("srv.col.profile"), value: \.name) { row in
+                VStack(alignment: .leading, spacing: 1) {
                     Text(row.name)
-                        .font(.custom("SpaceGrotesk-Bold", size: 14))
-                        .foregroundStyle(C.bone)
                         .lineLimit(1)
-                    if row.active {
-                        Text("● ACTIVE")
-                            .font(.custom("DepartureMono-Regular", size: 9.5))
-                            .tracking(0.14 * 9.5)
-                            .foregroundStyle(C.signal)
-                    }
-                }
-                .padding(.leading, row.active ? 6 : 0)
-                .overlay(alignment: .leading) {
-                    if row.active {
-                        Rectangle().fill(C.signal).frame(width: 2)
-                    }
-                }
-            }
-            .frame(width: Col.name, alignment: .leading)
-
-            rowActionArea(row) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.endpoint)
-                        .font(.custom("JetBrainsMono-Regular", size: 11.5))
-                        .foregroundStyle(C.textDim)
+                    Text(row.host)
+                        .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if !row.sni.isEmpty {
-                        Text("sni: \(row.sni)")
-                            .font(.custom("JetBrainsMono-Regular", size: 10))
-                            .foregroundStyle(C.textFaint)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                }
+                .padding(.vertical, GsSpace.xs)
+            }
+            .width(min: 180, ideal: 250)
+
+            TableColumn(L("srv.col.route"), value: \.route) { row in
+                Text(row.route)
+            }
+            .width(min: 90, ideal: 120)
+
+            TableColumn(L("srv.col.latency"), value: \.rttSort) { row in
+                if let ms = row.rtt {
+                    Text(String(format: L("srv.ms"), Int32(ms))).monospacedDigit()
+                } else {
+                    Text(probed ? L("srv.no_reply") : "—").foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .width(min: 70, ideal: 90)
 
-            rowActionArea(row) {
-                HStack(spacing: 6) {
-                    regionBadge(row.region)
-                    if row.relay { relayBadge }
-                }
+            TableColumn(L("srv.col.access"), value: \.accessSort) { row in
+                Text(row.access.text)
+                    .monospacedDigit()
+                    .foregroundStyle(row.access.dim ? .secondary : .primary)
             }
-            .frame(width: Col.region, alignment: .leading)
+            .width(min: 80, ideal: 100)
 
-            rowActionArea(row) {
-                Text(row.rttLabel)
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.04 * 11)
-                    .foregroundStyle(rttColor(row.rttMs))
+            TableColumn(L("srv.col.state"), value: \.stateSort) { row in
+                stateLabel(row)
             }
-            .frame(width: Col.rtt, alignment: .leading)
-
-            rowActionArea(row) {
-                Text(row.status.lowercased())
-                    .font(.custom("JetBrainsMono-Regular", size: 11))
-                    .foregroundStyle(C.textDim)
+            .width(min: 110, ideal: 140)
+        }
+        .gsType(.body)
+        .tableStyle(.inset)
+        .alternatingRowBackgrounds(.disabled)
+        .scrollContentBackground(.hidden)
+        .background(C.bgElev, in: RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous).stroke(C.hair, lineWidth: 1))
+        // По высоте строк, как в макете: иначе inset-таблица рисует до низа
+        // пустые полосы-заполнители. Больше строк — прокрутка.
+        .frame(maxHeight: GsTable.height(rows: rows.count, rowHeight: GsTable.twoLineRow))
+        .contextMenu(forSelectionType: String.self) { ids in
+            if let profile = ids.first.flatMap(profiles.load(id:)) {
+                rowMenu(profile)
             }
-            .frame(width: Col.state, alignment: .leading)
-
-            rowMenu(row)
-                .frame(width: Col.menu)
+        } primaryAction: { ids in
+            if let profile = ids.first.flatMap(profiles.load(id:)) { connect(profile) }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(row.active ? C.signal.opacity(0.04) : Color.clear)
-    }
-
-    /// Единый стиль лейбла колонки-заголовка.
-    private struct HeaderLabel: ViewModifier {
-        @Environment(\.gsColors) private var C
-        func body(content: Content) -> some View {
-            content
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.14 * 9.5)
-                .foregroundStyle(C.textFaint)
+        .onDeleteCommand {
+            deleting = selection.flatMap(profiles.load(id:))
         }
-    }
-
-    private func regionBadge(_ region: String) -> some View {
-        let color: Color
-        let label: String
-        switch region.lowercased() {
-        case "ru":
-            color = C.warn
-            label = "ru · sni-passthrough"
-        case "nl":
-            color = C.signal
-            label = "nl · vdsina"
-        default:
-            color = C.bone
-            label = region.isEmpty ? "— internal" : region
-        }
-        return Text(label)
-            .font(.custom("DepartureMono-Regular", size: 9.5))
-            .tracking(0.14 * 9.5)
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .gsStroke(color.opacity(0.35), GsRadius.chip)
-    }
-
-    /// Профиль ходит через дополнительный хоп — endpoint в строке уже
-    /// показывает relay-адрес, бейдж это подсвечивает.
-    private var relayBadge: some View {
-        Text("RELAY")
-            .font(.custom("DepartureMono-Regular", size: 9.5))
-            .tracking(0.14 * 9.5)
-            .foregroundStyle(C.warn)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .gsStroke(C.warn.opacity(0.35), GsRadius.chip)
     }
 
     @ViewBuilder
-    private var emptyState: some View {
-        VStack(alignment: .center, spacing: 14) {
-            Image(systemName: "server.rack")
-                .font(.system(size: 36))
-                .foregroundStyle(C.textFaint)
-            Text(L("roster.empty"))
-                .font(.custom("JetBrainsMono-Regular", size: 12))
-                .foregroundStyle(C.textDim)
+    private func rowMenu(_ profile: VpnProfile) -> some View {
+        let active = profiles.activeProfile?.id == profile.id
+        if !(active && VpnTunnelController.isUp(stateMgr.statusFrame.state)) {
+            Button(L("srv.connect")) { connect(profile) }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-        .gsCard(fill: C.bgElev2, stroke: C.hair, radius: GsRadius.card)
+        if !active {
+            Button(L("srv.make_active")) { profiles.setActive(id: profile.id) }
+        }
+        Button(L("srv.edit")) { sheet = .edit(profile.id) }
+        Divider()
+        Button(L("srv.delete"), role: .destructive) { deleting = profile }
+    }
+
+    @ViewBuilder
+    private func stateLabel(_ row: RosterRow) -> some View {
+        if row.active {
+            let state = stateMgr.statusFrame.state
+            HStack(spacing: 7) {
+                StateDot(state: state)
+                Text(state.title)
+            }
+        } else if row.noAccess {
+            HStack(spacing: 7) {
+                Circle().fill(C.danger).frame(width: 8, height: 8)
+                Text(L("srv.state.no_access"))
+            }
+        } else {
+            Text(L("srv.state.ready")).foregroundStyle(.secondary)
+        }
+    }
+
+    private var footer: some View {
+        Text(notice?.text ?? L("srv.hint"))
+            .gsType(.caption)
+            .foregroundStyle(notice?.isError == true ? C.danger : C.textDim)
+            .padding(.horizontal, GsSpace.s)
+    }
+
+    // MARK: - Empty
+
+    private var emptyState: some View {
+        VStack(spacing: GsSpace.m) {
+            Text(L("srv.empty.title"))
+                .gsType(.title)
+                .foregroundStyle(C.bone)
+            Text(L("srv.empty.text"))
+                .gsType(.body)
+                .foregroundStyle(C.textDim)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
+            Button(action: pasteFromClipboard) {
+                Label(L("srv.paste"), systemImage: "link")
+                    .gsType(.body)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(C.bg)
+                    .padding(.horizontal, GsSpace.xs)
+            }
+            .controlSize(.large)
+            .gsProminentButton(tint: C.signal)
+            .padding(.top, GsSpace.s)
+            if let notice {
+                Text(notice.text)
+                    .gsType(.caption)
+                    .foregroundStyle(notice.isError ? C.danger : C.textDim)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Rows
 
     private var rows: [RosterRow] {
-        let unsorted = profiles.profiles.map { profile in
-            RosterRow(
-                id: profile.id,
-                name: profile.name,
-                // Показываем и пробим фактическую точку входа: с relay это
-                // relay-адрес, транспорт подключается именно туда.
-                endpoint: profile.effectiveServerAddr,
-                sni: profile.serverName,
-                region: detectRegion(profile),
-                relay: profile.relayActive,
-                rttMs: rttCache[profile.id],
-                active: profiles.activeId == profile.id,
-                status: profiles.activeId == profile.id ? "active" : "—",
-                connString: profile.connString
-            )
-        }
-        return unsorted.sorted(using: sortOrder)
+        let activeId = profiles.activeProfile?.id
+        let query = search.trimmingCharacters(in: .whitespaces)
+        return profiles.profiles
+            .filter {
+                query.isEmpty
+                    || $0.name.localizedCaseInsensitiveContains(query)
+                    || $0.serverName.localizedCaseInsensitiveContains(query)
+            }
+            .map { RosterRow(profile: $0, active: $0.id == activeId, rtt: rtt[$0.id]) }
+            .sorted(using: sortOrder)
     }
 
-    private func detectRegion(_ p: VpnProfile) -> String {
-        let host = p.effectiveServerAddr.lowercased()
-        if host.contains("vdsina") { return "nl" }
-        if host.contains("relay") || host.contains("193.187") { return "ru" }
-        return ""
-    }
+    // MARK: - Actions
 
-    private func rttColor(_ rtt: UInt32?) -> Color {
-        guard let rtt else { return C.textFaint }
-        switch rtt {
-        case 0..<20:    return C.signal
-        case 20..<100:  return C.bone
-        case 100..<200: return C.warn
-        default:        return C.danger
+    /// Сделать активным и поднять туннель. Поднятый туннель на другом
+    /// профиле переключает `VpnTunnelController.activeProfileChanged`.
+    private func connect(_ profile: VpnProfile) {
+        profiles.setActive(id: profile.id)
+        guard !VpnTunnelController.isUp(stateMgr.statusFrame.state) else { return }
+        Task {
+            await ConnectAction.toggle {
+                openWindow(id: "welcome")
+                dock.activateForegroundWindow()
+            }
         }
     }
+
+    private func pasteFromClipboard() {
+        let text = NSPasteboard.general.string(forType: .string) ?? ""
+        switch profiles.importLink(text) {
+        case .added(let profile):
+            selection = profile.id
+            notice = Notice(text: String(format: L("srv.notice.added"), profile.name))
+        case .duplicate(let profile):
+            selection = profile.id
+            notice = Notice(text: String(format: L("srv.notice.duplicate"), profile.name))
+        case .notALink:
+            notice = Notice(text: L("srv.notice.no_link"), isError: true)
+        case .invalid:
+            notice = Notice(text: L("srv.notice.invalid"), isError: true)
+        }
+    }
+
+    // MARK: - RTT probe
 
     private func probeLoop() async {
-        await probeProfilesOnce()
-        while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-            if Task.isCancelled { break }
-            await probeProfilesOnce()
-        }
-    }
-
-    @MainActor
-    private func probeProfilesOnce() async {
-        let snapshot = profiles.profiles
-        guard !snapshot.isEmpty else {
-            rttCache = [:]
-            probeStatus = "RTT PROBE · EMPTY"
+        #if DEBUG
+        if DebugDemo.isActive {
+            rtt = ["demo-relay": 38, "demo-direct": 61]
+            probed = true
             return
         }
-
-        probeStatus = "PROBING RTT · 30S"
-        var nextCache = rttCache
-        await withTaskGroup(of: (String, UInt32?).self) { group in
-            for profile in snapshot {
-                group.addTask {
-                    (profile.id, await measureRTT(to: profile.effectiveServerAddr))
+        #endif
+        while !Task.isCancelled {
+            let targets = profiles.profiles.map { ($0.id, $0.effectiveServerAddr) }
+            var next: [String: UInt32] = [:]
+            await withTaskGroup(of: (String, UInt32?).self) { group in
+                for (id, addr) in targets {
+                    group.addTask { (id, await Self.measureRTT(to: addr)) }
+                }
+                for await (id, ms) in group {
+                    if let ms { next[id] = ms }
                 }
             }
-
-            for await (id, rtt) in group {
-                if let rtt {
-                    nextCache[id] = rtt
-                } else {
-                    nextCache.removeValue(forKey: id)
-                }
-            }
+            guard !Task.isCancelled else { return }
+            rtt = next
+            probed = true
+            try? await Task.sleep(for: .seconds(30))
         }
-        rttCache = nextCache
-        let measured = snapshot.filter { nextCache[$0.id] != nil }.count
-        probeStatus = "RTT \(measured)/\(snapshot.count) · 30S"
     }
 
-    private func measureRTT(to serverAddr: String) async -> UInt32? {
+    /// Время TCP-рукопожатия до точки входа (с реле — до реле), 3 с таймаут.
+    private nonisolated static func measureRTT(to serverAddr: String) async -> UInt32? {
         guard let endpoint = endpoint(from: serverAddr) else { return nil }
-
         let connection = NWConnection(host: NWEndpoint.Host(endpoint.host), port: endpoint.port, using: .tcp)
         let startedAt = Date()
-
         return await withCheckedContinuation { continuation in
             let gate = RTTProbeCompletionGate(connection: connection, continuation: continuation)
-
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    let ms = UInt32(max(1, min(9_999, Date().timeIntervalSince(startedAt) * 1_000)))
-                    gate.resume(ms)
+                    gate.resume(UInt32(max(1, min(9_999, Date().timeIntervalSince(startedAt) * 1_000))))
                 case .failed, .waiting:
                     gate.resume(nil)
                 case .cancelled, .setup, .preparing:
@@ -537,99 +311,119 @@ public struct ServerRosterView: View {
                 }
             }
             connection.start(queue: .global(qos: .utility))
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
-                gate.resume(nil)
-            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) { gate.resume(nil) }
         }
     }
 
-    private func endpoint(from serverAddr: String) -> (host: String, port: NWEndpoint.Port)? {
+    private nonisolated static func endpoint(from serverAddr: String) -> (host: String, port: NWEndpoint.Port)? {
         let trimmed = serverAddr.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        let normalized = trimmed.contains("://") ? trimmed : "tcp://\(trimmed)"
-        guard let components = URLComponents(string: normalized),
-              let host = components.host,
-              !host.isEmpty
+        guard !trimmed.isEmpty,
+              let components = URLComponents(string: trimmed.contains("://") ? trimmed : "tcp://\(trimmed)"),
+              let host = components.host, !host.isEmpty,
+              let port = NWEndpoint.Port(rawValue: UInt16(clamping: components.port ?? 443))
         else { return nil }
-
-        let portValue = components.port ?? 443
-        guard let port = NWEndpoint.Port(rawValue: UInt16(clamping: portValue)) else {
-            return nil
-        }
         return (host, port)
-    }
-
-    private func pasteFromClipboard() {
-        let str = NSPasteboard.general.string(forType: .string)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard let str, !str.isEmpty else {
-            setRosterStatus("Clipboard is empty", kind: .error)
-            return
-        }
-
-        guard str.hasPrefix("ghs://") else {
-            setRosterStatus("Clipboard does not contain a ghs:// profile", kind: .error)
-            return
-        }
-
-        do {
-            let profile = try profiles.importFromConnString(str)
-            setRosterStatus("Imported \(profile.name)", kind: .success)
-        } catch {
-            setRosterStatus("Failed to import ghs:// profile", kind: .error)
-        }
-    }
-
-    @ViewBuilder
-    private func rowActionArea<Content: View>(
-        _ row: RosterRow,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                profiles.setActive(id: row.id)
-                setRosterStatus("Active profile: \(row.name)", kind: .success)
-            }
-    }
-
-    /// Клик по ⋯ сразу открывает редактор ЭТОГО профиля (Image #15) —
-    /// без промежуточного выпадающего меню. Set Active = тап по строке;
-    /// удаление/копирование — внутри редактора.
-    @ViewBuilder
-    private func rowMenu(_ row: RosterRow) -> some View {
-        Button {
-            editTarget = EditTarget(id: row.id)
-        } label: {
-            Image(systemName: "ellipsis")
-                .foregroundStyle(C.textFaint)
-                .font(.system(size: 14))
-                .frame(width: 28, height: 24)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Edit profile")
     }
 }
 
-// MARK: - Row model
+// MARK: - Models
+
+/// Высота inset-таблицы под содержимое (шапка + отступы + строки).
+enum GsTable {
+    static let twoLineRow: CGFloat = 47
+    static let oneLineRow: CGFloat = 24.1
+
+    static func height(rows: Int, rowHeight: CGFloat) -> CGFloat {
+        38 + CGFloat(max(rows, 1)) * rowHeight
+    }
+}
+
+private enum EditorSheet: Identifiable {
+    case new
+    case edit(String)
+
+    var id: String {
+        switch self {
+        case .new:            return "new"
+        case .edit(let id):   return id
+        }
+    }
+}
+
+private struct Notice: Equatable {
+    let text: String
+    var isError = false
+}
 
 private struct RosterRow: Identifiable {
     let id: String
     let name: String
-    let endpoint: String
-    let sni: String
-    let region: String
-    let relay: Bool
-    let rttMs: UInt32?
+    let host: String
+    let route: String
+    let rtt: UInt32?
+    let access: (text: String, dim: Bool)
+    let accessSort: Int64
     let active: Bool
-    let status: String
-    let connString: String?
-    var rttLabel: String { rttMs.map { "\($0) ms" } ?? "n/a" }
-    var rttSort: UInt32 { rttMs ?? UInt32.max }
+    let noAccess: Bool
+
+    @MainActor
+    init(profile: VpnProfile, active: Bool, rtt: UInt32?) {
+        id = profile.id
+        name = profile.name
+        host = profile.serverName.isEmpty ? profile.serverAddr : profile.serverName
+        route = L(profile.relayActive ? "srv.route.relay" : "srv.route.direct")
+        self.rtt = rtt
+        self.active = active
+        accessSort = profile.cachedExpiresAt ?? .max
+
+        let expires = profile.cachedExpiresAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        let expired = expires.map { $0 < .now } ?? false
+        noAccess = profile.cachedEnabled == false || expired
+        if let expires, expired {
+            access = (String(format: L("srv.access.expired"),
+                             expires.formatted(.dateTime.day(.twoDigits).month(.twoDigits))), true)
+        } else if let expires {
+            access = (expires.formatted(.dateTime.day(.twoDigits).month(.twoDigits).year()), false)
+        } else if profile.cachedEnabled == true {
+            access = (L("srv.access.forever"), true)
+        } else {
+            access = ("—", true)
+        }
+    }
+
+    var rttSort: UInt32 { rtt ?? .max }
+    /// Активный — первым, затем готовые, затем без доступа.
+    var stateSort: Int { active ? 0 : noAccess ? 2 : 1 }
+}
+
+// MARK: - Import without duplicates
+
+/// Итог импорта ghs://-ссылки.
+enum LinkImportResult {
+    case added(VpnProfile)
+    case duplicate(VpnProfile)
+    case notALink
+    case invalid
+}
+
+extension ProfilesStore {
+    /// Импорт без дублей: та же ссылка или тот же клиентский сертификат на
+    /// том же сервере — «Профиль уже есть» вместо второй копии.
+    func importLink(_ raw: String) -> LinkImportResult {
+        let link = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard link.hasPrefix("ghs://") else { return .notALink }
+        guard let parsed = PhantomBridge.parseConnString(link) else { return .invalid }
+        let cert = parsed.certPem.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let existing = profiles.first(where: {
+            $0.connString == link
+                || ($0.serverAddr == parsed.serverAddr
+                    && $0.certPem?.trimmingCharacters(in: .whitespacesAndNewlines) == cert)
+        }) {
+            return .duplicate(existing)
+        }
+        guard let profile = try? importFromConnString(link) else { return .invalid }
+        return .added(profile)
+    }
 }
 
 private final class RTTProbeCompletionGate: @unchecked Sendable {

@@ -38,6 +38,12 @@ public final class TunnelLogStore {
     private init() {}
 
     public func start(stateManager: VpnStateManager) {
+        #if DEBUG
+        if DebugDemo.isActive {
+            if logs.isEmpty { logs = DebugDemo.logs; revision += 1 }
+            return
+        }
+        #endif
         self.stateManager = stateManager
         guard pollTask == nil else { return }
 

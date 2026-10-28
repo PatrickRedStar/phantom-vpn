@@ -2,20 +2,14 @@
 //  AdminConsoleView.swift
 //  GhostStream (macOS)
 //
-//  ADMIN tab — desktop port of the iOS Admin screen on top of the shared
-//  PhantomKit `AdminViewModel` / `AdminHttpClient` (mTLS + TOFU pin, admin
-//  gateway derived from the profile tun address, reachable only through the
-//  tunnel).
-//
-//  Layout (matches the approved HTML mockup):
-//   1. detail-head: "CLIENTS · N" + hero "admin." + mTLS/pin status right.
-//   2. stats strip: uptime / sessions / total traffic / exit IP.
-//   3. columns: clients Table (left) + selected-client detail panel (right)
-//      with traffic sparkline, recent destinations and subscription actions.
-//   4. footer CTA: + NEW CLIENT → CreateClientSheet.
+//  «Админ» (mockup.html, pane admin): нативная Table клиентов сервера,
+//  детали выбранного — в `.inspector`, «Новый клиент» — в тулбаре.
+//  Поверх общего PhantomKit `AdminViewModel` (mTLS + TOFU). API живёт за
+//  туннелем, поэтому опрос — только в `.connected`.
 //
 
 import AppKit
+import CryptoKit
 import PhantomKit
 import PhantomUI
 import SwiftUI
@@ -28,89 +22,256 @@ public struct AdminConsoleView: View {
 
     @State private var vm: AdminViewModel?
     @State private var vmProfileId: String?
-    @State private var selectedClientName: String?
-    @State private var showCreateSheet = false
-    @State private var banner: AdminBannerState?
-    @State private var bannerTtlTask: Task<Void, Never>?
-    @State private var confirmDeleteClient: AdminClient?
-    @State private var sortOrder: [KeyPathComparator<AdminClientRow>] = [
-        .init(\.name, order: .forward)
-    ]
-
-    private struct AdminBannerState: Equatable {
-        enum Kind { case success, info, error }
-        let message: String
-        let kind: Kind
-    }
+    /// SHA-256 серта активного профиля — так сервер отдаёт `fingerprint`.
+    @State private var ownFingerprint: String?
+    @State private var selection: String?
+    @State private var sortOrder = [KeyPathComparator(\ClientRow.name)]
+    @State private var showCreate = false
+    @State private var pending: PendingAction?
+    @State private var notice: AdminNotice?
 
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            detailHead
-            if let vm {
-                if vm.mtlsUnavailable {
-                    mtlsBanner(vm.error)
-                } else {
-                    if let err = vm.error, vm.status == nil {
-                        errorBanner(err)
+        VStack(alignment: .leading, spacing: GsSpace.s) {
+            content
+        }
+        .padding(.horizontal, GsSpace.xxl)
+        .padding(.top, GsSpace.s)
+        .padding(.bottom, GsSpace.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .toolbar {
+            if let vm, adminReachable, !vm.mtlsUnavailable {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showCreate = true } label: {
+                        Label(L("adm.new"), systemImage: "plus")
+                            .labelStyle(.titleAndIcon)
                     }
-                    statsStrip(vm)
-                    contentColumns(vm)
-                    footer(vm)
+                    .keyboardShortcut("n", modifiers: .command)
                 }
-            } else {
-                noProfileState
             }
         }
-        .padding(.horizontal, 28)
-        .padding(.top, 22)
-        .padding(.bottom, 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(C.bg)
-        .sheet(isPresented: $showCreateSheet) {
+        .inspector(isPresented: Binding(
+            get: { adminReachable && vm?.mtlsUnavailable == false && selectedClient != nil },
+            set: { if !$0 { selection = nil } }
+        )) {
+            if let vm, let client = selectedClient {
+                AdminClientDetailPanel(
+                    vm: vm,
+                    client: client,
+                    isOwn: isOwn(client),
+                    onRequest: { handle($0, client) },
+                    onStatus: { notice = AdminNotice(text: $0, isError: !$1) }
+                )
+                .inspectorColumnWidth(min: 250, ideal: 270, max: 380)
+            }
+        }
+        .sheet(isPresented: $showCreate) {
             if let vm {
-                AdminCreateClientSheet(vm: vm) { message, ok in
-                    setBanner(message, kind: ok ? .success : .error)
-                }
+                AdminCreateClientSheet(vm: vm) { notice = AdminNotice(text: $0, isError: !$1) }
             }
         }
         .alert(
-            item: $confirmDeleteClient
-        ) { client in
-            Alert(
-                title: Text(String(format: L("admin.confirm.delete"), client.name)),
-                message: Text(L("admin.confirm.delete.hint")),
-                primaryButton: .destructive(Text(L("admin.action.delete"))) {
-                    run(L("admin.status.deleted")) { vm in
-                        try await vm.deleteClient(name: client.name)
-                        if selectedClientName == client.name { selectedClientName = nil }
-                    }
-                },
-                secondaryButton: .cancel(Text(L("general.cancel")))
-            )
+            pending.map { $0.title } ?? "",
+            isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+            presenting: pending
+        ) { action in
+            Button(action.buttonTitle, role: .destructive) { perform(action) }
+            Button(L("general.cancel"), role: .cancel) {}
+        } message: { action in
+            Text(isOwn(action.client)
+                 ? L("adm.confirm.self") + "\n\n" + action.message
+                 : action.message)
         }
-        // VM живёт per-profile: смена активного профиля = новый identity/PEM
-        // = новый mTLS-клиент. Пересобираем и перечитываем.
-        // Лёгкий автопул как у roster probe — раз в 30 с, только пока
-        // вкладка смонтирована и туннель в .connected: API живёт на
-        // 10.7.0.1 за туннелем, без него — таймауты, а TOFU мог бы
-        // закрепить чужой хост из LAN.
+        .task(id: notice) {
+            guard notice != nil else { return }
+            try? await Task.sleep(for: .seconds(4))
+            notice = nil
+        }
+        // VM живёт per-profile: смена активного профиля = новый mTLS-клиент.
+        // Опрос раз в 30 с, только пока вкладка открыта и туннель в
+        // .connected: API на 10.7.0.1 за туннелем, без него — таймауты, а
+        // TOFU мог бы закрепить чужой хост из LAN.
         .task(id: "\(profiles.activeId ?? "")|\(adminReachable)") {
             rebuildViewModel()
             while adminReachable, !Task.isCancelled {
                 await vm?.refresh()
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                try? await Task.sleep(for: .seconds(30))
             }
-        }
-        .onDisappear {
-            bannerTtlTask?.cancel()
         }
     }
 
-    // MARK: - VM lifecycle
+    // MARK: - Content
+
+    @ViewBuilder
+    private var content: some View {
+        if let vm {
+            if vm.mtlsUnavailable {
+                placeholder(L("adm.unavailable.title"), L("adm.unavailable.text"))
+            } else if !adminReachable {
+                placeholder(L("adm.offline.title"), L("adm.offline.text"))
+            } else if vm.clients.isEmpty, let error = vm.error {
+                placeholder(L("adm.error.title"), error, retry: true)
+            } else if vm.clients.isEmpty {
+                if vm.loading { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
+                else { placeholder(L("adm.empty"), nil) }
+            } else {
+                table(vm)
+                if let notice {
+                    Text(notice.text)
+                        .gsType(.caption)
+                        .foregroundStyle(notice.isError ? C.danger : C.textDim)
+                        .padding(.horizontal, GsSpace.s)
+                }
+            }
+        } else {
+            placeholder(L("adm.no_profile"), nil)
+        }
+    }
+
+    private func placeholder(_ title: String, _ text: String?, retry: Bool = false) -> some View {
+        VStack(spacing: GsSpace.m) {
+            Text(title)
+                .gsType(.title)
+                .foregroundStyle(C.bone)
+            if let text {
+                Text(text)
+                    .gsType(.body)
+                    .foregroundStyle(C.textDim)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+            }
+            if retry {
+                Button(L("action.retry")) { Task { await vm?.refresh() } }
+                    .controlSize(.large)
+                    .gsGlassButton()
+                    .padding(.top, GsSpace.s)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func table(_ vm: AdminViewModel) -> some View {
+        let rows = rows(vm)
+        return Table(rows, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn(L("adm.col.client"), value: \.name) { row in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(row.title).lineLimit(1)
+                    Text(row.ip)
+                        .font(.custom(GsFontName.jetBrainsMono, size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, GsSpace.xs)
+            }
+            .width(min: 120, ideal: 150)
+
+            TableColumn(L("adm.col.status"), value: \.statusSort) { row in
+                AdminClientStatus(client: row.client)
+            }
+            .width(min: 150, ideal: 190)
+
+            TableColumn(L("adm.col.access"), value: \.accessSort) { row in
+                let access = AdminFormat.access(row.client.expiresAt)
+                Text(access.text)
+                    .monospacedDigit()
+                    .foregroundStyle(access.dim ? .secondary : .primary)
+            }
+            .width(min: 80, ideal: 96)
+
+            TableColumn(L("adm.col.traffic"), value: \.traffic) { row in
+                Text(AdminFormat.bytes(row.traffic)).monospacedDigit()
+            }
+            .width(min: 60, ideal: 76)
+        }
+        .gsType(.body)
+        .tableStyle(.inset)
+        .alternatingRowBackgrounds(.disabled)
+        .scrollContentBackground(.hidden)
+        .background(C.bgElev, in: RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: GsRadius.group, style: .continuous).stroke(C.hair, lineWidth: 1))
+        .frame(maxHeight: GsTable.height(rows: rows.count, rowHeight: GsTable.twoLineRow))
+        .contextMenu(forSelectionType: String.self) { names in
+            if let client = names.first.flatMap(client(named:)) {
+                AdminActionsMenu(client: client) { handle($0, client) }
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    /// Разрушительное — через подтверждение, остальное — сразу.
+    private func handle(_ request: AdminRequest, _ client: AdminClient) {
+        switch request {
+        case .disable:      pending = PendingAction(kind: .disable, client: client)
+        case .revokeAdmin:  pending = PendingAction(kind: .revoke, client: client)
+        case .delete:       pending = PendingAction(kind: .delete, client: client)
+        case .enable:
+            run(L("admin.status.enabled")) { try await $0.setEnabled(name: client.name, enabled: true) }
+        case .makeAdmin:
+            run(L("admin.status.admin_toggled")) { try await $0.setAdmin(name: client.name, isAdmin: true) }
+        case .extend30:
+            run(L("admin.status.extended")) {
+                try await $0.manageSubscription(name: client.name, action: "extend", days: 30)
+            }
+        case .copyLink:
+            Task {
+                do {
+                    let link = try await vm?.getConnString(name: client.name) ?? ""
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(link, forType: .string)
+                    notice = AdminNotice(text: L("adm.copied"))
+                } catch {
+                    notice = AdminNotice(text: error.localizedDescription, isError: true)
+                }
+            }
+        }
+    }
+
+    private func perform(_ action: PendingAction) {
+        let name = action.client.name
+        switch action.kind {
+        case .disable:
+            run(L("admin.status.disabled")) { try await $0.setEnabled(name: name, enabled: false) }
+        case .revoke:
+            run(L("admin.status.admin_toggled")) { try await $0.setAdmin(name: name, isAdmin: false) }
+        case .delete:
+            if selection == name { selection = nil }
+            run(L("admin.status.deleted")) { try await $0.deleteClient(name: name) }
+        }
+    }
+
+    private func run(_ success: String, _ op: @escaping (AdminViewModel) async throws -> Void) {
+        guard let vm else { return }
+        Task {
+            do {
+                try await op(vm)
+                notice = AdminNotice(text: success)
+            } catch {
+                notice = AdminNotice(text: error.localizedDescription, isError: true)
+            }
+        }
+    }
+
+    // MARK: - Model
 
     private var adminReachable: Bool { stateMgr.statusFrame.state == .connected }
+
+    private var selectedClient: AdminClient? { selection.flatMap(client(named:)) }
+
+    private func client(named name: String) -> AdminClient? {
+        vm?.clients.first { $0.name == name }
+    }
+
+    private func isOwn(_ client: AdminClient) -> Bool {
+        guard let ownFingerprint else { return false }
+        return client.fingerprint.lowercased().filter { $0 != ":" } == ownFingerprint
+    }
+
+    private func rows(_ vm: AdminViewModel) -> [ClientRow] {
+        vm.clients
+            .map { ClientRow(client: $0, isOwn: isOwn($0)) }
+            .sorted(using: sortOrder)
+    }
 
     private func rebuildViewModel() {
         guard let profile = profiles.activeProfile else {
@@ -119,666 +280,243 @@ public struct AdminConsoleView: View {
             return
         }
         if vmProfileId == profile.id, vm != nil { return }
-        vm = AdminViewModel(profile: profile, profilesStore: profiles)
+        let model = AdminViewModel(profile: profile, profilesStore: profiles)
+        vm = model
         vmProfileId = profile.id
-        selectedClientName = nil
-    }
-
-    // MARK: - 1. detail-head
-
-    @ViewBuilder
-    private var detailHead: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(L("admin.head.meta")) · \(vm?.clients.count ?? 0)")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.20 * 11)
-                    .foregroundStyle(C.textFaint)
-                HStack(spacing: 0) {
-                    Text("admin")
-                        .font(.custom("InstrumentSerif-Italic", size: 38))
-                        .foregroundStyle(C.signal)
-                    Text(".")
-                        .font(.custom("SpaceGrotesk-Bold", size: 38))
-                        .foregroundStyle(C.textDim)
-                }
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 6) {
-                HStack(spacing: 6) {
-                    PulseDot(
-                        color: vm?.mtlsUnavailable == false ? C.signal : C.textDim,
-                        size: 8,
-                        pulse: false
-                    )
-                    Text(headStatusText)
-                        .font(.custom("DepartureMono-Regular", size: 10.5))
-                        .tracking(0.16 * 10.5)
-                        .foregroundStyle(C.textDim)
-                }
-                refreshButton
-            }
+        ownFingerprint = Self.certFingerprint(profile.certPem)
+        selection = nil
+        #if DEBUG
+        if DebugDemo.isActive {
+            model._previewApply(status: nil, clients: AdminDemo.clients, error: nil, mtls: false)
+            ownFingerprint = AdminDemo.ownFingerprint
+            selection = AdminDemo.selected
         }
-        .padding(.bottom, 14)
-        .overlay(alignment: .bottom) {
-            DashedHairline()
-        }
+        #endif
     }
 
-    private var headStatusText: String {
-        guard let vm else { return L("admin.head.no_profile") }
-        if vm.mtlsUnavailable { return L("admin.head.mtls_off") }
-        let host = AdminGateway.host(forTunAddr: vm.profile.tunAddr)
-        let pin = vm.profile.cachedAdminServerCertFp == nil ? "TOFU" : "PIN OK"
-        return "MTLS · \(host):8080 · \(pin)"
+    /// SHA-256 DER первого сертификата PEM, hex — формат `fingerprint`
+    /// сервера (`vpn_session::cert_fingerprint`).
+    static func certFingerprint(_ pem: String?) -> String? {
+        guard let body = pem?
+            .components(separatedBy: "-----BEGIN CERTIFICATE-----").dropFirst().first?
+            .components(separatedBy: "-----END CERTIFICATE-----").first,
+            let der = Data(base64Encoded: body.filter { !$0.isWhitespace })
+        else { return nil }
+        return SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
     }
+}
 
-    @ViewBuilder
-    private var refreshButton: some View {
-        Button {
-            Task { await vm?.refresh() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: vm?.loading == true ? "hourglass" : "arrow.clockwise")
-                    .font(.system(size: 10))
-                Text(L("admin.refresh"))
-                    .font(.custom("DepartureMono-Regular", size: 10))
-                    .tracking(0.14 * 10)
-            }
-            .foregroundStyle(C.textDim)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .gsStroke(C.hairBold, GsRadius.control)
-            .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(vm == nil || vm?.loading == true)
-        .keyboardShortcut("r", modifiers: .command)
-    }
+// MARK: - Rows and actions
 
-    // MARK: - Banners
+private struct ClientRow: Identifiable {
+    let client: AdminClient
+    let isOwn: Bool
 
-    @ViewBuilder
-    private func mtlsBanner(_ detail: String?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(L("admin.mtls.unavailable"))
-                .font(.custom("SpaceGrotesk-Bold", size: 14))
-                .foregroundStyle(C.danger)
-            Text(detail ?? L("admin.mtls.hint"))
-                .font(.custom("JetBrainsMono-Regular", size: 11))
-                .foregroundStyle(C.textDim)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
-        .gsStroke(C.danger.opacity(0.35), GsRadius.card)
-    }
+    var id: String { client.name }
+    var name: String { client.name }
+    var ip: String { String(client.tunAddr.split(separator: "/").first ?? "") }
+    var traffic: Int64 { client.bytesRx + client.bytesTx }
+    var accessSort: Int64 { client.expiresAt ?? .max }
+    var statusSort: Int { AdminClientState(client).rawValue }
 
-    @ViewBuilder
-    private func errorBanner(_ message: String) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L("admin.error"))
-                    .font(.custom("SpaceGrotesk-Bold", size: 13))
-                    .foregroundStyle(C.danger)
-                Text(message)
-                    .font(.custom("JetBrainsMono-Regular", size: 10.5))
-                    .foregroundStyle(C.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button {
-                Task { await vm?.refresh() }
-            } label: {
-                Text(L("admin.retry"))
-                    .font(.custom("DepartureMono-Regular", size: 10))
-                    .tracking(0.14 * 10)
-                    .foregroundStyle(C.signal)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .gsStroke(C.signal, GsRadius.control)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
-        .gsStroke(C.danger.opacity(0.35), GsRadius.card)
-    }
+    @MainActor var title: String { isOwn ? String(format: L("adm.you"), client.name) : client.name }
+}
 
-    @ViewBuilder
-    private var noProfileState: some View {
-        VStack(alignment: .center, spacing: 14) {
-            Image(systemName: "person.2.badge.gearshape")
-                .font(.system(size: 36))
-                .foregroundStyle(C.textFaint)
-            Text(L("admin.head.no_profile"))
-                .font(.custom("JetBrainsMono-Regular", size: 12))
-                .foregroundStyle(C.textDim)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
-        .gsStroke(C.hair, GsRadius.card)
-    }
+private struct AdminNotice: Equatable {
+    let text: String
+    var isError = false
+}
 
-    // MARK: - 2. stats strip
+/// Действие над клиентом из меню строки или инспектора.
+enum AdminRequest {
+    case extend30, copyLink, enable, disable, makeAdmin, revokeAdmin, delete
+}
 
-    @ViewBuilder
-    private func statsStrip(_ vm: AdminViewModel) -> some View {
-        HStack(spacing: 10) {
-            statCell(
-                label: L("admin.uptime"),
-                value: vm.status.map { AdminConsoleFormat.duration($0.uptimeSecs) } ?? "—"
-            )
-            statCell(
-                label: L("admin.sessions"),
-                value: vm.status.map { "\($0.activeSessions)" } ?? "—",
-                signal: (vm.status?.activeSessions ?? 0) > 0
-            )
-            statCell(
-                label: L("admin.egress"),
-                value: AdminConsoleFormat.bytes(
-                    vm.clients.reduce(Int64(0)) { $0 + $1.bytesRx + $1.bytesTx }
-                )
-            )
-            statCell(
-                label: L("admin.exit_ip"),
-                value: vm.status?.exitIp ?? vm.status?.serverIp ?? "—",
-                mono: true
-            )
+private struct PendingAction {
+    enum Kind { case disable, revoke, delete }
+    let kind: Kind
+    let client: AdminClient
+
+    @MainActor var title: String {
+        switch kind {
+        case .disable: return String(format: L("adm.confirm.disable"), client.name)
+        case .revoke:  return String(format: L("adm.confirm.revoke"), client.name)
+        case .delete:  return String(format: L("adm.confirm.delete"), client.name)
         }
     }
 
-    private func statCell(
-        label: String,
-        value: String,
-        signal: Bool = false,
-        mono: Bool = false
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.14 * 9.5)
-                .foregroundStyle(C.textFaint)
-            Text(value)
-                .font(mono
-                      ? .custom("JetBrainsMono-Regular", size: 14)
-                      : .custom("SpaceGrotesk-Bold", size: 19))
-                .foregroundStyle(signal ? C.signal : C.bone)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+    @MainActor var message: String {
+        switch kind {
+        case .disable: return L("adm.confirm.disable.text")
+        case .revoke:  return L("adm.confirm.revoke.text")
+        case .delete:  return L("adm.confirm.delete.text")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev))
-        .gsStroke(C.hair, GsRadius.card)
     }
 
-    // MARK: - 3. columns
-
-    @ViewBuilder
-    private func contentColumns(_ vm: AdminViewModel) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            clientsTable(vm)
-            if let client = selectedClient(vm) {
-                AdminClientDetailPanel(
-                    vm: vm,
-                    client: client,
-                    onStatus: { message, ok in
-                        setBanner(message, kind: ok ? .success : .error)
-                    },
-                    onDelete: { confirmDeleteClient = client }
-                )
-                .frame(width: 320)
-            }
+    @MainActor var buttonTitle: String {
+        switch kind {
+        case .disable: return L("adm.do.disable")
+        case .revoke:  return L("adm.do.revoke")
+        case .delete:  return L("adm.do.delete")
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+}
 
-    private func selectedClient(_ vm: AdminViewModel) -> AdminClient? {
-        guard let name = selectedClientName else { return nil }
-        return vm.clients.first { $0.name == name }
-    }
+/// Пункты меню строки (контекстное меню таблицы).
+struct AdminActionsMenu: View {
+    let client: AdminClient
+    let onRequest: (AdminRequest) -> Void
 
-    @ViewBuilder
-    private func clientsTable(_ vm: AdminViewModel) -> some View {
-        if vm.clients.isEmpty && !vm.loading {
-            VStack(alignment: .center, spacing: 14) {
-                Image(systemName: "person.slash")
-                    .font(.system(size: 30))
-                    .foregroundStyle(C.textFaint)
-                Text(L("admin.no.clients"))
-                    .font(.custom("JetBrainsMono-Regular", size: 12))
-                    .foregroundStyle(C.textDim)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 60)
-            .background(RoundedRectangle(cornerRadius: GsRadius.card, style: .continuous).fill(C.bgElev2))
-            .gsStroke(C.hair, GsRadius.card)
+    var body: some View {
+        Button(L("adm.extend30")) { onRequest(.extend30) }
+        Button(L("adm.copy_link")) { onRequest(.copyLink) }
+        Divider()
+        if client.enabled {
+            Button(L("adm.disable")) { onRequest(.disable) }
         } else {
-            // Кастомный список вместо native Table: единый скруглённый
-            // контейнер + hairline-строки, без пустых filler-«пилюль» и с
-            // адаптивной колонкой клиента. Паритет с мокапом (§5).
-            ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    Section {
-                        let rs = rows(vm)
-                        ForEach(Array(rs.enumerated()), id: \.element.id) { idx, row in
-                            adminRow(vm, row)
-                            if idx < rs.count - 1 {
-                                Rectangle().fill(C.hair).frame(height: 1)
-                            }
-                        }
-                    } header: {
-                        VStack(spacing: 0) {
-                            adminHeader
-                            Rectangle().fill(C.hair).frame(height: 1)
-                        }
-                        .background(C.bgElev)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
-            .gsClip(GsRadius.card)
+            Button(L("adm.enable")) { onRequest(.enable) }
         }
-    }
-
-    private enum ACol {
-        static let tun: CGFloat = 100
-        static let status: CGFloat = 96
-        static let traffic: CGFloat = 150
-        static let sub: CGFloat = 96
-        static let menu: CGFloat = 34
-    }
-
-    private var adminHeader: some View {
-        HStack(spacing: 10) {
-            adminSortHeader(L("admin.col.client"), key: \.name)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            adminHeaderLabel("tun").frame(width: ACol.tun, alignment: .leading)
-            adminSortHeader(L("admin.col.status"), key: \.statusSort)
-                .frame(width: ACol.status, alignment: .leading)
-            adminHeaderLabel("rx / tx").frame(width: ACol.traffic, alignment: .leading)
-            adminSortHeader(L("admin.col.subscription"), key: \.subscriptionSort)
-                .frame(width: ACol.sub, alignment: .leading)
-            Color.clear.frame(width: ACol.menu)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-    }
-
-    private func adminHeaderLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.custom("DepartureMono-Regular", size: 9))
-            .tracking(0.14 * 9)
-            .foregroundStyle(C.textFaint)
-    }
-
-    private func adminSortHeader<V: Comparable>(_ title: String, key: KeyPath<AdminClientRow, V>) -> some View {
-        Button {
-            if let cur = sortOrder.first, cur.keyPath == key {
-                sortOrder = [KeyPathComparator(key, order: cur.order == .forward ? .reverse : .forward)]
-            } else {
-                sortOrder = [KeyPathComparator(key, order: .forward)]
-            }
-        } label: {
-            HStack(spacing: 4) {
-                adminHeaderLabel(title)
-                if let cur = sortOrder.first, cur.keyPath == key {
-                    Image(systemName: cur.order == .forward ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 7))
-                        .foregroundStyle(C.textDim)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func adminRow(_ vm: AdminViewModel, _ row: AdminClientRow) -> some View {
-        HStack(spacing: 10) {
-            clientCell(row)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            selectableCell(row) {
-                Text(row.tunAddr)
-                    .font(.custom("JetBrainsMono-Regular", size: 11))
-                    .foregroundStyle(C.textDim)
-                    .lineLimit(1)
-            }
-            .frame(width: ACol.tun, alignment: .leading)
-            selectableCell(row) {
-                AdminStatusChip(chip: row.chip)
-            }
-            .frame(width: ACol.status, alignment: .leading)
-            selectableCell(row) {
-                Text("\(AdminConsoleFormat.bytes(row.bytesRx)) / \(AdminConsoleFormat.bytes(row.bytesTx))")
-                    .font(.custom("JetBrainsMono-Regular", size: 10.5))
-                    .foregroundStyle(C.textDim)
-                    .lineLimit(1)
-            }
-            .frame(width: ACol.traffic, alignment: .leading)
-            selectableCell(row) {
-                Text(AdminConsoleFormat.subscriptionShort(row.expiresAt))
-                    .font(.custom("JetBrainsMono-Regular", size: 11))
-                    .foregroundStyle(AdminConsoleFormat.subscriptionColor(row.expiresAt, C: C))
-            }
-            .frame(width: ACol.sub, alignment: .leading)
-            rowMenu(vm, row)
-                .frame(width: ACol.menu)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(row.selected ? C.signal.opacity(0.05) : Color.clear)
-    }
-
-    @ViewBuilder
-    private func clientCell(_ row: AdminClientRow) -> some View {
-        selectableCell(row) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(row.name)
-                        .font(.custom("SpaceGrotesk-Bold", size: 13))
-                        .foregroundStyle(C.bone)
-                    if row.isAdmin {
-                        Text("ADMIN")
-                            .font(.custom("DepartureMono-Regular", size: 8.5))
-                            .tracking(0.10 * 8.5)
-                            .foregroundStyle(C.signal)
-                    }
-                }
-                if row.selected {
-                    Text("● \(L("admin.selected"))")
-                        .font(.custom("DepartureMono-Regular", size: 9))
-                        .tracking(0.14 * 9)
-                        .foregroundStyle(C.signal)
-                }
-            }
-            .padding(.leading, row.selected ? 6 : 0)
-            .overlay(alignment: .leading) {
-                if row.selected {
-                    Rectangle().fill(C.signal).frame(width: 2)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func selectableCell<Content: View>(
-        _ row: AdminClientRow,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                selectedClientName = selectedClientName == row.name ? nil : row.name
-            }
-            .contextMenu {
-                if let vm { rowMenuCommands(vm, row) }
-            }
-    }
-
-    @ViewBuilder
-    private func rowMenu(_ vm: AdminViewModel, _ row: AdminClientRow) -> some View {
-        Menu {
-            rowMenuCommands(vm, row)
-        } label: {
-            Image(systemName: "ellipsis")
-                .foregroundStyle(C.textFaint)
-                .font(.system(size: 14))
-                .frame(width: 28, height: 24)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .buttonStyle(.plain)
-        .accessibilityLabel("Client actions")
-    }
-
-    @ViewBuilder
-    private func rowMenuCommands(_ vm: AdminViewModel, _ row: AdminClientRow) -> some View {
-        Button(row.enabled ? L("admin.action.disable") : L("admin.action.enable")) {
-            run(row.enabled ? L("admin.status.disabled") : L("admin.status.enabled")) { vm in
-                try await vm.setEnabled(name: row.name, enabled: !row.enabled)
-            }
-        }
-        Button(L("admin.action.extend30")) {
-            run(L("admin.status.extended")) { vm in
-                try await vm.manageSubscription(name: row.name, action: "extend", days: 30)
-            }
-        }
-        Button(L("admin.action.copy_ghs")) {
-            Task {
-                do {
-                    let ghs = try await vm.getConnString(name: row.name)
-                    copyToPasteboard(ghs)
-                    setBanner(L("admin.status.ghs_copied"), kind: .info)
-                } catch {
-                    setBanner(error.localizedDescription, kind: .error)
-                }
-            }
-        }
-        Button(row.isAdmin ? L("admin.action.revoke_admin") : L("admin.action.make_admin")) {
-            run(L("admin.status.admin_toggled")) { vm in
-                try await vm.setAdmin(name: row.name, isAdmin: !row.isAdmin)
-            }
+        if client.isAdmin {
+            Button(L("adm.revoke_admin")) { onRequest(.revokeAdmin) }
+        } else {
+            Button(L("adm.make_admin")) { onRequest(.makeAdmin) }
         }
         Divider()
-        Button(L("admin.action.delete"), role: .destructive) {
-            confirmDeleteClient = vm.clients.first { $0.name == row.name }
-        }
-    }
-
-    // MARK: - 4. footer
-
-    @ViewBuilder
-    private func footer(_ vm: AdminViewModel) -> some View {
-        HStack(spacing: 10) {
-            Button { showCreateSheet = true } label: {
-                HStack(spacing: 8) {
-                    Text(L("admin.new.client"))
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.18 * 11)
-                    Text("· ⌘N")
-                        .font(.custom("DepartureMono-Regular", size: 10))
-                        .foregroundStyle(C.signal.opacity(0.6))
-                }
-                .foregroundStyle(C.signal)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .gsStroke(C.signal, GsRadius.control)
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut("n", modifiers: .command)
-
-            Spacer()
-
-            Text(banner?.message ?? "\(vm.clients.count) \(L("admin.head.meta")) · \(vm.clients.filter(\.connected).count) LIVE")
-                .font(.custom("DepartureMono-Regular", size: 10.5))
-                .tracking(0.14 * 10.5)
-                .foregroundStyle(bannerColor)
-        }
-    }
-
-    private var bannerColor: Color {
-        guard let banner else { return C.textFaint }
-        switch banner.kind {
-        case .success: return C.signal
-        case .info:    return C.textDim
-        case .error:   return C.danger
-        }
-    }
-
-    private func setBanner(_ message: String, kind: AdminBannerState.Kind) {
-        banner = AdminBannerState(message: message, kind: kind)
-        bannerTtlTask?.cancel()
-        guard kind != .error else { return }
-        let captured = banner
-        bannerTtlTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            guard !Task.isCancelled else { return }
-            if banner == captured { banner = nil }
-        }
-    }
-
-    /// Runs a mutating VM action; on success shows `successMessage`,
-    /// on failure surfaces the error in the status line.
-    private func run(
-        _ successMessage: String,
-        _ action: @escaping (AdminViewModel) async throws -> Void
-    ) {
-        guard let vm else { return }
-        Task {
-            do {
-                try await action(vm)
-                setBanner(successMessage, kind: .success)
-            } catch {
-                setBanner(error.localizedDescription, kind: .error)
-            }
-        }
-    }
-
-    private func copyToPasteboard(_ value: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
-    }
-
-    // MARK: - Rows
-
-    private func rows(_ vm: AdminViewModel) -> [AdminClientRow] {
-        let unsorted = vm.clients.map { client in
-            AdminClientRow(client: client, selected: client.name == selectedClientName)
-        }
-        return unsorted.sorted(using: sortOrder)
+        Button(L("adm.delete"), role: .destructive) { onRequest(.delete) }
     }
 }
 
-// MARK: - Row model
+// MARK: - Status
 
-struct AdminClientRow: Identifiable {
-    let name: String
-    let tunAddr: String
-    let enabled: Bool
-    let connected: Bool
-    let isAdmin: Bool
-    let bytesRx: Int64
-    let bytesTx: Int64
-    let expiresAt: Int64?
-    let lastSeenSecs: Int64?
-    let selected: Bool
+/// Состояние клиента; порядок — порядок сортировки.
+enum AdminClientState: Int {
+    case online, offline, expired, disabled
 
-    var id: String { name }
-
-    init(client: AdminClient, selected: Bool) {
-        self.name = client.name
-        self.tunAddr = client.tunAddr
-        self.enabled = client.enabled
-        self.connected = client.connected
-        self.isAdmin = client.isAdmin
-        self.bytesRx = client.bytesRx
-        self.bytesTx = client.bytesTx
-        self.expiresAt = client.expiresAt
-        self.lastSeenSecs = client.lastSeenSecs
-        self.selected = selected
-    }
-
-    var chip: AdminClientChip {
-        if !enabled { return .off }
-        if let expiresAt, expiresAt <= Int64(Date().timeIntervalSince1970) { return .expired }
-        if connected { return .live }
-        return .idle(hours: (lastSeenSecs ?? 0) / 3_600)
-    }
-
-    var statusSort: Int {
-        switch chip {
-        case .live:    return 0
-        case .idle:    return 1
-        case .expired: return 2
-        case .off:     return 3
+    init(_ client: AdminClient) {
+        if !client.enabled {
+            self = .disabled
+        } else if let exp = client.expiresAt, exp <= Int64(Date().timeIntervalSince1970) {
+            self = .expired
+        } else {
+            self = client.connected ? .online : .offline
         }
     }
-
-    var trafficSort: Int64 { bytesRx + bytesTx }
-    var subscriptionSort: Int64 { expiresAt ?? Int64.max }
 }
 
-enum AdminClientChip: Equatable {
-    case live
-    case idle(hours: Int64)
-    case off
-    case expired
-}
+/// Точка + слово: «В сети», «Не в сети · 2 ч назад», «Отключён».
+struct AdminClientStatus: View {
+    let client: AdminClient
 
-struct AdminStatusChip: View {
-    let chip: AdminClientChip
     @Environment(\.gsColors) private var C
 
     var body: some View {
-        let (text, color): (String, Color) = {
-            switch chip {
-            case .live:             return (L("admin.tag.live"), C.signal)
-            case .idle(let hours):  return ("\(L("admin.tag.idle")) \(hours)h", C.textDim)
-            case .off:              return (L("admin.tag.off"), C.danger)
-            case .expired:          return (L("admin.tag.expired"), C.warn)
-            }
-        }()
-        Text(text)
-            .font(.custom("DepartureMono-Regular", size: 9))
-            .tracking(0.12 * 9)
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .gsStroke(color.opacity(0.35), GsRadius.chip)
+        let state = AdminClientState(client)
+        HStack(spacing: 7) {
+            Circle()
+                .fill(color(state))
+                .frame(width: 8, height: 8)
+            Text(text(state))
+                .lineLimit(1)
+        }
+    }
+
+    private func color(_ state: AdminClientState) -> Color {
+        switch state {
+        case .online:   return C.signal
+        case .offline:  return C.textFaint
+        case .expired:  return C.warn
+        case .disabled: return C.danger
+        }
+    }
+
+    private func text(_ state: AdminClientState) -> String {
+        switch state {
+        case .online:   return L("adm.online")
+        case .expired:  return L("adm.expired")
+        case .disabled: return L("adm.disabled")
+        case .offline:
+            guard let ago = AdminFormat.ago(client.lastSeenSecs) else { return L("adm.offline") }
+            return String(format: L("adm.offline.ago"), ago)
+        }
     }
 }
 
 // MARK: - Formatting
 
-enum AdminConsoleFormat {
+enum AdminFormat {
     static func bytes(_ n: Int64) -> String {
-        let fmt = ByteCountFormatter()
-        fmt.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
-        fmt.countStyle = .binary
-        return fmt.string(fromByteCount: n)
+        ByteCountFormatter.string(fromByteCount: n, countStyle: .file)
     }
 
-    static func duration(_ secs: Int64) -> String {
-        let s = max(0, secs)
-        let d = s / 86_400
-        let h = (s % 86_400) / 3_600
-        let m = (s % 3_600) / 60
-        if d > 0 { return "\(d)d \(h)h" }
-        if h > 0 { return "\(h)h \(m)m" }
-        if m > 0 { return "\(m)m" }
-        return "\(s)s"
+    /// «2 ч назад».
+    static func ago(_ secs: Int64?) -> String? {
+        guard let secs, secs > 0 else { return nil }
+        return Date(timeIntervalSinceNow: -TimeInterval(secs))
+            .formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
     }
 
     @MainActor
-    static func subscriptionShort(_ expiresAt: Int64?) -> String {
-        guard let exp = expiresAt else { return "∞" }
-        let delta = exp - Int64(Date().timeIntervalSince1970)
-        if delta <= 0 { return L("admin.tag.expired") }
-        let days = Int(delta / 86_400)
-        if days >= 2 { return "\(days)d" }
-        return "\(Int(delta / 3_600))h"
-    }
-
-    static func subscriptionColor(_ expiresAt: Int64?, C: GsColorSet) -> Color {
-        guard let exp = expiresAt else { return C.textDim }
-        let delta = exp - Int64(Date().timeIntervalSince1970)
-        if delta <= 0 { return C.danger }
-        if delta < 3 * 86_400 { return C.danger }
-        if delta < 7 * 86_400 { return C.warn }
-        return C.textDim
-    }
-
-    static func lastSeen(_ secs: Int64?) -> String {
-        guard let s = secs else { return "—" }
-        if s < 60 { return "\(s)s" }
-        if s < 3_600 { return "\(s / 60)m" }
-        if s < 86_400 { return "\(s / 3_600)h" }
-        return "\(s / 86_400)d"
+    static func access(_ expiresAt: Int64?) -> (text: String, dim: Bool) {
+        guard let expiresAt else { return (L("adm.forever"), true) }
+        let date = Date(timeIntervalSince1970: TimeInterval(expiresAt))
+        if date < .now {
+            return (String(format: L("adm.expired.on"),
+                           date.formatted(.dateTime.day(.twoDigits).month(.twoDigits))), true)
+        }
+        return (date.formatted(.dateTime.day(.twoDigits).month(.twoDigits).year()), false)
     }
 }
+
+// MARK: - Demo
+
+#if DEBUG
+/// Клиенты для `-gsDemo` (как в макете), только в памяти.
+enum AdminDemo {
+    static let ownFingerprint = "aa11"
+    static let selected = "Аня"
+
+    static var clients: [AdminClient] {
+        let now = Int64(Date().timeIntervalSince1970)
+        let rows: [[String: Any]] = [
+            client("Пётр", fp: ownFingerprint, ip: 12, online: true, rx: 40_100_000_000, tx: 4_800_000_000,
+                   expires: NSNull(), admin: true),
+            client("Мама", fp: "bb22", ip: 14, online: true, rx: 2_900_000_000, tx: 520_000_000,
+                   expires: now + 45 * 86_400),
+            client("Аня", fp: "cc33", ip: 17, online: false, rx: 11_400_000_000, tx: 1_900_000_000,
+                   expires: now + 33 * 86_400, lastSeen: 7_200),
+            client("Старый ноутбук", fp: "dd44", ip: 21, online: false, rx: 0, tx: 0,
+                   expires: now - 58 * 86_400, enabled: false, lastSeen: 5_000_000),
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: rows)
+        return try! JSONDecoder().decode([AdminClient].self, from: data)
+    }
+
+    static var stats: [ClientStat] {
+        let now = Int64(Date().timeIntervalSince1970)
+        var rx: Int64 = 0
+        let rows: [[String: Any]] = (0..<24).map { h in
+            rx += Int64(200_000_000 + 180_000_000 * sin(Double(h) / 3))
+            return ["ts": now - Int64(24 - h) * 3_600, "bytes_rx": rx, "bytes_tx": rx / 9]
+        }
+        return try! JSONDecoder().decode([ClientStat].self, from: JSONSerialization.data(withJSONObject: rows))
+    }
+
+    static var logs: [ClientLog] {
+        let now = Int64(Date().timeIntervalSince1970)
+        let rows: [[String: Any]] = [
+            ["ts": now - 9_000, "dst": "api.telegram.org", "port": 443, "proto": "tcp", "bytes": 4_200_000],
+            ["ts": now - 8_400, "dst": "rr3.googlevideo.com", "port": 443, "proto": "udp", "bytes": 310_000_000],
+            ["ts": now - 7_900, "dst": "instagram.com", "port": 443, "proto": "tcp", "bytes": 18_000_000],
+        ]
+        return try! JSONDecoder().decode([ClientLog].self, from: JSONSerialization.data(withJSONObject: rows))
+    }
+
+    private static func client(_ name: String, fp: String, ip: Int, online: Bool, rx: Int64, tx: Int64,
+                               expires: Any, admin: Bool = false, enabled: Bool = true,
+                               lastSeen: Int64 = 1) -> [String: Any] {
+        ["name": name, "fingerprint": fp, "tun_addr": "10.7.0.\(ip)/24", "enabled": enabled,
+         "connected": online, "bytes_rx": rx, "bytes_tx": tx, "created_at": "2026-03-14T10:00:00Z",
+         "last_seen_secs": lastSeen, "expires_at": expires, "is_admin": admin]
+    }
+}
+#endif

@@ -2,16 +2,8 @@
 //  CommandPalette.swift
 //  GhostStream (macOS)
 //
-//  Pixel-matched to section 07 of the design HTML.
-//
-//   • Floating 600×420 panel, hairBold 1pt border, semi-transparent bg.
-//   • Header row 18×22pt: signal magnifier glyph + mono 18pt input
-//     + esc-pill on the right.
-//   • Section dividers (mono 9.5pt 0.18em faint) between groups.
-//   • Rows 14×10pt with [icon 16pt][title body 13.5pt][meta tag mono
-//     10pt faint][kbd hint]. Active row: signal text + signal.opacity(0.06)
-//     bg.
-//   • Footer 22×10pt mono 9.5pt: ↑↓ navigate · ↵ execute · selected/total.
+//  Палитра команд (⇧⌘C): профили, действия, переход по разделам. Всё
+//  по-русски через L(), поиск — по тем же русским названиям.
 //
 
 import AppKit
@@ -101,20 +93,14 @@ public struct CommandPalette: View {
                 .font(.system(size: 16, weight: .regular))
             TextField(L("command_palette.placeholder"), text: $query)
                 .textFieldStyle(.plain)
-                .font(.custom("JetBrainsMono-Regular", size: 18))
+                .font(.system(size: 18))
                 .foregroundStyle(C.bone)
                 .focused($fieldFocused)
                 .onSubmit {
                     statusMessage = nil
                     runSelected()
                 }
-            Text("ESC")
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.14 * 9.5)
-                .foregroundStyle(C.textFaint)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.chip, style: .continuous).stroke(C.hair, lineWidth: 1))
+            KeyboardShortcutHint("esc")
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 18)
@@ -133,7 +119,7 @@ public struct CommandPalette: View {
                 .foregroundStyle(color)
                 .frame(width: 16, height: 16)
             Text(message.text)
-                .font(.custom("JetBrainsMono-Regular", size: 12))
+                .gsType(.caption)
                 .foregroundStyle(isError ? C.bone : C.textDim)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -149,7 +135,8 @@ public struct CommandPalette: View {
     @ViewBuilder
     private var resultList: some View {
         ScrollView {
-            LazyVStack(spacing: 0) {
+            // ~15 строк — ленивый стек не нужен (и в нём строки мигали пустыми).
+            VStack(spacing: 0) {
                 let groups = filteredGroups
                 // UI-H7: precompute the running flat-index offsets so
                 // each row knows its position in the linearised list
@@ -168,7 +155,7 @@ public struct CommandPalette: View {
                 }()
                 if groups.isEmpty {
                     Text(L("palette.no_matches"))
-                        .font(.custom("JetBrainsMono-Regular", size: 13))
+                        .gsType(.body)
                         .foregroundStyle(C.textFaint)
                         .padding(.vertical, 30)
                         .frame(maxWidth: .infinity)
@@ -188,10 +175,10 @@ public struct CommandPalette: View {
     @ViewBuilder
     private func sectionLabel(_ name: String) -> some View {
         HStack {
-            Text(name.lowercased())
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.18 * 9.5)
-                .foregroundStyle(C.textFaint)
+            Text(name)
+                .gsType(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(C.textDim)
             Spacer()
         }
         .padding(.horizontal, 22)
@@ -212,21 +199,17 @@ public struct CommandPalette: View {
 
                 HStack(spacing: 8) {
                     Text(item.title)
-                        .font(.custom("JetBrainsMono-Regular", size: 13.5))
+                        .gsType(.body)
                         .foregroundStyle(active ? C.signal : C.bone)
                     if let subtitle = item.subtitle {
                         Text(subtitle)
-                            .font(.custom("JetBrainsMono-Regular", size: 12))
-                            .foregroundStyle(C.textFaint)
+                            .gsType(.caption)
+                            .foregroundStyle(C.textDim)
                     }
                 }
+                .lineLimit(1)
 
                 Spacer()
-
-                Text(item.section.lowercased())
-                    .font(.custom("DepartureMono-Regular", size: 10))
-                    .tracking(0.14 * 10)
-                    .foregroundStyle(C.textFaint)
 
                 if let kbd = item.kbd {
                     KeyboardShortcutHint(kbd)
@@ -250,13 +233,13 @@ public struct CommandPalette: View {
     @ViewBuilder
     private var footerHint: some View {
         HStack(spacing: 18) {
-            footerItem(kbd: "↑↓", text: "navigate")
-            footerItem(kbd: "↵",  text: "execute")
+            footerItem(kbd: "↑↓", text: L("palette.navigate"))
+            footerItem(kbd: "↵",  text: L("palette.run"))
             Spacer()
-            Text("\(selectedCounter) · \(profiles.profiles.count) profiles")
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.16 * 9.5)
-                .foregroundStyle(C.textFaint)
+            Text(selectedCounter)
+                .gsType(.caption)
+                .monospacedDigit()
+                .foregroundStyle(C.textDim)
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 10)
@@ -268,9 +251,8 @@ public struct CommandPalette: View {
         HStack(spacing: 6) {
             KeyboardShortcutHint(kbd)
             Text(text)
-                .font(.custom("DepartureMono-Regular", size: 9.5))
-                .tracking(0.16 * 9.5)
-                .foregroundStyle(C.textFaint)
+                .gsType(.caption)
+                .foregroundStyle(C.textDim)
         }
     }
 
@@ -308,16 +290,21 @@ public struct CommandPalette: View {
 
     private var allGroups: [Group] {
         var groups: [Group] = []
+        let state = stateMgr.statusFrame.state
 
-        // 1. Profile rows
+        // 1. Профили. RTT — только у активного: он один и замерен.
+        let profilesSection = L("palette.section.profiles")
         let profileItems: [PaletteItem] = profiles.profiles.map { profile in
-            let rttSuffix = stateMgr.statusFrame.rttMs.map { " · \($0)ms" } ?? ""
+            let isActive = profile.id == profiles.activeProfile?.id
+            let rtt = isActive && state == .connected
+                ? stateMgr.statusFrame.rttMs.map { " · \($0) " + L("palette.ms") } ?? ""
+                : ""
             return PaletteItem(
                 id: "profile.\(profile.id)",
-                title: "Connect to \(profile.name)",
-                subtitle: profile.serverAddr + rttSuffix,
-                section: "PROFILES",
-                icon: "dot.radiowaves.left.and.right",
+                title: String(format: L("palette.connect_to"), profile.name),
+                subtitle: profile.effectiveServerAddr + rtt,
+                section: profilesSection,
+                icon: isActive ? "checkmark.circle" : "dot.radiowaves.left.and.right",
                 kbd: nil,
                 action: {
                     profiles.setActive(id: profile.id)
@@ -332,36 +319,37 @@ public struct CommandPalette: View {
             )
         }
         if !profileItems.isEmpty {
-            groups.append(Group(section: "PROFILES", items: profileItems))
+            groups.append(Group(section: profilesSection, items: profileItems))
         }
 
-        // 2. Actions
-        let isLive = stateMgr.statusFrame.state == .connected
+        // 2. Действия
+        let actionsSection = L("palette.section.actions")
+        let isUp = VpnTunnelController.isUp(state)
         var actionItems: [PaletteItem] = []
         actionItems.append(.init(
             id: "act.disconnect",
-            title: isLive ? "Disconnect" : "Connect",
-            subtitle: isLive ? "stop tunnel immediately" : "use the active profile",
-            section: "ACTIONS",
-            icon: isLive ? "power.circle.fill" : "power.circle",
+            title: L(isUp ? "action.disconnect" : "action.connect"),
+            subtitle: isUp ? L("palette.disconnect.sub") : profiles.activeProfile?.name,
+            section: actionsSection,
+            icon: "power",
             kbd: nil,
             action: {
-                if isLive {
+                if isUp {
                     tunnel.stop()
                     return .close
                 } else if let p = profiles.activeProfile {
                     return start(p)
                 } else {
-                    return openSetupWithError("No VPN profile selected. Opening setup to import one.")
+                    return openSetupWithError(L("palette.no_profile"))
                 }
             }
         ))
         actionItems.append(.init(
             id: "act.reconnect",
-            title: "Reconnect",
-            subtitle: "restart tunnel",
-            section: "ACTIONS",
-            icon: "arrow.clockwise.circle",
+            title: L("settings.reconnect"),
+            subtitle: L("palette.reconnect.sub"),
+            section: actionsSection,
+            icon: "arrow.clockwise",
             kbd: nil,
             action: {
                 return reconnectActive()
@@ -369,9 +357,9 @@ public struct CommandPalette: View {
         ))
         actionItems.append(.init(
             id: "act.theme",
-            title: "Toggle theme",
-            subtitle: "system → dark → light",
-            section: "ACTIONS",
+            title: L("palette.theme"),
+            subtitle: L("palette.theme.sub"),
+            section: actionsSection,
             icon: "circle.lefthalf.filled",
             kbd: nil,
             action: {
@@ -386,29 +374,34 @@ public struct CommandPalette: View {
         ))
         actionItems.append(.init(
             id: "act.updates",
-            title: "Check for updates",
-            subtitle: "unavailable: Sparkle not integrated",
-            section: "ACTIONS",
+            title: L("update.check_menu"),
+            subtitle: "GitHub",
+            section: actionsSection,
             icon: "arrow.down.circle",
             kbd: nil,
             action: {
-                // UI-AUDIT-07/2026: НЕ через tunnel.lastError — то поле
-                // рендерится красной inline-ошибкой под кнопкой CONNECT
-                // (дашборд и попап), будто упал коннект. Сообщаем в
-                // statusMessage самой палитры.
-                statusMessage = .init(
-                    text: "Check for updates is unavailable: Sparkle is not integrated",
-                    kind: .info
-                )
+                let updates = UpdateChecker.shared
+                if let release = updates.available {
+                    NSWorkspace.shared.open(release.url)
+                    return .close
+                }
+                Task {
+                    await updates.check()
+                    statusMessage = .init(
+                        text: updates.available.map { String(format: L("update.available"), $0.version) }
+                            ?? (updates.lastCheck == nil ? L("update.check_failed") : L("update.latest")),
+                        kind: .info
+                    )
+                }
                 return .stayOpen
             }
         ))
         actionItems.append(.init(
             id: "act.logs",
-            title: "Open detached logs",
-            subtitle: "logs window",
-            section: "ACTIONS",
-            icon: "rectangle.on.rectangle",
+            title: L("palette.logs"),
+            subtitle: nil,
+            section: actionsSection,
+            icon: "macwindow.on.rectangle",
             kbd: "⇧⌘L",
             action: {
                 router.openDetachedLogs()
@@ -418,9 +411,9 @@ public struct CommandPalette: View {
         ))
         actionItems.append(.init(
             id: "act.about",
-            title: "About GhostStream",
-            subtitle: "version and credits",
-            section: "ACTIONS",
+            title: L("menu.about"),
+            subtitle: nil,
+            section: actionsSection,
             icon: "info.circle",
             kbd: nil,
             action: {
@@ -430,9 +423,9 @@ public struct CommandPalette: View {
         ))
         actionItems.append(.init(
             id: "act.quit",
-            title: "Quit GhostStream",
-            subtitle: "close the app",
-            section: "ACTIONS",
+            title: L("palette.quit"),
+            subtitle: nil,
+            section: actionsSection,
             icon: "xmark.circle",
             kbd: "⌘Q",
             action: {
@@ -440,17 +433,17 @@ public struct CommandPalette: View {
                 return .close
             }
         ))
-        groups.append(Group(section: "ACTIONS", items: actionItems))
+        groups.append(Group(section: actionsSection, items: actionItems))
 
-        // 3. Navigation jumps — ADMIN появляется только для admin-профиля,
-        // как и в сайдбаре.
+        // 3. Переход по разделам — «Админ» только для админ-профиля, как в сайдбаре.
+        let navSection = L("palette.section.nav")
         let adminUnlocked = profiles.activeProfile?.cachedIsAdmin == true
         let navItems: [PaletteItem] = SidebarChannel.visible(adminUnlocked: adminUnlocked).map { channel in
             PaletteItem(
                 id: "nav.\(channel.rawValue)",
-                title: "Go to \(L(channel.localizedKey))",
+                title: String(format: L("palette.go_to"), L(channel.localizedKey)),
                 subtitle: nil,
-                section: "NAV",
+                section: navSection,
                 icon: channel.sfSymbol,
                 kbd: "⌘\(channel.hotkey)",
                 action: {
@@ -459,7 +452,7 @@ public struct CommandPalette: View {
                 }
             )
         }
-        groups.append(Group(section: "NAV", items: navItems))
+        groups.append(Group(section: navSection, items: navItems))
 
         return groups
     }
@@ -527,7 +520,7 @@ public struct CommandPalette: View {
             return openSetupWithError(preflightError)
         }
 
-        statusMessage = .init(text: "Connecting to \(profile.name)...", kind: .info)
+        statusMessage = .init(text: String(format: L("palette.connecting"), profile.name), kind: .info)
         Task {
             do {
                 try await tunnel.installAndStart(
@@ -547,14 +540,14 @@ public struct CommandPalette: View {
 
     private func reconnectActive() -> PaletteActionResult {
         guard let profile = profiles.activeProfile else {
-            return openSetupWithError("No VPN profile selected. Opening setup to import one.")
+            return openSetupWithError(L("palette.no_profile"))
         }
 
         if let preflightError = connectPreflightError() {
             return openSetupWithError(preflightError)
         }
 
-        statusMessage = .init(text: "Reconnecting to \(profile.name)...", kind: .info)
+        statusMessage = .init(text: String(format: L("palette.reconnecting"), profile.name), kind: .info)
         Task {
             // stop → дождаться .disconnected → start (ошибку старта
             // installAndStart кладёт в tunnel.lastError).
@@ -573,13 +566,9 @@ public struct CommandPalette: View {
         case .activated:
             return nil
         case .failed(let message):
-            return "System extension is not ready: \(message). Opening setup."
-        case .awaitingUserApproval:
-            return "System extension is waiting for approval. Opening setup."
-        case .requestPending:
-            return "System extension install is still pending. Opening setup."
-        case .notInstalled:
-            return "System extension is not installed yet. Opening setup."
+            return message
+        case .awaitingUserApproval, .requestPending, .notInstalled:
+            return L("palette.sysext_not_ready")
         }
     }
 

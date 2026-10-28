@@ -7,9 +7,12 @@
 //  the user must cross before they can connect.
 //
 //  Flow:
+//    moveToApplications — app runs outside /Applications: sys-ext can't
+//                       be activated from there, ask to move it first
 //    paste            → user pastes a ghs:// connection string
 //    installExt       → user authorises the system extension install
 //    awaitingApproval → live polling while user approves in System Settings
+//    reboot           → `willCompleteAfterReboot`: «Перезагрузите Mac»
 //    configureVpn     → app saves NETunnelProviderManager (Allow VPN dialog)
 //    ready            → terminal — wizard fades and Welcome window closes
 //
@@ -31,16 +34,32 @@ import os.log
 @Observable
 public final class OnboardingCoordinator {
 
-    public enum Step: Int, Comparable, CaseIterable {
-        case paste = 0
-        case installExt = 1
-        case awaitingApproval = 2
-        case configureVpn = 3
-        case ready = 4
+    public enum Step: CaseIterable {
+        case moveToApplications
+        case paste
+        case installExt
+        case awaitingApproval
+        case reboot
+        case configureVpn
+        case ready
 
-        public static func < (lhs: Step, rhs: Step) -> Bool {
-            lhs.rawValue < rhs.rawValue
+        /// «Шаг N из 4»; у экрана «Перенесите в Программы» номера нет.
+        public var number: Int? {
+            switch self {
+            case .moveToApplications: return nil
+            case .paste: return 1
+            case .installExt, .awaitingApproval, .reboot: return 2
+            case .configureVpn: return 3
+            case .ready: return 4
+            }
         }
+    }
+
+    /// Системное расширение активируется только у приложения из /Applications
+    /// (иначе OSSystemExtensionError.unsupportedParentBundleLocation). Из DMG
+    /// и Загрузок macOS ещё и транслоцирует бандл в случайную папку.
+    public static var isInApplications: Bool {
+        Bundle.main.bundleURL.path.hasPrefix("/Applications/")
     }
 
     public private(set) var step: Step = .paste
@@ -67,10 +86,25 @@ public final class OnboardingCoordinator {
 
     public init() {}
 
+    #if DEBUG
+    /// Снимки DebugDemo: мастер сразу на нужном шаге, без resync.
+    public init(previewStep: Step) {
+        step = previewStep
+    }
+    #endif
+
     /// Re-evaluate which step the user is on based on the current state of
     /// the world (profile imported? sys-ext activated? NEManager configured?).
     /// Called when the Welcome window opens.
     public func resync() async {
+        guard Self.isInApplications else {
+            transition(to: .moveToApplications)
+            return
+        }
+        if sysExt?.needsReboot == true {
+            transition(to: .reboot)
+            return
+        }
         if let profiles, profiles.activeProfile == nil {
             transition(to: .paste)
             return
@@ -126,6 +160,10 @@ public final class OnboardingCoordinator {
     /// System Settings. Either way we move to `awaitingApproval` and poll.
     public func kickOffInstall() {
         guard let sysExt else { return }
+        guard Self.isInApplications else {
+            transition(to: .moveToApplications)
+            return
+        }
         log.info("user approved install — submitting activation request")
         lastError = nil
         sysExt.activate()
@@ -147,7 +185,7 @@ public final class OnboardingCoordinator {
     public func configureVpn() async {
         guard let profiles, let tunnel,
               let profile = profiles.activeProfile else {
-            lastError = "Профиль исчез — вернитесь к шагу 1"
+            lastError = L("welcome.profile_missing")
             transition(to: .paste)
             return
         }
@@ -177,7 +215,7 @@ public final class OnboardingCoordinator {
                     return
                 }
                 self.awaitingVpnApproval = false
-                self.lastError = error.localizedDescription
+                self.lastError = ConnectErrorHumanizer.humanize(error.localizedDescription)
                 self.log.error("VPN configure failed: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -205,7 +243,7 @@ public final class OnboardingCoordinator {
         installTask = nil
         awaitingVpnApproval = false
         lastError = nil
-        if step != .ready {
+        if step != .ready && step != .moveToApplications && step != .reboot {
             step = .paste
         }
     }
@@ -231,7 +269,7 @@ public final class OnboardingCoordinator {
 
     private func transition(to next: Step) {
         guard step != next else { return }
-        log.info("step \(self.step.rawValue, privacy: .public) → \(next.rawValue, privacy: .public)")
+        log.info("step \(String(describing: self.step), privacy: .public) → \(String(describing: next), privacy: .public)")
         step = next
         if next != .awaitingApproval {
             stopPolling()
@@ -243,6 +281,10 @@ public final class OnboardingCoordinator {
         pollTask = Task { @MainActor [weak self] in
             while let self, !Task.isCancelled {
                 guard let sx = self.sysExt else { break }
+                if sx.needsReboot {
+                    self.transition(to: .reboot)
+                    return
+                }
                 switch sx.state {
                 case .activated:
                     self.log.info("polling detected .activated — advancing")

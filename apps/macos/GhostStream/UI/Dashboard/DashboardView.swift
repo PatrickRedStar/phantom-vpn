@@ -2,756 +2,525 @@
 //  DashboardView.swift
 //  GhostStream (macOS)
 //
-//  STREAM tab — pixel-matched to section 02 of the design HTML.
-//
-//  Vertical layout:
-//    1. detail-head: lblmono "tunnel state" + 54pt state hero (left) /
-//       pulse + "session" lbl + ticker 26pt timer (right).
-//    2. endpoint row: 4 KV labels (endpoint / sni / tun ip / disconnect
-//       ghost-fab on the right).
-//    3. card "scope · throughput": 240pt scope chart + window-pill.
-//    4. bottom row: 360pt mux card (left) + 4-cell KV grid (right).
+//  «Главная» (mockup.html, `data-pane="home"`): состояние словами, время
+//  сессии, проблема с причиной, скорость с графиком, срок доступа и
+//  карточка подключения; без профилей — «Добавьте профиль».
+//  Заголовок экрана, баннер обновления и кнопку «Подключить/Отключить»
+//  рисует каркас (MainConsoleWindow).
 //
 
+import AppKit
 import PhantomKit
 import PhantomUI
 import SwiftUI
-import os.log
-
-private let dashLog = Logger(subsystem: "com.ghoststream.client", category: "DashboardView")
 
 public struct DashboardView: View {
 
     @Environment(\.gsColors) private var C
-    @Environment(\.openWindow) private var openWindow
     @Environment(VpnStateManager.self) private var stateMgr
     @Environment(TrafficSeriesStore.self) private var traffic
     @Environment(ProfilesStore.self) private var profiles
-    @Environment(PreferencesStore.self) private var prefs
-    @Environment(SystemExtensionInstaller.self) private var sysExt
-    @Environment(DockPolicyController.self) private var dock
     @Environment(AppRouter.self) private var router
     @EnvironmentObject private var tunnel: VpnTunnelController
 
-    // A3: эффективный Reduce Motion = ручной тумблер OR системный флаг.
-    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private var reduceMotion: Bool { prefs.reduceMotion || systemReduceMotion }
+    /// Окно графика, секунд.
+    @State private var window = 60
+    @State private var pasteError: String?
 
-    @State private var scopeWindow: ScopeWindow = .m5
-    // UI-R2-R03/R04 / UI-R4-R06: track whether we transitioned through
-    // `.connected` since the last error so we can clear `lastError`
-    // only on a benign disconnect. The state lives in
-    // `VpnTunnelController.hadSuccessfulConnect` (Service layer) so it
-    // survives view churn — switching between the popover and the
-    // dashboard used to lose the flag, leaving stale errors visible
-    // after a clean session.
     public init() {}
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                detailHead
-                endpointRow
-                scopeCard
-                bottomRow
+            Group {
+                if profiles.profiles.isEmpty { emptyState } else { content }
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 22)
-            .padding(.bottom, 32)
+            .padding(.horizontal, GsSpace.xxl)
+            .padding(.top, GsSpace.l)
+            .padding(.bottom, GsSpace.xxl)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(C.bg)
         .task { traffic.start(stateManager: stateMgr) }
-        // UI-R2-R03/R04 (was UI-H3) / UI-R4-R06: clear the inline error
-        // chip only when the tunnel transitioned through a successful
-        // `.connected` state and is now `.disconnected`. Round 2 stored
-        // `wasConnected` per-view; we now route through
-        // `tunnel.observeStateForSuccessTracking(_:)` so the flag is
-        // shared between dashboard and menu-bar popover and doesn't
-        // reset when the user toggles between surfaces.
+        // Ошибка коннекта гасится только после удачной сессии — флаг общий
+        // с попапом (VpnTunnelController.hadSuccessfulConnect).
         .onChange(of: stateMgr.statusFrame.state) { _, newState in
             tunnel.observeStateForSuccessTracking(newState)
         }
     }
 
-    // MARK: - 1. detail-head
+    private var frame: StatusFrame { stateMgr.statusFrame }
+    private var state: ConnState { frame.state }
+    private var profile: VpnProfile? { profiles.activeProfile }
+    private var name: String { profile?.name ?? L("profile.none") }
+
+    // MARK: - Content
 
     @ViewBuilder
-    private var detailHead: some View {
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("TUNNEL STATE")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.20 * 11)
-                    .foregroundStyle(C.textFaint)
-                stateHero
-                // A5: строка reconnect-прогресса под hero-заголовком; при
-                // поднятом туннеле на её месте — проблема канала (как на Android).
-                if let progress = reconnectProgressText ?? healthWarningText {
-                    Text(progress)
-                        .font(.custom("DepartureMono-Regular", size: 11))
-                        .tracking(0.06 * 11)
-                        .foregroundStyle(C.warn)
+    private var content: some View {
+        let issue = DashIssue.current(frame: frame, tunnelError: tunnel.lastError, profileName: name)
+        VStack(alignment: .leading, spacing: GsSpace.l) {
+            hero
+                .padding(.bottom, 6)
+            if let issue { banner(issue) }
+            if state == .connected || state == .reconnecting {
+                HStack(alignment: .top, spacing: GsSpace.l) {
+                    speedCard
+                    VStack(spacing: GsSpace.l) {
+                        accessCard
+                        connectionCard
+                    }
+                    .frame(width: 300)
+                }
+                // Правая колонка тянется до высоты карточки скорости.
+                .fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack(alignment: .top, spacing: GsSpace.l) {
+                    if state != .error { accessCard.fixedSize() }
+                    connectionCard
                 }
             }
-            Spacer()
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
-                HStack(spacing: 6) {
-                    PulseDot(
-                        color: pulseColor,
-                        size: 8,
-                        pulse: !reduceMotion && (stateMgr.statusFrame.state == .connected
-                            || stateMgr.statusFrame.state == .connecting
-                            || stateMgr.statusFrame.state == .reconnecting)
-                    )
-                    Text("SESSION")
-                        .font(.custom("DepartureMono-Regular", size: 10.5))
-                        .tracking(0.16 * 10.5)
+        }
+    }
+
+    private var hero: some View {
+        HStack(alignment: .bottom, spacing: GsSpace.xl) {
+            StatusHeadline(state: state, subtitle: subtitle)
+            Spacer(minLength: 0)
+            if state == .connected || state == .reconnecting {
+                VStack(alignment: .trailing, spacing: 7) {
+                    Text(DashFormat.duration(frame.sessionSecs))
+                        .gsType(.metric)
+                        .foregroundStyle(C.bone)
+                    Text(L(state == .reconnecting ? "dash.session_continues" : "dash.session_time"))
+                        .gsType(.caption)
                         .foregroundStyle(C.textDim)
                 }
-                Text(timerText)
-                    .font(.custom("DepartureMono-Regular", size: 26))
-                    .tracking(0.04 * 26)
-                    .foregroundStyle(stateMgr.statusFrame.state == .connected ? C.bone : C.textFaint)
             }
         }
-        .padding(.bottom, 14)
-        .overlay(alignment: .bottom) {
-            DashedHairline()
+    }
+
+    private var subtitle: String {
+        switch state {
+        case .connecting:   return String(format: L("dash.sub.connecting"), name)
+        case .disconnected: return String(format: L("dash.sub.disconnected"), name)
+        default:            return name
         }
     }
 
-    @ViewBuilder
-    private var stateHero: some View {
-        let (verb, accent) = heroParts
-        HStack(spacing: 0) {
-            Text(verb)
-                .font(.custom("InstrumentSerif-Italic", size: 54))
-                .foregroundStyle(accent)
-            Text(".")
-                .font(.custom("SpaceGrotesk-Bold", size: 54))
-                .foregroundStyle(accent)
-        }
-        .lineLimit(1)
-    }
+    // MARK: - Banner (переподключение, ошибка, плохая связь)
 
-    private var heroParts: (String, Color) {
-        // A1: тот же локализованный state.*-словарь, lowercase (serif hero).
-        let verb = MenuBarPopover.stateWord(for: stateMgr.statusFrame.state).lowercased()
-        let accent: Color
-        switch stateMgr.statusFrame.state {
-        case .disconnected:               accent = C.textDim
-        case .connecting, .reconnecting:  accent = C.warn
-        case .connected:                  accent = C.signal
-        case .error:                      accent = C.danger
-        }
-        return (verb, accent)
-    }
-
-    /// A5: «попытка N · повтор через Ns» — только при .reconnecting и
-    /// когда рантайм отдал оба поля.
-    private var reconnectProgressText: String? {
-        guard stateMgr.statusFrame.state == .reconnecting,
-              let attempt = stateMgr.statusFrame.reconnectAttempt,
-              let delay = stateMgr.statusFrame.reconnectNextDelaySecs
-        else { return nil }
-        return String(format: L("state.reconnect_progress"),
-                      Int64(attempt), Int64(delay))
-    }
-
-    /// Туннель поднят, но ядро видит мёртвые стримы, тишину или зажим скорости.
-    private var healthWarningText: String? {
-        let frame = stateMgr.statusFrame
-        guard frame.state == .connected else { return nil }
-        switch frame.health {
-        case .dead?:
-            return L("state.health_dead")
-        case .degraded?:
-            // The core reports throttling as `degraded` too.
-            if frame.bandwidthClass == .throttled {
-                return L("state.health_throttled")
-            }
-            return String(format: L("state.health_degraded"),
-                          Int64(frame.streamsUp), Int64(frame.nStreams))
-        case .stale?:
-            return String(format: L("state.health_stale"), Int64(frame.idleRxSecs ?? 0))
-        default:
-            return nil
-        }
-    }
-
-    private var pulseColor: Color {
-        switch stateMgr.statusFrame.state {
-        case .connected:                  return C.signal
-        case .connecting, .reconnecting:  return C.warn
-        case .error:                      return C.danger
-        case .disconnected:               return C.textFaint
-        }
-    }
-
-    private var timerText: String {
-        let secs = stateMgr.statusFrame.sessionSecs
-        let h = secs / 3600
-        let m = (secs % 3600) / 60
-        let s = secs % 60
-        if stateMgr.statusFrame.state == .connected {
-            return String(format: "%02d:%02d:%02d", h, m, s)
-        }
-        return "—:—:—"
-    }
-
-    /// Активный профиль реально ходит через дополнительный хоп.
-    private var relayActive: Bool {
-        profiles.activeProfile?.relayActive ?? false
-    }
-
-    private var tunAddrText: String {
-        guard stateMgr.statusFrame.state == .connected else { return "—" }
-        guard let raw = stateMgr.statusFrame.tunAddr?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else {
-            return "—"
-        }
-
-        let cidrParts = raw.split(separator: "/", maxSplits: 1)
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        if cidrParts.count == 2, !cidrParts[0].isEmpty, !cidrParts[1].isEmpty {
-            return "\(cidrParts[0]) / \(cidrParts[1])"
-        }
-        return raw
-    }
-
-    // MARK: - 2. endpoint row
-
-    @ViewBuilder
-    private var endpointRow: some View {
-        // UI-R2-N20: during `connecting`/`reconnecting` the button now
-        // surfaces CANCEL instead of being disabled. The Round 1 UI-H1
-        // fix gated parallel `installAndStart` calls by disabling the
-        // button — but that left the user with no escape during the
-        // 75s TLS deadline on slow servers. CANCEL is a `tunnel.stop()`
-        // call, idempotent if a teardown is already in flight.
-        let state = stateMgr.statusFrame.state
-        let live = state == .connected
-        let busy = state == .connecting || state == .reconnecting
-        // MIG-R4-N01: phase A (UserDefaults) is sync — profiles appear
-        // in the picker as soon as the window opens — but phase B
-        // (Keychain cert/key re-import) runs on a detached task and
-        // takes ~5–30s. If the user taps CONNECT before phase B
-        // finishes, the tunnel starts with `certPem == nil` and mTLS
-        // fails silently. Gate the button (and route around it in
-        // `toggle()`) until the migration observable says we're done.
-        let migrating = LegacyMigration.state.isMigrating
-        let buttonTint: Color = busy ? C.warn
-            : (live ? C.danger
-            : (migrating ? C.textFaint : C.signal))
-        let buttonLabel: String = busy
-            ? L("fab.cancel")
-            : (live ? L("fab.disconnect")
-            : (migrating ? L("fab.importing") : L("fab.connect")))
-        HStack(alignment: .bottom, spacing: 24) {
-            kvLabel(label: relayActive ? "ROUTE · RELAY" : "ENDPOINT") {
-                if let host = relayActive
-                    ? profiles.activeProfile?.effectiveServerAddr
-                    : profiles.activeProfile?.serverAddr,
-                   !host.isEmpty {
-                    let parts = host.split(separator: ":", maxSplits: 1).map(String.init)
-                    HStack(spacing: 0) {
-                        Text(parts.first ?? host)
-                            .font(.custom("JetBrainsMono-Regular", size: 14))
-                            .foregroundStyle(C.signal)
-                        if parts.count > 1 {
-                            Text(":")
-                                .font(.custom("JetBrainsMono-Regular", size: 14))
-                                .foregroundStyle(C.bone)
-                            Text(parts[1])
-                                .font(.custom("JetBrainsMono-Regular", size: 14))
-                                .foregroundStyle(C.signal)
-                        }
-                    }
-                    // UI-H4: clamp the line + middle-truncate when
-                    // the endpoint is a long DNS name or IPv6 — it
-                    // used to push the CONNECT button off-screen.
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(host)
-                } else {
-                    Text("—")
-                        .font(.custom("JetBrainsMono-Regular", size: 14))
-                        .foregroundStyle(C.textFaint)
-                }
-            }
-
-            kvLabel(label: "SNI") {
-                Text(profiles.activeProfile?.serverName ?? "—")
-                    .font(.custom("JetBrainsMono-Regular", size: 14))
+    private func banner(_ issue: DashIssue) -> some View {
+        let tone = issue.danger ? C.danger : C.warn
+        let shape = RoundedRectangle(cornerRadius: GsRadius.panel, style: .continuous)
+        // В баннере переподключения — ещё и обещание, что сессия переживёт.
+        let text = state == .reconnecting
+            ? [issue.text, L("dash.reconnect.keep")].filter { !$0.isEmpty }.joined(separator: ". ")
+            : issue.text
+        return HStack(alignment: issue.danger ? .top : .center, spacing: 14) {
+            Image(systemName: issue.icon)
+                .font(.system(size: 22))
+                .foregroundStyle(tone)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(issue.title)
+                    .gsType(.headline)
                     .foregroundStyle(C.bone)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(profiles.activeProfile?.serverName ?? "")
-            }
-
-            kvLabel(label: "TUN IP") {
-                Text(tunAddrText)
-                    .font(.custom("JetBrainsMono-Regular", size: 14))
-                    .foregroundStyle(C.bone)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(tunAddrText)
-            }
-
-            Spacer()
-
-            // Connect / disconnect / cancel compact GhostFab
-            VStack(alignment: .trailing, spacing: 6) {
-                Button {
-                    dashLog.info("Connect button tapped — live=\(live, privacy: .public) busy=\(busy, privacy: .public) migrating=\(migrating, privacy: .public)")
-                    Task { await toggle() }
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(buttonLabel)
-                            .font(.custom("DepartureMono-Regular", size: 11))
-                            .tracking(0.20 * 11)
-                        if busy || (migrating && !live) {
-                            // Keep the spinner during busy AND during
-                            // migration so the user gets visual
-                            // confirmation that *something* is in
-                            // progress when CONNECT can't be tapped.
-                            ProgressView()
-                                .controlSize(.mini)
-                        } else {
-                            KeyboardShortcutHint("⌘K")
-                        }
-                    }
-                    .foregroundStyle(buttonTint)
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous)
-                            .stroke(buttonTint, lineWidth: 1)
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                // UI-AUDIT-07/2026: гейт по открытой палитре — раньше ⌘K
-                // мог стартануть/оборвать коннект ПОД оверлеем палитры.
-                .if(!router.commandPaletteOpen) { view in
-                    view.keyboardShortcut("k", modifiers: .command)
-                }
-                // UI-R2-N20: button never goes disabled — CANCEL is a
-                // valid action during busy states. The Round 1 race on
-                // parallel `installAndStart` is still prevented by the
-                // `live || busy → stop()` branch in `toggle()`.
-                // MIG-R4-N01: while migrating (phase B in flight) we
-                // disable the keyboard shortcut and surface a tooltip
-                // so users understand the delay; the `toggle()` method
-                // also short-circuits with an inline error if the user
-                // gets here anyway via accessibility.
-                .disabled(migrating && !live && !busy)
-                .help(migrating
-                    ? "Importing keychain items from previous version — please wait."
-                    : "")
-
-                if let err = inlineConnectError {
-                    Text(err)
-                        .font(.custom("JetBrainsMono-Regular", size: 11))
-                        .foregroundStyle(C.danger)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.trailing)
-                        .frame(maxWidth: 260, alignment: .trailing)
-                }
-            }
-        }
-    }
-
-    private var inlineConnectError: String? {
-        if let msg = tunnel.lastError, !msg.isEmpty { return msg }
-        // Фатальная причина от ядра (отзыв, сертификат, часы).
-        if stateMgr.statusFrame.state == .error,
-           let msg = stateMgr.statusFrame.lastError, !msg.isEmpty { return msg }
-        return nil
-    }
-
-    @ViewBuilder
-    private func kvLabel<V: View>(
-        label: String,
-        @ViewBuilder content: () -> V
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(.custom("DepartureMono-Regular", size: 10.5))
-                .tracking(0.18 * 10.5)
-                .foregroundStyle(C.textFaint)
-            content()
-        }
-    }
-
-    // MARK: - 3. scope card
-
-    @ViewBuilder
-    private var scopeCard: some View {
-        let series = traffic.series(capacity: scopeWindow.rawValue)
-        let chartRxSamples = isSamplingState ? series.rxSamples : []
-        let chartTxSamples = isSamplingState ? series.txSamples : []
-
-        VStack(spacing: 0) {
-            // card header
-            HStack {
-                Text("SCOPE · THROUGHPUT")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.18 * 11)
+                Text(text)
+                    .gsType(.body)
                     .foregroundStyle(C.textDim)
-                Spacer()
-                HStack(spacing: 8) {
-                    HStack(spacing: 4) {
-                        Circle().fill(C.signal).frame(width: 6, height: 6)
-                        Text("RX")
-                            .font(.custom("DepartureMono-Regular", size: 10.5))
-                            .tracking(0.12 * 10.5)
-                            .foregroundStyle(C.textDim)
-                    }
-                    HStack(spacing: 4) {
-                        Circle().fill(C.warn).frame(width: 6, height: 6)
-                        Text("TX")
-                            .font(.custom("DepartureMono-Regular", size: 10.5))
-                            .tracking(0.12 * 10.5)
-                            .foregroundStyle(C.textDim)
-                    }
-                    Text("WINDOW")
-                        .font(.custom("DepartureMono-Regular", size: 10))
-                        .tracking(0.12 * 10)
-                        .foregroundStyle(C.textFaint)
-                        .padding(.leading, 6)
-                    Menu {
-                        ForEach(ScopeWindow.allCases, id: \.self) { option in
-                            Button(option.label) {
-                                scopeWindow = option
-                            }
-                        }
-                    } label: {
-                        HStack(spacing: 2) {
-                            Text(scopeWindow.label)
-                                .font(.custom("DepartureMono-Regular", size: 10.5))
-                                .foregroundStyle(C.signal)
-                            Text("▾").foregroundStyle(C.signal).font(.system(size: 9))
-                        }
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-            .background(C.bgElev)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(C.hair).frame(height: 1)
-            }
-
-            // scope canvas
-            ZStack(alignment: .topLeading) {
-                ScopeChart(
-                    rxSamples: chartRxSamples,
-                    txSamples: chartTxSamples,
-                    height: 240,
-                    sampleCapacity: series.sampleCapacity
-                )
-                // tag row TL
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Circle().fill(C.signal).frame(width: 6, height: 6)
-                        Text("RX \(formatRate(displayRxRateBps))")
-                            .font(.custom("DepartureMono-Regular", size: 9.5))
-                            .tracking(0.16 * 9.5)
-                            .foregroundStyle(C.textFaint)
-                    }
-                    HStack(spacing: 6) {
-                        Circle().fill(C.warn).frame(width: 6, height: 6)
-                        Text("TX \(formatRate(displayTxRateBps))")
-                            .font(.custom("DepartureMono-Regular", size: 9.5))
-                            .tracking(0.16 * 9.5)
-                            .foregroundStyle(C.textFaint)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-
-                // Window pill TR
-                VStack {
-                    HStack {
-                        Spacer()
-                        Text(scopeWindow.label.uppercased())
-                            .font(.custom("DepartureMono-Regular", size: 9.5))
-                            .tracking(0.16 * 9.5)
+                    .fixedSize(horizontal: false, vertical: true)
+                if issue.danger {
+                    HStack(spacing: GsSpace.s) {
+                        if issue.canPaste { pasteButton(large: false) }
+                        Button(L("dash.open_logs")) { router.select(.tail) }
+                            .gsType(.body)
                             .foregroundStyle(C.bone)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(C.bg.opacity(0.75))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 3)
-                                    .stroke(C.hairBold, lineWidth: 1)
-                            )
+                            .gsGlassButton()
                     }
-                    Spacer()
+                    .padding(.top, 9)
+                    if let pasteError {
+                        Text(pasteError)
+                            .gsType(.caption)
+                            .foregroundStyle(C.danger)
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
             }
-            .frame(height: 240)
-            .background(C.bgElev2)
+            Spacer(minLength: 0)
         }
-        .gsClip(GsRadius.card)
-        .gsStroke(C.hairBold, GsRadius.card)
+        .padding(.vertical, GsSpace.l)
+        .padding(.horizontal, 18)
+        .background(shape.fill(C.bg).overlay(shape.fill(tone.opacity(0.10))))
+        .overlay(shape.stroke(tone.opacity(0.35), lineWidth: 1))
     }
 
-    // MARK: - 4. bottom row
+    // MARK: - Speed
 
-    @ViewBuilder
-    private var bottomRow: some View {
-        HStack(alignment: .top, spacing: 18) {
-            muxCard
-                .frame(width: 360)
-            kvGrid
-                .frame(maxWidth: .infinity)
-        }
-    }
-
-    @ViewBuilder
-    private var muxCard: some View {
-        VStack(spacing: 0) {
+    private var speedCard: some View {
+        let live = state == .connected
+        let series = traffic.series(capacity: window)
+        // При переподключении график остаётся, но замирает (см. ниже).
+        let rx = series.rxSamples
+        let tx = series.txSamples
+        // Тот же пик, к которому ScopeChart нормирует обе линии.
+        let peak = max(rx.max() ?? 0, tx.max() ?? 0)
+        return GsCard {
             HStack {
-                Text("MUX · STREAMS")
-                    .font(.custom("DepartureMono-Regular", size: 11))
-                    .tracking(0.18 * 11)
+                Text(L("dash.speed"))
+                    .gsType(.body)
+                    .fontWeight(.semibold)
                     .foregroundStyle(C.textDim)
                 Spacer()
-                HStack(spacing: 6) {
-                    PulseDot(
-                        color: pulseColor,
-                        size: 6,
-                        pulse: !reduceMotion && stateMgr.statusFrame.state == .connected
-                    )
-                    Text("\(stateMgr.statusFrame.streamsUp) ↑ \(stateMgr.statusFrame.nStreams)")
-                        .font(.custom("DepartureMono-Regular", size: 10.5))
-                        .tracking(0.12 * 10.5)
-                        .foregroundStyle(C.textFaint)
+                Picker("", selection: $window) {
+                    Text(L("dash.window.1m")).tag(60)
+                    Text(L("dash.window.5m")).tag(300)
+                    Text(L("dash.window.15m")).tag(900)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                .tint(C.signal)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-            .background(C.bgElev)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(C.hair).frame(height: 1)
-            }
-
-            // Per ADR 0007 the runtime is the only source of truth for
-            // `nStreams`. The UI follows whatever the runtime reports,
-            // clamped to [1, 16] so the widget never collapses.
-            let bars = TelemetryDisplayHelpers.barCountFromStreams(stateMgr.statusFrame.nStreams)
-            VStack(spacing: 10) {
-                MuxBars(
-                    active: stateMgr.statusFrame.state == .connected,
-                    barCount: bars,
-                    activityLevels: stateMgr.statusFrame.streamActivity,
-                    reduceMotion: reduceMotion,
-                    height: 84
-                )
-                HStack {
-                    ForEach(1...bars, id: \.self) { idx in
-                        Text(String(format: "S%02d", idx))
-                            .font(.custom("DepartureMono-Regular", size: 9.5))
-                            .tracking(0.18 * 9.5)
-                            .foregroundStyle(C.textFaint)
-                            .frame(maxWidth: .infinity)
+            Group {
+                HStack(spacing: 40) {
+                    rate(displayRate(rx: true), up: false, live: live)
+                    rate(displayRate(rx: false), up: true, live: live)
+                }
+                .padding(.top, 2)
+                .padding(.bottom, 2)
+                ScopeChart(rxSamples: rx, txSamples: tx, height: 168, sampleCapacity: series.sampleCapacity)
+                    .overlay(alignment: .topTrailing) {
+                        if peak > 0 { axisLabel(peak).offset(y: -7) }
                     }
-                }
+                    .overlay(alignment: .trailing) {
+                        if peak > 0 { axisLabel(peak / 2) }
+                    }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 22)
-            .background(C.bgElev)
-        }
-        .gsClip(GsRadius.card)
-        .gsStroke(C.hairBold, GsRadius.card)
-    }
-
-    @ViewBuilder
-    private var kvGrid: some View {
-        let frame = stateMgr.statusFrame
-        let active = frame.state == .connected
-        // 4 отдельные скруглённые карточки (паритет с мокапом и stats-полосой
-        // админки), а не один контейнер с вертикальными разделителями.
-        HStack(spacing: 10) {
-            kvCell(label: "RX · RATE",
-                   value: active ? splitRate(displayRxRateBps).val : "—",
-                   unit:  active ? splitRate(displayRxRateBps).unit : "",
-                   highlight: true)
-            kvCell(label: "TX · RATE",
-                   value: active ? splitRate(displayTxRateBps).val : "—",
-                   unit:  active ? splitRate(displayTxRateBps).unit : "",
-                   highlight: false)
-            kvCell(label: "RTT",
-                   value: frame.rttMs.map { "\($0)" } ?? "—",
-                   unit:  frame.rttMs != nil ? "MS" : "",
-                   highlight: false)
-            kvCell(label: "TOTAL RX",
-                   value: active ? splitBytes(totalRxBytes).val : "—",
-                   unit:  active ? splitBytes(totalRxBytes).unit : "",
-                   highlight: false)
+            // Переподключение: цифры и график замирают.
+            .opacity(live ? 1 : 0.35)
+            .grayscale(live ? 0 : 1)
+            VStack(spacing: GsSpace.m) {
+                Rectangle().fill(C.hair).frame(height: 1)
+                HStack(spacing: 10) {
+                    streamBars(live: live)
+                    Text(String(format: L("dash.streams"),
+                                Int64(live ? frame.streamsUp : 0), Int64(frame.nStreams)))
+                    Spacer(minLength: GsSpace.s)
+                    Text(String(format: L("dash.totals"),
+                                DashFormat.bytes(frame.bytesRx), DashFormat.bytes(frame.bytesTx)))
+                        .lineLimit(1)
+                }
+                .gsType(.caption)
+                .foregroundStyle(C.textDim)
+            }
         }
     }
 
-    @ViewBuilder
-    private func kvCell(label: String, value: String, unit: String, highlight: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(label)
-                .font(.custom("DepartureMono-Regular", size: 10))
-                .tracking(0.18 * 10)
-                .foregroundStyle(C.textFaint)
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(value)
-                    .font(.custom("SpaceGrotesk-Bold", size: 24))
-                    .tracking(-0.01 * 24)
-                    .foregroundStyle(highlight ? C.signal : C.bone)
-                if !unit.isEmpty {
+    private func rate(_ bytesPerSec: Double, up: Bool, live: Bool) -> some View {
+        let tone = up ? C.warn : C.signal
+        let (value, unit) = live ? DashFormat.rate(bytesPerSec) : ("—", L("unit.mbps"))
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: up ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(tone)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(value)
+                        .gsType(.metric)
+                        .foregroundStyle(C.bone)
                     Text(unit)
-                        .font(.custom("DepartureMono-Regular", size: 10.5))
-                        .tracking(0.08 * 10.5)
+                        .gsType(.body)
                         .foregroundStyle(C.textDim)
                 }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 16)
-        .gsCard(fill: C.bgElev, stroke: C.hair, radius: GsRadius.card)
-    }
-
-    // MARK: - Helpers
-
-    private func toggle() async {
-        let state = stateMgr.statusFrame.state
-        // UI-R2-N20: connected → DISCONNECT, busy → CANCEL. Both paths
-        // funnel to `tunnel.stop()` so a half-completed handshake can be
-        // torn down before it hits the 75s TLS deadline.
-        if state == .connected || state == .connecting || state == .reconnecting {
-            dashLog.info("toggle → stop (state=\(String(describing: state), privacy: .public))")
-            tunnel.stop()
-            return
-        }
-        // MIG-R4-N01: belt-and-braces guard for the case the user gets
-        // past the disabled button (accessibility / keyboard shortcut
-        // path). Phase B re-imports cert/key material from the legacy
-        // keychain; tapping CONNECT before that finishes starts the
-        // tunnel with `certPem == nil` and mTLS silently fails.
-        if LegacyMigration.state.isMigrating {
-            dashLog.info("toggle → migration phase B still in flight, refusing CONNECT")
-            tunnel.lastError = "Importing keychain items from previous version — please wait a moment and try again."
-            return
-        }
-        if let preflightError = connectPreflightError() {
-            dashLog.info("toggle → prerequisites missing, opening Welcome wizard")
-            tunnel.lastError = preflightError
-            openForegroundWindow("welcome")
-            return
-        }
-        guard let profile = profiles.activeProfile else { return }
-        dashLog.info("toggle → installAndStart profile=\(profile.id, privacy: .public)")
-        do {
-            try await tunnel.installAndStart(profile: profile, preferences: PreferencesStore.shared)
-            tunnel.lastError = nil
-        } catch {
-            dashLog.error("installAndStart failed: \(error.localizedDescription, privacy: .public)")
-            tunnel.lastError = ConnectErrorHumanizer.humanize(error.localizedDescription)
+            HStack(spacing: 6) {
+                Capsule().fill(tone).frame(width: 12, height: 2)
+                Text(L(up ? "dash.upload" : "dash.download"))
+                    .gsType(.caption)
+                    .foregroundStyle(C.textDim)
+            }
+            .padding(.leading, 24)
         }
     }
 
-    private func openForegroundWindow(_ id: String) {
-        openWindow(id: id)
-        dock.activateForegroundWindow()
+    private func axisLabel(_ bytesPerSec: Double) -> some View {
+        Text(DashFormat.rate(bytesPerSec).value)
+            .font(.system(size: 10.5))
+            .foregroundStyle(C.textDim)
+            .padding(.leading, 4)
+            .background(C.bgElev)
     }
 
-    private func connectPreflightError() -> String? {
-        if profiles.activeProfile == nil {
-            return "No VPN profile selected. Opening setup to import one."
+    /// Активность каналов (макет `.mux`): столбик на поток.
+    private func streamBars(live: Bool) -> some View {
+        let count = min(max(Int(frame.nStreams), 1), 16)
+        return HStack(alignment: .bottom, spacing: 3) {
+            ForEach(0..<count, id: \.self) { i in
+                let level = live && i < frame.streamActivity.count ? CGFloat(frame.streamActivity[i]) : 0.4
+                Capsule()
+                    .fill(live ? C.signal : C.hairBold)
+                    .frame(width: 4, height: 6 + 10 * level)
+            }
         }
+        .frame(height: 16, alignment: .bottom)
+    }
 
-        switch sysExt.state {
-        case .activated:
-            return nil
-        case .failed(let message):
-            return "System extension is not ready: \(message). Opening setup."
-        case .awaitingUserApproval:
-            return "System extension is waiting for approval. Opening setup."
-        case .requestPending:
-            return "System extension install is still pending. Opening setup."
-        case .notInstalled:
-            return "System extension is not installed yet. Opening setup."
+    /// Байт/с: из выборки графика, иначе из StatusFrame (там бит/с).
+    private func displayRate(rx: Bool) -> Double {
+        let sampled = rx ? traffic.currentRxRateBps : traffic.currentTxRateBps
+        if sampled > 0 { return sampled }
+        return TelemetryDisplayHelpers.bytesPerSecondFromBitsPerSecond(rx ? frame.rateRxBps : frame.rateTxBps)
+    }
+
+    // MARK: - Access & connection
+
+    @ViewBuilder
+    private var accessCard: some View {
+        if let expires = profile?.cachedExpiresAt {
+            let date = Date(timeIntervalSince1970: TimeInterval(expires))
+            let day = date.formatted(.dateTime.day(.twoDigits).month(.twoDigits))
+            let days = Int((date.timeIntervalSinceNow / 86_400).rounded(.up))
+            let tone = days > 0 ? C.signal : C.danger
+            GsCard {
+                HStack(spacing: 14) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 19))
+                        .foregroundStyle(tone)
+                        .frame(width: 42, height: 42)
+                        .background(tone.opacity(0.14), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(days > 0 ? String(format: L("dash.access_until"), day)
+                                      : String(format: L("profile.access_expired"), day))
+                            .gsType(.headline)
+                            .foregroundStyle(C.bone)
+                        Text(days > 0 ? String(format: L("dash.days_left"), Int64(days)) : L("dash.access_extend"))
+                            .gsType(.body)
+                            .foregroundStyle(C.textDim)
+                    }
+                }
+            }
         }
     }
 
-    private var isSamplingState: Bool {
-        stateMgr.statusFrame.state == .connected
-            || stateMgr.statusFrame.state == .connecting
-            || stateMgr.statusFrame.state == .reconnecting
-    }
-
-    private var totalRxBytes: UInt64 {
-        let bytes = stateMgr.statusFrame.bytesRx
-        if bytes > 0 { return bytes }
-        return traffic.currentRxBytes
-    }
-
-    /// Throughput exposed to the UI is bytes/sec. The wire contract of
-    /// `StatusFrame.rate_rx_bps` is bits/sec, so the fallback path divides
-    /// by 8. `TrafficSeriesStore.currentRxRateBps` is already bytes/sec.
-    private var displayRxRateBps: Double {
-        if traffic.currentRxRateBps > 0 { return traffic.currentRxRateBps }
-        return TelemetryDisplayHelpers
-            .bytesPerSecondFromBitsPerSecond(stateMgr.statusFrame.rateRxBps)
-    }
-
-    private var displayTxRateBps: Double {
-        if traffic.currentTxRateBps > 0 { return traffic.currentTxRateBps }
-        return TelemetryDisplayHelpers
-            .bytesPerSecondFromBitsPerSecond(stateMgr.statusFrame.rateTxBps)
-    }
-
-    private func formatRate(_ bps: Double) -> String {
-        let kb = bps / 1024.0
-        if kb < 1024 { return String(format: "%.1f KB/S", kb) }
-        return String(format: "%.2f MB/S", kb / 1024.0)
-    }
-
-    private func splitRate(_ bps: Double) -> (val: String, unit: String) {
-        let kb = bps / 1024.0
-        if kb < 1024 {
-            return (String(format: "%.0f", kb), "KB/S")
+    private var connectionCard: some View {
+        GsCard(L("dash.connection")) {
+            VStack(spacing: 0) {
+                kv(L("dash.server"), first: true) { Text(name) }
+                kv(L("dash.route")) {
+                    Text(L(profile?.relayActive == true ? "dash.route.relay" : "dash.route.direct"))
+                }
+                if let address = vpnAddress {
+                    kv(L("dash.vpn_address")) { Text(address).gsType(.mono) }
+                }
+                if let dns = DashFormat.dns(frame.dnsObserved) {
+                    kv(L("dash.dns")) {
+                        HStack(spacing: 0) {
+                            Text(dns.host).gsType(.mono)
+                            if dns.encrypted { Text(" · " + L("dash.dns.encrypted")) }
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
         }
-        return (String(format: "%.2f", kb / 1024.0), "MB/S")
     }
 
-    private func splitBytes(_ bytes: UInt64) -> (val: String, unit: String) {
-        let kb = Double(bytes) / 1024.0
-        if kb < 1024 {
-            return (String(format: "%.0f", kb), "KB")
+    private func kv<V: View>(_ label: String, first: Bool = false, @ViewBuilder value: () -> V) -> some View {
+        HStack(spacing: GsSpace.m) {
+            Text(label).foregroundStyle(C.textDim)
+            Spacer(minLength: GsSpace.m)
+            value()
+                .foregroundStyle(C.bone)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
-        let mb = kb / 1024.0
-        if mb < 1024 {
-            return (String(format: "%.2f", mb), "MB")
+        .gsType(.body)
+        .padding(.top, first ? 0 : 9)
+        .padding(.bottom, 9)
+        .overlay(alignment: .top) {
+            if !first { Rectangle().fill(C.hair).frame(height: 1) }
         }
-        return (String(format: "%.2f", mb / 1024.0), "GB")
+    }
+
+    /// «10.7.0.12» — адрес клиента внутри VPN, без маски.
+    private var vpnAddress: String? {
+        let raw = frame.tunAddr ?? profile?.tunAddr ?? ""
+        let ip = raw.split(separator: "/").first.map(String.init) ?? ""
+        return ip.isEmpty ? nil : ip
+    }
+
+    // MARK: - Empty
+
+    private var emptyState: some View {
+        let parts = L("dash.empty.text").components(separatedBy: "%@")
+        return VStack(spacing: GsSpace.m) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 116, height: 116)
+                .shadow(color: .black.opacity(0.25), radius: 12, y: 10)
+                .padding(.bottom, 6)
+            Text(L("dash.empty.title"))
+                .gsType(.title)
+                .foregroundStyle(C.bone)
+            Text("\(parts.first ?? "")\(Text("ghs://…").font(GsType.mono.font).foregroundStyle(C.bone))\(parts.dropFirst().joined())")
+                .gsType(.body)
+                .foregroundStyle(C.textDim)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
+            pasteButton(large: true)
+                .padding(.top, 10)
+            Text(pasteError ?? L("dash.empty.hint"))
+                .gsType(.caption)
+                .foregroundStyle(pasteError == nil ? C.textDim : C.danger)
+        }
+        .frame(maxWidth: .infinity, minHeight: 560)
+    }
+
+    /// «Вставить ссылку»; ⌘V в окне делает то же самое.
+    private func pasteButton(large: Bool) -> some View {
+        Button {
+            pasteError = DashPaste.importFromClipboard(profiles)
+        } label: {
+            Label(L("dash.paste_link"), systemImage: "link")
+                .gsType(.body)
+                .fontWeight(.semibold)
+                .foregroundStyle(C.bg)
+                .padding(.horizontal, large ? GsSpace.xs : 0)
+        }
+        .controlSize(large ? .large : .regular)
+        .gsProminentButton(tint: C.signal)
+        .keyboardShortcut("v", modifiers: .command)
     }
 }
 
-// MARK: - DashedHairline
+// MARK: - Shared with the menu-bar popover
 
-/// Dashed equivalent of `HairlineDivider` — used by `detail-head` borders
-/// in section 02..05 of the design HTML.
-struct DashedHairline: View {
-    @Environment(\.gsColors) private var C
-    var body: some View {
-        Rectangle()
-            .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-            .foregroundStyle(C.hairBold)
-            .frame(height: 1)
-            .frame(maxWidth: .infinity)
+/// Что не так прямо сейчас — человеческими словами: переподключение с
+/// причиной и отсчётом, фатальная остановка, неудачный коннект, плохая связь.
+struct DashIssue {
+    var danger: Bool
+    var icon: String
+    var title: String
+    var text: String
+    /// Лечится новой ссылкой (доступ отозван / истёк / сертификат профиля).
+    var canPaste = false
+
+    @MainActor
+    static func current(frame: StatusFrame, tunnelError: String?, profileName: String) -> DashIssue? {
+        let english = (LocalizationManager.shared.language ?? Bundle.main.preferredLocalizations.first) == "en"
+        switch frame.state {
+        case .reconnecting:
+            let reason = nonEmpty(frame.lastError).map {
+                firstSentence(ConnectErrorHumanizer.humanize($0, english: english))
+            }
+            var progress = ""
+            if let attempt = frame.reconnectAttempt, let delay = frame.reconnectNextDelaySecs {
+                progress = String(format: L("dash.reconnect.progress"), Int64(attempt), Int64(delay))
+            }
+            return DashIssue(danger: false, icon: "wifi.slash",
+                             title: reason ?? L("dash.reconnect.lost"), text: progress)
+
+        case .error:
+            let raw = nonEmpty(frame.lastError) ?? nonEmpty(tunnelError) ?? ""
+            let fatal = ConnectErrorHumanizer.fatalStop(raw, profileName: profileName, english: english)
+            // «VPN остановлен: доступ отозван» → «Доступ отозван»; без
+            // известной причины — «Не удалось подключиться».
+            let generic = fatal.body == ConnectErrorHumanizer.humanize(raw, english: english)
+            let cause = fatal.title.components(separatedBy: ": ").last ?? fatal.title
+            let lower = raw.lowercased()
+            return DashIssue(danger: true, icon: "xmark.shield",
+                             title: generic ? L("dash.connect_failed") : cause.prefix(1).uppercased() + cause.dropFirst(),
+                             text: fatal.body,
+                             canPaste: ["доступ", "revoked", "access", "ghs://"].contains { lower.contains($0) })
+
+        case .disconnected:
+            guard let error = nonEmpty(tunnelError) else { return nil }
+            return DashIssue(danger: true, icon: "exclamationmark.triangle",
+                             title: L("dash.connect_failed"), text: error,
+                             canPaste: error.contains("ghs://"))
+
+        case .connected:
+            switch frame.health {
+            case .dead?:
+                return DashIssue(danger: false, icon: "wifi.exclamationmark",
+                                 title: L("health.dead.title"), text: L("health.dead.text"))
+            case .degraded? where frame.bandwidthClass == .throttled:
+                return DashIssue(danger: false, icon: "tortoise",
+                                 title: L("health.throttled.title"), text: L("health.throttled.text"))
+            case .degraded?:
+                return DashIssue(danger: false, icon: "wifi.exclamationmark",
+                                 title: L("health.degraded.title"),
+                                 text: String(format: L("health.degraded.text"),
+                                              Int64(frame.streamsUp), Int64(frame.nStreams)))
+            case .stale?:
+                return DashIssue(danger: false, icon: "wifi.exclamationmark",
+                                 title: L("health.stale.title"),
+                                 text: String(format: L("health.stale.text"), Int64(frame.idleRxSecs ?? 0)))
+            default:
+                return nil
+            }
+
+        case .connecting:
+            return nil
+        }
+    }
+
+    private static func nonEmpty(_ s: String?) -> String? {
+        guard let s = s?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        return s
+    }
+
+    /// «Нет сети. Проверьте подключение…» → «Нет сети».
+    private static func firstSentence(_ s: String) -> String {
+        s.components(separatedBy: ". ").first ?? s
+    }
+}
+
+enum DashFormat {
+    /// Байт/с → («48,2», «Мбит/с»); до мегабита — в килобитах.
+    @MainActor
+    static func rate(_ bytesPerSec: Double) -> (value: String, unit: String) {
+        let bits = max(bytesPerSec, 0) * 8
+        if bits < 1_000_000 {
+            return ((bits / 1_000).formatted(.number.precision(.fractionLength(0))), L("unit.kbps"))
+        }
+        let mbit = bits / 1_000_000
+        return (mbit.formatted(.number.precision(.fractionLength(mbit < 100 ? 1 : 0))), L("unit.mbps"))
+    }
+
+    /// 5077 → «1:24:37».
+    static func duration(_ secs: UInt64) -> String {
+        String(format: "%d:%02d:%02d", Int(secs / 3600), Int(secs / 60 % 60), Int(secs % 60))
+    }
+
+    /// «1,92 ГБ».
+    static func bytes(_ bytes: UInt64) -> String {
+        Int64(clamping: bytes).formatted(.byteCount(style: .memory))
+    }
+
+    /// «1.1.1.1:853» → (1.1.1.1, зашифрован: DoT).
+    static func dns(_ observed: String?) -> (host: String, encrypted: Bool)? {
+        guard let observed, let colon = observed.lastIndex(of: ":") else { return nil }
+        let host = observed[..<colon].trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return host.isEmpty ? nil : (host, observed[observed.index(after: colon)...] == "853")
+    }
+}
+
+@MainActor
+enum DashPaste {
+    /// Импорт ghs:// из буфера тем же путём, что в «Серверах» и раньше в
+    /// попапе: профиль добавляется и становится активным. nil — успех,
+    /// иначе текст ошибки.
+    static func importFromClipboard(_ profiles: ProfilesStore) -> String? {
+        let link = NSPasteboard.general.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard link.hasPrefix("ghs://") else { return L("dash.paste.no_link") }
+        do {
+            let profile = try profiles.importFromConnString(link)
+            profiles.setActive(id: profile.id)
+            return nil
+        } catch {
+            return L("popover.paste_failed")
+        }
     }
 }

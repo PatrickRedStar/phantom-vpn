@@ -2,10 +2,8 @@
 //  AdminCreateClientSheet.swift
 //  GhostStream (macOS)
 //
-//  "New client" modal for the ADMIN tab. Creates a client on the server
-//  (cert + key are generated server-side), then shows the resulting ghs://
-//  connection string exactly once with a copy button — the secret is not
-//  retained by the UI after the sheet closes.
+//  «Новый клиент»: имя, срок, права. Серт и ключ сервер выпускает сам;
+//  ghs://-ссылка с QR показывается один раз и после закрытия не хранится.
 //
 
 import AppKit
@@ -22,177 +20,120 @@ struct AdminCreateClientSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
-    @State private var durationDays: Int? = 30   // nil = perpetual
+    /// 0 — бессрочно (так и уходит на сервер).
+    @State private var days = 30
     @State private var isAdmin = false
     @State private var submitting = false
     @State private var errorText: String?
-    @State private var resultGhs: String?
-
-    private static let durations: [(label: String, days: Int?)] = [
-        ("7", 7), ("30", 30), ("90", 90), ("∞", nil)
-    ]
+    @State private var resultLink: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(resultGhs == nil ? L("admin.create.title") : L("admin.create.done.title"))
-                .font(.custom("SpaceGrotesk-Bold", size: 19))
-                .foregroundStyle(C.bone)
-                .padding(.bottom, 18)
-
-            if let resultGhs {
-                resultBlock(resultGhs)
+        VStack(spacing: 0) {
+            if let resultLink {
+                result(resultLink)
             } else {
                 form
             }
+            buttons
         }
-        .padding(24)
-        .frame(width: 520)
-        .background(RoundedRectangle(cornerRadius: GsRadius.window, style: .continuous).fill(C.bgElev))
+        .frame(width: 460)
+        .background(C.bg)
     }
 
     // MARK: - Form
 
-    @ViewBuilder
     private var form: some View {
-        fieldLabel(L("admin.create.name"))
-        TextField("plankton", text: $name)
-            .textFieldStyle(.plain)
-            .font(.custom("JetBrainsMono-Regular", size: 12))
-            .foregroundStyle(C.bone)
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bg))
-            .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
-
-        fieldLabel(L("admin.create.duration"))
-        HStack(spacing: 0) {
-            ForEach(Self.durations, id: \.label) { option in
-                let selected = durationDays == option.days
-                Button {
-                    durationDays = option.days
-                } label: {
-                    Text(option.days.map { "\($0) \(L("admin.create.days"))" } ?? L("admin.create.perpetual"))
-                        .font(.custom("DepartureMono-Regular", size: 9.5))
-                        .tracking(0.12 * 9.5)
-                        .foregroundStyle(selected ? C.signal : C.textDim)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background(selected ? C.bgElev2 : Color.clear)
-                        .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
+        Form {
+            Section(L("adm.new")) {
+                TextField(text: $name, prompt: Text(L("adm.create.name.prompt"))) {
+                    Text(L("adm.create.name"))
                 }
-                .buttonStyle(.plain)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.hair, lineWidth: 1))
-
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L("admin.create.admin_toggle"))
-                    .font(.custom("JetBrainsMono-Regular", size: 12))
-                    .foregroundStyle(C.bone)
-                Text(L("admin.create.admin_desc"))
-                    .font(.custom("JetBrainsMono-Regular", size: 10))
-                    .foregroundStyle(C.textFaint)
-            }
-            Spacer()
-            Toggle("", isOn: $isAdmin)
-                .toggleStyle(.switch)
-                .labelsHidden()
+                Picker(L("adm.create.duration"), selection: $days) {
+                    ForEach([7, 30, 90], id: \.self) { d in
+                        Text(String(format: L("adm.create.days"), Int32(d))).tag(d)
+                    }
+                    Text(L("adm.create.forever")).tag(0)
+                }
+                Toggle(isOn: $isAdmin) {
+                    Text(L("adm.create.admin"))
+                    Text(L("adm.create.admin.hint"))
+                }
                 .tint(C.signal)
-        }
-        .padding(.vertical, 14)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(C.hair).frame(height: 1)
-        }
-
-        if let errorText {
-            Text(errorText)
-                .font(.custom("JetBrainsMono-Regular", size: 10.5))
-                .foregroundStyle(C.danger)
-                .padding(.top, 10)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-
-        HStack(spacing: 8) {
-            bigButton(
-                submitting ? "…" : L("admin.create.submit"),
-                prominent: true,
-                disabled: trimmedName.isEmpty || submitting
-            ) {
-                submit()
             }
-            bigButton(L("general.cancel"), prominent: false, disabled: submitting) {
-                dismiss()
+            if let errorText {
+                Section {
+                    Label(errorText, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(C.danger)
+                }
             }
         }
-        .padding(.top, 16)
-    }
-
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .frame(height: errorText == nil ? 200 : 260)
     }
 
     // MARK: - Result (shown once)
 
-    @ViewBuilder
-    private func resultBlock(_ ghs: String) -> some View {
-        fieldLabel(L("admin.create.result"))
-        ScrollView {
-            Text(ghs)
-                .font(.custom("JetBrainsMono-Regular", size: 10))
-                .foregroundStyle(C.signal)
+    private func result(_ link: String) -> some View {
+        VStack(spacing: GsSpace.m) {
+            Text(String(format: L("adm.create.done"), trimmedName))
+                .gsType(.headline)
+                .foregroundStyle(C.bone)
+            Text(L("adm.create.done.hint"))
+                .gsType(.caption)
+                .foregroundStyle(C.textDim)
+                .multilineTextAlignment(.center)
+            QRCodeView(link: link)
+            Text(link)
+                .font(.custom(GsFontName.jetBrainsMono, size: 10))
+                .foregroundStyle(C.textDim)
+                .lineLimit(2)
+                .truncationMode(.middle)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
         }
-        .frame(maxHeight: 120)
-        .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(C.bg))
-        .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(C.signalDim, lineWidth: 1))
-
-        HStack(spacing: 8) {
-            bigButton(L("admin.create.copy"), prominent: true, disabled: false) {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(ghs, forType: .string)
-                onStatus(L("admin.status.ghs_copied"), true)
-            }
-            bigButton(L("general.done"), prominent: false, disabled: false) {
-                dismiss()
-            }
-        }
-        .padding(.top, 16)
+        .padding(GsSpace.xl)
     }
 
-    // MARK: - Pieces
-
-    private func fieldLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.custom("DepartureMono-Regular", size: 9.5))
-            .tracking(0.16 * 9.5)
-            .foregroundStyle(C.textFaint)
-            .padding(.top, 14)
-            .padding(.bottom, 6)
+    private var buttons: some View {
+        HStack(spacing: GsSpace.s) {
+            Spacer()
+            if let resultLink {
+                Button(L("adm.copy_link")) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(resultLink, forType: .string)
+                    onStatus(L("adm.copied"), true)
+                }
+                .controlSize(.large)
+                .gsGlassButton()
+                primary(L("general.done")) { dismiss() }
+            } else {
+                Button(L("general.cancel")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .controlSize(.large)
+                    .gsGlassButton()
+                    .disabled(submitting)
+                primary(L("adm.create.submit"), action: submit)
+                    .disabled(trimmedName.isEmpty || submitting)
+            }
+        }
+        .padding(.horizontal, GsSpace.xl)
+        .padding(.bottom, GsSpace.xl)
     }
 
-    private func bigButton(
-        _ title: String,
-        prominent: Bool,
-        disabled: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
+    private func primary(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.custom("DepartureMono-Regular", size: 10.5))
-                .tracking(0.16 * 10.5)
-                .foregroundStyle(prominent ? C.bg : C.textDim)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-                .background(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).fill(prominent ? C.signal : Color.clear))
-                .overlay(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous).stroke(prominent ? C.signal : C.hairBold, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: GsRadius.control, style: .continuous))
+                .fontWeight(.semibold)
+                .foregroundStyle(C.bg)
+                .padding(.horizontal, GsSpace.xs)
         }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.5 : 1)
+        .keyboardShortcut(.defaultAction)
+        .controlSize(.large)
+        .gsProminentButton(tint: C.signal)
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Submit
@@ -205,16 +146,10 @@ struct AdminCreateClientSheet: View {
         Task {
             defer { submitting = false }
             do {
-                try await vm.createClient(
-                    name: clientName,
-                    expiresDays: durationDays,
-                    isAdmin: isAdmin
-                )
-                // The POST response is not retained by the VM — fetch the
-                // conn string explicitly so it can be handed out once.
-                let ghs = try await vm.getConnString(name: clientName)
-                resultGhs = ghs
-                onStatus(String(format: L("admin.status.created"), clientName), true)
+                try await vm.createClient(name: clientName, expiresDays: days == 0 ? nil : days, isAdmin: isAdmin)
+                // Ответ POST VM не хранит — ссылку берём отдельным запросом.
+                resultLink = try await vm.getConnString(name: clientName)
+                onStatus(String(format: L("adm.create.done"), clientName), true)
             } catch {
                 errorText = error.localizedDescription
             }

@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0154840B4F2117F9F102C920 /* SidebarList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 257ADBA54B9B683D8C66A404 /* SidebarList.swift */; };
 		06CA2E6CEB0651746EBC453F /* MenuBarStatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = E178770D82843C786E17C471 /* MenuBarStatusItem.swift */; };
 		08EB60E72500643451B2C222 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0327D15C33430C284635D42A /* DashboardView.swift */; };
 		091CE0CF5FC66B113F2A9C69 /* EntitlementRefresher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA669165A1F26B91F6CE77DE /* EntitlementRefresher.swift */; };
@@ -15,6 +14,7 @@
 		1D4AE3DFB7E2576885B5D556 /* KeyboardShortcutHint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 735D0DD6A563FD9A2568459E /* KeyboardShortcutHint.swift */; };
 		22E9407401612BB76A747C01 /* WelcomeWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18EE894D73FD02941FDC2E20 /* WelcomeWindow.swift */; };
 		240AB4569EC7E07597B95E66 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 70DF2B5E0FF9CC6DEAADB874 /* Localizable.xcstrings */; };
+		27A1F90C0EB2A3260A71B897 /* GsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE2EAE591BD3EED591ED0132 /* GsCard.swift */; };
 		2DBD991F4555DDEC913ED143 /* UpstreamVpnRouteDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE64869C73B206FEB664F6FD /* UpstreamVpnRouteDetector.swift */; };
 		337A008221CE70E7C2893472 /* DockPolicyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E146F2AB8966DDD6F9BB53EB /* DockPolicyController.swift */; };
 		39C9936B348FE813522099E2 /* OnboardingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A380C0C517545C4A72D369B /* OnboardingCoordinator.swift */; };
@@ -24,6 +24,8 @@
 		423A69B5839190D55AD04276 /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
 		44882E92C4B6B7088F24E6BE /* PhantomKit in Frameworks */ = {isa = PBXBuildFile; productRef = 192F28EAB815474C93A38DAF /* PhantomKit */; };
 		449C6816999C68805F28407E /* TrafficSeriesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */; };
+		4B355F81622A9E2DB72B0CDA /* GsTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E454EC6979FAAA9F75F90D3 /* GsTokens.swift */; };
+		4B3C762E4F5DF021679EDADC /* UpdateChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E6CD0769B7EBFA85C17211 /* UpdateChecker.swift */; };
 		4D993D530BE54E371136CC50 /* GsRadius.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD302624D7C607CCD253E224 /* GsRadius.swift */; };
 		527186CDE65ED9E37B948D97 /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */; };
 		53CB2B107A76ABC8F70FC547 /* LoginItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1BF7582D129D427A55BF228 /* LoginItemController.swift */; };
@@ -37,20 +39,22 @@
 		85EA87EA5F725136E0C09CAA /* LocalizationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25035702284F14611EECE350 /* LocalizationManager.swift */; };
 		86D244DB0B5726C72EBFD77A /* AdminCreateClientSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07C4CDE4794E2C95CCAF175A /* AdminCreateClientSheet.swift */; };
 		8712DF68B5B91649EBD1A9EC /* VpnTunnelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9DBE55892E32B2EEB55A210 /* VpnTunnelController.swift */; };
-		8869D0009F207D8CCC8819E0 /* SidebarProfileBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */; };
 		8A8E0A6D9004C5AF79AE3CFD /* LogFileWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62BDAA532E9F7195EB0FA414 /* LogFileWriter.swift */; };
 		8BAC9E8284EAB5B6251C764C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21597CEA9A505595AE9813DB /* SettingsView.swift */; };
 		8C9DFF80CDAA22010A53B558 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB4009EBBC952758419A6DAE /* AboutView.swift */; };
 		92BBC670737910138EB981D6 /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B8373F0C0C3AABD2CB455F7 /* ServiceManagement.framework */; };
 		930431B39EFAE6D0678A11E2 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB024577662DF32A109637B9 /* AppDelegate.swift */; };
+		9604101052EF9FE87CD4C3C6 /* DebugDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CF87F00C99F072B2B0E3CF1 /* DebugDemo.swift */; };
 		96A058E90B52C17C206DBE36 /* PacketTunnelExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = B54B8FBC9214315D8D506753 /* PacketTunnelExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9C6A4AA1ADC745AA5A3BE02F /* VpnStateManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C5FF9F9A7151C391868F6EF /* VpnStateManager.swift */; };
 		9D1D3C3A932F5DC317776964 /* ProfileEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62F91C21525DA5CCD33520B0 /* ProfileEditorSheet.swift */; };
 		A8F99F92967F66EB987F52FD /* MainConsoleWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51F847664C4CCC7651B2AC04 /* MainConsoleWindow.swift */; };
 		B3780B573BE81B4D94796983 /* AdminConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 045725494C15E45CC3228DD6 /* AdminConsoleView.swift */; };
 		B9F34F9AA2B2DAAA36461268 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86C39DA03DEF188889E61E7 /* PacketTunnelProvider.swift */; };
+		C3D43EE9EFBC1F2EFE795C77 /* GsButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C95C1A3C93A3322EF4AE6CD /* GsButtons.swift */; };
 		CBAFDA18C57D0B4B1AF9897E /* ServerRosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50B75A842C64C2669ADB7F5 /* ServerRosterView.swift */; };
 		CD7E358B0D6284D85507B910 /* MenuBarPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9571F13CA27DCC5EEBE7F19 /* MenuBarPopover.swift */; };
+		D6512D8BA32E5730B8D3B1E9 /* StatusViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD9FC8891B9314FF16DCF5C /* StatusViews.swift */; };
 		E19F05F1756F778791751FFB /* PhantomCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6A9A9B7C4E5918EBCFE8E580 /* PhantomCore.xcframework */; };
 		E3FDDB6EF72AA2DC2776D647 /* TunnelLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0037F340A53B43B5E67935C7 /* TunnelLogStore.swift */; };
 		E52A3DEC18D4F192FE05E901 /* ConditionalModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38659351E3EC8DDFDF3286F5 /* ConditionalModifier.swift */; };
@@ -102,12 +106,12 @@
 		206B1279E7E37C0862FEC03F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		21597CEA9A505595AE9813DB /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		25035702284F14611EECE350 /* LocalizationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationManager.swift; sourceTree = "<group>"; };
-		257ADBA54B9B683D8C66A404 /* SidebarList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarList.swift; sourceTree = "<group>"; };
 		2B083AADEC74AF6F046D2475 /* GhostStream.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GhostStream.entitlements; sourceTree = "<group>"; };
 		2C70003712DBB20C5F829D4E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2CF87F00C99F072B2B0E3CF1 /* DebugDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugDemo.swift; sourceTree = "<group>"; };
 		38659351E3EC8DDFDF3286F5 /* ConditionalModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConditionalModifier.swift; sourceTree = "<group>"; };
 		3872376E08B45829DB3C624D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarProfileBlock.swift; sourceTree = "<group>"; };
+		4C95C1A3C93A3322EF4AE6CD /* GsButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GsButtons.swift; sourceTree = "<group>"; };
 		4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrafficSeriesStore.swift; sourceTree = "<group>"; };
 		51F847664C4CCC7651B2AC04 /* MainConsoleWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainConsoleWindow.swift; sourceTree = "<group>"; };
 		62BDAA532E9F7195EB0FA414 /* LogFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogFileWriter.swift; sourceTree = "<group>"; };
@@ -117,6 +121,9 @@
 		735D0DD6A563FD9A2568459E /* KeyboardShortcutHint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutHint.swift; sourceTree = "<group>"; };
 		750B9134D64C078874D2F5CA /* PasteGhsField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteGhsField.swift; sourceTree = "<group>"; };
 		76DA79C7CCAF81197CACD8C8 /* FontRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FontRegistration.swift; sourceTree = "<group>"; };
+		7E454EC6979FAAA9F75F90D3 /* GsTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GsTokens.swift; sourceTree = "<group>"; };
+		91E6CD0769B7EBFA85C17211 /* UpdateChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateChecker.swift; sourceTree = "<group>"; };
+		9AD9FC8891B9314FF16DCF5C /* StatusViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusViews.swift; sourceTree = "<group>"; };
 		9B89D6EDEA25F404BBC533F4 /* TailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TailView.swift; sourceTree = "<group>"; };
 		A1BF7582D129D427A55BF228 /* LoginItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemController.swift; sourceTree = "<group>"; };
 		AE6742D4E48EC28BBC72622E /* SystemExtensions.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemExtensions.framework; path = System/Library/Frameworks/SystemExtensions.framework; sourceTree = SDKROOT; };
@@ -139,6 +146,7 @@
 		E178770D82843C786E17C471 /* MenuBarStatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarStatusItem.swift; sourceTree = "<group>"; };
 		E9415BCD9CF4A8CEA4F124C3 /* GhostStream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GhostStream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EB4009EBBC952758419A6DAE /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		EE2EAE591BD3EED591ED0132 /* GsCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GsCard.swift; sourceTree = "<group>"; };
 		FB024577662DF32A109637B9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		FC6CB792C9929B75A33654B1 /* PacketTunnelExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PacketTunnelExtension.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -170,15 +178,6 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		0E5E088C52A13F12A203700E /* Sidebar */ = {
-			isa = PBXGroup;
-			children = (
-				257ADBA54B9B683D8C66A404 /* SidebarList.swift */,
-				406CE1A14DD3B6246028B30B /* SidebarProfileBlock.swift */,
-			);
-			path = Sidebar;
-			sourceTree = "<group>";
-		};
 		15BDD09A23A40C89FEAE03BA /* Servers */ = {
 			isa = PBXGroup;
 			children = (
@@ -220,6 +219,7 @@
 				C2CEB8B9E2D690775F30C537 /* SystemExtensionInstaller.swift */,
 				4CF4A6725EFF5262089061B1 /* TrafficSeriesStore.swift */,
 				0037F340A53B43B5E67935C7 /* TunnelLogStore.swift */,
+				91E6CD0769B7EBFA85C17211 /* UpdateChecker.swift */,
 				E160F03707922FDAB0058A26 /* UpstreamVpnMonitor.swift */,
 				BE64869C73B206FEB664F6FD /* UpstreamVpnRouteDetector.swift */,
 				0C5FF9F9A7151C391868F6EF /* VpnStateManager.swift */,
@@ -232,7 +232,10 @@
 			isa = PBXGroup;
 			children = (
 				38659351E3EC8DDFDF3286F5 /* ConditionalModifier.swift */,
+				4C95C1A3C93A3322EF4AE6CD /* GsButtons.swift */,
+				EE2EAE591BD3EED591ED0132 /* GsCard.swift */,
 				735D0DD6A563FD9A2568459E /* KeyboardShortcutHint.swift */,
+				9AD9FC8891B9314FF16DCF5C /* StatusViews.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -275,6 +278,7 @@
 			isa = PBXGroup;
 			children = (
 				BD302624D7C607CCD253E224 /* GsRadius.swift */,
+				7E454EC6979FAAA9F75F90D3 /* GsTokens.swift */,
 			);
 			path = Theme;
 			sourceTree = "<group>";
@@ -300,7 +304,6 @@
 				BC3DFBB91D59999BFF5A89EC /* Onboarding */,
 				15BDD09A23A40C89FEAE03BA /* Servers */,
 				7672F78F0B9FFACB05137932 /* Settings */,
-				0E5E088C52A13F12A203700E /* Sidebar */,
 				853E40D8E1DA1A169EBFDA02 /* Theme */,
 				88BFCB57990DC1F2E63C9A84 /* Window */,
 			);
@@ -376,6 +379,7 @@
 			children = (
 				FB024577662DF32A109637B9 /* AppDelegate.swift */,
 				D5B6D69B5DE4794B44BDEEFD /* AppRouter.swift */,
+				2CF87F00C99F072B2B0E3CF1 /* DebugDemo.swift */,
 				76DA79C7CCAF81197CACD8C8 /* FontRegistration.swift */,
 				D44DCB5C785BF403588E7AC7 /* GhostStreamApp.swift */,
 			);
@@ -512,11 +516,15 @@
 				56BA5BC6F3F4C992842BB875 /* CommandPalette.swift in Sources */,
 				E52A3DEC18D4F192FE05E901 /* ConditionalModifier.swift in Sources */,
 				08EB60E72500643451B2C222 /* DashboardView.swift in Sources */,
+				9604101052EF9FE87CD4C3C6 /* DebugDemo.swift in Sources */,
 				337A008221CE70E7C2893472 /* DockPolicyController.swift in Sources */,
 				091CE0CF5FC66B113F2A9C69 /* EntitlementRefresher.swift in Sources */,
 				79C9C49C81ACB0CFF7C6CF63 /* FontRegistration.swift in Sources */,
 				856469DBCB4079F628A8EA90 /* GhostStreamApp.swift in Sources */,
+				C3D43EE9EFBC1F2EFE795C77 /* GsButtons.swift in Sources */,
+				27A1F90C0EB2A3260A71B897 /* GsCard.swift in Sources */,
 				4D993D530BE54E371136CC50 /* GsRadius.swift in Sources */,
+				4B355F81622A9E2DB72B0CDA /* GsTokens.swift in Sources */,
 				F3D51C560BF28A8BE013BE19 /* HostLogMirror.swift in Sources */,
 				1D4AE3DFB7E2576885B5D556 /* KeyboardShortcutHint.swift in Sources */,
 				402B5A68469B69DD852C660E /* LegacyMigration.swift in Sources */,
@@ -530,12 +538,12 @@
 				9D1D3C3A932F5DC317776964 /* ProfileEditorSheet.swift in Sources */,
 				CBAFDA18C57D0B4B1AF9897E /* ServerRosterView.swift in Sources */,
 				8BAC9E8284EAB5B6251C764C /* SettingsView.swift in Sources */,
-				0154840B4F2117F9F102C920 /* SidebarList.swift in Sources */,
-				8869D0009F207D8CCC8819E0 /* SidebarProfileBlock.swift in Sources */,
+				D6512D8BA32E5730B8D3B1E9 /* StatusViews.swift in Sources */,
 				F926DB0657009EE342DDDACD /* SystemExtensionInstaller.swift in Sources */,
 				FE2128A1C154A27968768E54 /* TailView.swift in Sources */,
 				449C6816999C68805F28407E /* TrafficSeriesStore.swift in Sources */,
 				E3FDDB6EF72AA2DC2776D647 /* TunnelLogStore.swift in Sources */,
+				4B3C762E4F5DF021679EDADC /* UpdateChecker.swift in Sources */,
 				7FB4E45A66321CF1349AF128 /* UpstreamVpnMonitor.swift in Sources */,
 				2DBD991F4555DDEC913ED143 /* UpstreamVpnRouteDetector.swift in Sources */,
 				9C6A4AA1ADC745AA5A3BE02F /* VpnStateManager.swift in Sources */,

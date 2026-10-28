@@ -21,6 +21,8 @@
 import SwiftUI
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 // MARK: - PostScript names (per font file)
@@ -201,6 +203,16 @@ public struct GsFontSpec {
             let system = UIFont.systemFont(ofSize: size, weight: weight).fontDescriptor
             let descriptor = base.fontDescriptor.addingAttributes([.cascadeList: [system]])
             return Font(UIFont(descriptor: descriptor, size: size) as CTFont)
+        }
+        #elseif os(macOS)
+        // Same gap on macOS: Cyrillic falls back to whatever CoreText picks.
+        if name.hasPrefix("SpaceGrotesk"), let base = NSFont(name: name, size: size) {
+            let weight: NSFont.Weight = name.hasSuffix("Bold") ? .bold : name.hasSuffix("Medium") ? .medium : .regular
+            let system = NSFont.systemFont(ofSize: size, weight: weight).fontDescriptor
+            let descriptor = base.fontDescriptor.addingAttributes([.cascadeList: [system]])
+            if let font = NSFont(descriptor: descriptor, size: size) {
+                return Font(font as CTFont)
+            }
         }
         #endif
         return .custom(name, size: size)

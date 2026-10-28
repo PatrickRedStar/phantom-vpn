@@ -2,7 +2,7 @@ import XCTest
 @testable import PhantomKit
 
 final class MacStartupPolicyTests: XCTestCase {
-    func testConfiguredManagerDoesNotOpenSetup() {
+    func testConfiguredManagerOpensConsole() {
         let decision = MacStartupPolicy.decide(
             managerConfigured: true,
             hasActiveProfile: true,
@@ -10,7 +10,16 @@ final class MacStartupPolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(decision.shouldActivateSystemExtension)
-        XCTAssertNil(decision.foregroundWindow)
+        XCTAssertEqual(decision.foregroundWindow, .console)
+    }
+
+    func testConfiguredManagerStaysHiddenInMenuBarOrAtLogin() {
+        XCTAssertNil(MacStartupPolicy.decide(
+            managerConfigured: true, hasActiveProfile: true, startInMenuBar: true
+        ).foregroundWindow)
+        XCTAssertNil(MacStartupPolicy.decide(
+            managerConfigured: true, hasActiveProfile: true, startInMenuBar: false, launchedAtLogin: true
+        ).foregroundWindow)
     }
 
     func testProfileWithoutManagerOpensWelcomeByDefault() {

@@ -3,8 +3,8 @@
 //  GhostStream (macOS)
 //
 //  @main entry. Hosts a `MenuBarExtra` (primary surface), a single
-//  singleton `Window` for the main console, plus a separate window for the
-//  Welcome / onboarding panel and the standard `Settings` scene.
+//  singleton `Window` for the main console (⌘, opens it on «Настройки»),
+//  plus separate windows for logs, Welcome / onboarding and About.
 //
 //  Singletons (ProfilesStore / PreferencesStore / VpnStateManager /
 //  AppRouter) are passed via `.environment` so any view can read them.
@@ -20,6 +20,11 @@ import UserNotifications
 @main
 struct GhostStreamApp: App {
 
+    #if DEBUG
+    // Первым полем: демо-данные подставляются до создания сторов ниже.
+    private let demo: Void = DebugDemo.prepare()
+    #endif
+
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     @Environment(\.openWindow) private var openWindow
@@ -29,7 +34,6 @@ struct GhostStreamApp: App {
     @State private var state    = VpnStateManager.shared
     @State private var router   = AppRouter.shared
     @State private var sysExt   = SystemExtensionInstaller.shared
-    @State private var login    = LoginItemController.shared
     @State private var dock     = DockPolicyController.shared
     @State private var upstream = UpstreamVpnMonitor.shared
     @State private var traffic  = TrafficSeriesStore.shared
@@ -43,32 +47,27 @@ struct GhostStreamApp: App {
         // Primary surface — menu bar.
         MenuBarExtra {
             LocalizedRoot {
+                // Размер — по содержимому (FitWindowToContent в попапе).
                 MenuBarPopover()
-                    .environment(profiles)
-                    .environment(prefs)
-                    .environment(state)
-                    .environment(router)
-                    .environment(sysExt)
-                    .environment(dock)
-                    .environment(upstream)
-                    .environment(traffic)
-                    .environment(logs)
-                    .environmentObject(tunnel)
-                    .gsTheme(override: themeOverride(from: prefs.theme))
-                    // См. UI-POPOVER-CLIP в MenuBarPopover — статичная высота
-                    // под connected-макет (MenuBarExtra не ресайзит окно).
-                    .frame(width: 380, height: 600)
+                    .gsAppEnvironment()
             }
         } label: {
             MenuBarStatusItem(state: state.statusFrame.state)
                 .task {
+                    delegate.openConsole = { openForegroundWindow("console") }
+                    #if DEBUG
+                    if DebugDemo.isActive {
+                        await DebugDemo.start { openForegroundWindow("console") }
+                        return
+                    }
+                    #endif
                     notifications.configure()
                     await openSetupIfNeeded()
                     upstream.start(profiles: profiles, preferences: prefs, stateManager: state)
                     traffic.start(stateManager: state)
                     logs.start(stateManager: state)
                 }
-                .onChange(of: notificationToken(from: state.statusFrame)) { _, _ in
+                .onChange(of: state.statusFrame.state) { _, _ in
                     notifications.handle(frame: state.statusFrame, preferences: prefs)
                 }
                 .onChange(of: prefs.notifyStateChanges) { _, _ in
@@ -87,23 +86,13 @@ struct GhostStreamApp: App {
             ForegroundWindowClaim("console", dock: dock) {
                 LocalizedRoot {
                 MainConsoleWindow()
-                    .environment(profiles)
-                    .environment(prefs)
-                    .environment(state)
-                    .environment(router)
-                    .environment(sysExt)
-                    .environment(login)
-                    .environment(dock)
-                    .environment(upstream)
-                    .environment(traffic)
-                    .environment(logs)
-                    .environmentObject(tunnel)
-                    .gsTheme(override: themeOverride(from: prefs.theme))
-                    .frame(minWidth: 960, minHeight: 640)
+                    // Подсказка после мастера; до gsAppEnvironment — ей нужны тема и цвета.
+                    .overlay(alignment: .bottom) { MenuBarHint() }
+                    .gsAppEnvironment()
                 }
             }
         }
-        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1200, height: 800)
         .commands {
@@ -111,6 +100,25 @@ struct GhostStreamApp: App {
                 Button(L("menu.about")) {
                     openForegroundWindow("about")
                 }
+            }
+            // ⌘, — консоль на «Настройках» вместо отдельного окна настроек.
+            CommandGroup(replacing: .appSettings) {
+                Button(L("menu.settings")) {
+                    openConsole(on: .setup)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+            // ⌘1…⌘5 — пункты сайдбара (меню «Вид»). Пока открыта палитра,
+            // цифры нужны её полю поиска.
+            CommandGroup(before: .sidebar) {
+                ForEach(SidebarChannel.visible(adminUnlocked: profiles.activeProfile?.cachedIsAdmin == true)) { channel in
+                    Button(L(channel.localizedKey)) {
+                        openConsole(on: channel)
+                    }
+                    .keyboardShortcut(KeyEquivalent(channel.hotkey), modifiers: .command)
+                }
+                .disabled(router.commandPaletteOpen)
+                Divider()
             }
             // ⌘0 — focus / open the main console window.
             CommandGroup(after: .windowArrangement) {
@@ -140,7 +148,7 @@ struct GhostStreamApp: App {
         }
 
         // Detached logs window, opened from the command palette or ⇧⌘L.
-        Window("Logs", id: "logs") {
+        Window(L("menu.logs"), id: "logs") {
             ForegroundWindowClaim("logs", dock: dock) {
                 LocalizedRoot {
                 TailView()
@@ -159,7 +167,7 @@ struct GhostStreamApp: App {
         .windowResizability(.contentMinSize)
 
         // Onboarding window.
-        Window("Welcome", id: "welcome") {
+        Window(L("welcome.window_title"), id: "welcome") {
             ForegroundWindowClaim("welcome", dock: dock) {
                 LocalizedRoot {
                 WelcomeWindow()
@@ -178,7 +186,7 @@ struct GhostStreamApp: App {
 
         // Custom About panel — wired to the App-menu "About" item via
         // CommandGroup(replacing: .appInfo).
-        Window("About", id: "about") {
+        Window(L("menu.about"), id: "about") {
             ForegroundWindowClaim("about", dock: dock) {
                 LocalizedRoot {
                 AboutView()
@@ -189,23 +197,6 @@ struct GhostStreamApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
 
-        // Standard Settings scene → CMD-,
-        Settings {
-            ForegroundWindowClaim("settings", dock: dock) {
-                LocalizedRoot {
-                SettingsView()
-                    .environment(prefs)
-                    .environment(profiles)
-                    .environment(state)
-                    .environment(logs)
-                    .environment(login)
-                    .environment(dock)
-                    .environment(upstream)
-                    .gsTheme(override: themeOverride(from: prefs.theme))
-                    .frame(minWidth: 520, minHeight: 480)
-                }
-            }
-        }
     }
 
     private func themeOverride(from raw: String) -> ThemeOverride {
@@ -221,7 +212,8 @@ struct GhostStreamApp: App {
         let decision = MacStartupPolicy.decide(
             managerConfigured: isGhostStreamManagerConfigured(tunnel.manager),
             hasActiveProfile: profiles.activeProfile != nil,
-            startInMenuBar: prefs.startInMenuBar
+            startInMenuBar: prefs.startInMenuBar,
+            launchedAtLogin: AppDelegate.launchedAtLogin
         )
 
         if decision.shouldActivateSystemExtension {
@@ -231,6 +223,8 @@ struct GhostStreamApp: App {
         switch decision.foregroundWindow {
         case .welcome:
             openForegroundWindow("welcome")
+        case .console:
+            openForegroundWindow("console")
         case .none:
             break
         }
@@ -242,6 +236,12 @@ struct GhostStreamApp: App {
         dock.activateForegroundWindow()
     }
 
+    @MainActor
+    private func openConsole(on channel: SidebarChannel) {
+        router.select(channel)
+        openForegroundWindow("console")
+    }
+
     private func isGhostStreamManagerConfigured(_ manager: NETunnelProviderManager?) -> Bool {
         guard let manager,
               let proto = manager.protocolConfiguration as? NETunnelProviderProtocol
@@ -249,14 +249,25 @@ struct GhostStreamApp: App {
 
         return proto.providerBundleIdentifier == "com.ghoststream.client.tunnel" && manager.isEnabled
     }
+}
 
-    private func notificationToken(from frame: StatusFrame) -> String {
-        [
-            frame.state.rawValue,
-            frame.reconnectAttempt.map(String.init) ?? "",
-            frame.reconnectNextDelaySecs.map(String.init) ?? "",
-            frame.lastError ?? "",
-        ].joined(separator: "|")
+extension View {
+    /// Синглтоны приложения для консоли, попапа меню-бара и DEBUG-снимков.
+    @MainActor
+    func gsAppEnvironment() -> some View {
+        environment(ProfilesStore.shared)
+            .environment(PreferencesStore.shared)
+            .environment(VpnStateManager.shared)
+            .environment(AppRouter.shared)
+            .environment(SystemExtensionInstaller.shared)
+            .environment(LoginItemController.shared)
+            .environment(DockPolicyController.shared)
+            .environment(UpstreamVpnMonitor.shared)
+            .environment(TrafficSeriesStore.shared)
+            .environment(TunnelLogStore.shared)
+            .environment(UpdateChecker.shared)
+            .environmentObject(VpnTunnelController.shared)
+            .gsTheme(override: ThemeOverride(rawValue: PreferencesStore.shared.theme) ?? .system)
     }
 }
 
@@ -284,12 +295,29 @@ private struct ForegroundWindowClaim<Content: View>: View {
     }
 }
 
+/// Уровень уведомлений в «Настройках». Выключены = `notifyStateChanges`
+/// false; «обо всех» — отдельный флаг macOS (iOS его не знает).
+enum NotifyLevel: Hashable {
+    case problems, all, off
+
+    static let allKey = "notifyAllStateChanges"
+}
+
+/// Системные уведомления macOS (по-русски через `L()`). Общую с iOS
+/// `VpnStateNotificationPolicy` не используем: здесь другие правила —
+/// без ручного отключения и без коротких переподключений.
 @MainActor
 private final class VpnNotificationController: NSObject, UNUserNotificationCenterDelegate {
     static let shared = VpnNotificationController()
 
+    /// Переподключение короче этого не беспокоит (смена Wi‑Fi, сон).
+    private static let lostDelay: Duration = .seconds(10)
+
     private var configured = false
-    private var previousFrame: StatusFrame?
+    private var previousState: ConnState?
+    private var lostTask: Task<Void, Never>?
+    /// Уже сказали «нет связи» — на восстановление скажем «восстановлено».
+    private var lostNotified = false
 
     func configure() {
         guard !configured else { return }
@@ -303,28 +331,69 @@ private final class VpnNotificationController: NSObject, UNUserNotificationCente
     }
 
     func handle(frame: StatusFrame, preferences: PreferencesStore) {
+        #if DEBUG
+        if DebugDemo.isActive { return }
+        #endif
         configure()
-        let notification = VpnStateNotificationPolicy.notification(
-            previous: previousFrame,
-            current: frame,
-            enabled: preferences.notifyStateChanges
-        )
-        previousFrame = frame
+        let previous = previousState
+        previousState = frame.state
+        // Первый кадр после запуска — не переход.
+        guard let previous, previous != frame.state else { return }
+        if frame.state != .reconnecting {
+            lostTask?.cancel()
+            lostTask = nil
+        }
+        guard preferences.notifyStateChanges else {
+            lostNotified = false
+            return
+        }
+        let profile = ProfilesStore.shared.activeProfile?.name ?? "GhostStream"
 
-        guard let notification else { return }
+        switch frame.state {
+        case .reconnecting:
+            lostTask = Task { [weak self] in
+                try? await Task.sleep(for: Self.lostDelay)
+                guard let self, !Task.isCancelled, self.previousState == .reconnecting else { return }
+                self.lostNotified = true
+                self.post(title: L("notify.lost.title"), body: L("notify.lost.body"))
+            }
+        case .connected:
+            if lostNotified {
+                post(title: L("notify.restored.title"),
+                     body: String(format: L("notify.restored.body"), profile))
+            } else if previous == .connecting, UserDefaults.standard.bool(forKey: NotifyLevel.allKey) {
+                post(title: L("notify.connected.title"), body: profile)
+            }
+            lostNotified = false
+        case .error:
+            // Фатальная остановка: причина в заголовке, что делать — в тексте.
+            let text = ConnectErrorHumanizer.fatalStop(
+                frame.lastError ?? "",
+                profileName: profile,
+                english: !Self.isRussianUI
+            )
+            post(title: text.title, body: text.body)
+            lostNotified = false
+        case .disconnected, .connecting:
+            // Отключение без ошибки — это пользователь сам; он и так знает.
+            lostNotified = false
+        }
+    }
 
-        // NOTIF-1 fix: не дёргаем requestAuthorization на каждый переход
-        // состояния — читаем текущий статус без промпта и запрашиваем
-        // авторизацию только если она ещё не определена.
-        let center = UNUserNotificationCenter.current()
-        center.getNotificationSettings { settings in
+    private static var isRussianUI: Bool {
+        (LocalizationManager.shared.language ?? Bundle.main.preferredLocalizations.first ?? "ru")
+            .hasPrefix("ru")
+    }
+
+    /// NOTIF-1: авторизацию запрашиваем только если она ещё не определена.
+    private func post(title: String, body: String) {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
             switch settings.authorizationStatus {
             case .authorized, .provisional:
-                Self.post(notification, via: center)
+                Self.add(title: title, body: body)
             case .notDetermined:
-                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                    guard granted else { return }
-                    Self.post(notification, via: center)
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    if granted { Self.add(title: title, body: body) }
                 }
             default:
                 return
@@ -332,21 +401,16 @@ private final class VpnNotificationController: NSObject, UNUserNotificationCente
         }
     }
 
-    private static func post(
-        _ notification: VpnStateNotification,
-        via center: UNUserNotificationCenter
-    ) {
+    nonisolated private static func add(title: String, body: String) {
         let content = UNMutableNotificationContent()
-        content.title = notification.title
-        content.body = notification.body
+        content.title = title
+        content.body = body
         content.sound = .default
-
-        let request = UNNotificationRequest(
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
             identifier: "ghoststream.state.\(UUID().uuidString)",
             content: content,
             trigger: nil
-        )
-        center.add(request)
+        ))
     }
 
     nonisolated func userNotificationCenter(

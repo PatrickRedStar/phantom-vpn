@@ -79,6 +79,23 @@ public final class VpnStateManager {
         // ProfilesStore to read empty defaults, then clobber the migrated
         // data on the next `save()`.
 
+        #if DEBUG
+        // -gsDemo: фейковый туннель в памяти, без NE и App Group.
+        if DebugDemo.isActive {
+            self.defaults = .standard
+            self.statusFrame = DebugDemo.frame(tick: 0)
+            Task { @MainActor [weak self] in
+                var tick = 0
+                while true {
+                    try? await Task.sleep(for: .seconds(1))
+                    tick += 1
+                    self?.statusFrame = DebugDemo.frame(tick: tick)
+                }
+            }
+            return
+        }
+        #endif
+
         // App Group access can fail when entitlements/codesign are broken;
         // crashing here meant the whole host UI never came up. Fall back to
         // standard UserDefaults so the rest of the app boots — the snapshot
@@ -104,6 +121,9 @@ public final class VpnStateManager {
     /// stores (logs, upstream monitor) so they don't each fire XPC into
     /// `nesessionmanager` on every tick.
     public func cachedOrLoadManager() async -> NETunnelProviderManager? {
+        #if DEBUG
+        if DebugDemo.isActive { return nil }
+        #endif
         if let cachedManager { return cachedManager }
         return await refreshCachedManager()
     }

@@ -1,6 +1,6 @@
 ---
 created: 2026-04-27
-updated: 2026-10-26
+updated: 2026-10-28
 status: in-progress
 tags: [platform, macos, swiftui, network-extension]
 ---
@@ -9,14 +9,14 @@ tags: [platform, macos, swiftui, network-extension]
 
 ## Стек
 
-- **SwiftUI** host app (`apps/macos/GhostStream/`) — `MenuBarExtra` + `WindowGroup` + `Settings`-сцены, **macOS 15 Sequoia** minimum (используются последние API: `@Observable`, `NavigationSplitView` с `.navigationSplitViewColumnWidth`, `MenuBarExtra` styles).
+- **SwiftUI** host app (`apps/macos/GhostStream/`) — `MenuBarExtra` + `Window`-сцены (консоль — `NavigationSplitView` с системным сайдбаром и тулбаром; ⌘, открывает её на «Настройках», отдельной `Settings`-сцены нет), **macOS 15 Sequoia** minimum (используются последние API: `@Observable`, `NavigationSplitView` с `.navigationSplitViewColumnWidth`, `MenuBarExtra` styles).
 - **`NEPacketTunnelProvider` system extension** (`apps/macos/PacketTunnelExtension/`) — отдельный `.systemextension` bundle, активируется через `OSSystemExtensionRequest`.
 - **`PhantomKit` + `PhantomUI`** — Swift package в `apps/ios/Packages/PhantomKit/` (shared с iOS):
   - `PhantomKit` target — Models / Bridge / Storage / FFI (cross-platform).
   - `PhantomUI` target — Theme / Components / Fonts (cross-platform pure SwiftUI).
 - **Rust core:** `crates/client-apple/` → `PhantomCore.xcframework` с macOS slice (universal arm64+x86_64) поверх iOS slice'ов.
 - **Unified tunnel runtime:** `crates/client-core-runtime/` с `TunIo::Callback(Arc<dyn PacketIo>)` (тот же variant что iOS — packet flow через `NEPacketTunnelProvider`).
-- **Sparkle 2** — auto-update с EdDSA signature verification, appcast XML.
+- **Обновления** — `Service/UpdateChecker.swift` сверяет версию с последним релизом на GitHub (ADR 0022); Sparkle не подключаем.
 - **`i18n`:** `Localizable.xcstrings` — RU baseline + EN.
 
 Зрелость: **in-progress** (v0.23.0, 2026-04-27 — старт работ). Distribution через **Direct (DMG + Developer ID notarize)**, не через Mac App Store (sandboxed App Store distribution не даёт NetworkExtension entitlement без enterprise enrollment).
@@ -247,11 +247,21 @@ cd apps/macos && xcodegen generate
 # + update appcast.xml (enclosure + signature + version + minimumSystemVersion)
 ```
 
-**Sparkle 2 EdDSA**:
-- Generate EdDSA key pair один раз (`./scripts/generate-eddsa-keys.sh` → private в Keychain локально / 1Password, public в Info.plist `SUPublicEDKey`).
-- На каждый release — `sign_update` подписывает DMG → получает signature → попадает в appcast XML.
-- Appcast хостится на vdsina (`https://ghs.example.com/appcast.xml`) или GitHub Releases.
-- App периодически (раз в 24h) проверяет appcast → показывает update prompt с release notes (Markdown rendered) → скачивает + EdDSA verifies + installs.
+**Обновления** (ADR 0022, вместо Sparkle): при запуске и раз в сутки
+`UpdateChecker` берёт `tag_name` из
+`api.github.com/repos/PatrickRedStar/phantom-vpn/releases/latest` и сравнивает
+с `CFBundleShortVersionString`. Если новее — баннер в консоли, строка в попапе
+меню-бара и в «Настройках»; «Скачать» открывает страницу релиза, DMG ставят
+руками. Сетевые ошибки молча игнорируются. ⚠️ Репозиторий приватный: без
+токена API отвечает 404, и проверка у пользователей не срабатывает, пока
+релизы не станут публичными.
+
+**Скриншоты без записи экрана (DEBUG)**: `GhostStream -gsDemo
+idle|connecting|connected|reconnecting|error|empty -gsSnapshot <имя>
+[-gsTheme light|dark]` — демо-данные только в памяти, PNG каждого пункта
+сайдбара и попапа ложатся в
+`~/Library/Containers/com.ghoststream.client/Data/tmp/<имя>/` (песочница), затем
+выход. Код — `App/DebugDemo.swift`.
 
 **CI**: `.github/workflows/macos-release.yml` — m1 runner с self-hosted secrets (Developer ID cert, EdDSA private key, notarization App-Specific Password). Trigger: tag `v*`. Output: GitHub Release с notarized DMG + appcast.xml asset.
 
@@ -278,7 +288,7 @@ Components, переиспользуемые на macOS as-is: `GhostCard`, `Sco
 | Window count | 1 (root view) | Multiple: MenuBar popover + Console + LogsDetached + Welcome + About + CommandPalette |
 | Network extension | `.appex` app extension (packaged внутри `.app`) | `.systemextension` (отдельный bundle, активируется через `OSSystemExtensionRequest`) |
 | Activation flow | Auto при первом `manager.saveToPreferences()` + user allow VPN | Two-stage: system extension activation (`OSSystemExtensionRequest` → user allow в Privacy & Security) + manager save (user allow в VPN & Filters) |
-| Distribution | App Store (TestFlight + Release) | Direct (Developer ID + DMG + notarize + Sparkle 2 auto-update) |
+| Distribution | App Store (TestFlight + Release) | Direct (Developer ID + DMG + notarize), обновление — баннер «Доступна версия X» |
 | Login item | OS-managed background app refresh | `SMAppService.mainApp.register()` — explicit user toggle в Settings |
 | Dock policy | N/A | Toggle LSUIElement runtime: visible (Dock + menu bar) ↔ accessory (menu bar only) |
 | Per-app routing | **Не поддерживается** (требует MDM enterprise entitlement) | Не поддерживается (та же причина) |
@@ -286,7 +296,7 @@ Components, переиспользуемые на macOS as-is: `GhostCard`, `Sco
 | Server roster | Settings list | Dedicated **ROSTER** sidebar tab с SwiftUI `Table` (NAME / ENDPOINT / RTT / LAST USED / ★, sortable, right-click menu) |
 | Logs window | Внутри tab | Может быть detached (`⌘⇧L`) — keep-alive отдельно от main |
 | Theme switch | System-following | System-following + manual toggle в SETUP |
-| Auto-update | App Store | Sparkle 2 (EdDSA + appcast) |
+| Auto-update | App Store | Проверка GitHub Releases + ручная установка DMG |
 | `TunIo` variant | `Callback(Arc<dyn PacketIo>)` | `Callback(Arc<dyn PacketIo>)` (тот же, packet flow callback-based на обеих платформах) |
 
 ## Архитектурные особенности
