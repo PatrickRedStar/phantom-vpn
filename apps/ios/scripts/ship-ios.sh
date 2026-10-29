@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# iOS → TestFlight (internal; builds are also eligible for external testing):
+# iOS → TestFlight (internal testing only, no App Review — ADR 0020: external
+# TestFlight and App Store both rejected 4.3(a) with an account-removal warning):
 #   1. Rebuild PhantomCore.xcframework (skip: GHOSTSTREAM_SKIP_XCFRAMEWORK=1)
 #   2. xcodegen + archive, signed by the Xcode account (team UPG896A272)
 #   3. Export + upload to App Store Connect (app "GhostStream Tunnel")
@@ -37,7 +38,7 @@ cat > "$OUT/ExportOptions.plist" <<'EOF'
 <key>teamID</key><string>UPG896A272</string>
 <key>signingStyle</key><string>automatic</string>
 <key>manageAppVersionAndBuildNumber</key><false/>
-<key>testFlightInternalTestingOnly</key><false/>
+<key>testFlightInternalTestingOnly</key><true/>
 </dict></plist>
 EOF
 

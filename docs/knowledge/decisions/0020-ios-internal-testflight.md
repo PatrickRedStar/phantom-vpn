@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-27
+updated: 2026-10-29
 status: accepted
 ---
 
@@ -30,6 +30,26 @@ Connect — «GhostStream Tunnel» (`com.ghoststream.client`).
   всё равно сняли бы.
 - **Ad Hoc по UDID** (100 iPhone в год, без TestFlight) — запасной вариант, если
   внутренний TestFlight начнут ограничивать.
+
+## Проверка модерацией (2026-10-29)
+
+Попытки выйти за пределы внутреннего TestFlight закончились одинаково —
+**4.3(a) Spam** («similar binary, metadata, and/or concept as apps … by other
+developers»):
+- App Store, запись «GhostStream» (`com.ghoststream.vpn`), май 2026 —
+  отказ, апелляция в App Review Board отклонена 2026-06-03;
+- внешний TestFlight, «GhostStream Tunnel», сборка 1 (2026-05-19) и сборка 10
+  (2026-10-28, заметки «клиент к своему серверу, open source, не xray») —
+  отказ; во втором письме предупреждение: повторные подачи → extended review,
+  аккаунт могут исключить из Apple Developer Program.
+
+Правило 5.4 (организация) при этом не всплывало — упираемся в «концепт»
+(клиент обхода блокировок с импортом конфигов), а не в тип аккаунта, так что
+организация не помогла бы. **Больше на App Review не подаём**: потеря аккаунта
+убьёт и внутренний TestFlight. `ship-ios.sh` оставляет
+`testFlightInternalTestingOnly = true`, чтобы сборку нельзя было отправить
+внешним тестировщикам по ошибке. Предел раздачи — 100 человек (внутренний
+TestFlight или Ad Hoc по UDID).
 
 ## Consequences
 
